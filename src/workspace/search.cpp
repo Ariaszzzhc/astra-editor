@@ -205,6 +205,39 @@ TextSearchResult SearchPattern::find_all(std::string_view text, std::stop_token 
     return result;
 }
 
+TextFindResult SearchPattern::find_next(std::string_view text, ByteOffset begin,
+    bool wrap, std::stop_token stop) const {
+    impl_->require_input_size(text);
+    if (begin.value > text.size() || !utf8::is_boundary(text, begin.value)) {
+        throw std::invalid_argument("Find offset must be a UTF-8 scalar boundary");
+    }
+    TextFindResult result;
+    for (std::size_t index = 0; index < text.size();) {
+        if (stop.stop_requested()) { result.cancelled = true; return result; }
+        index += utf8::decode(text, index).bytes;
+    }
+    std::size_t scan_work{};
+    constexpr auto max_scan_work = std::size_t{256} * 1024U * 1024U;
+    const auto passes = wrap && begin.value != 0 ? 2 : 1;
+    for (int pass = 0; pass < passes; ++pass) {
+        for (auto offset = pass == 0 ? begin.value : std::size_t{0}; offset <= text.size();) {
+            if (stop.stop_requested()) { result.cancelled = true; return result; }
+            auto found = impl_->match(text, offset, RE2::UNANCHORED);
+            if (stop.stop_requested()) { result.cancelled = true; return result; }
+            if (!found || (pass == 1 && found->begin.value >= begin.value)) { break; }
+            const auto work = std::max(std::size_t{1}, found->end.value - offset);
+            if (work > max_scan_work - scan_work) { result.truncated = true; return result; }
+            scan_work += work;
+            if (!impl_->options_.whole_word || word_boundary(text, found->begin.value, found->end.value)) {
+                result.match = std::move(found); result.wrapped = pass != 0; return result;
+            }
+            if (found->begin.value == text.size()) { break; }
+            offset = found->begin.value + utf8::decode(text, found->begin.value).bytes;
+        }
+    }
+    return result;
+}
+
 void SearchPattern::validate_replacement(std::string_view replacement) const {
     (void)impl_->replacement_tokens(replacement);
 }

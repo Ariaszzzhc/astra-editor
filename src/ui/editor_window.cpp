@@ -110,9 +110,8 @@ struct EditorWindow::Impl {
     };
     struct ActiveRequest { Request request; std::string id; std::future<std::optional<std::string>> future; };
     struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; std::shared_ptr<PendingEdit> edit; std::string document; };
-    struct FindState { std::string id; std::string revision; std::string query; std::string replacement; std::string text; std::size_t cursor{}; std::size_t size{}; bool replace{}; };
     struct ViewState { std::string id; std::string revision; std::size_t first{}; std::size_t limit{}; std::map<std::size_t, Line> lines; };
-    enum class Prompt { none, policy_input, policy_confirm, policy_choice, policy_pick, policy_text, policy_progress, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, git_diff };
+    enum class Prompt { none, policy_input, policy_confirm, policy_choice, policy_pick, policy_text, policy_progress, search, workspace_replace_query, workspace_replace_value, replace_confirm, git_diff };
     struct Dialog {
         std::string id; Json spec; std::promise<Json> completion;
         TextLineIndex detail_lines; std::map<std::size_t,TextLayout> detail_layout; float detail_width{},detail_scale{};
@@ -464,8 +463,6 @@ struct EditorWindow::Impl {
     Json native_ui_request(std::string_view method, const Json& params);
     std::future<Json> begin_dialog(const Json& spec);
     void finish_dialog(Json value);
-    void find_next(std::shared_ptr<FindState> state);
-    void find_document(bool replace);
     void search_workspace(bool replace);
     void open_search_result(const Json& match);
     [[nodiscard]] std::string newline(const Document* document) const;
@@ -1132,7 +1129,11 @@ void EditorWindow::Impl::execute_policy(std::string_view name, const Json& param
     workbench->execute(name, params, [this](const script::Runtime::Outcome& outcome) {
         if (outcome.error) {
             if (outcome.error->value("name", std::string{}) != "AbortError") { error = outcome.error->value("message", std::string("Workbench action failed")); status = "Action failed"; }
-        } else if (outcome.value.is_object() && outcome.value.contains("id") && outcome.value.contains("revision")) { accept_metadata(outcome.value); reveal_caret(); }
+        } else if (outcome.value.is_object() && outcome.value.contains("id") && outcome.value.contains("revision") &&
+                   outcome.value.contains("sizeBytes") && outcome.value.contains("lineCount") &&
+                   outcome.value.contains("selections") && outcome.value.contains("selectionPositions")) {
+            accept_metadata(outcome.value); reveal_caret();
+        }
     });
     // Settle ready native focus/layout primitives before the next SDL event.
     // Neither tick waits for a service future, parser or disk operation.
@@ -1172,8 +1173,6 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     else if (name == "ui.explorer") { show_sidebar = true; search_view = false; git_view = false; tree_scroll = 0; }
     else if (name == "ui.toggleOutline") { show_outline = !show_outline; }
     else if (name == "ui.refreshTree") { refresh_tree(); }
-    else if (name == "ui.find") { prompt = Prompt::find; prompt_text = search_query; }
-    else if (name == "ui.replace") { prompt = Prompt::replace_query; prompt_text = search_query; }
     else if (name == "ui.search") { prompt = Prompt::search; prompt_text = search_query; }
     else if (name == "ui.workspaceReplace") { prompt = Prompt::workspace_replace_query; prompt_text = search_query; }
     else if (name == "ui.selectFunction" || name == "ui.selectClass" || name == "ui.selectBlock" || name == "ui.selectString") {
@@ -1248,70 +1247,17 @@ void EditorWindow::Impl::accept_prompt() {
     }
     else if (prompt == Prompt::policy_text) { finish_dialog(nullptr); }
     else if (prompt == Prompt::git_diff) { prompt = Prompt::none; }
-    else if (prompt == Prompt::find) {
-        if (prompt_text.empty()) { return; }
-        search_query = prompt_text; prompt = Prompt::none; find_document(false);
-    } else if (prompt == Prompt::replace_query || prompt == Prompt::workspace_replace_query) {
+    else if (prompt == Prompt::workspace_replace_query) {
         if (prompt_text.empty()) { return; }
         search_query = prompt_text;
-        prompt = prompt == Prompt::replace_query ? Prompt::replace_value : Prompt::workspace_replace_value;
+        prompt = Prompt::workspace_replace_value;
         prompt_text.clear();
-    } else if (prompt == Prompt::replace_value) {
-        replacement_text = prompt_text; prompt = Prompt::none; find_document(true);
     } else if (prompt == Prompt::search || prompt == Prompt::workspace_replace_value) {
         const bool replace = prompt == Prompt::workspace_replace_value;
         if (!replace) { if (prompt_text.empty()) { return; } search_query = prompt_text; }
         else { replacement_text = prompt_text; }
         prompt = Prompt::none; search_workspace(replace);
     } else if (prompt == Prompt::replace_confirm) { command("ui.confirmReplace"); }
-}
-
-void EditorWindow::Impl::find_document(bool replace) {
-    const auto* document = current();
-    if (!document || search_query.empty()) { return; }
-    auto state = std::make_shared<FindState>();
-    state->id = active_id; state->revision = document->metadata.at("revision").get<std::string>();
-    state->query = search_query; state->replacement = replacement_text; state->replace = replace;
-    state->cursor = document->metadata.at("selections").front().at("head").get<std::size_t>();
-    state->size = document->metadata.at("sizeBytes").get<std::size_t>();
-    find_next(std::move(state));
-}
-
-void EditorWindow::Impl::find_next(std::shared_ptr<FindState> state) {
-    if (state->text.size() < state->size) {
-        enqueue({"document.get", {{"id", state->id}, {"begin", state->text.size()}, {"end", state->size}}, {}, false,
-            [this, state](const Json& result) {
-                if (result.at("revision") != state->revision) { throw std::runtime_error("Document changed while finding; try again"); }
-                const auto part = result.at("text").get<std::string>();
-                if (part.empty()) { throw std::runtime_error("Document search made no progress"); }
-                state->text += part;
-                if (state->text.size() > 64 * 1024 * 1024) { throw std::runtime_error("Document exceeds the 64 MiB find limit"); }
-                find_next(state);
-            }, {}});
-        return;
-    }
-    if (state->replace) {
-        auto edits = Json::array();
-        std::size_t from{};
-        while (from <= state->text.size()) {
-            const auto match = state->text.find(state->query, from);
-            if (match == std::string::npos) { break; }
-            if (edits.size() >= 4096) { throw std::runtime_error("More than 4096 matches; refine the replacement query"); }
-            edits.push_back({{"begin", match}, {"end", match + state->query.size()}, {"text", state->replacement}});
-            from = match + state->query.size();
-        }
-        if (edits.empty()) { status = "No matches"; return; }
-        const auto count = edits.size();
-        enqueue({"document.edit", {{"id", state->id}, {"baseRevision", state->revision}, {"edits", std::move(edits)}}, {}, false,
-            [this, count](const Json& result) { accept_metadata(result); reveal_caret(); status = "Replaced " + std::to_string(count) + " match(es)"; }, {}});
-    } else {
-        auto match = state->text.find(state->query, state->cursor);
-        if (match == std::string::npos) { match = state->text.find(state->query); }
-        if (match == std::string::npos) { status = "No matches"; return; }
-        enqueue({"document.setSelections", {{"id", state->id}, {"baseRevision", state->revision},
-                 {"selections", Json::array({{{"anchor", match}, {"head", match + state->query.size()}}})}}, {}, false,
-            [this](const Json& result) { accept_metadata(result); reveal_caret(); status = "Match found"; }, {}});
-    }
 }
 
 void EditorWindow::Impl::search_workspace(bool replace) {
@@ -1994,9 +1940,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
     rectangle(canvas, x, 64 * scale, 600 * scale, (76 + (search_prompt() ? 32 : 0)) * scale, panel_background);
     rectangle(canvas, x, 64 * scale, 600 * scale, 2 * scale, accent);
     const char* hint = "SAVE AS — WORKSPACE RELATIVE PATH";
-    if (prompt == Prompt::find) { hint = "FIND NEXT IN DOCUMENT — LITERAL TEXT"; }
-    else if (prompt == Prompt::replace_query) { hint = "REPLACE ALL IN DOCUMENT — FIND TEXT"; }
-    else if (prompt == Prompt::replace_value || prompt == Prompt::workspace_replace_value) { hint = "REPLACEMENT TEXT — ENTER TO CONTINUE"; }
+    if (prompt == Prompt::workspace_replace_value) { hint = "REPLACEMENT TEXT — ENTER TO CONTINUE"; }
     else if (prompt == Prompt::search) { hint = "SEARCH WORKSPACE AND UNSAVED BUFFERS"; }
     else if (prompt == Prompt::workspace_replace_query) { hint = "REPLACE ACROSS WORKSPACE — FIND TEXT"; }
     label(canvas, prompt == Prompt::policy_input && dialog ? dialog->spec.at("title").get<std::string>() : hint, x + 16 * scale, 73 * scale, 10, muted);

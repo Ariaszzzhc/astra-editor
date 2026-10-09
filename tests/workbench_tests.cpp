@@ -78,6 +78,77 @@ TEST_CASE("workbench user commands replace builtins and preserve service errors"
     CHECK(workbench.idle());
 }
 
+TEST_CASE("workbench document search uses asynchronous service results without downloading text") {
+    for (const auto replace : {false,true}) {
+        CAPTURE(replace);
+        auto channel=std::make_shared<Channel>();std::vector<Json> updates;
+        const Json document{{"id","captured"},{"revision","7"}};
+        astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+            if(method=="_ui.read")return ready({{"document",document}});
+            REQUIRE(method=="_ui.update");updates.push_back(params);return ready(nullptr);
+        },modules());
+        std::optional<astra::script::Runtime::Outcome> outcome;
+        Json parameters{{"query","(中🙂)"},{"regex",true},{"caseSensitive",false},{"wholeWord",true}};
+        if(replace)parameters["replacement"]="[$1]";
+        workbench.execute(replace ? "ui.replace" : "ui.find",parameters,[&](const auto& result){outcome=result;});
+        for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);
+        CHECK(channel->requests.front().body.at("method")== (replace ? "document.replaceAll" : "document.find"));
+        const auto params=channel->requests.front().body.at("params");
+        CHECK(params.at("id")=="captured");CHECK(params.at("baseRevision")=="7");CHECK(params.at("regex")==true);
+        CHECK(params.at("query")=="(中🙂)");CHECK_FALSE(outcome);CHECK_FALSE(workbench.awaiting_input());
+        channel->reply({{"operationId","search-1"}});
+        for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="operation.get");
+        Json result{{"document",document}};
+        if(replace) { result["replacements"]=2;result["changed"]=true; }
+        else { result["match"]={{"begin",4},{"end",11}};result["wrapped"]=true; }
+        channel->reply({{"state","completed"},{"result",result}});
+        for(int tick=0;tick<12;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(channel->requests.empty());CHECK(workbench.idle());
+        REQUIRE(updates.size()==2);CHECK(updates.back().at("document")==document);
+        CHECK(updates.back().at("status")== (replace ? "Replaced 2 match(es)" : "Match found; wrapped to beginning"));
+    }
+}
+
+TEST_CASE("workbench cancellation drains late document search identity") {
+    auto channel=std::make_shared<Channel>();std::vector<Json> updates;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.read")return ready({{"document",{{"id","source"},{"revision","4"}}}});
+        if(method=="_ui.update")updates.push_back(params);
+        else CHECK(method=="_ui.action");
+        return ready(nullptr);
+    },modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.find",{{"query","needle"}},[&](const auto& result){outcome=result;});
+    for(int tick=0;tick<8;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="document.find");
+    workbench.execute("ui.cancel",Json::object(),{});
+    for(int tick=0;tick<12;++tick)workbench.poll();
+    REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==false);CHECK_FALSE(workbench.idle());
+    channel->reply({{"operationId","late-search"}});
+    for(int tick=0;tick<10;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="operation.cancel");
+    CHECK(channel->requests.front().body.at("params").at("id")=="late-search");
+    channel->reply(nullptr);for(int tick=0;tick<10;++tick)workbench.poll();
+    CHECK(workbench.idle());CHECK(channel->requests.empty());
+    CHECK(std::none_of(updates.begin(),updates.end(),[](const Json& value){return value.contains("document");}));
+}
+
+TEST_CASE("workbench document replace owns both inputs and treats dismissal as cancellation") {
+    auto channel=std::make_shared<Channel>();std::vector<Json> inputs;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.dialog") {inputs.push_back(params);return ready(inputs.size()==1 ? Json("needle") : Json(nullptr));}
+        CHECK(method=="_ui.dialog.cancel");return ready(nullptr);
+    },modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.replace",Json::object(),[&](const auto& result){outcome=result;});
+    for(int tick=0;tick<16;++tick)workbench.poll();
+    REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==false);
+    REQUIRE(inputs.size()==2);CHECK(inputs[0].at("kind")=="input");CHECK(inputs[1].at("kind")=="input");
+    CHECK(channel->requests.empty());CHECK(workbench.idle());
+}
+
 TEST_CASE("workbench editing awaits native completion and preserves parameters and errors") {
     auto channel=std::make_shared<Channel>();std::promise<Json> completion;Json action;int drains{};
     astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {

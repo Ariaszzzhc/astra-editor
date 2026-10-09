@@ -1,5 +1,44 @@
-import {ui} from 'astra/ui';
+import {ui, request} from 'astra/ui';
+let documentQuery = '', documentSearchControl;
+async function documentSearch(replace, parameters = {}) {
+    if (documentSearchControl) return false;
+    const control = new AbortController(); documentSearchControl = control;
+    const options = {signal:control.signal};
+    const abort = () => control.abort();
+    parameters.signal?.addEventListener('abort', abort);
+    if (parameters.signal?.aborted) control.abort();
+    try {
+        const query = parameters.query ?? await ui.input({title:replace ? 'REPLACE ALL IN DOCUMENT — FIND TEXT' : 'FIND IN DOCUMENT',value:documentQuery}, options);
+        if (!query) return false;
+        documentQuery = query;
+        const replacement = replace ? parameters.replacement ?? await ui.input({title:'REPLACEMENT TEXT',value:''}, options) : undefined;
+        if (replace && replacement === null) return false;
+        const {document} = await ui.read(parameters.id ? {id:parameters.id} : {}, options);
+        if (!document) return false;
+        await ui.update({status:replace ? 'Replacing in document...' : 'Finding in document...',error:''});
+        const result = await request(replace ? 'document.replaceAll' : 'document.find', {
+            id:document.id, baseRevision:parameters.baseRevision ?? document.revision, query,
+            caseSensitive:parameters.caseSensitive ?? true, regex:parameters.regex ?? false, wholeWord:parameters.wholeWord ?? false,
+            ...(replace ? {replacement} : {select:true,wrap:parameters.wrap ?? true,...(parameters.begin === undefined ? {} : {begin:parameters.begin})})
+        }, options);
+        control.signal.throwIfAborted();
+        await ui.update({...(result.document ? {document:result.document,revealCaret:true} : {}),
+            status:replace ? `Replaced ${result.replacements} match(es)` : result.match ? (result.wrapped ? 'Match found; wrapped to beginning' : 'Match found') : 'No matches'});
+        return result;
+    } catch (error) {
+        if (error.name === 'AbortError') { await ui.update({status:'Document search cancelled'}); return false; }
+        throw error;
+    } finally {
+        parameters.signal?.removeEventListener('abort', abort);
+        if (documentSearchControl === control) documentSearchControl = undefined;
+    }
+}
 export function registerSearch() {
+    ui.registerCommand({id:'ui.find',title:'Find in document',shortcut:'Ctrl+F'}, parameters => documentSearch(false,parameters));
+    ui.registerCommand({id:'ui.replace',title:'Replace all in document',shortcut:'Ctrl+H'}, parameters => documentSearch(true,parameters));
+    ui.registerCommand({id:'workbench.cancelDocumentSearch',title:'Cancel document search',palette:false}, () => {
+        documentSearchControl?.abort();
+    });
     ui.registerView({id:'search', title:'Search', icon:'search'}, async (parameters, options) => {
         const matches = [];
         const issues = [];

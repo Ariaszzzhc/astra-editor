@@ -55,10 +55,41 @@ honor graphemes, including combining marks, emoji sequences, and CRLF pairs.
 | `document.setSelections` | `id`, `baseRevision`, `selections` | Metadata |
 | `document.undo` / `document.redo` | `id`, `baseRevision` | Metadata |
 | `document.close` | `id`, `baseRevision`, optional `discardChanges` | Close result; dirty close otherwise rejected |
+| `document.find` | `id`, `baseRevision`, `query`; optional `begin`, `wrap`, `select`, `caseSensitive`, `regex`, `wholeWord` | Asynchronous operation; `{id,revision,match,wrapped,document?}` |
+| `document.replaceAll` | `id`, `baseRevision`, `query`, `replacement`; optional `caseSensitive`, `regex`, `wholeWord` | Asynchronous operation; `{document,replacements,changed}` |
 
 Edits contain `{begin,end,text}` in the **same original revision**. Selection
 objects contain `{anchor,head}`. Stale revisions and invalid/overlapping edits
 fail before mutation. One multicursor action creates one undo entry.
+
+Document search uses immutable snapshots on workers and the same dispatcher for
+local, TCP, scripting and Agent callers. Poll with `operation.get`, cancel with
+`operation.cancel`; JS `astra.request` awaits operation completion automatically.
+`find` retains one match, using complete-input RE2 anchors and Unicode whole-word
+boundaries. `begin` is a UTF-8 scalar boundary and defaults to the primary
+selection head; `wrap` defaults true, `select` defaults false. A missing match is
+`null`. With `select:true`, the original selections must still match at owner-loop
+publication; otherwise the operation fails without moving the user's caret.
+
+`replaceAll` expands captures and prepares one history transaction on a worker.
+Publication rejects changed revision/content, selections, saved state, closed
+documents or cancellation. It changes the buffer only; saving is a separate
+operation. Both methods accept up to 64 MiB input, share workspace search syntax,
+and preserve original UTF-8 byte ranges. Replacement is limited to 4096 matches,
+64 KiB replacement templates and 128 MiB output. No-match and identical-text
+replacements leave revision and history unchanged; all limit failures precede
+publication. Cancellation is checked around bounded RE2 calls, which do not
+expose an interrupt inside one call.
+
+Client `ui.find` / `ui.replace` commands now compose these APIs in JS. They accept
+optional `query`, search flags, captured `id`/`baseRevision` and `signal`; replace
+also accepts `replacement`. Missing strings use the shared generic input
+component. Cancellation propagates to the operation and drains late replies.
+After cancellation, a late valid service rejection is reported through
+`astra.on('runtime.requestDrained', receipt)` with `{method,cancelled:true,error}`;
+it cannot become a new failure of the cancelled user action. Malformed replies,
+transport failures and failures of the cancellation RPC still surface. Report
+handlers share the runtime's existing per-poll CPU budget and drain before idle.
 
 For a long logical line, `document.lines` returns `complete:false` and a
 `continuation:{firstLine,begin}` to fetch the rest. `nextBegin` includes the line

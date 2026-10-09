@@ -593,6 +593,70 @@ TEST_CASE("workspace search limits cancellation and hostile regex are bounded") 
     CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(5));
 }
 
+TEST_CASE("workspace find next preserves full regex context and Unicode boundaries") {
+    using astra::ByteOffset;
+    using astra::workspace::SearchPattern;
+    SearchOptions options; options.regex = true; options.query = "^cat";
+    auto found = SearchPattern(options).find_next("cat cat", ByteOffset{4}, false);
+    CHECK_FALSE(found.match);
+    found = SearchPattern(options).find_next("cat cat", ByteOffset{4});
+    REQUIRE(found.match); CHECK(found.match->begin.value == 0); CHECK(found.wrapped);
+    options.query = "\\bcat\\b";
+    CHECK_FALSE(SearchPattern(options).find_next("xcat", ByteOffset{1}).match);
+    options.query = "cat|dog"; options.case_sensitive = false; options.whole_word = true;
+    found = SearchPattern(options).find_next("CAT \xC3\xA9" "cat dog_ Dog", ByteOffset{4});
+    REQUIRE(found.match); CHECK(found.match->begin.value == 15); CHECK_FALSE(found.wrapped);
+    options = {}; options.query = "🙂";
+    found = SearchPattern(options).find_next("中🙂中🙂", ByteOffset{7}, false);
+    REQUIRE(found.match); CHECK(found.match->begin.value == 10); CHECK(found.match->end.value == 14);
+    CHECK_THROWS_AS((void)SearchPattern(options).find_next("中🙂", ByteOffset{1}), std::invalid_argument);
+    CHECK_THROWS_AS((void)SearchPattern(options).find_next("中🙂", ByteOffset{8}), std::invalid_argument);
+    CHECK_THROWS_AS((void)SearchPattern(options).find_next("\xFF", ByteOffset{0}), std::invalid_argument);
+    std::stop_source source; (void)source.request_stop();
+    found = SearchPattern(options).find_next("中🙂", ByteOffset{0}, true, source.get_token());
+    CHECK(found.cancelled); CHECK_FALSE(found.match);
+}
+
+TEST_CASE("workspace find next retains one match beyond the all match budget") {
+    using astra::ByteOffset;
+    using astra::workspace::SearchPattern;
+    SearchOptions options; options.query = "a"; options.max_matches = 0; options.max_result_bytes = 0;
+    const auto found = SearchPattern(options).find_next(std::string(100000, 'a'), ByteOffset{99999});
+    REQUIRE(found.match); CHECK(found.match->begin.value == 99999); CHECK_FALSE(found.truncated);
+    options.query = "$"; options.regex = true;
+    const auto eof = SearchPattern(options).find_next("中🙂", ByteOffset{7});
+    REQUIRE(eof.match); CHECK(eof.match->begin.value == 7); CHECK(eof.match->end.value == 7);
+    const auto empty = SearchPattern(options).find_next("", ByteOffset{0});
+    REQUIRE(empty.match); CHECK(empty.match->begin.value == 0); CHECK_FALSE(empty.wrapped);
+}
+
+TEST_CASE("workspace find next agrees with a flat literal oracle at random scalar boundaries") {
+    constexpr auto seed = 0xA57FA11U;
+    std::mt19937 random(seed); CAPTURE(seed);
+    const std::array<std::string_view,6> parts{"a","b"," ","中","🙂","e\xCC\x81"};
+    for (unsigned sample = 0; sample < 300; ++sample) {
+        std::string input;
+        for (unsigned i=0;i<80;++i) input += parts[random()%parts.size()];
+        std::vector<std::size_t> boundaries{0};
+        for (std::size_t index=0;index<input.size();) { index += astra::utf8::decode(input,index).bytes;boundaries.push_back(index); }
+        const auto begin = boundaries[random()%boundaries.size()];
+        SearchOptions options; options.query = std::string(parts[random()%parts.size()]);
+        for (const auto wrap : {false,true}) {
+            auto expected = input.find(options.query,begin);
+            const auto wrapped = wrap && expected == std::string::npos && begin != 0;
+            if (wrapped) expected = input.find(options.query);
+            const auto actual = astra::workspace::SearchPattern(options).find_next(input,astra::ByteOffset{begin},wrap);
+            CHECK(actual.match.has_value() == (expected != std::string::npos));
+            if (actual.match) {
+                CHECK(actual.match->begin.value == expected);
+                CHECK(actual.match->end.value == expected+options.query.size());
+                CHECK(actual.wrapped == wrapped);
+            }
+            CHECK_FALSE(actual.cancelled); CHECK_FALSE(actual.truncated);
+        }
+    }
+}
+
 TEST_CASE("workspace excludes buffer overlay paths before file and byte budgets") {
     WorkspaceFixture fixture;
     fixture.write("a.txt", std::string(2000, 'x'));

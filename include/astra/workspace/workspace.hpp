@@ -99,6 +99,13 @@ struct TextSearchResult {
     bool cancelled{};
 };
 
+struct TextFindResult {
+    std::optional<TextMatch> match;
+    bool wrapped{};
+    bool truncated{};
+    bool cancelled{};
+};
+
 // Reusable pure-text search for disk files and immutable unsaved buffer copies.
 // RE2 syntax, Unicode simple case folding (locale independent; no normalization
 // or multi-scalar folds such as ss/ssharp), bounded compiled memory, no backtracking.
@@ -125,6 +132,11 @@ public:
     // calls; RE2 does not expose interruption inside one call.
     [[nodiscard]] TextSearchResult find_all(std::string_view text, std::stop_token stop = {},
         std::size_t max_matches = std::numeric_limits<std::size_t>::max()) const;
+    // Seeks from a UTF-8 scalar boundary, optionally wrapping to the beginning.
+    // Regex anchors and word boundaries always use the complete original input.
+    // Retains at most one match, independent of the number of earlier matches.
+    [[nodiscard]] TextFindResult find_next(std::string_view text, ByteOffset begin,
+        bool wrap = true, std::stop_token stop = {}) const;
     // Literal mode preserves replacement bytes. Regex mode accepts $0..$99,
     // ${name}, and $$; backslashes are literal. Unknown/malformed groups fail.
     // Revalidates the exact match/captures against the original UTF-8 text.

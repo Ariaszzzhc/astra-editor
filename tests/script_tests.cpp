@@ -240,6 +240,29 @@ TEST_CASE("JavaScript awaits operation pages and forwards cancellation after del
     CHECK(cancelled == std::vector<std::string>{"late-1"}); CHECK(remote.idle());
 }
 
+TEST_CASE("JavaScript cancelled request drains report service rejection and preserve transport failures") {
+    for (const auto code : {-32001,-32602,-32603}) {
+        CAPTURE(code);
+        std::promise<Json> delayed;
+        Runtime runtime(Runtime::AsyncRequest{[&](std::string_view,const Json&){return delayed.get_future();}});
+        static_cast<void>(runtime.evaluate("let receipt=null; astra.on('runtime.requestDrained',value=>receipt=value);"));
+        const auto task=runtime.start_evaluation("astra.request('document.find',{query:'needle'})");runtime.poll();
+        runtime.cancel(task);const auto cancelled=runtime.take_result(task);REQUIRE(cancelled);
+        CHECK(cancelled->error->at("name")=="AbortError");runtime.poll();
+        delayed.set_exception(std::make_exception_ptr(astra::protocol::RpcError(code,"late rejection",Json{{"revision","8"}})));
+        if(code==-32603) {
+            CHECK_THROWS_AS(runtime.poll(),astra::protocol::RpcError);
+            CHECK(runtime.evaluate("receipt").is_null());
+        } else {
+            CHECK_NOTHROW(runtime.poll());runtime.poll();
+            CHECK(runtime.evaluate("receipt")==Json{{"method","document.find"},{"cancelled",true},
+                {"error",{{"code",code},{"message","late rejection"},{"data",{{"revision","8"}}}}}});
+            CHECK(runtime.take_errors().empty());
+        }
+        CHECK(runtime.idle());
+    }
+}
+
 TEST_CASE("JavaScript event subscriptions and registered ES modules use the same host") {
     Runtime runtime(echo);
     runtime.define_module("astra/test", "export function setup(){let n=0; astra.registerCommand('counter',()=>++n);}");

@@ -134,6 +134,8 @@ ApplicationService::ApplicationService(const fs::path& root, Scheduler scheduler
     rpc.register_method("workspace.tree", [this](const Json& p) { return tree(p); });
     rpc.register_method("workspace.search", [this](const Json& p) { return search(p); });
     rpc.register_method("workspace.replace", [this](const Json& p) { return replace(p); });
+    rpc.register_method("document.find", [this](const Json& p) { return find_document_text(p); });
+    rpc.register_method("document.replaceAll", [this](const Json& p) { return replace_document_text(p); });
     rpc.register_method("workspace.documents", [this](const Json& p) {
         fields(p, {});
         auto result = Json::array();

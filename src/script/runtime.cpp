@@ -82,7 +82,9 @@ struct Runtime::Impl {
     std::map<std::string, std::map<std::uint64_t, std::unique_ptr<Value>>> listeners;
     std::map<std::string, std::string> modules;
     std::deque<std::future<Json>> cancellations;
-    std::deque<std::future<Json>> abandoned;
+    struct Abandoned { std::string method; std::future<Json> future; };
+    std::deque<Abandoned> abandoned;
+    std::deque<Json> drain_reports;
     std::vector<Json> errors;
     TaskId active_task{};
     std::uint64_t next_id{1};
@@ -205,6 +207,27 @@ struct Runtime::Impl {
     std::uint64_t allocate_id() {
         if (next_id == std::numeric_limits<std::uint64_t>::max()) { throw ScriptError("Script identifier capacity exceeded"); }
         return next_id++;
+    }
+
+    void emit_event(std::string_view event, const Json& payload) {
+        if (stopping) { return; }
+        const auto found = listeners.find(std::string(event));
+        if (found == listeners.end()) { return; }
+        std::vector<std::unique_ptr<Value>> event_callbacks;
+        for (const auto& [id, callback] : found->second) {
+            static_cast<void>(id); event_callbacks.push_back(std::make_unique<Value>(context, JS_DupValue(context, callback->get())));
+        }
+        Value argument(context, from_json(payload)); check(argument.get());
+        for (const auto& callback : event_callbacks) {
+            if (tasks.size() >= limits.max_tasks) { throw ScriptError("Script event task capacity exceeded"); }
+            const auto id = allocate_id(); active_task = id;
+            auto arg = argument.get();
+            try {
+                Value result(context, JS_Call(context, callback->get(), JS_UNDEFINED, 1, &arg));
+                check(result.get()); retain(result.get(), id); tasks.at(id).detached = true; run_jobs();
+            } catch (...) { active_task = 0; abandon_task(id); throw; }
+            active_task = 0;
+        }
     }
 
     void require_owner() const {
@@ -428,7 +451,7 @@ struct Runtime::Impl {
         } else if (incoming.future) {
             // An outstanding transport response may reveal an operation ID only
             // after cancellation. Retain it and cancel that operation on receipt.
-            abandoned.push_back(std::move(*incoming.future)); incoming.future.reset();
+            abandoned.push_back({incoming.method, std::move(*incoming.future)}); incoming.future.reset();
         }
     }
 
@@ -518,11 +541,24 @@ struct Runtime::Impl {
             static_cast<void>(completed.get());
         }
         for (auto i = abandoned.begin(); i != abandoned.end();) {
-            if (i->wait_for(std::chrono::seconds(0)) != std::future_status::ready) { ++i; continue; }
+            if (i->future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) { ++i; continue; }
             auto completed = std::move(*i); i = abandoned.erase(i);
-            const auto reply = completed.get();
-            if (reply.is_object() && reply.contains("operationId")) {
-                cancellations.push_back(request("operation.cancel", {{"id", reply.at("operationId")}}));
+            try {
+                const auto reply = completed.future.get();
+                if (reply.is_object() && reply.contains("operationId")) {
+                    cancellations.push_back(request("operation.cancel", {{"id", reply.at("operationId")}}));
+                }
+            } catch (const protocol::RpcError& error) {
+                // A valid service rejection settles the already-cancelled
+                // request without creating an operation to cancel. Report it
+                // separately from the caller's settled AbortError. Transport,
+                // malformed-reply and cancellation-RPC failures still surface.
+                const auto code = error.code();
+                if (!((code <= -32000 && code >= -32099) || code == -32600 || code == -32601 || code == -32602)) { throw; }
+                Json failure{{"code", code}, {"message", error.what()}};
+                if (error.data()) { failure["data"] = *error.data(); }
+                if (drain_reports.size() >= limits.max_pending_requests) { throw ScriptError("Cancelled request report capacity exceeded"); }
+                drain_reports.push_back({{"method", completed.method}, {"cancelled", true}, {"error", std::move(failure)}});
             }
         }
         for (auto& [id, task] : tasks) {
@@ -705,7 +741,13 @@ Runtime::TaskId Runtime::start_command(std::string_view name, const Json& params
     return id;
 }
 
-void Runtime::poll() { Impl::Scope scope(*impl_); impl_->tick(); }
+void Runtime::poll() {
+    Impl::Scope scope(*impl_); impl_->tick();
+    while (!impl_->drain_reports.empty() && Impl::Clock::now() < impl_->deadline) {
+        auto report = std::move(impl_->drain_reports.front()); impl_->drain_reports.pop_front();
+        impl_->emit_event("runtime.requestDrained", report);
+    }
+}
 
 std::optional<Runtime::Outcome> Runtime::take_result(TaskId id) {
     impl_->require_owner();
@@ -731,14 +773,14 @@ void Runtime::cancel(TaskId id) {
 
 bool Runtime::idle() const {
     impl_->require_owner();
-    return impl_->pending.empty() && impl_->tasks.empty() && impl_->cancellations.empty() && impl_->abandoned.empty();
+    return impl_->pending.empty() && impl_->tasks.empty() && impl_->cancellations.empty() && impl_->abandoned.empty() && impl_->drain_reports.empty();
 }
 bool Runtime::waiting_only(std::string_view method) const {
     return waiting_only(std::span<const std::string_view>(&method,1));
 }
 bool Runtime::waiting_only(std::span<const std::string_view> methods) const {
     impl_->require_owner();
-    if (impl_->pending.empty() || !impl_->cancellations.empty() || !impl_->abandoned.empty() || JS_IsJobPending(impl_->runtime)) { return false; }
+    if (impl_->pending.empty() || !impl_->cancellations.empty() || !impl_->abandoned.empty() || !impl_->drain_reports.empty() || JS_IsJobPending(impl_->runtime)) { return false; }
     if (!std::ranges::all_of(impl_->pending,[methods](const auto& entry){return std::ranges::find(methods,entry.second->method)!=methods.end() && entry.second->future.has_value();})) { return false; }
     return std::ranges::all_of(impl_->tasks,[this](const auto& entry){
         return !entry.second.cancelled && !entry.second.outcome && std::ranges::any_of(impl_->pending,[id=entry.first](const auto& request){return request.second->owner==id;});
@@ -791,28 +833,7 @@ Runtime::Json Runtime::execute_command(std::string_view name, const Json& params
 
 void Runtime::emit(std::string_view event, const Json& payload) {
     Impl::Scope scope(*impl_);
-    if (impl_->stopping) { return; }
-    const auto found = impl_->listeners.find(std::string(event));
-    if (found == impl_->listeners.end()) { return; }
-    // Copy callbacks because handlers can unsubscribe themselves or other handlers.
-    std::vector<std::unique_ptr<Value>> callbacks;
-    for (const auto& [id, callback] : found->second) {
-        static_cast<void>(id); callbacks.push_back(std::make_unique<Value>(impl_->context, JS_DupValue(impl_->context, callback->get())));
-    }
-    Value argument(impl_->context, impl_->from_json(payload)); impl_->check(argument.get());
-    for (const auto& callback : callbacks) {
-        if (impl_->tasks.size() >= impl_->limits.max_tasks) { throw ScriptError("Script event task capacity exceeded"); }
-        const auto id = impl_->allocate_id();
-        impl_->active_task = id;
-        auto arg = argument.get();
-        try {
-            Value result(impl_->context, JS_Call(impl_->context, callback->get(), JS_UNDEFINED, 1, &arg));
-            impl_->check(result.get()); impl_->retain(result.get(), id);
-            impl_->tasks.at(id).detached = true;
-            impl_->run_jobs();
-        } catch (...) { impl_->active_task = 0; impl_->abandon_task(id); throw; }
-        impl_->active_task = 0;
-    }
+    impl_->emit_event(event, payload);
 }
 
 void Runtime::define_module(std::string name, std::string source) {

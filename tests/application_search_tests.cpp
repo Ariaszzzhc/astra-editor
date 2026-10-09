@@ -159,6 +159,153 @@ private:
     std::vector<std::unique_ptr<Task>> tasks;
 };
 
+TEST_CASE("document search defers computation and atomically selects Unicode matches") {
+    SearchFiles files; PausedSearch service(files.root);
+    const auto doc = service.call("document.create", {{"text", "中🙂 cat\nCAT"}});
+    const auto id = doc.at("id");
+    const auto pending = service.call("document.find", {{"id",id},{"baseRevision","0"},{"query","cat"},
+        {"begin",11},{"caseSensitive",false},{"wholeWord",true},{"select",true}});
+    CHECK(service.call("operation.get", {{"id",pending.at("operationId")}}).at("state") == "pending");
+    CHECK(service.call("document.get", {{"id",id}}).at("selections") == doc.at("selections"));
+    const auto completed = service.finish(pending);
+    REQUIRE(completed.at("state") == "completed");
+    CHECK(completed["result"]["match"]["begin"] == 12);
+    CHECK(completed["result"]["match"]["line"] == 1);
+    CHECK(completed["result"]["wrapped"] == false);
+    const auto selected = service.call("document.get", {{"id",id}});
+    CHECK(selected.at("selections") == Json::array({{{"anchor",12},{"head",15}}}));
+    CHECK(selected.at("revision") == "0"); CHECK_FALSE(selected.at("canUndo").get<bool>());
+    const auto wrapped = service.finish(service.call("document.find", {{"id",id},{"baseRevision","0"},{"query","cat"},{"caseSensitive",false}}));
+    REQUIRE(wrapped.at("state") == "completed"); CHECK(wrapped["result"]["match"]["begin"] == 8); CHECK(wrapped["result"]["wrapped"] == true);
+    const auto absent = service.finish(service.call("document.find", {{"id",id},{"baseRevision","0"},{"query","missing"},{"select",true}}));
+    REQUIRE(absent.at("state") == "completed"); CHECK(absent["result"]["match"].is_null());
+    CHECK(service.call("document.get", {{"id",id}}).at("selections") == selected.at("selections"));
+}
+
+TEST_CASE("document replacement is one Unicode transaction with selection history") {
+    SearchFiles files; SearchHost service(files.root);
+    auto doc = service.call("document.create", {{"text","中 cat\nCAT 🙂"}});
+    const auto id = doc.at("id");
+    doc = service.call("document.setSelections", {{"id",id},{"baseRevision","0"},
+        {"selections",Json::array({{{"anchor",4},{"head",7}},{{"anchor",11},{"head",16}}})}});
+    const auto result = service.done("document.replaceAll", {{"id",id},{"baseRevision","0"},{"query","(cat)"},
+        {"replacement","[$1]"},{"regex",true},{"caseSensitive",false}});
+    CHECK(result.at("replacements") == 2); CHECK(result.at("changed") == true);
+    const auto replaced = service.call("document.get", {{"id",id}});
+    CHECK(replaced.at("text") == "中 [cat]\n[CAT] 🙂"); CHECK(replaced.at("revision") == "1"); CHECK(replaced.at("dirty") == true);
+    service.call("document.undo", {{"id",id},{"baseRevision","1"}});
+    const auto undone = service.call("document.get", {{"id",id}});
+    CHECK(undone.at("text") == "中 cat\nCAT 🙂"); CHECK(undone.at("selections") == doc.at("selections"));
+    CHECK(undone.at("dirty") == false); CHECK(undone.at("canUndo") == false);
+    service.call("document.redo", {{"id",id},{"baseRevision","2"}});
+    CHECK(service.call("document.get", {{"id",id}}).at("selections") == replaced.at("selections"));
+}
+
+TEST_CASE("document search and replacement reject changes before publication") {
+    for (const auto replace : {false,true}) for (const auto change : {"edit","selections","close","cancel"}) {
+        CAPTURE(replace); CAPTURE(change);
+        SearchFiles files; PausedSearch service(files.root);
+        const auto doc = service.call("document.create", {{"text","cat cat"}}), id = doc.at("id");
+        Json params{{"id",id},{"baseRevision","0"},{"query","cat"}};
+        if (replace) params["replacement"] = "dog"; else params["select"] = true;
+        const auto operation = service.call(replace ? "document.replaceAll" : "document.find", params);
+        service.worker();
+        if (std::string_view(change) == "edit") service.call("document.insert", {{"id",id},{"baseRevision","0"},{"text","X"}});
+        else if (std::string_view(change) == "selections") service.call("document.setSelections", {{"id",id},{"baseRevision","0"},{"selections",Json::array({{{"anchor",4},{"head",4}}})}});
+        else if (std::string_view(change) == "close") service.call("document.close", {{"id",id},{"baseRevision","0"}});
+        else service.call("operation.cancel", {{"id",operation.at("operationId")}});
+        Json before;
+        if (std::string_view(change) != "close") before = service.call("document.get", {{"id",id}});
+        service.complete();
+        const auto result = service.call("operation.get", {{"id",operation.at("operationId")}});
+        CHECK(result.at("state") == (std::string_view(change) == "cancel" ? "cancelled" : "failed"));
+        if (std::string_view(change) != "close") CHECK(service.call("document.get", {{"id",id}}) == before);
+        else CHECK(service.call("document.list").empty());
+    }
+}
+
+TEST_CASE("document replacement limits and invalid expressions preserve state") {
+    SearchFiles files; PausedSearch service(files.root);
+    for (const auto kind : {"limit","regex","capture","utf8","noop","empty"}) {
+        CAPTURE(kind);
+        const auto text = std::string_view(kind) == "limit" ? std::string(4097,'a') : std::string("a🙂a");
+        const auto doc = service.call("document.create", {{"text",text}}), id = doc.at("id");
+        const auto before = service.call("document.get", {{"id",id}});
+        Json params{{"id",id},{"baseRevision","0"},{"query","a"},{"replacement","b"}};
+        if (std::string_view(kind) == "regex") { params["regex"] = true; params["query"] = "("; }
+        if (std::string_view(kind) == "capture") { params["regex"] = true; params["replacement"] = "$1"; }
+        if (std::string_view(kind) == "utf8") params["replacement"] = std::string("\xFF");
+        if (std::string_view(kind) == "noop") params["replacement"] = "a";
+        if (std::string_view(kind) == "empty") { params["regex"] = true; params["query"] = "^|$"; params["replacement"] = "!"; }
+        if (std::string_view(kind) == "utf8") {
+            const auto response = service.app.dispatch(request("document.replaceAll",params));
+            REQUIRE(response); REQUIRE(response->contains("error")); CHECK((*response)["error"]["code"] == -32600);
+            CHECK(service.call("document.get", {{"id",id}}) == before);
+            service.call("document.close", {{"id",id},{"baseRevision","0"}});
+            continue;
+        }
+        const auto result = service.finish(service.call("document.replaceAll",params));
+        if (std::string_view(kind) == "empty") {
+            REQUIRE(result.at("state") == "completed"); CHECK(result["result"]["replacements"] == 2);
+            CHECK(service.call("document.get", {{"id",id}}).at("text") == "!a🙂a!");
+        } else {
+            CHECK(result.at("state") == (std::string_view(kind) == "noop" ? "completed" : "failed"));
+            CHECK(service.call("document.get", {{"id",id}}) == before);
+        }
+        service.call("document.close", {{"id",id},{"baseRevision",std::string_view(kind) == "empty" ? "1" : "0"},{"discardChanges",true}});
+    }
+}
+
+TEST_CASE("document search validates offsets revisions and runs with inline completion") {
+    SearchFiles files; PausedSearch service(files.root);
+    const auto doc = service.call("document.create", {{"text","中🙂a"}}), id = doc.at("id");
+    for (const auto& invalid : std::vector<Json>{Json{{"begin",1}},Json{{"begin",-1}},Json{{"begin",1.5}},
+        Json{{"begin",9}},Json{{"wrap","yes"}},Json{{"select",1}},Json{{"other",true}}}) {
+        Json params{{"id",id},{"baseRevision","0"},{"query","a"}};
+        params.update(invalid);
+        const auto response = service.app.dispatch(request("document.find",params));
+        REQUIRE(response); REQUIRE(response->contains("error")); CHECK((*response)["error"]["code"] == -32602);
+    }
+    const auto stale = service.app.dispatch(request("document.replaceAll",{{"id",id},{"baseRevision","1"},{"query","a"},{"replacement","b"}}));
+    REQUIRE(stale); CHECK((*stale)["error"]["code"] == -32001);
+    service.run_next_inline();
+    const auto result = service.call("operation.get", {{"id",service.call("document.find",{{"id",id},{"baseRevision","0"},{"query","a"}}).at("operationId")}});
+    REQUIRE(result.at("state") == "completed"); CHECK(result["result"]["match"]["begin"] == 7);
+}
+
+TEST_CASE("document replacement cannot overwrite a concurrent save baseline") {
+    SearchFiles files; PausedSearch service(files.root);
+    auto doc = service.call("document.create", {{"text","cat"}}), id = doc.at("id");
+    doc = service.call("document.insert", {{"id",id},{"baseRevision","0"},{"text","cat "}});
+    REQUIRE(doc.at("dirty").get<bool>());
+    const auto replace = service.call("document.replaceAll", {{"id",id},{"baseRevision","1"},{"query","cat"},{"replacement","dog"}});
+    service.worker();
+    const auto save = service.call("workspace.save", {{"id",id},{"baseRevision","1"},{"path","saved.txt"}});
+    service.worker(1); service.complete(1);
+    REQUIRE(service.call("operation.get", {{"id",save.at("operationId")}}).at("state") == "completed");
+    const auto saved = service.call("document.get", {{"id",id}});
+    REQUIRE(saved.at("dirty") == false);
+    service.complete();
+    const auto result = service.call("operation.get", {{"id",replace.at("operationId")}});
+    CHECK(result.at("state") == "failed"); CHECK(result["error"]["code"] == -32001);
+    CHECK(service.call("document.get", {{"id",id}}) == saved); CHECK(files.read("saved.txt") == "cat cat");
+}
+
+TEST_CASE("document search cancellation before worker and pure queries preserve selections") {
+    SearchFiles files; PausedSearch service(files.root);
+    const auto doc = service.call("document.create", {{"text","cat"}}), id = doc.at("id");
+    const auto cancelled = service.call("document.find", {{"id",id},{"baseRevision","0"},{"query","cat"},{"select",true}});
+    service.call("operation.cancel", {{"id",cancelled.at("operationId")}});
+    CHECK(service.finish(cancelled).at("state") == "cancelled");
+    const auto query = service.call("document.find", {{"id",id},{"baseRevision","0"},{"query","cat"}});
+    service.worker();
+    const auto selected = service.call("document.setSelections", {{"id",id},{"baseRevision","0"},{"selections",Json::array({{{"anchor",3},{"head",3}}})}});
+    service.complete();
+    const auto result = service.call("operation.get", {{"id",query.at("operationId")}});
+    CHECK(result.at("state") == "completed"); CHECK(result["result"]["match"]["begin"] == 0);
+    CHECK(service.call("document.get", {{"id",id}}).at("selections") == selected.at("selections"));
+}
+
 #if defined(_WIN32)
 class SearchJunction {
 public:

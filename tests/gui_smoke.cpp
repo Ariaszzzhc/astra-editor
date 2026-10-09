@@ -64,6 +64,15 @@ public:
         :channel_(std::move(channel)),host_(std::move(host)) {}
     std::future<std::optional<std::string>> submit(std::string body) override {
         const auto request=Json::parse(body);
+        const auto method=request.at("method").get<std::string>();
+        if(method=="document.find")++find_requests;
+        if(method=="document.replaceAll")++replace_requests;
+        if(method=="document.get" && request.at("params").value("end",std::size_t{0})>
+            request.at("params").value("begin",std::size_t{0}))++text_downloads;
+        if(method=="document.find" && hold_next_find) {
+            hold_next_find=false;held_find.emplace();held_find->body=std::move(body);
+            return held_find->reply.get_future();
+        }
         if(!changed && request.at("method")=="document.syntax") {
             changed=true;
             const auto id=request.at("params").at("id").get<std::string>();
@@ -74,9 +83,26 @@ public:
         }
         return channel_->submit(std::move(body));
     }
-    std::vector<std::string> take_notifications() override { return channel_->take_notifications(); }
+    std::vector<std::string> take_notifications() override {
+        if(held_find && held_find->future && held_find->future->wait_for(std::chrono::seconds(0))==std::future_status::ready) {
+            held_find->reply.set_value(held_find->future->get());held_find.reset();
+        }
+        return channel_->take_notifications();
+    }
+    void release_find() {
+        require(held_find.has_value(),"No withheld search request to release");
+        held_find->future.emplace(channel_->submit(std::move(held_find->body)));
+    }
     bool changed{};
+    bool hold_next_find{};
+    unsigned find_requests{},replace_requests{},text_downloads{};
 private:
+    struct HeldFind {
+        std::string body;
+        std::promise<std::optional<std::string>> reply;
+        std::optional<std::future<std::optional<std::string>>> future;
+    };
+    std::optional<HeldFind> held_find;
     std::shared_ptr<astra::ui::EditorChannel> channel_;
     std::shared_ptr<astra::service::ServiceHost> host_;
 };
@@ -129,6 +155,7 @@ int main(int argc, char* argv[]) {
         options.title = "Astra — GUI acceptance"; options.workspace_name = "GUI ACCEPTANCE";
         options.open_paths = {"src/main.cpp"}; options.width = 1400; options.height = 860;
         options.user_script = R"js(if(astra.context==='client') {
+            astra.registerCommand('acceptance.findWithoutInput',()=>astra.ui.execute('ui.find',{query:'beta'}));
             astra.registerCommand('acceptance.readInput',async()=>{
                 const state=await astra.ui.read();
                 await astra.request('script.command',{name:'acceptance.observeRead',params:state});
@@ -285,6 +312,9 @@ int main(int argc, char* argv[]) {
         require(pasted == "Xalpha\nXbeta", "Production clipboard paste failed: " + pasted.dump());
         std::cerr << "GUI acceptance: clipboard and multicursor passed\n";
 
+        const auto search_downloads=concurrent->text_downloads;
+        const auto search_requests=concurrent->find_requests;
+        const auto replacement_requests=concurrent->replace_requests;
         key(window, SDLK_HOME, SDL_KMOD_CTRL);
         key(window, SDLK_F, SDL_KMOD_CTRL); text(window, "alpha"); key(window, SDLK_RETURN);
         require(read_document(host, id).at("selections").front().at("anchor") == 1, "Find selected the wrong UTF-8 match");
@@ -292,10 +322,27 @@ int main(int argc, char* argv[]) {
         require(read_document(host, id).at("text") == "XALPHA\nXbeta", "Replace did not edit the document");
         key(window, SDLK_Z, SDL_KMOD_CTRL);
         require(read_document(host, id).at("text") == "Xalpha\nXbeta", "Document replace was not one undo transaction");
+        require(concurrent->find_requests==search_requests+1 && concurrent->replace_requests==replacement_requests+1,
+            "Document find/replace bypassed the asynchronous service APIs");
+        require(concurrent->text_downloads==search_downloads,"Document search downloaded full text to the GUI");
+        concurrent->hold_next_find=true;
+        window.execute_ui_command("acceptance.findWithoutInput");
+        pump_until(window,[&]{return concurrent->find_requests==search_requests+2;},"Document search was not dispatched");
+        SDL_Event live_input{};live_input.type=SDL_EVENT_TEXT_INPUT;live_input.text.text="live";
+        live_input.text.windowID=SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&live_input),"Push editing during search failed");
+        pump_until(window,[&]{return read_document(host,id).at("text")=="Xlive\nXbeta";},"Pending search blocked SDL editing");
+        const auto live_document=read_document(host,id);
+        window.execute_ui_command("ui.cancel");
+        for(int tick=0;tick<16;++tick)require(window.pump(),"Search cancellation closed the window");
+        concurrent->release_find();settle(window);
+        require(read_document(host,id)==live_document,"Late cancelled search changed live editing or selections");
+        key(window,SDLK_Z,SDL_KMOD_CTRL);
+        require(read_document(host,id).at("text")=="Xalpha\nXbeta","Editing during search did not retain undo history");
         std::cerr << "GUI acceptance: document search passed\n";
 
         window.execute_ui_command("ui.workspaceReplace"); settle(window);
-        for (unsigned i = 0; i < 5; ++i) { key(window, SDLK_BACKSPACE); }
+        key(window, SDLK_A, SDL_KMOD_CTRL);
         text(window, "needle"); key(window, SDLK_RETURN); text(window, "thread"); key(window, SDLK_RETURN);
         require(astra::io::read_file(workspace / "rename.txt").text == "needle and needle\n", "Workspace replace ran before confirmation");
         window.request_screenshot("build/graphics/gui-replace-confirm.png"); settle(window);

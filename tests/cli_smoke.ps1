@@ -44,20 +44,37 @@ try {
             $client.Dispose()
         }
     }
+    function Wait-TestOperation([object]$Operation) {
+        $operationDeadline = [DateTime]::UtcNow.AddSeconds(10)
+        do {
+            $completed = Invoke-TestRpc 'operation.get' @{id=$Operation.operationId}
+            if ($completed.state -ne 'pending') { break }
+            Start-Sleep -Milliseconds 10
+        } while ([DateTime]::UtcNow -lt $operationDeadline)
+        if ($completed.state -ne 'completed') { throw "Operation did not complete: $($completed | ConvertTo-Json -Depth 10)" }
+        return $completed.result
+    }
     $expectedText = "C:\code\中文`nemoji 😀`n"
     $created = Invoke-TestRpc 'document.create' @{text=$expectedText}
     $read = Invoke-TestRpc 'document.get' @{id=$created.id}
     if ($read.text -cne $expectedText) { throw 'CLI changed Unicode, newline, or literal backslash content' }
+    $finding = Invoke-TestRpc 'document.find' @{id=$created.id; baseRevision=$created.revision; query='中文'; begin=25; select=$true}
+    $found = Wait-TestOperation $finding
+    if ($found.match.begin -ne 8 -or $found.match.end -ne 14 -or -not $found.wrapped -or
+        $found.match.line -ne 0 -or $found.match.utf16Column -ne 8) { throw 'CLI find lost UTF-8 positions or wrap semantics' }
+    $replacing = Invoke-TestRpc 'document.replaceAll' @{id=$created.id; baseRevision=$created.revision; query='(emoji)'; regex=$true; replacement='[$1]'}
+    $replaced = Wait-TestOperation $replacing
+    $afterReplace = Invoke-TestRpc 'document.get' @{id=$created.id}
+    if ($replaced.replacements -ne 1 -or $afterReplace.text -cne $expectedText.Replace('emoji','[emoji]')) { throw 'CLI replacement lost regex capture semantics' }
+    $created = Invoke-TestRpc 'document.undo' @{id=$created.id; baseRevision=$afterReplace.revision}
+    $afterUndo = Invoke-TestRpc 'document.get' @{id=$created.id}
+    if ($afterUndo.text -cne $expectedText -or $created.dirty -or $created.canUndo -or
+        $created.selections[0].anchor -ne $found.document.selections[0].anchor -or
+        $created.selections[0].head -ne $found.document.selections[0].head) { throw 'CLI replacement was not one atomic undo transaction' }
     $saving = Invoke-TestRpc 'workspace.save' @{id=$created.id; baseRevision=$created.revision; path='保存.txt'}
-    $saveDeadline = [DateTime]::UtcNow.AddSeconds(10)
-    do {
-        $saved = Invoke-TestRpc 'operation.get' @{id=$saving.operationId}
-        if ($saved.state -ne 'pending') { break }
-        Start-Sleep -Milliseconds 10
-    } while ([DateTime]::UtcNow -lt $saveDeadline)
-    if ($saved.state -ne 'completed') { throw "Save did not complete: $($saved | ConvertTo-Json -Depth 10)" }
+    $saved = Wait-TestOperation $saving
     if ([IO.File]::ReadAllText((Join-Path $testRoot '保存.txt')) -cne $expectedText) { throw 'Saved bytes differ from CLI content' }
-    Write-Output 'Astra server process + TCP CLI + Unicode argv + real async save: PASS'
+    Write-Output 'Astra server process + TCP CLI + Unicode argv + async find/regex replacement/undo/save: PASS'
 } finally {
     # This test owns the process object and only terminates its own temporary server.
     if ($null -ne $testServer) {

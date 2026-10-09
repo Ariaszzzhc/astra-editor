@@ -9,6 +9,78 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### Asynchronous document search and JS policy (2026-10-10)
+
+`document.find` and `document.replaceAll` now use the shared application
+dispatcher, immutable Rope snapshots and worker computation. Find retains one
+match, seeks from a UTF-8 boundary and wraps without changing full-input regex
+anchors or Unicode word boundaries. Optional selection publication checks the
+captured selections and version; it prepares metadata/notifications before
+mutating selections and avoids copying undo history. Replace prepares capture
+expansions and one atomic history transaction on a worker, then rejects changed
+revision/content, selections, saved state, closed documents and cancellation
+before publication. Input/template/match/output budgets are explicit.
+
+JS owns document query/replacement input, captured document requests, result
+presentation and cancellation. The C++ window's recursive full-text download,
+literal search/replacement loop and document-specific prompt branches were
+removed. The current generic input component is still modal: the planned
+nonmodal document find widget, sidebar search controls and remaining native
+workspace search/replacement policy are **not complete**. This increment is the
+service/policy foundation for those components, not UI redesign acceptance.
+
+Real GUI acceptance now counts the production document-search APIs and rejects
+full-text downloads by that flow. It withholds a real search request, sends SDL
+editing while the request is pending, cancels and releases the stale reply, and
+checks that content, selections and undo history survive. Valid late service
+rejections of already-cancelled requests emit `runtime.requestDrained` receipts;
+malformed replies, transport and cancellation-RPC failures remain observable.
+Receipt handlers share the existing poll budget and drain before idle.
+
+Intermediate failures and corrections:
+
+- The first focused run: **52/53 cases**, one failure. The invalid UTF-8 fixture
+  assumed scheduling would succeed; the protocol correctly rejects malformed
+  JSON strings before dispatch. The test now checks that rejection and unchanged
+  document state; no production validation was weakened.
+- `gui-workspace-225628841076600` failed with missing `selections`: native return
+  handling mistook a search envelope containing `id`/`revision` for complete
+  metadata. It now requires the document metadata fields before acceptance.
+- `gui-workspace-225760368872800` exposed the cancelled late-rejection bug above.
+  The strengthened real-input test is retained; service rejection receipts are
+  separate from the caller's settled cancellation.
+- An intermediate complete Debug run: **495/496 cases**, one idle recovery
+  checkpoint timeout at its unchanged five-second assertion. That run overlapped
+  GUI validation. The isolated recovery check and final serial full-suite run
+  subsequently passed without changing its assertion or timeout.
+- An intermediate runtime refactor build rejected a member-shadowing local name
+  and an unqualified clock alias. Both were corrected under warnings-as-errors.
+
+Final Windows Debug acceptance (all commands completed successfully):
+
+```powershell
+./scripts/xmake.ps1 build -y astra-tests gui-smoke gui-presentation-smoke gui-recovery-smoke
+./build/windows/x64/debug/astra-tests.exe --no-version
+./build/windows/x64/debug/gui-smoke.exe
+./build/windows/x64/debug/gui-smoke.exe --tcp
+./build/windows/x64/debug/gui-presentation-smoke.exe
+./build/windows/x64/debug/gui-recovery-smoke.exe
+./scripts/xmake.ps1 build -y astra astra-server
+./tests/cli_smoke.ps1 -Mode debug
+```
+
+The final serial full suite passed **497 cases / 441,225 assertions**, no skips.
+Four real GPU GUI runs passed, including the withheld-search/edit/cancel/late
+reply flow over both local and TCP channels. The independent production server
+and TCP CLI additionally verify Unicode byte/UTF-16 positions, wrapping, regex
+capture replacement, one-transaction undo/selection restoration and actual
+save. Built-in JS source/staged search-module SHA-256 hashes match. The 300-sample
+scalar-boundary differential oracle uses seed `0xA57FA11`; failure-path cases
+cover stale revisions, changed selections/saved baseline, closure, cancellation,
+bad expressions/captures, invalid protocol UTF-8, limits and inline scheduling.
+All GUI executions occurred after builds completed. Release and current-source
+packaging acceptance for the overall architecture/UI revision remain outstanding.
+
 ### JS window exit and asynchronous native waits (2026-10-10)
 
 The client `astra/lifecycle` module now owns sequential captured-document close,

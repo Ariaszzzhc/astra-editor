@@ -84,6 +84,8 @@ private:
     [[nodiscard]] Json tree(const Json& params);
     [[nodiscard]] Json search(const Json& params);
     [[nodiscard]] Json replace(const Json& params);
+    [[nodiscard]] Json find_document_text(const Json& params);
+    [[nodiscard]] Json replace_document_text(const Json& params);
     [[nodiscard]] Json search_disk(const Json& params);
     [[nodiscard]] Json replace_disk(const Json& params);
     [[nodiscard]] Json operation_get(const Json& params);
