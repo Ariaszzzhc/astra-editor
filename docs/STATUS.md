@@ -139,6 +139,32 @@ the prior interaction-only pass was not counted as appearance acceptance. Final
 all passed after the correction. Regenerated input and reload-confirmation GPU
 screenshots were visually inspected and show the title and action labels.
 
+Git diff requests, staged-change commit gating/message input and guarded discard
+confirmation now execute in client JS. Diff generations cancel older requests;
+discard retains the exact service preview ID across await. Saving while Source
+Control is visible refreshes its status in JS and preserves the saved-result label.
+C++ retains/draws the
+returned comparison and gutter model and does not call Git services. The obsolete
+native Git workflow branches and migrated reload/open prompt states were removed.
+Ready native focus steps advance within a four-millisecond/eight-tick bound before
+the next SDL event; service futures are never waited on there.
+
+Native multi-line confirmation descriptions now respect CR/LF/CRLF logical lines.
+Both descriptions and diff panels use a persistent measured text-line index;
+diff scrolling seeks only its viewport and retains a bounded 256-line shape cache.
+Text panels reject content over 8 MiB or 100,000 lines before replacing the old
+index. The source-index tests cover Unicode byte extents, mixed line endings,
+20,000-row viewport queries, retained snapshots and failed-replacement preservation.
+
+Windows Debug `build -y astra-tests gui-services-smoke gui-workspace-smoke
+gui-presentation-smoke` passed. The focused
+`--test-case=presentation*,workbench*,QuickJS*,JavaScript*` run passed
+**37 cases / 8,464 assertions**. All three GUI executables then passed using actual
+Git, clangd, service documents and native SDL/Skia/Dawn. Diff and discard screenshots
+were visually inspected. The first Git GUI run failed because a multi-line dialog
+description reached the one-logical-line shaper; the indexed multi-line component
+fix preceded these passing runs. The final idle-frame renderer warning remains.
+
 Remaining work includes the rest of the public UI/provider contract,
 native component extraction, indexed diagnostic/display views, incremental
 syntax indexes, full Debug/Release and native GUI acceptance, and packaging the

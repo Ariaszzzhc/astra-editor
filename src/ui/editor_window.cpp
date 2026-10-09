@@ -4,6 +4,7 @@
 #include "astra/ui/workbench.hpp"
 #include "astra/ui/file_tree_index.hpp"
 #include "astra/ui/icons.hpp"
+#include "astra/ui/text_line_index.hpp"
 #include "astra/io/file_store.hpp"
 
 #include "include/core/SkCanvas.h"
@@ -101,10 +102,10 @@ struct EditorWindow::Impl {
     struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; };
     struct FindState { std::string id; std::string revision; std::string query; std::string replacement; std::string text; std::size_t cursor{}; std::size_t size{}; bool replace{}; };
     struct ViewState { std::string id; std::string revision; std::size_t first{}; std::size_t limit{}; std::map<std::size_t, Line> lines; };
-    enum class Prompt { none, policy_input, policy_confirm, palette, open, save_as, close, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, completion, locations, hover, rename, rename_confirm, git_diff, git_discard, git_commit, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed, reload_confirm };
+    enum class Prompt { none, policy_input, policy_confirm, palette, save_as, close, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, completion, locations, hover, rename, rename_confirm, git_diff, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed };
     struct Dialog {
         std::string id; Json spec; std::promise<Json> completion;
-        std::optional<TextLayout> detail_layout; float detail_width{};
+        TextLineIndex detail_lines; std::map<std::size_t,TextLayout> detail_layout; float detail_width{},detail_scale{};
         std::optional<TextLayout> input_layout; std::string input_text; float input_scale{};
     };
 
@@ -184,6 +185,9 @@ struct EditorWindow::Impl {
     Json git_status = Json::object();
     std::string git_path;
     std::string git_preview;
+    TextLineIndex git_diff_lines;
+    std::map<std::size_t,TextLayout> git_diff_layouts;
+    float git_diff_layout_scale{};
     bool git_staged{};
     std::size_t tree_scroll{};
     std::map<std::string, TextLayout> labels;
@@ -406,9 +410,7 @@ struct EditorWindow::Impl {
         if (closing_window) { continue_close_window(); }
     }
     void new_document() {
-        enqueue({"document.create", {{"text", ""}}, {}, false, [this](const Json& result) {
-            accept_metadata(result); activate(result.at("id").get<std::string>()); status = "New file";
-        }, {}});
+        execute_policy("ui.new");
     }
     void start_operation(std::string method, Json params, std::function<void(const Json&)> complete,
                          std::string document = {}, bool revision = false, std::function<void()> failure = {}) {
@@ -835,20 +837,7 @@ std::vector<std::size_t> EditorWindow::Impl::filtered_language_items() const {
 }
 
 void EditorWindow::Impl::fetch_git_diff(std::string path, bool staged) {
-    if (path.empty()) { return; }
-    git_path = std::move(path); git_staged = staged;
-    start_operation("git.diff", {{"path", git_path}, {"staged", staged}}, [this](const Json& result) {
-        hover_text = result.value("binary", false) ? "Binary file — textual diff is unavailable." : result.value("patch", std::string{});
-        if (hover_text.empty()) { hover_text = "No changes in this comparison."; }
-        git_preview = result.value("previewId", std::string{});
-        for (auto& [id, document] : documents) {
-            static_cast<void>(id);
-            if (document.path == git_path && !git_staged && !document.metadata.value("dirty", false)) {
-                document.git_gutter = result.value("gutter", Json::array());
-            }
-        }
-        prompt = Prompt::git_diff; prompt_choice = 0;
-    });
+    execute_policy("workbench.gitDiff",{{"path",std::move(path)},{"staged",staged}});
 }
 
 void EditorWindow::Impl::set_selections(Json selections, std::string revision) {
@@ -987,7 +976,7 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
     const auto accept = spec.value("accept", std::string("Confirm"));
     const auto placeholder = spec.value("placeholder", std::string{});
     if (id.empty() || id.size()>128 || title.empty() || title.size() > 4096 || value.size() > 16384 || detail.size() > 65536 || accept.size()>4096 || placeholder.size()>4096) { throw protocol::RpcError(-32602, "Dialog content exceeds its bounds"); }
-    Dialog pending{id,spec,{},{},0,{}, {},0};
+    Dialog pending;pending.id=id;pending.spec=spec;pending.detail_lines.reset(detail);
     auto result = pending.completion.get_future();
     dialog.emplace(std::move(pending));
     prompt = kind == "input" ? Prompt::policy_input : Prompt::policy_confirm;
@@ -1021,7 +1010,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         return nullptr;
     }
     if (method == "_ui.read") {
-        Json result{{"sidebarVisible", show_sidebar}, {"outlineVisible", show_outline}, {"tabs", tabs}, {"gitPath", prompt == Prompt::git_diff ? git_path : std::string{}}};
+        Json result{{"sidebarVisible", show_sidebar}, {"sidebar",git_view ? "git" : (search_view ? "search" : "explorer")}, {"outlineVisible", show_outline}, {"tabs", tabs}, {"gitPath", prompt == Prompt::git_diff ? git_path : std::string{}}, {"gitStaged",git_staged},{"gitPreview",git_preview}};
         if (const auto* document = current()) {
             result["document"] = document->metadata; result["document"]["path"] = document->path;
             result["newline"] = newline(); result["selectionLines"] = Json::array();
@@ -1036,6 +1025,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
     if (method == "_ui.action") { native_command(params.at("command").get<std::string>()); return nullptr; }
     if (method != "_ui.update") { throw protocol::RpcError(-32601, "Unknown native UI primitive"); }
     if (!params.is_object()) { throw protocol::RpcError(-32602, "UI updates require an object"); }
+    if(params.contains("gitDiff") && dialog) { throw protocol::RpcError(-32004,"Dismiss the active dialog before showing a comparison"); }
     // Establish document state before activation regardless of JSON key order.
     if (params.contains("document")) { accept_metadata(params.at("document")); }
     for (const auto& [name, value] : params.items()) {
@@ -1050,7 +1040,22 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         else if (name == "activate") { activate(value.get<std::string>()); }
         else if (name == "revealCaret") { if (value.get<bool>()) { reveal_caret(); } }
         else if (name == "workspaceNotice") { workspace_notices[value.at("id").get<std::string>()] = value.at("text").get<std::string>(); }
-        else if (name == "dismissPrompt") { if (value.get<bool>()) { prompt = Prompt::none; } }
+        else if (name == "gitDiff") {
+            auto path=value.at("path").get<std::string>();const auto staged=value.at("staged").get<bool>();
+            const auto& model=value.at("model");
+            auto text=value.at("text").get<std::string>();auto preview=model.value("previewId",std::string{});
+            TextLineIndex lines;lines.reset(text);
+            const auto marks=model.value("gutter",Json::array());
+            if(!marks.is_array())throw protocol::RpcError(-32602,"Git gutter must be an array");
+            git_path=std::move(path);git_staged=staged;hover_text=std::move(text);git_preview=std::move(preview);
+            git_diff_lines=std::move(lines);git_diff_layouts.clear();git_diff_layout_scale=0;
+            for(auto& [id,document]:documents){
+                static_cast<void>(id);
+                if(document.path==git_path&&!git_staged&&!document.metadata.value("dirty",false))document.git_gutter=marks;
+            }
+            prompt=Prompt::git_diff;prompt_choice=0;
+        }
+        else if (name == "dismissPrompt") { if (value.get<bool>()) { finish_dialog(nullptr); prompt = Prompt::none; } }
         else if (name == "busy") { busy_views.merge_patch(value); }
         else if (name != "view" && name != "model") { throw protocol::RpcError(-32602, "Unknown UI update field: " + name); }
     }
@@ -1081,7 +1086,11 @@ void EditorWindow::Impl::execute_policy(std::string_view name, const Json& param
     });
     // Settle ready native focus/layout primitives before the next SDL event.
     // Neither tick waits for a service future, parser or disk operation.
-    workbench->poll(); workbench->poll();
+    const auto until=Clock::now()+std::chrono::milliseconds(4);
+    for(int tick=0;tick<8 && Clock::now()<until;++tick){
+        workbench->poll();
+        if(workbench->idle() || workbench->awaiting_input())break;
+    }
 }
 
 void EditorWindow::Impl::command(std::string_view name) {
@@ -1100,7 +1109,7 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     if (recovery_flushing && prompt == Prompt::recovery_flushing && name != "ui.cancel") { return; }
     if (name.starts_with("editor.")) {
         editor_command(std::string(name));
-    } else if (name == "ui.new") { new_document(); }
+    }
     else if (name == "ui.commandPalette") { prompt = Prompt::palette; prompt_text.clear(); prompt_choice = 0; }
     else if (name == "ui.save") { save_document(active_id); }
     else if (name == "ui.saveAs") { save_document(active_id, true); }
@@ -1150,37 +1159,6 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     else if (name == "ui.references") { language_request("references"); }
     else if (name == "ui.format") { language_request("formatting"); }
     else if (name == "ui.rename") { prompt = Prompt::rename; prompt_text.clear(); }
-    else if (name == "ui.gitStatus") {
-        git_view = true; search_view = false; show_sidebar = true; tree_scroll = 0;
-        start_operation("git.status", Json::object(), [this](const Json& result) { git_status = result; status = "Source control refreshed"; });
-    }
-    else if (name == "ui.gitDiff") { if (const auto* doc = current()) { fetch_git_diff(doc->path); } }
-    else if (name == "ui.gitStage" || name == "ui.gitUnstage") {
-        const auto path = prompt == Prompt::git_diff ? git_path : (current() ? current()->path : std::string{});
-        if (path.empty()) { return; }
-        prompt = Prompt::none;
-        start_operation(name == "ui.gitStage" ? "git.stage" : "git.unstage", {{"paths", Json::array({path})}}, [this](const Json& result) {
-            git_status = result; status = "Git index updated";
-        });
-    }
-    else if (name == "ui.gitDiscard") {
-        if (prompt == Prompt::git_diff && !git_staged && !git_preview.empty()) { prompt = Prompt::git_discard; }
-    }
-    else if (name == "ui.confirmDiscard") {
-        if (prompt != Prompt::git_discard) { return; }
-        prompt = Prompt::none;
-        start_operation("git.discard", {{"previewId", git_preview}}, [this](const Json& result) {
-            git_status = result; status = "Working tree change discarded"; refresh_tree();
-        });
-    }
-    else if (name == "ui.gitCommit") {
-        start_operation("git.status", Json::object(), [this](const Json& result) {
-            git_status = result;
-            const bool staged = std::ranges::any_of(result.at("entries"), [](const Json& entry) { return entry.at("staged") != "unchanged" && entry.at("staged") != "untracked"; });
-            if (!staged) { status = "No staged changes to commit"; return; }
-            prompt = Prompt::git_commit; prompt_text.clear();
-        });
-    }
     else if (name == "ui.confirmRename") {
         if (prompt != Prompt::rename_confirm) { return; }
         prompt = Prompt::none;
@@ -1310,12 +1288,6 @@ void EditorWindow::Impl::accept_prompt() {
         }
     } else if (prompt == Prompt::hover) { prompt = Prompt::none; }
     else if (prompt == Prompt::git_diff) { prompt = Prompt::none; }
-    else if (prompt == Prompt::git_discard) { command("ui.confirmDiscard"); }
-    else if (prompt == Prompt::git_commit) {
-        if (prompt_text.empty()) { return; }
-        const auto message = prompt_text; prompt = Prompt::none;
-        start_operation("git.commit", {{"message", message}}, [this](const Json&) { status = "Commit created"; command("ui.gitStatus"); });
-    }
     else if (prompt == Prompt::rename) {
         if (prompt_text.empty()) { return; }
         const auto name = prompt_text; prompt = Prompt::none; language_request("rename", name);
@@ -1324,8 +1296,6 @@ void EditorWindow::Impl::accept_prompt() {
         if (matches.empty()) { return; }
         const auto id = std::string(matches[std::min(prompt_choice, matches.size() - 1)]->id);
         prompt = Prompt::none; command(id);
-    } else if (prompt == Prompt::open) {
-        const auto path = prompt_text; prompt = Prompt::none; open_path(path);
     } else if (prompt == Prompt::save_as) {
         if (prompt_text.empty()) { return; }
         const auto id = prompt_document;
@@ -1352,7 +1322,6 @@ void EditorWindow::Impl::accept_prompt() {
         prompt = Prompt::none; search_workspace(replace);
     } else if (prompt == Prompt::replace_confirm) { command("ui.confirmReplace"); }
     else if (prompt == Prompt::rename_confirm) { command("ui.confirmRename"); }
-    else if (prompt == Prompt::reload_confirm) { command("ui.confirmReload"); }
 }
 
 void EditorWindow::Impl::find_document(bool replace) {
@@ -1642,8 +1611,8 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
     case SDL_EVENT_TEXT_INPUT:
         preedit.clear();
         if (!input.text.text) { break; }
-        if (prompt != Prompt::none && prompt != Prompt::close && prompt != Prompt::replace_confirm && prompt != Prompt::rename_confirm && prompt != Prompt::reload_confirm &&
-            prompt != Prompt::hover && prompt != Prompt::git_diff && prompt != Prompt::git_discard &&
+        if (prompt != Prompt::none && prompt != Prompt::close && prompt != Prompt::replace_confirm && prompt != Prompt::rename_confirm &&
+            prompt != Prompt::hover && prompt != Prompt::git_diff &&
             prompt != Prompt::recovery_confirm && prompt != Prompt::recovery_flushing && prompt != Prompt::recovery_exit_failed && prompt != Prompt::policy_confirm) {
             if (prompt_select_all) { prompt_text.clear(); prompt_select_all = false; }
             if (prompt_text.size() + std::string_view(input.text.text).size() > 16384) { error = "Input exceeds its 16 KiB limit"; break; }
@@ -1717,10 +1686,10 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             }
             break;
         }
-        if (prompt == Prompt::replace_confirm || prompt == Prompt::rename_confirm || prompt == Prompt::git_discard || prompt == Prompt::reload_confirm) {
+        if (prompt == Prompt::replace_confirm || prompt == Prompt::rename_confirm) {
             const auto bx = (width - 600 * scale) / 2;
             if (mouse_y >= 211 * scale && mouse_y < 245 * scale) {
-                if (mouse_x >= bx + 24 * scale && mouse_x < bx + 260 * scale) { command(prompt == Prompt::reload_confirm ? "ui.confirmReload" : (prompt == Prompt::rename_confirm ? "ui.confirmRename" : (prompt == Prompt::git_discard ? "ui.confirmDiscard" : "ui.confirmReplace"))); }
+                if (mouse_x >= bx + 24 * scale && mouse_x < bx + 260 * scale) { command(prompt == Prompt::rename_confirm ? "ui.confirmRename" : "ui.confirmReplace"); }
                 else if (mouse_x >= bx + 340 * scale && mouse_x < bx + 576 * scale) { command("ui.cancel"); }
             }
             break;
@@ -1931,11 +1900,16 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         rectangle(canvas,x,90*scale,panel_width,2*scale,accent);
         elided_label(canvas,dialog->spec.at("title").get<std::string>(),x+24*scale,108*scale,16,panel_width-48*scale,foreground);
         TextLayoutOptions style; style.font_size=13; style.dpi_scale=scale; style.color=muted; style.wrap_width=panel_width-48*scale;
-        if(!dialog->detail_layout || dialog->detail_width!=style.wrap_width){
-            dialog->detail_layout=fonts.layout(dialog->spec.value("detail",std::string{}),style);dialog->detail_width=style.wrap_width;
-        }
+        style.font_families={"Segoe UI","Microsoft YaHei UI","sans-serif"};
+        if(dialog->detail_width!=style.wrap_width || dialog->detail_scale!=scale){dialog->detail_layout.clear();dialog->detail_width=style.wrap_width;dialog->detail_scale=scale;}
         canvas->save(); canvas->clipRect(SkRect::MakeXYWH(x+24*scale,145*scale,panel_width-48*scale,58*scale));
-        dialog->detail_layout->draw(canvas,x+24*scale,145*scale);canvas->restore();
+        float detail_y=145*scale;
+        dialog->detail_lines.for_each_range(0,std::min(dialog->detail_lines.size(),std::size_t{8}),[&](std::size_t row,const std::string& text){
+            if(detail_y>=203*scale)return;
+            auto found=dialog->detail_layout.find(row);
+            if(found==dialog->detail_layout.end())found=dialog->detail_layout.emplace(row,fonts.layout(text,style)).first;
+            found->second.draw(canvas,x+24*scale,detail_y);detail_y+=found->second.height();
+        });canvas->restore();
         const auto button_width=(panel_width-72*scale)/2;
         rectangle(canvas,x+24*scale,211*scale,button_width,34*scale,accent);
         rectangle(canvas,x+48*scale+button_width,211*scale,button_width,34*scale,border_color);
@@ -2043,6 +2017,26 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         label(canvas, prompt == Prompt::git_diff ? "DIFF — " + git_path + (git_staged ? " [staged]" : " [working tree]") : "LANGUAGE INFORMATION — Esc to close · arrows to scroll", x + 18 * scale, 83 * scale, 11, muted);
         if (prompt == Prompt::git_diff) { label(canvas, "S: Stage  ·  U: Unstage  ·  D: Discard  ·  Esc: Close", x + 18 * scale, 100 * scale, 10, accent); }
         canvas->save(); canvas->clipRect(SkRect::MakeLTRB(x + 14 * scale, 115 * scale, x + 666 * scale, panel_bottom - 12 * scale));
+        if(prompt==Prompt::git_diff){
+            if(git_diff_layout_scale!=scale){git_diff_layouts.clear();git_diff_layout_scale=scale;}
+            prompt_choice=std::min(prompt_choice,git_diff_lines.size()-1);
+            float y=115*scale;
+            const auto rows=static_cast<std::size_t>(std::ceil((panel_bottom-y)/(14*scale)))+1;
+            git_diff_lines.for_each_range(prompt_choice,std::min(git_diff_lines.size(),prompt_choice+rows),[&](std::size_t row,const std::string& text){
+                if(y>=panel_bottom-12*scale)return;
+                auto found=git_diff_layouts.find(row);
+                if(found==git_diff_layouts.end()){
+                    TextLayoutOptions style;style.font_size=14;style.dpi_scale=scale;style.color=foreground;style.wrap_width=630*scale;
+                    if(text.starts_with('+')&&!text.starts_with("+++"))style.color=added_color;
+                    else if(text.starts_with('-')&&!text.starts_with("---"))style.color=error_color;
+                    else if(text.starts_with("@@"))style.color=accent;
+                    if(git_diff_layouts.size()>=256)git_diff_layouts.erase(git_diff_layouts.begin());
+                    found=git_diff_layouts.emplace(row,fonts.layout(text,style)).first;
+                }
+                found->second.draw(canvas,x+22*scale,y);y+=found->second.height()+5*scale;
+            });
+            canvas->restore();return;
+        }
         std::size_t begin{}; std::size_t line{}; float y = 115 * scale;
         while (begin <= hover_text.size()) {
             auto end = hover_text.find('\n', begin);
@@ -2051,11 +2045,6 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
             if (!part.empty() && part.back() == '\r') { part.pop_back(); }
             if (line++ >= prompt_choice) {
                 TextLayoutOptions style; style.font_size = 14; style.dpi_scale = scale; style.color = foreground; style.wrap_width = 630 * scale;
-                if (prompt == Prompt::git_diff) {
-                    if (part.starts_with('+') && !part.starts_with("+++")) { style.color = added_color; }
-                    else if (part.starts_with('-') && !part.starts_with("---")) { style.color = error_color; }
-                    else if (part.starts_with("@@")) { style.color = accent; }
-                }
                 auto layout = fonts.layout(std::move(part), style);
                 layout.draw(canvas, x + 22 * scale, y); y += layout.height() + 5 * scale;
             }
@@ -2064,20 +2053,18 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         }
         canvas->restore(); return;
     }
-    if (prompt == Prompt::replace_confirm || prompt == Prompt::rename_confirm || prompt == Prompt::git_discard || prompt == Prompt::reload_confirm) {
+    if (prompt == Prompt::replace_confirm || prompt == Prompt::rename_confirm) {
         const auto x = (width - 600 * scale) / 2;
         const bool rename = prompt == Prompt::rename_confirm;
-        const bool discard = prompt == Prompt::git_discard;
-        const bool reload = prompt == Prompt::reload_confirm;
         const auto extra = rename ? 220 * scale : 0;
         rectangle(canvas, x, 90 * scale, 600 * scale, 175 * scale + extra, panel_background);
         rectangle(canvas, x, 90 * scale, 600 * scale, 2 * scale, accent);
-        label(canvas, reload ? "Reload from disk and replace unsaved edits?" : (rename ? "Apply symbol rename?" : (discard ? "Discard the previewed working tree change?" : "Replace " + std::to_string(search_results.size()) + " workspace matches?")), x + 24 * scale, 108 * scale, 17);
-        label(canvas, reload ? "The disk version will replace this buffer's unsaved content." : (rename ? std::to_string(rename_plan.at("documents").size()) + " file(s) will become edited buffers" : (discard ? git_path : "Find: " + search_query)), x + 24 * scale, 146 * scale, 13, muted);
-        label(canvas, reload ? "Cancel to preserve the current buffer." : (rename ? "Review files below. Save afterward to persist changes." : (discard ? "This removes changes from disk. It cannot be undone here." : "Replace with: " + replacement_text)), x + 24 * scale, 172 * scale, 13, muted);
+        label(canvas, rename ? "Apply symbol rename?" : "Replace " + std::to_string(search_results.size()) + " workspace matches?", x + 24 * scale, 108 * scale, 17);
+        label(canvas, rename ? std::to_string(rename_plan.at("documents").size()) + " file(s) will become edited buffers" : "Find: " + search_query, x + 24 * scale, 146 * scale, 13, muted);
+        label(canvas, rename ? "Review files below. Save afterward to persist changes." : "Replace with: " + replacement_text, x + 24 * scale, 172 * scale, 13, muted);
         rectangle(canvas, x + 24 * scale, 211 * scale, 236 * scale, 34 * scale, accent);
         rectangle(canvas, x + 340 * scale, 211 * scale, 236 * scale, 34 * scale, border_color);
-        label(canvas, reload ? "Reload file" : (rename ? "Apply rename" : (discard ? "Discard changes" : "Replace matches")), x + 85 * scale, 218 * scale, 13);
+        label(canvas, rename ? "Apply rename" : "Replace matches", x + 85 * scale, 218 * scale, 13);
         label(canvas, "Cancel", x + 432 * scale, 218 * scale, 13);
         if (rename) {
             const auto& files = rename_plan.at("documents");
@@ -2105,7 +2092,6 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
     rectangle(canvas, x, 64 * scale, 600 * scale, 2 * scale, accent);
     const char* hint = "SAVE AS — WORKSPACE RELATIVE PATH";
     if (prompt == Prompt::palette) { hint = "COMMAND PALETTE"; }
-    else if (prompt == Prompt::open) { hint = "OPEN WORKSPACE FILE"; }
     else if (prompt == Prompt::find) { hint = "FIND NEXT IN DOCUMENT — LITERAL TEXT"; }
     else if (prompt == Prompt::replace_query) { hint = "REPLACE ALL IN DOCUMENT — FIND TEXT"; }
     else if (prompt == Prompt::replace_value || prompt == Prompt::workspace_replace_value) { hint = "REPLACEMENT TEXT — ENTER TO CONTINUE"; }
@@ -2114,7 +2100,6 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
     else if (prompt == Prompt::completion) { hint = "COMPLETION — TYPE TO FILTER · ENTER TO INSERT"; }
     else if (prompt == Prompt::locations) { hint = "LANGUAGE LOCATIONS — ENTER TO OPEN"; }
     else if (prompt == Prompt::rename) { hint = "RENAME SYMBOL — NEW NAME"; }
-    else if (prompt == Prompt::git_commit) { hint = "COMMIT STAGED CHANGES — COMMIT MESSAGE"; }
     else if (prompt == Prompt::recovery) { hint = "RECOVERY — SELECT A SESSION TO REVIEW · ESC TO KEEP EDITING"; }
     label(canvas, prompt == Prompt::policy_input && dialog ? dialog->spec.at("title").get<std::string>() : hint, x + 16 * scale, 73 * scale, 10, muted);
     rectangle(canvas, x + 12 * scale, 94 * scale, 576 * scale, 30 * scale, background);

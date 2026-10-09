@@ -200,7 +200,9 @@ following service workflow stays in JS. Abort dismisses the matching dialog and
 drains its native future. Dialogs default to five minutes, with a separate bounded
 client task deadline. UI automation distinguishes waiting for user input from
 unfinished background operations. Input is bounded to 16 KiB; confirmation
-details to 64 KiB. The clipboard adapter reads/writes at most 8 MiB and rejects
+details to 64 KiB. Native text panels index logical CR/LF/CRLF rows and bound their
+source to 8 MiB and 100,000 lines; diff shaping caches only a bounded visible-row
+working set. The clipboard adapter reads/writes at most 8 MiB and rejects
 oversized/NUL text rather than silently truncating it.
 
 `astra.ui.registerView(spec, provider)` supplies an async model provider;

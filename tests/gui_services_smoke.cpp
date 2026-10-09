@@ -148,7 +148,7 @@ int main() {
         window.execute_ui_command("ui.gitDiff"); settle(window); key(window, SDLK_D);
         require(astra::io::read_file(workspace / "main.cpp").text != formatted, "Git discard ran before confirmation");
         window.request_screenshot("build/graphics/gui-git-discard.png"); settle(window);
-        window.execute_ui_command("ui.confirmDiscard"); settle(window);
+        key(window, SDLK_RETURN);
         require(astra::io::read_file(workspace / "main.cpp").text == formatted, "Git discard did not restore the previewed baseline");
         require(document(host, id).at("text") == formatted, "Git discard left the open clean buffer stale");
         std::cout << "Real Windows GUI -> shared service -> clangd/Git: completion, navigation, hover, references, rename confirmation, formatting, diff, stage/unstage, commit, guarded discard: PASS\n";

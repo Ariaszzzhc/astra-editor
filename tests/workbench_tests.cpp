@@ -246,3 +246,42 @@ TEST_CASE("workbench composed commands honor user replacements through awaited e
     for(int tick=0;tick<4;++tick)workbench.poll();
     REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==42);CHECK(channel->requests.empty());
 }
+
+TEST_CASE("workbench Git discard awaits confirmation and retains its exact preview") {
+    auto channel=std::make_shared<Channel>();
+    std::promise<Json> confirmation;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json&){
+        if(method=="_ui.read")return ready({{"gitPath","file.cpp"},{"gitStaged",false},{"gitPreview","captured-preview"}});
+        if(method=="_ui.dialog")return confirmation.get_future();
+        return ready(nullptr);
+    },modules());
+    workbench.execute("ui.gitDiscard",Json::object(),{});
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    CHECK(channel->requests.empty());CHECK(workbench.awaiting_input());
+    confirmation.set_value(true);
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);
+    CHECK(channel->requests.front().body.at("method")=="git.discard");
+    CHECK(channel->requests.front().body.at("params").at("previewId")=="captured-preview");
+    channel->reply({{"entries",Json::array()}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);
+    CHECK(channel->requests.front().body.at("method")=="workspace.tree");
+    channel->reply({{"entries",Json::array()}});
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench Git commit skips input when no staged changes exist") {
+    auto channel=std::make_shared<Channel>();bool prompted{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json&){
+        if(method=="_ui.dialog")prompted=true;
+        return ready(nullptr);
+    },modules());
+    workbench.execute("ui.gitCommit",Json::object(),{});workbench.poll();
+    REQUIRE(channel->requests.size()==1);
+    CHECK(channel->requests.front().body.at("method")=="git.status");
+    channel->reply({{"entries",Json::array({{{"path","untracked.cpp"},{"staged","untracked"}}})}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    CHECK_FALSE(prompted);CHECK(channel->requests.empty());CHECK(workbench.idle());
+}

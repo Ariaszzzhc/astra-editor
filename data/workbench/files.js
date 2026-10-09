@@ -52,7 +52,7 @@ export function registerFiles() {
     }
 }
 async function save(saveAs) {
-    const {document} = await ui.read();
+    const state = await ui.read(), document = state.document;
     if (!document) return;
     let path = document.path;
     if (saveAs || !path) {
@@ -62,4 +62,6 @@ async function save(saveAs) {
     const saved = await request('workspace.save',{id:document.id,baseRevision:document.revision,...((saveAs || !document.path) ? {path} : {})});
     await ui.update({document:saved,status:'Saved'});
     await ui.refresh('explorer');
+    if(state.sidebar==='git')await ui.refresh('git');
+    await ui.update({status:'Saved'});
 }

@@ -1,10 +1,30 @@
 #include <astra/ui/file_tree_index.hpp>
 #include <astra/ui/workbench_layout.hpp>
+#include <astra/ui/text_line_index.hpp>
 #include <doctest/doctest.h>
 
 #include <random>
 #include <set>
 #include <string>
+
+TEST_CASE("presentation text panels index mixed line endings and preserve snapshots") {
+    astra::ui::TextLineIndex lines;
+    lines.reset("中\r\n🙂\re\xCC\x81\n");
+    REQUIRE(lines.size()==4);CHECK(lines.bytes()==14);
+    CHECK(lines.at(0)=="中");CHECK(lines.at(1)=="🙂");CHECK(lines.at(2)=="e\xCC\x81");CHECK(lines.at(3).empty());
+    CHECK(lines.offset(1)==5);CHECK(lines.offset(2)==10);CHECK(lines.offset(3)==14);
+    const auto old=lines;
+    std::string many;
+    for(int row=0;row<20000;++row)many+=std::to_string(row)+"\n";
+    lines.reset(many);
+    std::vector<std::string> viewport;
+    lines.for_each_range(18000,18004,[&](std::size_t row,const std::string& text){CHECK(row==18000+viewport.size());viewport.push_back(text);});
+    CHECK(viewport==std::vector<std::string>{"18000","18001","18002","18003"});
+    CHECK(old.at(0)=="中");CHECK(old.size()==4);
+    CHECK_THROWS_AS(lines.reset(std::string(8*1024*1024+1,'x')),std::length_error);
+    CHECK(lines.size()==20001);
+    lines.reset("");CHECK(lines.size()==1);CHECK(lines.bytes()==0);CHECK(lines.at(0).empty());
+}
 
 namespace {
 using Json = astra::protocol::Json;
