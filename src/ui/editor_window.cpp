@@ -91,6 +91,11 @@ struct EditorWindow::Impl {
         Clock::time_point diagnostics_after{};
         std::uint64_t diagnostics_generation{};
     };
+    struct PendingEdit {
+        std::promise<Json> completion;
+        bool settled{}, cancelled{};
+        std::string operation;
+    };
     struct Request {
         std::string method;
         Json params;
@@ -99,9 +104,10 @@ struct EditorWindow::Impl {
         std::function<void(const Json&)> complete;
         std::function<Json()> build_params;
         std::function<void()> failure{};
+        std::shared_ptr<PendingEdit> edit{};
     };
     struct ActiveRequest { Request request; std::string id; std::future<std::optional<std::string>> future; };
-    struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; };
+    struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; std::shared_ptr<PendingEdit> edit; };
     struct FindState { std::string id; std::string revision; std::string query; std::string replacement; std::string text; std::size_t cursor{}; std::size_t size{}; bool replace{}; };
     struct ViewState { std::string id; std::string revision; std::size_t first{}; std::size_t limit{}; std::map<std::size_t, Line> lines; };
     enum class Prompt { none, policy_input, policy_confirm, policy_pick, policy_text, palette, save_as, close, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, git_diff, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed };
@@ -125,6 +131,7 @@ struct EditorWindow::Impl {
     std::deque<Request> requests;
     std::optional<ActiveRequest> active_request;
     std::vector<std::shared_ptr<Operation>> operations;
+    std::map<std::string,std::shared_ptr<PendingEdit>> pending_edits;
     std::uint64_t next_request{1};
     std::map<std::string, std::string> keybindings;
     std::vector<MenuCommand> script_commands;
@@ -258,6 +265,7 @@ struct EditorWindow::Impl {
         }
         workbench = std::make_unique<Workbench>(channel, [this](std::string_view method, const Json& params) {
             if (method == "_ui.dialog") { return begin_dialog(params); }
+            if (method == "_ui.action" && params.at("command").get<std::string>().starts_with("editor.")) { return begin_edit(params); }
             std::promise<Json> completed;
             try { completed.set_value(native_ui_request(method, params)); }
             catch (...) { completed.set_exception(std::current_exception()); }
@@ -449,7 +457,10 @@ struct EditorWindow::Impl {
     void fetch_syntax();
     void fetch_diagnostics(const std::string& id);
     void fetch_git_diff(std::string path, bool staged = false);
-    void editor_command(std::string command, Json extra = Json::object());
+    void editor_command(std::string command, Json extra = Json::object(), std::shared_ptr<PendingEdit> edit = {});
+    std::future<Json> begin_edit(const Json& params);
+    void settle_edit(const std::shared_ptr<PendingEdit>& edit, const Json& result, std::exception_ptr failure = {});
+    void cancel_edit(const std::shared_ptr<PendingEdit>& edit);
     void set_selections(Json selections, std::string revision = {});
     void save_document(const std::string& id, bool save_as = false);
     void close_document(const std::string& id, bool discard = false);
@@ -531,23 +542,41 @@ void EditorWindow::Impl::service_responses() {
                 if (!body) { throw std::runtime_error("The service returned no response for an editor request"); }
                 const auto response = Json::parse(*body);
                 if (!response.contains("id") || response["id"] != completed.id) { throw std::runtime_error("The service response ID does not match its request"); }
-                if (response.contains("error")) { throw std::runtime_error(response["error"].value("message", std::string("Service request failed"))); }
+                if (response.contains("error")) {
+                    const auto& failure=response.at("error");
+                    throw protocol::RpcError(failure.value("code",-32603),failure.value("message",std::string("Service request failed")),
+                        failure.contains("data") ? std::optional<Json>(failure.at("data")) : std::nullopt);
+                }
                 if (completed.request.method == "script.command" && response.at("result").is_object() && response.at("result").contains("operationId")) {
                     auto operation = std::make_shared<Operation>();
                     operation->id = response.at("result").at("operationId").get<std::string>();
                     operation->complete = completed.request.complete;
                     operation->failure = completed.request.failure;
-                    operations.push_back(std::move(operation));
-                } else if (completed.request.complete) { completed.request.complete(response.at("result")); }
+                    operation->edit=completed.request.edit;
+                    operations.push_back(operation);
+                    if(operation->edit){
+                        operation->edit->operation=operation->id;
+                        if(operation->edit->cancelled)enqueue({"operation.cancel",{{"id",operation->id}},{},false,{}, {}});
+                    }
+                } else {
+                    if (completed.request.complete) { completed.request.complete(response.at("result")); }
+                    settle_edit(completed.request.edit,response.at("result"));
+                }
                 if (completed.request.method == "script.command" || completed.request.method == "document.edit") { error.clear(); }
             } catch (const std::exception& failure) {
-                error = failure.what(); status = "Action failed";
+                bool script_handles_failure=static_cast<bool>(completed.request.edit);
+                settle_edit(completed.request.edit,nullptr,std::current_exception());
                 if (completed.request.failure) { completed.request.failure(); }
                 if (completed.request.method == "operation.get") {
                     const auto id = completed.request.params.value("id", std::string{});
-                    for (const auto& operation : operations) { if (operation->id == id && operation->failure) { operation->failure(); } }
+                    for (const auto& operation : operations) { if (operation->id == id) {
+                        script_handles_failure=script_handles_failure || static_cast<bool>(operation->edit);
+                        settle_edit(operation->edit,nullptr,std::current_exception());
+                        if(operation->failure)operation->failure();
+                    } }
                     std::erase_if(operations, [&](const auto& operation) { return operation->id == id; });
                 }
+                if(!script_handles_failure){error = failure.what(); status = "Action failed";}
                 if (completed.request.method == "document.close") {
                     closing_pending.erase(completed.request.document); closing_window = false;
                 }
@@ -570,7 +599,11 @@ void EditorWindow::Impl::service_responses() {
         if (requests.empty()) { break; }
         auto request = std::move(requests.front());
         requests.pop_front();
-        if (!request.document.empty() && !documents.contains(request.document)) { continue; }
+        if (request.edit && request.edit->cancelled) { continue; }
+        if (!request.document.empty() && !documents.contains(request.document)) {
+            settle_edit(request.edit,nullptr,std::make_exception_ptr(protocol::RpcError(-32001,"Document closed before the edit was dispatched"))); continue;
+        }
+        try {
         if (request.build_params) { request.params = request.build_params(); }
         if (request.inject_revision) {
             const auto found = documents.find(request.document);
@@ -582,6 +615,11 @@ void EditorWindow::Impl::service_responses() {
         const auto id = std::to_string(next_request++);
         auto future = channel->submit(Json{{"jsonrpc", "2.0"}, {"id", id}, {"method", request.method}, {"params", request.params}}.dump());
         active_request.emplace(ActiveRequest{std::move(request), id, std::move(future)});
+        } catch (const std::exception& failure) {
+            settle_edit(request.edit,nullptr,std::current_exception());
+            if(request.failure)request.failure();
+            error=failure.what();status="Action failed";
+        }
     }
     const auto now = Clock::now();
     for (const auto& operation : operations) {
@@ -608,12 +646,16 @@ void EditorWindow::Impl::service_responses() {
                         }
                         if (!operation->accumulated.empty()) { value = operation->accumulated; }
                     }
-                    std::erase(operations, operation);
                     if (operation->complete) { operation->complete(value); }
-                } else if (state == "failed" || state == "cancelled") {
-                    if (operation->failure) { operation->failure(); }
+                    settle_edit(operation->edit,value);
                     std::erase(operations, operation);
-                    throw std::runtime_error(result.contains("error") ? result["error"].value("message", std::string("Workspace operation failed")) : "Workspace operation cancelled");
+                } else if (state == "failed" || state == "cancelled") {
+                    const auto failure=result.value("error",Json::object());
+                    const auto exception=std::make_exception_ptr(protocol::RpcError(failure.value("code",-32800),
+                        failure.value("message",std::string("Workspace operation cancelled")),
+                        failure.contains("data") ? std::optional<Json>(failure.at("data")) : std::nullopt));
+                    settle_edit(operation->edit,nullptr,exception);
+                    std::rethrow_exception(exception);
                 }
             }, {}});
     }
@@ -723,23 +765,73 @@ void EditorWindow::Impl::fetch_syntax() {
         }, {}});
 }
 
-void EditorWindow::Impl::editor_command(std::string name, Json extra) {
-    if (!current()) { return; }
+void EditorWindow::Impl::settle_edit(const std::shared_ptr<PendingEdit>& edit,const Json& result,std::exception_ptr failure) {
+    if(!edit || edit->settled)return;
+    edit->settled=true;
+    if(failure)edit->completion.set_exception(std::move(failure));
+    else edit->completion.set_value(result);
+    std::erase_if(pending_edits,[&](const auto& entry){return entry.second==edit;});
+}
+
+void EditorWindow::Impl::cancel_edit(const std::shared_ptr<PendingEdit>& edit) {
+    if(edit->cancelled || edit->settled)return;
+    edit->cancelled=true;
+    // Runtime cancellation rejects the caller and drains this abandoned future.
+    // Resolve the drain value, as for dismissed native dialogs.
+    settle_edit(edit,nullptr);
+    if(!edit->operation.empty())enqueue({"operation.cancel",{{"id",edit->operation}},{},false,{}, {}});
+}
+
+std::future<Json> EditorWindow::Impl::begin_edit(const Json& params) {
+    if(dialog)throw protocol::RpcError(-32004,"Dismiss the active dialog before editing");
+    const auto token=params.at("actionId").get<std::string>();
+    if(token.empty() || token.size()>128 || pending_edits.contains(token))throw protocol::RpcError(-32602,"Invalid editor action identity");
+    if(pending_edits.size()>=256)throw protocol::RpcError(-32004,"Editor action queue is full");
+    const auto extra=params.value("parameters",Json::object());
+    if(!extra.is_object())throw protocol::RpcError(-32602,"Editor action parameters must be an object");
+    const auto id=extra.value("id",active_id);
+    if(!documents.contains(id))throw protocol::RpcError(-32001,"Editor action requires an open document");
+    auto edit=std::make_shared<PendingEdit>();auto future=edit->completion.get_future();
+    pending_edits.emplace(token,edit);
+    try { editor_command(params.at("command").get<std::string>(),extra,edit); }
+    catch (...) { settle_edit(edit,nullptr,std::current_exception()); }
+    return future;
+}
+
+void EditorWindow::Impl::editor_command(std::string name, Json extra,std::shared_ptr<PendingEdit> edit) {
+    const auto id=extra.value("id",active_id);
+    const auto found=documents.find(id);
+    if(found==documents.end()) { return; }
     if (!name.starts_with("editor.move_up") && !name.starts_with("editor.move_down")) { vertical_column.reset(); }
     if (name != "editor.undo" && name != "editor.redo") {
         auto tab_size = editor_settings.value("tabSize", 4U);
         auto insert_spaces = editor_settings.value("insertSpaces", true);
-        const auto& config = current()->editor_config;
+        const auto& config = found->second.editor_config;
         if (config.contains("tab_width")) { tab_size = static_cast<unsigned>(std::stoul(config.at("tab_width").get<std::string>())); }
         else if (config.contains("indent_size") && config.at("indent_size") != "tab") { tab_size = static_cast<unsigned>(std::stoul(config.at("indent_size").get<std::string>())); }
         if (config.contains("indent_style")) { insert_spaces = config.at("indent_style") == "space"; }
-        extra["tabSize"] = tab_size;
-        extra["insertSpaces"] = insert_spaces;
-        extra["newline"] = newline();
+        if(!extra.contains("tabSize"))extra["tabSize"] = tab_size;
+        if(!extra.contains("insertSpaces"))extra["insertSpaces"] = insert_spaces;
+        if(!extra.contains("newline")) {
+            auto ending=std::string("\n");
+            if(config.contains("end_of_line")) {
+                if(config.at("end_of_line")=="crlf")ending="\r\n";
+            } else for(const auto& [number,line]:found->second.lines) {
+                static_cast<void>(number);
+                if(line.complete && line.next-line.end==2){ending="\r\n";break;}
+            }
+            extra["newline"]=std::move(ending);
+        }
     }
-    const auto id = active_id;
-    enqueue({"script.command", {{"name", name}, {"params", std::move(extra)}}, id, true,
-        [this](const Json& result) { accept_metadata(result); reveal_caret(); status = "Ready"; }, {}});
+    const bool inject_revision=!extra.contains("baseRevision");
+    extra["id"]=id;
+    enqueue({"script.command", {{"name", name}, {"params", std::move(extra)}}, id, inject_revision,
+        [this,id](const Json& result) {
+            if(result.is_object() && result.contains("id") && result.contains("revision")) {
+                accept_metadata(result);if(active_id==id)reveal_caret();
+            }
+            status = "Ready";
+        }, {},{},std::move(edit)});
 }
 
 void EditorWindow::Impl::fetch_diagnostics(const std::string& id) {
@@ -925,6 +1017,11 @@ void EditorWindow::Impl::finish_dialog(Json value) {
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
     if (method == "_ui.dialog.cancel") {
         if (dialog && dialog->id == params.at("id").get<std::string>()) { finish_dialog(nullptr); }
+        return nullptr;
+    }
+    if(method=="_ui.action.cancel") {
+        const auto found=pending_edits.find(params.at("actionId").get<std::string>());
+        if(found!=pending_edits.end()){const auto edit=found->second;cancel_edit(edit);}
         return nullptr;
     }
     if (method == "_ui.clipboard.read") {
@@ -2424,6 +2521,7 @@ bool EditorWindow::pump() {
     if (!impl_->running) {
         if (!impl_->stopping_workbench) {
             impl_->finish_dialog(nullptr);
+            while(!impl_->pending_edits.empty()){const auto edit=impl_->pending_edits.begin()->second;impl_->cancel_edit(edit);}
             impl_->stopping_workbench = true;
             impl_->workbench_shutdown_deadline = Clock::now() + std::chrono::seconds(5);
             impl_->workbench->shutdown();

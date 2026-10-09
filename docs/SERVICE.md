@@ -192,7 +192,16 @@ if (astra.context === 'client') {
 
 Client document calls use the same in-process/TCP protocol as other clients.
 `astra.ui.execute(id, parameters)` awaits a registered UI command, including user
-overrides. `astra.ui.input({title, value, placeholder}, {signal, timeoutMs})`
+overrides. Built-in `editor.*` wrappers forward their parameters and await actual
+service completion, including deferred script operations. Their result is the
+service result, and rejection preserves RPC `code` and `data`. Advanced callers
+use `astra.ui.native('editor.undo', {id, baseRevision}, {signal, timeoutMs})` for
+cancellation/deadlines. Explicit revisions stay fixed; absent revisions are filled
+when the captured document's intent leaves the serial queue. Cancellation skips
+queued work and forwards cancellation to deferred operations; committed edits
+cannot be rolled back. At most 256 native edit futures may be pending. Remaining
+non-edit native workflow bridges still await their respective migration.
+`astra.ui.input({title, value, placeholder}, {signal, timeoutMs})`
 returns entered text or `null` on dismissal. `astra.ui.confirm({title, detail,
 accept, items}, options)` returns `true` or `null`. Optional `items` are a
 scrollable review list, bounded to 4,096 single-line labels, 4 KiB per label and

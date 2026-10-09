@@ -82,7 +82,36 @@ int main(int argc, char* argv[]) {
         astra::ui::EditorWindowOptions options;
         options.title = "Astra — GUI acceptance"; options.workspace_name = "GUI ACCEPTANCE";
         options.open_paths = {"src/main.cpp"}; options.width = 1400; options.height = 860;
-        options.user_script = "if(astra.context==='client'){astra.ui.registerCommand({id:'ui.toggleSidebar',title:'User sidebar policy'},async()=>{const state=await astra.ui.read();await astra.ui.update({sidebarVisible:!state.sidebarVisible,status:'User sidebar policy'});});}";
+        options.user_script = R"js(if(astra.context==='client') {
+            astra.ui.registerCommand({id:'ui.toggleSidebar',title:'User sidebar policy'},async()=>{
+                const state=await astra.ui.read();await astra.ui.update({sidebarVisible:!state.sidebarVisible,status:'User sidebar policy'});
+            });
+            astra.ui.registerCommand({id:'acceptance.awaitEdits',title:'Await actual editing'},async()=>{
+                const {document}=await astra.ui.read();
+                const undone=await astra.ui.execute('editor.undo',{id:document.id,baseRevision:document.revision});
+                if(undone.id!==document.id || undone.revision===document.revision)throw new Error('Undo resolved before commit');
+                const before=await astra.request('document.get',{id:document.id});
+                if(before.text!=='alpha\nbeta')throw new Error('Awaited Undo did not observe the edit');
+                const redone=await astra.ui.execute('editor.redo',{id:document.id,baseRevision:undone.revision});
+                const after=await astra.request('document.get',{id:document.id});
+                if(after.text!=='Xalpha\nXbeta' || after.revision!==redone.revision)throw new Error('Awaited Redo did not observe the edit');
+                let rejected=false;
+                try { await astra.ui.execute('editor.undo',{id:document.id,baseRevision:document.revision}); }
+                catch(error) { rejected=error.code===-32001; }
+                if(!rejected)throw new Error('Editor action lost the stale revision error');
+                const retained=await astra.request('document.get',{id:document.id});
+                if(retained.text!==after.text || retained.revision!==after.revision)throw new Error('Rejected edit changed the document');
+                await astra.ui.update({status:'Awaited editing passed'});
+            });
+            astra.ui.registerCommand({id:'acceptance.cancelEdit',title:'Cancel queued editing'},async()=>{
+                const control=new AbortController();
+                const pending=astra.ui.native('editor.insert_text',{text:'cancelled edit'},{signal:control.signal});
+                const observed=pending.then(()=>false,error=>error.name==='AbortError');
+                await astra.sleep(0);control.abort();
+                if(!await observed)throw new Error('Editor action cancellation did not reject');
+                await astra.ui.update({status:'Queued edit cancelled'});
+            });
+        })js";
         std::shared_ptr<astra::ui::EditorChannel> channel = host;
         if (remote) { channel = std::make_shared<astra::transport::TcpEditorChannel>("127.0.0.1", host->port()); }
         astra::ui::EditorWindow window(channel, std::move(options));
@@ -106,6 +135,23 @@ int main(int argc, char* argv[]) {
         require(read_document(host, id).at("text") == "alpha\nbeta", "One undo did not restore every cursor edit");
         key(window, SDLK_Y, SDL_KMOD_CTRL);
         require(read_document(host, id).at("text") == "Xalpha\nXbeta", "Redo did not restore multicursor text");
+        window.execute_ui_command("acceptance.awaitEdits");settle(window);
+        require(window.status_text()=="Awaited editing passed","Composed editing Promise resolved before actual service completion");
+        const auto before_cancel=read_document(host,id);
+        window.execute_ui_command("acceptance.cancelEdit");settle(window);
+        require(window.status_text()=="Queued edit cancelled","Queued editor action did not settle after cancellation");
+        const auto after_cancel=read_document(host,id);
+        require(before_cancel.at("revision")==after_cancel.at("revision") && before_cancel.at("text")==after_cancel.at("text"),"Cancelled queued editor action mutated the document");
+        for(unsigned pair=0;pair<3;++pair)for(const auto keycode:{SDLK_Z,SDLK_Y}) {
+            SDL_Event event{};event.type=SDL_EVENT_KEY_DOWN;event.key.key=keycode;event.key.mod=SDL_KMOD_CTRL;
+            event.key.down=true;event.key.windowID=SDL_GetWindowID(window.window());
+            require(SDL_PushEvent(&event),"Cannot queue rapid history shortcuts");
+        }
+        settle(window);
+        const auto after_batch=read_document(host,id);
+        require(after_batch.at("text")==after_cancel.at("text") &&
+            std::stoull(after_batch.at("revision").get<std::string>())==std::stoull(after_cancel.at("revision").get<std::string>())+6,
+            "Rapid queued history commands lost order or used stale revisions");
 
         key(window, SDLK_A, SDL_KMOD_CTRL);
         key(window, SDLK_C, SDL_KMOD_CTRL);

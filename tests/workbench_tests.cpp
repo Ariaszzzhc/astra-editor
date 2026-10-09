@@ -77,6 +77,38 @@ TEST_CASE("workbench user commands replace builtins and preserve service errors"
     CHECK(workbench.idle());
 }
 
+TEST_CASE("workbench editing awaits native completion and preserves parameters and errors") {
+    auto channel=std::make_shared<Channel>();std::promise<Json> completion;Json action;int drains{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.action") { action=params;return completion.get_future(); }
+        REQUIRE(method=="_ui.action.cancel");++drains;CHECK(params.at("actionId")==action.at("actionId"));return ready(nullptr);
+    },modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("editor.undo",{{"id","captured"},{"baseRevision","7"}},[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<5;++tick)workbench.poll();
+    REQUIRE(action.at("command")=="editor.undo");
+    CHECK(action.at("parameters")==Json{{"id","captured"},{"baseRevision","7"}});
+    CHECK_FALSE(outcome);CHECK_FALSE(workbench.idle());CHECK_FALSE(workbench.awaiting_input());
+    completion.set_exception(std::make_exception_ptr(astra::protocol::RpcError(-32001,"Stale revision",Json{{"revision","8"}})));
+    for(int tick=0;tick<5;++tick)workbench.poll();
+    REQUIRE(outcome);REQUIRE(outcome->error);CHECK(outcome->error->at("code")==-32001);
+    CHECK(outcome->error->at("data").at("revision")=="8");CHECK(drains==1);CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench editing cancellation drains the deferred native future") {
+    auto channel=std::make_shared<Channel>();std::promise<Json> completion;bool submitted{},cancelled{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json&) {
+        if(method=="_ui.action") { submitted=true;return completion.get_future(); }
+        REQUIRE(method=="_ui.action.cancel");cancelled=true;completion.set_value(nullptr);return ready(nullptr);
+    },modules(),"let control=new AbortController(); astra.registerCommand('edit',()=>astra.ui.native('editor.insert_text',{text:'中🙂'},{signal:control.signal})); astra.registerCommand('abort',()=>control.abort());");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("edit",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<3;++tick)workbench.poll();REQUIRE(submitted);CHECK_FALSE(outcome);
+    workbench.execute("abort",Json::object(),{});
+    for(int tick=0;tick<8;++tick)workbench.poll();
+    CHECK(cancelled);REQUIRE(outcome);REQUIRE(outcome->error);CHECK(outcome->error->at("name")=="AbortError");CHECK(workbench.idle());
+}
+
 TEST_CASE("workbench provider generation prevents older results replacing newer views") {
     auto channel = std::make_shared<Channel>();
     std::vector<Json> models;

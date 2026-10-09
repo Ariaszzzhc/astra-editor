@@ -22,6 +22,6 @@ export function registerNativeCommands() {
         ['ui.checkpoint','Write recovery checkpoint']
     ];
     for (const [id, title, shortcut] of commands) {
-        ui.registerCommand({id, title, ...(shortcut ? {shortcut} : {})}, () => ui.native(id));
+        ui.registerCommand({id, title, ...(shortcut ? {shortcut} : {})}, parameters => ui.native(id, parameters));
     }
 }

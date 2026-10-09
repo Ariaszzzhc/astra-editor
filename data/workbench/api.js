@@ -21,7 +21,8 @@ export const ui = {
     },
     // Native actions handle text layout, focus, clipboard and modal input.
     // Product workflows call services directly and publish retained view state.
-    native: (command, parameters = {}) => request('_ui.action', {command, parameters}),
+    native: (command, parameters = {}, options) => command.startsWith('editor.')
+        ? edit(command, parameters, options) : request('_ui.action', {command, parameters}, options),
     registerCommand(spec, handler) {
         if (!spec?.id || !spec?.title || typeof handler !== 'function') throw new TypeError('Invalid UI command');
         astra.configure({workbench:{commands:{[spec.id]:spec}}});
@@ -61,6 +62,19 @@ const providers = new Map();
 const commands = new Map();
 const generations = new Map();
 let dialogId = 0;
+let actionId = 0;
+async function edit(command, parameters, options = {}) {
+    const id = `edit-${++actionId}`;
+    const signal = options.signal;
+    let cancellation;
+    const cancel = () => { cancellation = request('_ui.action.cancel', {actionId:id}); };
+    signal?.addEventListener('abort', cancel);
+    try { return await request('_ui.action', {command, parameters, actionId:id}, options); }
+    finally {
+        signal?.removeEventListener('abort', cancel);
+        await (cancellation || request('_ui.action.cancel', {actionId:id}));
+    }
+}
 async function dialog(kind, spec, options = {}) {
     const id = `dialog-${++dialogId}`;
     const signal = options.signal;

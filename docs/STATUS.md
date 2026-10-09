@@ -249,6 +249,24 @@ scrolling selects the intended symbol. `build/graphics/gui-workbench-outline.png
 was visually inspected. An initial build failed on a missing explicit JSON test
 header, corrected before these checks. The final idle-frame Skia warning remains.
 
+Native editing bridges now retain bounded completion futures until the actual
+service command (including a deferred script operation) settles. JS wrappers
+forward parameters, retain captured document identity, preserve RPC error data,
+and can cancel an edit before it leaves the serial queue. Explicit revisions are
+checked unchanged; ordinary rapid key intents obtain the revision when dispatched.
+Committed work is not rolled back by cancellation. The existing service JS policy
+still defines document commands; this increment does not claim all remaining
+native UI workflows have moved to JS.
+
+Windows Debug `build -y astra-tests gui-smoke gui-presentation-smoke` passed.
+`--test-case=workbench*,QuickJS*,JavaScript*` passed **37 cases / 275 assertions**.
+Real local and TCP `gui-smoke` runs passed composed await Undo/Redo, stale revision
+rejection without mutation, cancelled queued editing, and six history shortcuts
+in one SDL batch without stale revisions or reordering. Both variants were rerun
+after adding that batch assertion. `gui-presentation-smoke` also passed. The final
+idle-frame Skia warning remains; full current Debug/Release and package acceptance
+still remain outstanding.
+
 Remaining work includes the rest of the public UI/provider contract,
 native component extraction, indexed diagnostic/display views, incremental
 syntax indexes, full Debug/Release and native GUI acceptance, and packaging the
