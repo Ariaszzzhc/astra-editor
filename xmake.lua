@@ -8,6 +8,8 @@ set_warnings("allextra", "error")
 -- xmake 3.1.1's additional Git partial-clone lock path is not used.
 set_policy("package.requires_lock", false)
 add_repositories("astra-pinned .tools/recipes/xmake-repo-e567b25f0575b952c47b2000e0dedbd6fa698b2c")
+includes("xmake/packages/astra-sdl3/xmake.lua")
+includes("xmake/packages/skia-graphite/xmake.lua")
 add_rules("mode.debug", "mode.release")
 
 if is_plat("windows") then
@@ -24,6 +26,13 @@ end
 add_requires("doctest 2.4.12", {system = false})
 add_requires("nlohmann_json 3.12.0", {system = false})
 
+add_requires("utf8proc 2.11.3", {system = false})
+add_requires("astra-sdl3 3.4.12", {alias = "libsdl3", system = false, configs = {shared = true}})
+if is_plat("windows") then
+    add_requireconfs("*", {configs = {runtimes = "MT"}})
+end
+add_requires("skia-graphite", {configs = {root = os.projectdir(),
+    configuration = is_mode("debug") and "Debug" or "Release", runtimes = "MT"}})
 target("astra-core")
     set_kind("static")
     add_includedirs("include", {public = true})
@@ -63,4 +72,42 @@ target("astra-config")
     add_includedirs("include", {public = true})
     add_headerfiles("include/(astra/config/*.hpp)")
     add_files("src/config/*.cpp")
+    set_exceptions("cxx")
+
+target("astra-renderer")
+    set_kind("static")
+    set_default(false)
+    add_includedirs("include", {public = true})
+    add_packages("skia-graphite", "libsdl3", {public = true})
+    add_packages("utf8proc")
+    add_files("src/ui/renderer.cpp", "src/ui/text_layout.cpp")
+    set_exceptions("cxx")
+
+
+target("graphics-smoke")
+    set_kind("binary")
+    set_default(false)
+    add_packages("skia-graphite")
+    add_rules("astra.graphics-runtime")
+    add_files("tests/graphics_smoke.cpp")
+    set_exceptions("cxx")
+
+
+target("renderer-smoke")
+    set_kind("binary")
+    set_default(false)
+    add_deps("astra-renderer")
+    add_packages("skia-graphite", "libsdl3")
+    add_rules("astra.graphics-runtime")
+    add_files("tests/renderer_smoke.cpp")
+    set_exceptions("cxx")
+
+
+target("text-layout-tests")
+    set_kind("binary")
+    set_default(false)
+    add_deps("astra-renderer")
+    add_packages("skia-graphite", "libsdl3")
+    add_rules("astra.graphics-runtime")
+    add_files("tests/text_layout_tests.cpp")
     set_exceptions("cxx")

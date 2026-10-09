@@ -9,6 +9,11 @@
   },
   "libraries": {
     "doctest": "2.4.12",
-    "nlohmann_json": "3.12.0"
+    "nlohmann_json": "3.12.0",
+    "libuv": "1.52.1",
+    "quickjs-ng": "0.15.1",
+    "tree-sitter": "0.26.13",
+    "utf8proc": "2.11.3",
+    "libsdl3": "3.4.12"
   }
 }
