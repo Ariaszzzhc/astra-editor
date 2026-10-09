@@ -26,6 +26,7 @@ if is_plat("windows") then
 end
 
 add_requires("doctest 2.4.12", {system = false})
+add_requires("re2 2025.11.05", "abseil 20260107.0", {system = false})
 add_requires("nlohmann_json 3.12.0", {system = false})
 add_requires("libuv 1.52.1", "quickjs-ng 0.15.1", "tree-sitter 0.26.13", "utf8proc 2.11.3", {system = false})
 add_requires("astra-sdl3 3.4.12", {alias = "libsdl3", system = false, configs = {shared = true}})
@@ -118,7 +119,7 @@ target("astra-workspace")
     set_kind("static")
     add_deps("astra-core", "astra-io", "astra-config")
     add_includedirs("include", {public = true})
-    add_packages("utf8proc")
+    add_packages("utf8proc", "re2")
     add_headerfiles("include/(astra/workspace/*.hpp)")
     add_files("src/workspace/*.cpp")
     set_exceptions("cxx")

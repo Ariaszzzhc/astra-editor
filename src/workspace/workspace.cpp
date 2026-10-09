@@ -2,8 +2,6 @@
 
 #include <astra/core/utf8.hpp>
 
-#include <utf8proc.h>
-
 #include <algorithm>
 #include <array>
 #include <functional>
@@ -12,6 +10,10 @@
 #include <stdexcept>
 #include <system_error>
 #include <utility>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 namespace astra::workspace {
 namespace {
@@ -103,6 +105,19 @@ std::string_view newline_for(config::LineEnding ending) {
     throw std::invalid_argument("unsupported workspace line ending");
 }
 
+bool cr_only(std::string_view text) {
+    return text.find('\r') != std::string_view::npos && text.find('\n') == std::string_view::npos;
+}
+
+std::string editor_text(std::string text) {
+    // Equal-width replacement keeps all UTF-8 byte offsets stable. CRLF, LF,
+    // and existing mixed CRLF/LF files retain their exact buffer representation.
+    // Mixed lone-CR/LF files need a separate per-line EOL model, not a lossy
+    // blanket normalization hidden in this adapter.
+    if (cr_only(text)) { std::ranges::replace(text, '\r', '\n'); }
+    return text;
+}
+
 std::string format_for_save(std::string_view text, const config::EditorSettings& settings) {
     utf8::validate(text);
     const bool trim = settings.trim_trailing_whitespace.value_or(false);
@@ -131,20 +146,20 @@ std::string format_for_save(std::string_view text, const config::EditorSettings&
     return result;
 }
 
-bool word_character(char32_t scalar) {
-    const auto category = utf8proc_category(static_cast<utf8proc_int32_t>(scalar));
-    return (category >= UTF8PROC_CATEGORY_LU && category <= UTF8PROC_CATEGORY_PC) ||
-        scalar == 0x200c || scalar == 0x200d;
-}
-
-bool word_boundary(std::string_view text, std::size_t begin, std::size_t end) {
-    if (begin != 0) {
-        auto previous = begin - 1;
-        while (!utf8::is_boundary(text, previous)) { --previous; }
-        if (word_character(utf8::decode(text, previous).value)) { return false; }
+struct PathLess {
+    bool operator()(const fs::path& left, const fs::path& right) const {
+#if defined(_WIN32)
+        const auto& a = left.native();
+        const auto& b = right.native();
+        if (a.size() > 32768 || b.size() > 32768) { throw std::invalid_argument("Workspace path exceeds supported length"); }
+        const auto compared = CompareStringOrdinal(a.data(), static_cast<int>(a.size()), b.data(), static_cast<int>(b.size()), TRUE);
+        if (compared == 0) { throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), "Compare workspace paths"); }
+        return compared == CSTR_LESS_THAN;
+#else
+        return left < right;
+#endif
     }
-    return end == text.size() || !word_character(utf8::decode(text, end).value);
-}
+};
 
 void require_version(const io::FileVersion& expected, const io::FileVersion& current) {
     if (!expected.raw_content || expected.path != current.path || *expected.raw_content != *current.raw_content) {
@@ -272,12 +287,13 @@ LoadedFile Workspace::load(const fs::path& relative, std::size_t max_bytes) cons
     const auto override = configured.config.settings.charset == config::Charset::latin1 ?
         std::optional{io::TextEncoding::latin1} : std::nullopt;
     auto snapshot = io::read_file(path, max_bytes, override);
+    snapshot.text = editor_text(std::move(snapshot.text));
     return {relative.lexically_normal(), std::move(snapshot),
         std::move(configured.config), std::move(configured.issues)};
 }
 
-SavedFile Workspace::prepare_save(const fs::path& relative, std::string_view text,
-                                  io::TextEncoding original_encoding) const {
+Workspace::PreparedSave Workspace::prepare_save(const fs::path& relative, std::string_view text,
+    io::TextEncoding original_encoding, const std::optional<io::FileVersion>& expected) const {
     (void)resolve_path(relative);
     auto configured = editor_config(relative);
     const auto encoding = configured.config.settings.charset ?
@@ -287,7 +303,12 @@ SavedFile Workspace::prepare_save(const fs::path& relative, std::string_view tex
     case io::TextEncoding::utf16_be: case io::TextEncoding::latin1: break;
     default: throw std::invalid_argument("unsupported workspace encoding");
     }
-    auto formatted = format_for_save(text, configured.config.settings);
+    auto settings = configured.config.settings;
+    if (!settings.end_of_line && expected && expected->raw_content) {
+        const auto original = io::decode_bytes(*expected->raw_content, read_override(original_encoding));
+        if (cr_only(original.text)) { settings.end_of_line = config::LineEnding::cr; }
+    }
+    auto formatted = format_for_save(text, settings);
     for (std::size_t offset = 0; offset < formatted.size();) {
         const auto scalar = utf8::decode(formatted, offset);
         if (scalar.value == 0 || (encoding == io::TextEncoding::latin1 && scalar.value > 0xff)) {
@@ -295,57 +316,74 @@ SavedFile Workspace::prepare_save(const fs::path& relative, std::string_view tex
         }
         offset += scalar.bytes;
     }
-    return {relative.lexically_normal(), {}, std::move(formatted), encoding,
+    PreparedSave prepared;
+    if (cr_only(formatted)) {
+        prepared.disk_text = std::move(formatted);
+        formatted = editor_text(*prepared.disk_text);
+    }
+    prepared.result = {relative.lexically_normal(), {}, std::move(formatted), encoding,
         std::move(configured.config), std::move(configured.issues)};
+    return prepared;
 }
 
 SavedFile Workspace::save(const fs::path& relative, std::string_view text,
                           std::optional<io::FileVersion> expected, io::TextEncoding original_encoding) const {
-    auto prepared = prepare_save(relative, text, original_encoding);
-    prepared.version = io::save_file(resolve_path(relative), prepared.text, prepared.encoding, std::move(expected));
-    return prepared;
+    auto prepared = prepare_save(relative, text, original_encoding, expected);
+    prepared.result.version = io::save_file(resolve_path(relative), prepared.text_for_disk(),
+        prepared.result.encoding, std::move(expected));
+    return std::move(prepared.result);
 }
 
 SearchResult Workspace::search(const SearchOptions& options, std::stop_token stop) const {
-    utf8::validate(options.query);
-    if (options.query.empty() || options.query.find('\0') != std::string::npos) {
-        throw std::invalid_argument("workspace search requires a nonempty UTF-8 text query");
-    }
+    const SearchPattern pattern(options);
     SearchResult result;
     result.query = options.query;
+    result.options = options;
+    result.options.excluded_paths.clear();
+    std::set<fs::path, PathLess> excluded;
+    for (const auto& path : options.excluded_paths) {
+        if (stop.stop_requested()) { result.cancelled = true; return result; }
+        excluded.insert(resolve_path(path));
+    }
     const auto listed = tree(options.tree, stop);
     result.issues = listed.issues;
     result.truncated = listed.truncated;
     result.cancelled = listed.cancelled;
     if (result.cancelled) { return result; }
     std::size_t total = 0;
+    std::size_t result_bytes = 0;
     std::size_t files = 0;
-    std::set<fs::path> searched;
+    std::set<fs::path, PathLess> searched;
     for (const auto& entry : listed.entries) {
         if (stop.stop_requested()) { result.cancelled = true; break; }
         if (entry.directory) { continue; }
-        if (files >= options.max_files) { result.truncated = true; break; }
-        ++files;
         try {
-            if (!searched.insert(resolve_path(entry.relative_path)).second) { continue; }
+            const auto resolved = resolve_path(entry.relative_path);
+            if (excluded.contains(resolved) || !searched.insert(resolved).second) { continue; }
+            if (files >= options.max_files) { result.truncated = true; break; }
+            ++files;
             auto file = load(entry.relative_path, options.max_file_bytes);
             result.issues.insert(result.issues.end(), file.issues.begin(), file.issues.end());
             if (file.snapshot.text.size() > options.max_total_bytes - total) { result.truncated = true; break; }
             total += file.snapshot.text.size();
             const Rope rope(file.snapshot.text);
-            for (std::size_t position = 0; position <= file.snapshot.text.size();) {
+            auto matches = pattern.find_all(file.snapshot.text, stop, options.max_matches - result.matches.size());
+            result.cancelled = matches.cancelled;
+            result.truncated = result.truncated || matches.truncated;
+            bool metadata_full = false;
+            for (auto& match : matches.matches) {
                 if (stop.stop_requested()) { result.cancelled = true; break; }
-                const auto found = file.snapshot.text.find(options.query, position);
-                if (found == std::string::npos) { break; }
-                const auto end = found + options.query.size();
-                if (!options.whole_word || word_boundary(file.snapshot.text, found, end)) {
-                    if (result.matches.size() >= options.max_matches) { result.truncated = true; break; }
-                    result.matches.push_back({entry.relative_path, ByteOffset{found}, ByteOffset{end},
-                        rope.byte_to_position(found), rope.byte_to_position(end), file.snapshot.version, file.snapshot.encoding});
-                }
-                position = end; // Non-overlapping matches are safe to replace together.
+                const auto bytes = sizeof(SearchMatch) + entry.relative_path.native().size() * sizeof(fs::path::value_type) +
+                    match.captures.size() * sizeof(std::optional<TextRange>);
+                if (bytes > options.max_result_bytes - result_bytes) { result.truncated = true; metadata_full = true; break; }
+                result_bytes += bytes;
+                result.matches.push_back({entry.relative_path, match.begin, match.end,
+                    rope.byte_to_position(match.begin.value), rope.byte_to_position(match.end.value),
+                    file.snapshot.version, file.snapshot.encoding, std::move(match.captures)});
             }
-            if (result.cancelled || (result.truncated && result.matches.size() >= options.max_matches)) { break; }
+            if (result.cancelled || matches.truncated || metadata_full) { break; }
+            // Reaching a limit exactly is not itself truncation; later files
+            // are still scanned with the remaining match/metadata capacity.
         } catch (const std::exception& failure) { result.issues.push_back(issue(entry.relative_path, failure)); }
     }
     return result;
@@ -353,33 +391,48 @@ SearchResult Workspace::search(const SearchOptions& options, std::stop_token sto
 
 ReplacePlan Workspace::plan_replace(const SearchResult& search_result, std::string_view replacement,
                                     std::stop_token stop) const {
-    utf8::validate(replacement);
-    if (replacement.find('\0') != std::string_view::npos || search_result.query.empty() ||
+    if (search_result.query.empty() || search_result.options.query != search_result.query ||
         search_result.cancelled || search_result.truncated) {
         throw std::invalid_argument("cannot plan replacement from an incomplete search or invalid replacement");
     }
+    const SearchPattern pattern(search_result.options);
+    pattern.validate_replacement(replacement);
     std::map<fs::path, std::vector<const SearchMatch*>> grouped;
     for (const auto& match : search_result.matches) { grouped[match.relative_path].push_back(&match); }
     ReplacePlan plan;
+    std::size_t total_output = 0;
     for (auto& [relative, matches] : grouped) {
         if (stop.stop_requested()) { throw std::runtime_error("workspace replacement planning was cancelled"); }
         const auto path = resolve_path(relative);
-        const auto original = io::read_file(path, io::default_max_file_bytes, read_override(matches.front()->encoding));
+        auto original = io::read_file(path, search_result.options.max_file_bytes, read_override(matches.front()->encoding));
+        original.text = editor_text(std::move(original.text));
         std::ranges::sort(matches, {}, [](const SearchMatch* match) { return match->begin; });
         std::string text;
         std::size_t source = 0;
+        std::optional<std::size_t> previous_begin;
+        const auto append = [&](std::string_view value) {
+            if (value.size() > SearchPattern::max_output_bytes - total_output - text.size()) {
+                throw std::length_error("Workspace replacement plan exceeds 128 MiB output limit");
+            }
+            text.append(value);
+        };
         for (const auto* match : matches) {
+            if (stop.stop_requested()) { throw std::runtime_error("workspace replacement planning was cancelled"); }
             require_version(match->version, original.version);
-            if (match->begin.value < source || match->begin >= match->end || match->end.value > original.text.size() ||
+            if (match->begin.value < source || (previous_begin && *previous_begin == match->begin.value) ||
+                match->begin > match->end || match->end.value > original.text.size() ||
                 !utf8::is_boundary(original.text, match->begin.value) || !utf8::is_boundary(original.text, match->end.value) ||
-                std::string_view(original.text).substr(match->begin.value, match->end.value - match->begin.value) != search_result.query) {
+                match->encoding != original.encoding) {
                 throw std::invalid_argument("workspace search contains invalid or overlapping matches");
             }
-            text.append(original.text, source, match->begin.value - source);
-            text += replacement;
+            append(std::string_view(original.text).substr(source, match->begin.value - source));
+            append(pattern.expand_replacement(original.text, {match->begin, match->end, match->captures},
+                replacement, SearchPattern::max_output_bytes - total_output - text.size()));
             source = match->end.value;
+            previous_begin = match->begin.value;
         }
-        text.append(original.text, source, original.text.size() - source);
+        append(std::string_view(original.text).substr(source));
+        total_output += text.size();
         plan.files.push_back({relative, std::move(text), original.encoding, original.version, matches.size()});
     }
     return plan;
@@ -391,7 +444,7 @@ ReplaceResult Workspace::apply_replace(const ReplacePlan& plan, std::stop_token 
     result.pending.reserve(plan.files.size());
     result.issues.reserve(1);
     for (const auto& file : plan.files) { result.pending.push_back(file.relative_path); }
-    std::vector<SavedFile> prepared;
+    std::vector<PreparedSave> prepared;
     prepared.reserve(plan.files.size());
     std::set<fs::path> paths;
     for (const auto& file : plan.files) {
@@ -401,7 +454,7 @@ ReplaceResult Workspace::apply_replace(const ReplacePlan& plan, std::stop_token 
             if (!paths.insert(path).second) { throw std::invalid_argument("replacement plan contains a duplicate file"); }
             const auto current = io::read_file(path, io::default_max_file_bytes, read_override(file.encoding));
             require_version(file.expected, current.version);
-            prepared.push_back(prepare_save(file.relative_path, file.text, file.encoding));
+            prepared.push_back(prepare_save(file.relative_path, file.text, file.encoding, file.expected));
         } catch (const std::exception& failure) {
             result.issues.push_back(issue(file.relative_path, failure));
             return result;
@@ -416,8 +469,9 @@ ReplaceResult Workspace::apply_replace(const ReplacePlan& plan, std::stop_token 
         const auto& file = plan.files[index];
         try {
             auto& saving = prepared[index];
-            saving.version = io::save_file(resolve_path(file.relative_path), saving.text, saving.encoding, file.expected);
-            result.applied.push_back(std::move(saving));
+            saving.result.version = io::save_file(resolve_path(file.relative_path), saving.text_for_disk(),
+                saving.result.encoding, file.expected);
+            result.applied.push_back(std::move(saving.result));
         } catch (const std::exception& failure) {
             result.issues.push_back(issue(file.relative_path, failure));
             result.pending.erase(result.pending.begin(), result.pending.begin() + static_cast<std::ptrdiff_t>(result.applied.size()));
