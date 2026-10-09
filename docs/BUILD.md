@@ -23,6 +23,20 @@ recipe updates or edit downloaded recipes; update the reviewed manifest when upg
 Windows static libraries share the `/MT` runtime and `_ITERATOR_DEBUG_LEVEL=0` in both modes
 to match Skia's Dawn build; Debug still provides symbols and unoptimized application code.
 
-Graphite requires a Skia build that explicitly enables Graphite and Dawn. The generic xmake
-Skia package does not currently expose those options and cannot satisfy the renderer contract.
-The renderer will use a pinned Skia revision and its matching Dawn dependency.
+Graphite uses the verified local package described in `docs/GRAPHICS.md`. Build both
+graphics configurations before configuring the full project. SDL3 is a pinned native
+window/input package; its separate renderers are disabled because drawing uses Graphite.
+
+Prepare fixed Tree-sitter grammar sources before the full syntax target:
+
+```powershell
+./scripts/prepare-grammars.ps1
+./scripts/xmake.ps1 build -y astra-tests astra-server
+./scripts/xmake.ps1 build -y graphics-smoke renderer-smoke text-layout-tests
+./scripts/xmake.ps1 run graphics-smoke
+./scripts/xmake.ps1 run renderer-smoke
+./scripts/xmake.ps1 run text-layout-tests
+```
+
+See `docs/SERVICE.md` for server, local automation, and protocol usage. The GUI and
+remaining language/Git/recovery integration are tracked separately in `docs/STATUS.md`.

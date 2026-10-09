@@ -98,6 +98,35 @@ std::string random_text(std::mt19937& random, std::size_t maximum_tokens) {
 
 } // namespace
 
+TEST_CASE("persistent Rope change extents reconstruct Unicode edits without flattening") {
+    std::string source;
+    for (int i = 0; i < 600; ++i) { source += "line " + chinese + emoji + combining + "\r\n"; }
+    astra::Rope before(source);
+    std::mt19937 random(0x53484152U);
+    for (int round = 0; round < 300; ++round) {
+        const auto offsets = boundaries(source);
+        const auto index = static_cast<std::size_t>(random() % static_cast<unsigned>(offsets.size()));
+        const auto finish = std::min(offsets.size() - 1, index + static_cast<std::size_t>(random() % 7U));
+        const auto added = round % 2 == 0 ? emoji + "new\n" : std::string{};
+        const auto after = before.replace(offsets[index], offsets[finish], added);
+        const auto extent = before.changed_extent(after);
+        REQUIRE(before.is_boundary(extent.begin));
+        REQUIRE(before.is_boundary(extent.old_end));
+        REQUIRE(after.is_boundary(extent.begin));
+        REQUIRE(after.is_boundary(extent.new_end));
+        CHECK(before.replace(extent.begin, extent.old_end, after.slice(extent.begin, extent.new_end)).str() == after.str());
+        CHECK(extent.old_end - extent.begin <= offsets[finish] - offsets[index] + 2 * astra::Rope::max_chunk_bytes);
+        source.replace(offsets[index], offsets[finish] - offsets[index], added);
+        before = after;
+    }
+    const auto same = before.changed_extent(before);
+    CHECK(same.begin == same.old_end);
+    CHECK(same.begin == same.new_end);
+    const astra::Rope rebuilt(source);
+    const auto whole = before.changed_extent(rebuilt);
+    CHECK(before.replace(whole.begin, whole.old_end, rebuilt.slice(whole.begin, whole.new_end)).str() == source);
+}
+
 TEST_CASE("UTF-8 accepts Unicode scalars and rejects malformed byte sequences") {
     const std::vector<std::string> valid{
         "", std::string(1, '\0'), "\x7F", "\xC2\x80", "\xDF\xBF",
@@ -361,4 +390,25 @@ TEST_CASE("Rope rejects summary overflow before changing shared snapshots") {
     const astra::TextSummary first{1, 1, maximum - 1, 0, 0};
     const astra::TextSummary last{1, 1, 1, 0, 0};
     CHECK_THROWS_AS((void)(first + last), std::length_error);
+}
+
+TEST_CASE("Rope changed extents refine rebuilt chunks without including a neighboring long line") {
+    const std::string source = "int before;\r\n// \xf0\x9f\x98\x80\r\nint after;\r\n" + std::string(30000, ' ');
+    const astra::Rope before(source);
+    const auto position = source.find("after");
+    const auto after = before.replace(position, position + 5, "changed");
+    const auto extent = before.changed_extent(after);
+    CHECK(extent.begin == position);
+    CHECK(extent.old_end == position + 5);
+    CHECK(extent.new_end == position + 7);
+    CHECK(before.replace(extent.begin, extent.old_end, after.slice(extent.begin, extent.new_end)).str() == after.str());
+    const auto independent = before.changed_extent(astra::Rope(after.str()));
+    CHECK(independent.begin == extent.begin);
+    CHECK(independent.old_end == extent.old_end);
+    CHECK(independent.new_end == extent.new_end);
+    const astra::Rope before_emoji("\xf0\x9f\x98\x80");
+    const auto scalar = before_emoji.changed_extent(astra::Rope("\xf0\x9f\x98\x81"));
+    CHECK(scalar.begin == 0);
+    CHECK(scalar.old_end == 4);
+    CHECK(scalar.new_end == 4);
 }

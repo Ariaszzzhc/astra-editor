@@ -85,6 +85,26 @@ void check_seek(const Tree& tree, const std::vector<Entry>& expected, std::size_
 
 } // namespace
 
+TEST_CASE("shared tree edges skip immutable interiors and preserve summary order") {
+    std::vector<Entry> entries;
+    for (int i = 0; i < 4096; ++i) { entries.push_back({i, static_cast<std::size_t>(i % 7)}); }
+    const Tree original(entries);
+    CHECK(original.shared_prefix_summary(original) == original.summary());
+    CHECK(original.shared_suffix_summary(original) == original.summary());
+    for (const std::size_t position : {0U, 1U, 31U, 1023U, 2048U, 4095U, 4096U}) {
+        const auto inserted = original.insert(position, {-1, 10});
+        CHECK(original.shared_prefix_summary(inserted) == original.prefix_summary(position));
+        const auto tail = original.split(position).second;
+        CHECK(original.shared_suffix_summary(inserted) == tail.summary());
+        CHECK(inserted.shared_prefix_summary(original) == original.prefix_summary(position));
+        CHECK(inserted.shared_suffix_summary(original) == tail.summary());
+    }
+    const Tree rebuilt(entries);
+    CHECK(original.shared_prefix_summary(rebuilt) == EntrySummary{});
+    CHECK(original.shared_suffix_summary(rebuilt) == EntrySummary{});
+    CHECK(original.shared_prefix_summary(Tree{}) == EntrySummary{});
+}
+
 TEST_CASE("SumTree empty identity and checked ranges") {
     const Tree tree;
     check_tree(tree, {});

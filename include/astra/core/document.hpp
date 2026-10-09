@@ -87,10 +87,13 @@ class Document {
 public:
     explicit Document(BufferId id, std::string_view text = {},
                       std::size_t history_limit = 1000);
-    Document(const Document&) = delete;
     Document& operator=(const Document&) = delete;
     Document(Document&&) = default;
-    Document& operator=(Document&&) = default;
+    Document& operator=(Document&&) noexcept = default;
+
+    // Explicit transactional preparation for multi-document operations. Text
+    // nodes remain shared; selections and complete undo/redo state are isolated.
+    [[nodiscard]] Document clone() const;
 
     [[nodiscard]] BufferId id() const noexcept;
     [[nodiscard]] Revision revision() const noexcept;
@@ -124,6 +127,7 @@ public:
     void set_history_limit(std::size_t limit) noexcept;
 
 private:
+    Document(const Document&) = default;
     struct State {
         Rope text;
         std::vector<Selection> selections;

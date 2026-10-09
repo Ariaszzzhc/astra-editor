@@ -8,6 +8,49 @@
 
 namespace astra {
 
+RopeChangedExtent Rope::changed_extent(const Rope& after) const {
+    auto prefix = tree_.shared_prefix_summary(after.tree_).bytes;
+    auto suffix = std::min({tree_.shared_suffix_summary(after.tree_).bytes,
+                                  size_bytes() - prefix, after.size_bytes() - prefix});
+    // Shared immutable subtrees skip unchanged interiors. Compare only the
+    // remaining edge bytes in bounded windows, including independently built
+    // snapshots; never flatten a document merely to publish an incremental edit.
+    constexpr std::size_t window = 4096;
+    const auto old_limit = size_bytes() - suffix;
+    const auto new_limit = after.size_bytes() - suffix;
+    while (prefix < old_limit && prefix < new_limit) {
+        auto old_end = prefix + std::min(window, old_limit - prefix);
+        auto new_end = prefix + std::min(window, new_limit - prefix);
+        while (!is_boundary(old_end)) { --old_end; }
+        while (!after.is_boundary(new_end)) { --new_end; }
+        const auto old_bytes = slice(prefix, old_end);
+        const auto new_bytes = after.slice(prefix, new_end);
+        const auto common = std::min(old_bytes.size(), new_bytes.size());
+        std::size_t equal = 0;
+        while (equal < common && old_bytes[equal] == new_bytes[equal]) { ++equal; }
+        prefix += equal;
+        if (equal != common) { break; }
+    }
+    while (!is_boundary(prefix) || !after.is_boundary(prefix)) { --prefix; }
+    while (suffix < size_bytes() - prefix && suffix < after.size_bytes() - prefix) {
+        const auto old_end = size_bytes() - suffix;
+        const auto new_end = after.size_bytes() - suffix;
+        auto old_begin = old_end - std::min(window, old_end - prefix);
+        auto new_begin = new_end - std::min(window, new_end - prefix);
+        while (!is_boundary(old_begin)) { ++old_begin; }
+        while (!after.is_boundary(new_begin)) { ++new_begin; }
+        const auto old_bytes = slice(old_begin, old_end);
+        const auto new_bytes = after.slice(new_begin, new_end);
+        const auto common = std::min(old_bytes.size(), new_bytes.size());
+        std::size_t equal = 0;
+        while (equal < common && old_bytes[old_bytes.size() - equal - 1] == new_bytes[new_bytes.size() - equal - 1]) { ++equal; }
+        suffix += equal;
+        if (equal != common) { break; }
+    }
+    while (!is_boundary(size_bytes() - suffix) || !after.is_boundary(after.size_bytes() - suffix)) { --suffix; }
+    return {prefix, size_bytes() - suffix, after.size_bytes() - suffix};
+}
+
 TextSummary MeasureText::operator()(std::string_view text) const {
     TextSummary result;
     result.bytes = text.size();

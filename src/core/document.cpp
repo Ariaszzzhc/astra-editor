@@ -5,6 +5,8 @@
 #include <utility>
 
 namespace astra {
+
+Document Document::clone() const { return Document(*this); }
 namespace {
 
 void validate_offset(const Rope& text, ByteOffset offset) {

@@ -75,6 +75,16 @@ public:
         return root_ ? root_->summary : identity;
     }
 
+    // Proves equal edges by immutable node identity, skipping whole shared
+    // subtrees. Stops at the first distinct leaf even if its value is equal.
+    // No hashing, item comparison, flattening, or traversal of shared interiors.
+    [[nodiscard]] Summary shared_prefix_summary(const SumTree& other) const {
+        return shared_edge(other, false);
+    }
+    [[nodiscard]] Summary shared_suffix_summary(const SumTree& other) const {
+        return shared_edge(other, true);
+    }
+
     [[nodiscard]] const Item& at(std::size_t index) const {
         if (index >= size()) {
             throw std::out_of_range("SumTree item index is outside the tree");
@@ -188,6 +198,33 @@ public:
 
 private:
     NodePtr root_;
+
+    [[nodiscard]] Summary shared_edge(const SumTree& other, bool reverse) const {
+        Summary result{};
+        if (!root_ || !other.root_) { return result; }
+        std::vector<const Node*> left{root_.get()};
+        std::vector<const Node*> right{other.root_.get()};
+        const auto expand = [reverse](std::vector<const Node*>& stack) {
+            const auto* node = stack.back();
+            stack.pop_back();
+            stack.push_back(reverse ? node->left.get() : node->right.get());
+            stack.push_back(reverse ? node->right.get() : node->left.get());
+        };
+        while (!left.empty() && !right.empty()) {
+            const auto* a = left.back();
+            const auto* b = right.back();
+            if (a == b) {
+                result = reverse ? a->summary + result : result + a->summary;
+                left.pop_back();
+                right.pop_back();
+            } else if (a->is_leaf() && b->is_leaf()) {
+                break;
+            } else if (!a->is_leaf() && (b->is_leaf() || a->height >= b->height)) {
+                expand(left);
+            } else { expand(right); }
+        }
+        return result;
+    }
 
     explicit SumTree(NodePtr root) : root_(std::move(root)) {}
 

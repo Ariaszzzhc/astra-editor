@@ -10,6 +10,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <type_traits>
 
 namespace {
 
@@ -36,6 +37,32 @@ void check_unchanged(const astra::Document& document, const astra::DocumentSnaps
 }
 
 } // namespace
+
+TEST_CASE("explicit document clones isolate history and publish without throwing") {
+    static_assert(std::is_nothrow_move_assignable_v<astra::Document>);
+    astra::Document original({501}, "baseline");
+    REQUIRE(original.replace_selections("first "));
+    original.mark_saved();
+    REQUIRE(original.replace_selections("second "));
+    REQUIRE(original.undo());
+    auto prepared = original.clone();
+    CHECK(prepared.snapshot().text.str() == original.text().str());
+    CHECK(prepared.can_redo());
+    CHECK_FALSE(prepared.dirty());
+    REQUIRE(prepared.redo());
+    REQUIRE(prepared.replace_selections("third "));
+    CHECK(original.text().str() == "first baseline");
+    CHECK(original.can_redo());
+    CHECK_FALSE(original.dirty());
+    const auto committed_text = prepared.text().str();
+    original = std::move(prepared);
+    CHECK(original.text().str() == committed_text);
+    CHECK(original.dirty());
+    REQUIRE(original.undo());
+    REQUIRE(original.undo());
+    CHECK(original.text().str() == "first baseline");
+    CHECK_FALSE(original.dirty());
+}
 
 TEST_CASE("document starts with a clean persistent snapshot") {
     const astra::Document document(astra::BufferId{7}, "hello\nworld");

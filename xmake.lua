@@ -10,6 +10,7 @@ set_policy("package.requires_lock", false)
 add_repositories("astra-pinned .tools/recipes/xmake-repo-e567b25f0575b952c47b2000e0dedbd6fa698b2c")
 includes("xmake/packages/astra-sdl3/xmake.lua")
 includes("xmake/packages/skia-graphite/xmake.lua")
+includes("xmake/grammars.lua")
 
 add_rules("mode.debug", "mode.release")
 
@@ -44,12 +45,12 @@ target("astra-core")
 target("astra-tests")
     set_kind("binary")
     set_default(true)
-    add_deps("astra-core", "astra-protocol", "astra-io", "astra-service", "astra-config", "astra-script", "astra-transport", "astra-workspace", "astra-editing")
+    add_deps("astra-core", "astra-protocol", "astra-io", "astra-service", "astra-config", "astra-script", "astra-transport", "astra-workspace", "astra-editing", "astra-syntax")
     add_packages("doctest")
     add_files("tests/main.cpp", "tests/sum_tree_tests.cpp", "tests/rope_tests.cpp", "tests/document_tests.cpp",
               "tests/framing_tests.cpp", "tests/file_store_tests.cpp", "tests/rpc_tests.cpp", "tests/service_tests.cpp",
               "tests/editor_config_tests.cpp", "tests/script_tests.cpp", "tests/tcp_tests.cpp", "tests/workspace_tests.cpp", "tests/editing_tests.cpp",
-              "tests/application_tests.cpp", "tests/tcp_client_tests.cpp")
+              "tests/application_tests.cpp", "tests/tcp_client_tests.cpp", "tests/syntax_tests.cpp")
     set_exceptions("cxx")
     add_tests("unit", {runargs = {"--no-version", "--duration=true"}})
 
@@ -180,4 +181,23 @@ target("astra-server")
     add_packages("libuv")
     add_rules("astra.resources")
     add_files("src/main.cpp")
+    set_exceptions("cxx")
+
+target("astra-syntax")
+    set_kind("static")
+    add_includedirs("include", {public = true})
+    add_deps("astra-core", "astra-grammar-c", "astra-grammar-cpp", "astra-grammar-javascript",
+             "astra-grammar-typescript", "astra-grammar-tsx", "astra-grammar-json",
+             "astra-grammar-python", "astra-grammar-markdown", "astra-grammar-markdown-inline")
+    add_packages("tree-sitter")
+    add_files("src/language/syntax.cpp")
+    set_exceptions("cxx")
+
+target("astra-syntax-tests")
+    set_kind("binary")
+    set_default(false)
+    set_rundir(os.projectdir())
+    add_deps("astra-core", "astra-syntax")
+    add_packages("doctest")
+    add_files("tests/main.cpp", "tests/syntax_tests.cpp")
     set_exceptions("cxx")

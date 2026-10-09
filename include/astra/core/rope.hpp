@@ -18,6 +18,12 @@ struct TextPosition {
     friend bool operator==(const TextPosition&, const TextPosition&) = default;
 };
 
+struct RopeChangedExtent {
+    std::size_t begin{};
+    std::size_t old_end{};
+    std::size_t new_end{};
+};
+
 struct TextSummary {
     std::size_t bytes{};
     std::size_t utf16_units{};
@@ -80,6 +86,10 @@ public:
                                std::string_view replacement) const;
     [[nodiscard]] std::pair<Rope, Rope> split(std::size_t byte_offset) const;
     [[nodiscard]] Rope concat(const Rope& other) const;
+    // The smallest scalar-aligned replacement extent from this snapshot to
+    // after. Shared tree interiors are skipped by identity; unshared edge bytes
+    // are compared in bounded windows. All three offsets are scalar boundaries.
+    [[nodiscard]] RopeChangedExtent changed_extent(const Rope& after) const;
 
     [[nodiscard]] bool is_boundary(std::size_t byte_offset) const;
     [[nodiscard]] TextPosition byte_to_position(std::size_t byte_offset) const;
