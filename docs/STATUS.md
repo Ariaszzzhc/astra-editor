@@ -8,10 +8,11 @@ The native renderer, text layout, four editor GUI workflows and production TCP
 GUI variant also pass in both configurations. Recovery and atomic-replacement
 failures from earlier runs are fixed and covered by regressions below.
 
-A separate 6,527-file Windows validation package passed inventory and isolated
-runtime smoke checks before the final file-I/O fix. A package from the final clean
-source snapshot remains to be generated. No Linux/macOS functionality has been
-tested here; Windows acceptance is not an all-platform production-release claim.
+The final 6,527-file Windows ZIP from clean source commit `afcfbac` passed archive
+hash verification, fresh extraction, inventory and isolated runtime smoke checks.
+Only documentation recording that result changed after the package snapshot.
+No Linux/macOS functionality has been tested here; Windows acceptance is not an
+all-platform production-release claim.
 
 | Milestone | Scope | State | Acceptance evidence |
 | --- | --- | --- | --- |
@@ -23,7 +24,7 @@ tested here; Windows acceptance is not an all-platform production-release claim.
 | M5 | Tree-sitter syntax/textobjects/outline and LSP | Windows verified | Nine genuine pinned parsers, incremental syntax, real language services and clangd history diagnostics pass in final Debug/Release suites and GUI workflows |
 | M6 | SDL3 + Skia Graphite + Dawn GUI, layout, text input, themes/icons | Windows automated checks passed | Actual GPU rendering, Unicode layout and all GUI workflows pass both modes; physical DPI/IME/device-loss scenarios remain outside this evidence |
 | M7 | Complete workspace UI, git, global search, command palette | Windows verified | Both modes cover real Git/clangd, dirty/untitled search, search options, confirmed replacement, persistent external conflict and guarded reload |
-| M8 | Packaging, recovery/failure/performance acceptance, documentation | Final package pending | Final suites and Release core benchmark pass; independent validation package passes inventory and isolated smoke; regenerate package from final clean source |
+| M8 | Packaging, recovery/failure/performance acceptance, documentation | Windows verified | Final suites and Release core benchmark pass; clean-source ZIP passes hash, extraction, inventory and isolated runtime smoke |
 
 ## Validation boundary
 
@@ -54,7 +55,7 @@ retained rather than presented as current full-suite totals.
 | Production TCP GUI channel, `gui-smoke --tcp` | PASS | PASS before final file-I/O fix |
 | Independent-process `tests/cli_smoke.ps1` | PASS | PASS again after final file-I/O fix |
 | `astra-core-benchmark`: 1/8/64 MiB | Not run; Release benchmark | PASS; see [PERFORMANCE.md](PERFORMANCE.md) |
-| Independent-directory validation package | Not applicable | 6,527-file inventory and isolated runtime smoke PASS before final file-I/O fix |
+| Final ZIP in a freshly extracted directory | Not applicable | 6,527-file inventory, archive SHA-256, clean-source identity and isolated runtime smoke PASS after final file-I/O fix |
 
 The final suite logs are `build/debug-integrated-results.txt` and
 `build/release-integrated-results.txt`. The corresponding configured binaries
@@ -68,17 +69,28 @@ Debug also passed with `./tests/cli_smoke.ps1 -Mode debug`. After removing four
 unused default-setting declarations, the focused default/configuration/user
 policy checks passed: 7 cases / 75 assertions. No advertised setting remains
 for the unimplemented word-wrap, line-number, auto-save or default-encoding switches.
-The validation package commands both passed:
+An earlier validation package passed before the final file-I/O fix. The final
+Release executables were then rebuilt with `./scripts/xmake.ps1 f -m release -y`
+and `./scripts/xmake.ps1 build -y astra astra-server`. The source tree was clean
+before and after these final package checks, all of which passed:
 
 ```powershell
-./scripts/package-windows.ps1 -Offline -OutputDirectory build/packages/astra-0.1.0-windows-x64-validation -NoArchive
-./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/astra-0.1.0-windows-x64-validation -RunSmoke
+./scripts/package-windows.ps1 -Offline
+Expand-Archive -LiteralPath build/packages/astra-0.1.0-windows-x64.zip -DestinationPath build/packages/final-zip-check
+./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/final-zip-check/astra-0.1.0-windows-x64 -RunSmoke
 ```
 
 That smoke uses an independent Unicode/spaced workspace, isolated profile/state
 and a PATH containing only Windows directories. It exercises packaged executables,
-TCP, Unicode save, Git, clangd, TypeScript, Python and recovery. It is evidence for
-that validation snapshot, not a substitute for regenerating the final package.
+TCP, Unicode save, Git, clangd, TypeScript, Python and recovery. The final artifact is
+`build/packages/astra-0.1.0-windows-x64.zip` (142,939,954 bytes). Its manifest records
+source commit `afcfbacfbe0bea228eaf6fc7df469211675c30c9`, `sourceDirty: false` and
+runtime identity `windows-x64-7c73a1c471a39643`. Archive SHA-256, independently
+compared with the adjacent `.zip.sha256` file before extraction:
+
+```text
+a9102859236494435ebcbb5022a4f066ba41f745748326c13079a5d7b48b9fa2
+```
 
 `gui-workspace-smoke` uses real SDL keyboard/mouse events, the actual shared
 service and native file-monitor events. It verifies that clicking a dirty or
@@ -126,9 +138,15 @@ The following coherent modules were committed and pushed during this stage:
 | `1903b69` | LSP integration |
 | `c39b253` | File monitoring and external-change handling |
 | `e217270` | RE2 workspace search and replacement |
+| `e127246` | Explicit POSIX process-group lifetime ownership (source only on Windows) |
+| `0239ace` | Windows replacement-backup ownership and regression tests |
+| `a4982cd` | Integrated asynchronous editor services and production TCP channel |
+| `6fcf53c` | Native workspace UI and real GUI acceptance workflows |
+| `39c0691` | Pinned runtime preparation and native packaging sources |
+| `e001baf` | Persistent editing performance benchmark |
 
-Remaining release work is generating and verifying the package from the final
-clean source snapshot. The Release core benchmark passed for 1/8/64 MiB inputs:
+The Windows package is generated and verified. The Release core benchmark passed
+for 1/8/64 MiB inputs:
 edit P95 was 9.2/10.0/11.3 microseconds and load time was 1.9578/16.1456/130.548 ms.
 It validates 1,000 Unicode insertions, retained snapshots, UTF-16 round trips and
 undo; these are core measurements, not end-to-end GUI latency.

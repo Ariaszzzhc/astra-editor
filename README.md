@@ -9,9 +9,9 @@ The GUI, JavaScript commands and external automation share one document service.
 Windows Debug and Release each pass the full 408-case suite. Four real GUI
 workflows and the TCP GUI variant also pass in both configurations; exact source
 snapshots and package evidence are recorded in [STATUS.md](docs/STATUS.md).
-An independent Windows validation package passed its runtime smoke; the final
-clean-source package is pending. Linux/macOS source and native build scripts are
-present but have not been built or tested in this Windows environment.
+The Windows ZIP from clean source commit `afcfbac` passed inventory, archive
+round-trip and isolated runtime smoke checks. Linux/macOS source and native build
+scripts are present but have not been built or tested in this Windows environment.
 
 ## Build on Windows
 

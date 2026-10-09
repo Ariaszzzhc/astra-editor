@@ -119,10 +119,10 @@ After successful Release acceptance:
 Packaging refuses to replace an existing output directory. Choose a fresh
 `-OutputDirectory` when producing another package. Inventory verification and
 independent-directory smoke are distinct checks; [PACKAGING.md](PACKAGING.md)
-describes their scope and provenance. A separate 6,527-file validation package
-passed inventory and isolated runtime smoke before the final file-I/O fix. The
-final clean-source package remains to be generated; consult [STATUS.md](STATUS.md)
-for the exact tested snapshot and commands.
+describes their scope and provenance. The final 6,527-file ZIP from clean source
+commit `afcfbac` passed SHA-256 verification and isolated runtime smoke after
+extraction into a new directory. Consult [STATUS.md](STATUS.md) for the exact
+tested snapshot, archive identity and commands.
 
 Native macOS/Linux graphics, runtime and package scripts exist as source only.
 They have not been run, compiled or validated here. Follow their native-host

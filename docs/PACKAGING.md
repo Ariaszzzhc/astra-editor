@@ -1,9 +1,10 @@
 # Windows release packaging
 
 Windows x64 runtime preparation, package helper checks and isolated-directory
-package acceptance have passed. The 6,527-file validation package exercised
+package acceptance have passed. The final 6,527-file ZIP from clean source commit
+`afcfbac` passed archive hash verification and a fresh extraction's isolated smoke:
 packaged Git, clangd, TypeScript, Python and recovery through the real service.
-The coordinator rebuilds/packages the final source snapshot separately.
+See [STATUS.md](STATUS.md) for the archive identity and final acceptance commands.
 Native Linux/macOS preparation and packaging now have source
 implementations, but have never been run or tested on this Windows host.
 
