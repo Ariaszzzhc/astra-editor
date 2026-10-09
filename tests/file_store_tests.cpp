@@ -45,7 +45,7 @@ public:
         if (!strictly_within(root_, workspace)) {
             throw std::runtime_error("test build directory escaped the current workspace");
         }
-        fs::create_directories(root_);
+        (void)fs::create_directories(root_);
         std::random_device random;
         for (int attempt = 0; attempt < 32; ++attempt) {
             const auto candidate = root_ / ("file-store-test-" + std::to_string(random()) + "-" + std::to_string(random()));
@@ -70,7 +70,7 @@ public:
             std::fputs("refusing unsafe file-store test cleanup\n", stderr);
             return;
         }
-        fs::remove_all(resolved, error);
+        (void)fs::remove_all(resolved, error);
         if (error) { std::fputs("file-store test cleanup failed\n", stderr); }
     }
     [[nodiscard]] const fs::path& path() const noexcept { return path_; }

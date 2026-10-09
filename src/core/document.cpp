@@ -126,17 +126,25 @@ DocumentSnapshot Document::snapshot() const {
     return {id_, revision_, state_.text, state_.selections, state_.identity};
 }
 
-bool Document::dirty() const noexcept { return state_.identity != saved_identity_; }
+bool Document::dirty() const noexcept {
+    return !saved_identity_valid_ || state_.identity != saved_identity_;
+}
 bool Document::can_undo() const noexcept { return !undo_.empty(); }
 bool Document::can_redo() const noexcept { return !redo_.empty(); }
-void Document::mark_saved() noexcept { saved_identity_ = state_.identity; }
+void Document::mark_saved() noexcept {
+    saved_identity_ = state_.identity;
+    saved_identity_valid_ = true;
+}
 
 void Document::mark_saved(const DocumentSnapshot& saved_snapshot) {
     if (saved_snapshot.id != id_) {
         throw std::invalid_argument("saved snapshot belongs to a different document");
     }
     saved_identity_ = saved_snapshot.content_identity;
+    saved_identity_valid_ = true;
 }
+
+void Document::invalidate_saved_state() noexcept { saved_identity_valid_ = false; }
 
 std::vector<Selection> Document::normalize_selections(
     const Rope& text, std::vector<Selection> selections) {

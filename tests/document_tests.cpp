@@ -241,6 +241,52 @@ TEST_CASE("saved state follows history identity and asynchronous save snapshots"
     CHECK(document.dirty());
 }
 
+TEST_CASE("invalidating saved identity keeps all historical states dirty") {
+    astra::Document document(astra::BufferId{1}, "initial");
+    const auto initial = document.snapshot();
+    REQUIRE(document.replace_selections("A"));
+    document.mark_saved();
+    REQUIRE(document.replace_selections("B"));
+    const auto before = document.snapshot();
+    document.invalidate_saved_state();
+    check_unchanged(document, before);
+    CHECK(document.dirty());
+    REQUIRE(document.undo());
+    CHECK(document.dirty());
+    REQUIRE(document.undo());
+    CHECK(document.dirty());
+    REQUIRE(document.redo());
+    CHECK(document.dirty());
+    REQUIRE(document.redo());
+    CHECK(document.dirty());
+    document.mark_saved(initial);
+    CHECK(document.dirty());
+    REQUIRE(document.undo());
+    REQUIRE(document.undo());
+    CHECK_FALSE(document.dirty());
+    document.invalidate_saved_state();
+    CHECK(document.dirty());
+    document.mark_saved();
+    CHECK_FALSE(document.dirty());
+}
+
+TEST_CASE("foreign saved snapshot cannot restore invalid saved identity") {
+    astra::Document document(astra::BufferId{1}, "original");
+    astra::Document foreign(astra::BufferId{2}, "foreign");
+    document.invalidate_saved_state();
+    const auto before = document.snapshot();
+    CHECK_THROWS_AS((void)document.mark_saved(foreign.snapshot()), std::invalid_argument);
+    check_unchanged(document, before);
+    CHECK(document.dirty());
+    REQUIRE(document.replace_selections("x"));
+    REQUIRE(document.undo());
+    CHECK(document.dirty());
+    document.mark_saved(before);
+    CHECK_FALSE(document.dirty());
+    CHECK_THROWS_AS((void)document.mark_saved(foreign.snapshot()), std::invalid_argument);
+    CHECK_FALSE(document.dirty());
+}
+
 TEST_CASE("branching edits invalidate redo without reusing saved identities") {
     astra::Document document(astra::BufferId{1});
     REQUIRE(document.replace_selections("a"));

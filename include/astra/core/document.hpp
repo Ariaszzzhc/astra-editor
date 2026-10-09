@@ -106,6 +106,9 @@ public:
     // saving an older snapshot must use the snapshot overload to preserve dirty state.
     void mark_saved() noexcept;
     void mark_saved(const DocumentSnapshot& saved_snapshot);
+    // The on-disk content no longer matches any known history identity, for
+    // example when a worker formatted an older snapshot before saving it.
+    void invalidate_saved_state() noexcept;
 
     // Empty selection sets and non-scalar boundaries are rejected. Overlapping
     // selections are merged deterministically; adjacent nonempty ranges stay distinct.
@@ -141,6 +144,7 @@ private:
     Revision revision_{};
     State state_;
     ContentId saved_identity_{};
+    bool saved_identity_valid_{true};
     std::uint64_t next_identity_{1};
     std::size_t history_limit_;
     std::deque<HistoryEntry> undo_;
