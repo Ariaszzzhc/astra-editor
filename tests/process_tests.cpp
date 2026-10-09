@@ -17,6 +17,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <uv.h>
 #endif
 
 namespace {
@@ -37,8 +39,22 @@ using namespace std::chrono_literals;
     const auto utf8 = fixture.u8string();
     return {reinterpret_cast<const char*>(utf8.data()), utf8.size()};
 #else
-    // Other platforms have not been tested in this Windows-only environment.
-    throw std::runtime_error("process fixture discovery requires platform implementation");
+    std::vector<char> path(1024);
+    for (;;) {
+        auto size = path.size();
+        const auto status = uv_exepath(path.data(), &size);
+        if (status == 0 && size < path.size() - 1) {
+            return (std::filesystem::path(std::string(path.data(), size)).parent_path() /
+                "astra-process-fixture").string();
+        }
+        if (path.size() >= 1024 * 1024) {
+            throw std::length_error("process test executable path exceeds one MiB");
+        }
+        if (status != 0 && status != UV_ENOBUFS) {
+            throw std::runtime_error(std::string("cannot locate process test fixture: ") + uv_strerror(status));
+        }
+        path.resize(path.size() * 2);
+    }
 #endif
 }
 

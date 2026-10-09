@@ -6,6 +6,7 @@
 #include <array>
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <deque>
@@ -20,6 +21,11 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <signal.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 namespace astra::process {
@@ -257,6 +263,10 @@ struct Process::Impl {
 #ifdef _WIN32
     std::unique_ptr<Job> job;
     bool job_terminated{};
+#else
+    // An unreaped direct child pins its PID, and therefore this private PGID.
+    // Only this loop may wait for it. Never signal the stored number after reap.
+    pid_t owned_pid{};
 #endif
     std::unordered_map<uv_write_t*, std::unique_ptr<Write>> writes;
     bool loop_initialized{};
@@ -452,6 +462,7 @@ struct Process::Impl {
         self.maybe_finish();
     }
 
+#ifdef _WIN32
     static void exited(uv_process_t* process, std::int64_t status, int signal) noexcept {
         auto& self = *static_cast<Impl*>(process->data);
         self.result.exit_status = status;
@@ -462,6 +473,81 @@ struct Process::Impl {
         self.close_pipe(self.input);
         // stdout/stderr remain readable until EOF, including buffered tail data.
     }
+#else
+    void report_errno(int error, const char* operation) noexcept {
+        try { throw std::system_error(error, std::generic_category(), operation); }
+        catch (...) { report(std::current_exception()); }
+    }
+
+    bool inspect_owned_child(siginfo_t& information) noexcept {
+        if (owned_pid <= 0) { return false; }
+        int status;
+        do {
+            status = waitid(P_PID, static_cast<id_t>(owned_pid), &information,
+                WEXITED | WNOHANG | WNOWAIT);
+        } while (status < 0 && errno == EINTR);
+        if (status == 0) { return true; }
+        const auto error = errno;
+        if (error == ECHILD) {
+            // Another reaper or SIGCHLD disposition violated our ownership.
+            // Revoke the number before reporting; never signal a recycled PID.
+            owned_pid = 0;
+            child_exited = true;
+        }
+        report_errno(error, "observe owned process without reaping");
+        return false;
+    }
+
+    bool kill_owned_group() noexcept {
+        siginfo_t information{};
+        if (!inspect_owned_child(information)) { return false; }
+        // WNOWAIT retains even an already-exited leader until group cleanup.
+        // With exclusive wait ownership there can be no PID reuse here.
+        int status;
+        do { status = ::kill(-owned_pid, SIGKILL); } while (status < 0 && errno == EINTR);
+        if (status == 0 || errno == ESRCH) { return true; }
+        report_errno(errno, "terminate owned process group");
+        return false;
+    }
+
+    void poll_owned_child() noexcept {
+        if (owned_pid <= 0) { return; }
+        siginfo_t information{};
+        if (!inspect_owned_child(information)) {
+            begin_close(true);
+            return;
+        }
+        if (information.si_pid == 0) { return; }
+
+        // A normal leader exit also terminates same-group descendants, even if
+        // they closed their inherited pipes already. Repeat a previous force
+        // signal now, while the zombie leader still pins the group identifier.
+        begin_close(false);
+        if (!kill_owned_group() && owned_pid > 0 && Clock::now() < shutdown_deadline) {
+            return; // Timer retries group cleanup with ownership still retained.
+        }
+        if (owned_pid <= 0) { close_pipe(input); maybe_finish(); return; }
+        int status = 0;
+        pid_t waited;
+        do { waited = waitpid(owned_pid, &status, WNOHANG); } while (waited < 0 && errno == EINTR);
+        if (waited == 0) { return; }
+        if (waited < 0) {
+            const auto error = errno;
+            if (error != ECHILD) { report_errno(error, "reap owned process"); return; }
+            owned_pid = 0;
+            report_errno(error, "owned process was reaped by another owner");
+        } else {
+            owned_pid = 0; // No signal or PGID probe is legal beyond this point.
+            result.exit_status = WIFEXITED(status) ? WEXITSTATUS(status) : 0;
+            result.term_signal = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
+        }
+        child_exited = true;
+        killed = true;
+        shutdown_deadline = Clock::now() + options.shutdown_timeout;
+        close_pipe(input);
+        maybe_finish();
+    }
+#endif
 
     static void shutdown_done(uv_shutdown_t* request, int status) noexcept {
         auto& self = *static_cast<Impl*>(request->data);
@@ -532,11 +618,8 @@ struct Process::Impl {
                 else { report(failure(std::string("kill process host: ") + uv_strerror(status))); }
             } else { killed = true; job_terminated = true; }
 #else
-            if (!child_exited) {
-                const auto status = uv_process_kill(&child, SIGKILL);
-                if (status >= 0 || status == UV_ESRCH) { killed = true; }
-                else { report(failure(std::string("kill process: ") + uv_strerror(status))); }
-            } else { killed = true; }
+            if (owned_pid > 0) { killed = kill_owned_group(); }
+            else { killed = true; }
 #endif
             if (killed) { shutdown_deadline = Clock::now() + options.shutdown_timeout; }
             close_pipe(input);
@@ -637,6 +720,8 @@ struct Process::Impl {
         auto& self = *static_cast<Impl*>(handle->data);
 #ifdef _WIN32
         if (self.job) { self.invoke([&] { self.job->observe(); }); }
+#else
+        self.poll_owned_child();
 #endif
         self.drain_tasks();
         if (self.started_set && !self.closing && self.callbacks.on_tick) { self.invoke([&] { self.callbacks.on_tick(); }); }
@@ -727,7 +812,9 @@ struct Process::Impl {
             stdio[3].data.stream = reinterpret_cast<uv_stream_t*>(&startup.handle);
 #endif
             uv_process_options_t spawn{};
+#ifdef _WIN32
             spawn.exit_cb = exited;
+#endif
             spawn.file = argv.front();
             spawn.args = argv.data();
             spawn.cwd = options.cwd.empty() ? nullptr : options.cwd.c_str();
@@ -740,20 +827,50 @@ struct Process::Impl {
             // between uv_spawn's job assignment and the host's own assignment.
             // The uv_process handle remains referenced and is always waited.
             spawn.flags = UV_PROCESS_WINDOWS_HIDE | UV_PROCESS_DETACHED;
+#else
+            // libuv performs setsid before exec. Reject automatic reaping: this
+            // adapter must retain the leader until it has signalled the group.
+            struct sigaction disposition{};
+            if (sigaction(SIGCHLD, nullptr, &disposition) != 0) {
+                throw std::system_error(errno, std::generic_category(), "inspect SIGCHLD disposition");
+            }
+            if (disposition.sa_handler == SIG_IGN || (disposition.sa_flags & SA_NOCLDWAIT) != 0) {
+                throw std::runtime_error("process ownership requires waitable children (SIGCHLD is ignored)");
+            }
+            spawn.flags = UV_PROCESS_DETACHED;
+            // Start before spawning: failures after exec must still have a
+            // polling owner to kill/reap, including failed stdio initialization.
+            check_uv(uv_timer_start(&timer, tick, static_cast<std::uint64_t>(options.tick_interval.count()),
+                static_cast<std::uint64_t>(options.tick_interval.count())), "start process timer");
 #endif
             child.data = this;
             // uv_spawn initializes its handle even when spawning fails; it must
             // be closed on either path, unlike ordinary libuv init functions.
             child_initialized = true;
+#ifdef _WIN32
             check_uv(uv_spawn(&loop, &child, &spawn), "spawn process");
             child_started = true;
+#else
+            const auto spawn_status = uv_spawn(&loop, &child, &spawn);
+            // uv_spawn may return a stdio error after successfully executing the
+            // child. Its active handle identifies that separately from status.
+            if (uv_is_active(reinterpret_cast<uv_handle_t*>(&child))) {
+                child_started = true;
+                owned_pid = child.pid;
+                // Closing before uv_run removes libuv's waitpid ownership.
+                // Our timer uses waitid(WNOWAIT), then cleans the group before
+                // the single waitpid. No libuv internals are accessed.
+                uv_close(reinterpret_cast<uv_handle_t*>(&child), child_closed_callback);
+            }
+            check_uv(spawn_status, "spawn process");
+#endif
             check_uv(uv_read_start(reinterpret_cast<uv_stream_t*>(&output.handle), allocate, read), "read process stdout");
             check_uv(uv_read_start(reinterpret_cast<uv_stream_t*>(&errors.handle), allocate, read), "read process stderr");
 #ifdef _WIN32
             check_uv(uv_read_start(reinterpret_cast<uv_stream_t*>(&startup.handle), allocate, read), "read process startup");
-#endif
             check_uv(uv_timer_start(&timer, tick, static_cast<std::uint64_t>(options.tick_interval.count()),
                 static_cast<std::uint64_t>(options.tick_interval.count())), "start process timer");
+#endif
             {
                 const std::lock_guard lock(mutex);
                 async_ready = true;
@@ -768,8 +885,8 @@ struct Process::Impl {
             if (!started_set) { started_set = true; started.set_exception(error); }
             if (child_started) {
                 begin_close(true);
-                // If initialization failed before starting the timer, kill still
-                // produces the process-exit callback; pipe closure remains owned.
+                // Windows still receives its exit callback; Unix's timer was
+                // started before spawn and retains manual kill/reap ownership.
                 close_pipe(output);
                 close_pipe(errors);
                 close_pipe(startup);
