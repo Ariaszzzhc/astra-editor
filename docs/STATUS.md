@@ -46,8 +46,8 @@ foundation only; the active workbench revision remains in progress.
 The client workbench now loads ES modules for command/menu registration, files,
 search and Git. Open/new/save, sidebar/tab changes, file traversal, search paging
 and Git status/stage policy execute in the client runtime over the same local/TCP
-dispatcher. Remaining close/recovery/find/replace workflow migration remains
-unfinished. Providers cancel superseded generations before publishing a model.
+dispatcher. At this earlier checkpoint, close/recovery/find/replace workflow
+migration was unfinished. Providers cancel superseded generations before publishing a model.
 User client commands can replace `ui.*` actions; the native GUI smoke exercises
 that override through real SDL keys. Client shutdown drains late transport
 responses and forwards cancellation before closing the channel.
@@ -379,6 +379,45 @@ service byte ranges/native string measurement fixed the failure; the budget
 was not increased. All final focused and GUI checks above pass. These add four
 cases to the suite (464 total); full current Debug/Release and package acceptance
 remain outstanding.
+
+Client JS now owns dirty-tab/captured-document close decisions and composes the
+current user save handler. Save/Save As return their durable result; save-close
+uses its resulting revision, retains new dirty edits during save, and does not
+close on dismissal/failure. Discard retains the pre-choice revision guard.
+The native close/Save As workflow, specialized close modal and close-after-save
+state were removed. The generic awaited choice component has 2–4 buttons,
+configured defaults/keys, original value identity, named answers, cancellation
+and shared paint/hit-test layout with vertical buttons in narrow windows.
+
+Windows Debug `build -y astra-tests gui-smoke gui-presentation-smoke
+gui-recovery-smoke` passed; final
+`--test-case=workbench*,presentation*,QuickJS*,JavaScript*` passed **61 cases /
+218,771 assertions**. The complete suite now has **469 cases**; full current
+Debug/Release acceptance remains outstanding. Actual local/TCP `gui-smoke`,
+`gui-presentation-smoke` and `gui-recovery-smoke` all passed after the final
+fixes. GUI regressions cover same-batch input/close, explicit durable save-close,
+discard without disk writes, cancellation, untitled Save As dismissal, named
+decision actions, four-option default/key/pointer identity, narrow vertical
+buttons, and genuine recovery checkpoint failure/retry/explicit bypass.
+`gui-close-choice.png` and `gui-choice-narrow.png` GPU screenshots were visually
+inspected; title, detail and choices are visible.
+
+An intermediate presentation run timed out on window shutdown because the
+native exit adapter attempted reentrant JS execution. Exit now records intent
+and starts JS close work in the outer owner loop. The failed fixture is retained
+at `build/graphics/gui-presentation-219889147400300`. A subsequent recovery run
+reported `Window exit skipped the recovery flush`: idle was reported between
+asynchronous close continuations. Pending window close now prevents premature
+idle unless a prompt is actually presented; the original checkpoint assertions
+were retained and the final recovery check passed.
+
+One TCP GUI run then reported `Stale document revision` during a background
+syntax refresh. A deterministic production regression reproduces it by making
+another real client insert and undo immediately before the syntax request; that
+regression failed before the fix. Native syntax queries now discard known-old
+queued revisions and reschedule only their `-32001` stale-read response, keeping
+mutation revision errors intact. Final local/TCP GUI runs pass with this actual
+concurrent-client regression, including the existing stale-edit rejection check.
 
 Remaining work includes the rest of the public UI/provider contract,
 native component extraction, incremental display layout, incremental

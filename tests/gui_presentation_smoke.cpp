@@ -64,6 +64,11 @@ void run(const fs::path& workspace) {
         astra::ui::EditorWindowOptions options;
         options.workspace_name="ASTRA WORKBENCH";options.resource_directory=fs::current_path();options.open_paths={"one.cpp"};
         options.user_script=R"js(if(astra.context==='client') {
+            astra.ui.registerCommand({id:'acceptance.choice',title:'Choose an action'},async()=>{
+                const selected=await astra.ui.choose({title:'CHOOSE AN ACTION',detail:'A generic native component returns the selected identity to JavaScript.',
+                    choices:[{label:'First 中🙂',value:1},{label:'Second',value:2},{label:'Third',value:3},{label:'Fourth',value:4}],defaultChoice:2,keys:['a','b','c','d']});
+                await astra.ui.update({status:selected ? 'Action '+selected.value : 'Action cancelled'});
+            });
             astra.ui.registerCommand({id:'acceptance.review',title:'Review items'},async()=>{
                 const accepted=await astra.ui.confirm({title:'Review changes',items:Array.from({length:40},(_,i)=>'File '+i+' (2 edits)'),accept:'Apply changes'});
                 await astra.ui.update({status:accepted?'Review accepted':'Review cancelled'});
@@ -171,9 +176,25 @@ void run(const fs::path& workspace) {
         for(int row=0;row<30;++row)key(window,SDLK_DOWN);
         window.request_screenshot("build/graphics/gui-workbench-text.png");settle(window);key(window,SDLK_ESCAPE);
         require(window.status_text()=="Information closed","Text panel dismissal did not settle its awaited JS workflow");
+        window.execute_ui_command("acceptance.choice");settle(window);key(window,SDLK_RETURN);
+        require(window.status_text()=="Action 3","Choice dialog lost its configured default identity");
+        require(SDL_SetWindowSize(window.window(),static_cast<int>(360*state.layout.scale),static_cast<int>(600*state.layout.scale)),"Cannot resize for vertical choices");settle(window);
+        window.execute_ui_command("acceptance.choice");settle(window);
+        int choice_width{},choice_height{};
+        require(SDL_GetWindowSizeInPixels(window.window(),&choice_width,&choice_height),"Cannot read choice viewport");
+        const auto choices=astra::ui::ChoiceLayout::measure(static_cast<float>(choice_width),static_cast<float>(choice_height),window.layout().scale,4);
+        require(choices.buttons[1].y>choices.buttons[0].y,"Narrow choice dialog did not use vertical buttons");
+        window.request_screenshot("build/graphics/gui-choice-narrow.png");settle(window);
+        click(window,choices.buttons[1].x+choices.buttons[1].width/2,choices.buttons[1].y+choices.buttons[1].height/2);
+        require(window.status_text()=="Action 2","Choice pointer did not return the original identity");
+        window.execute_ui_command("acceptance.choice");settle(window);key(window,SDLK_D);
+        require(window.status_text()=="Action 4","Choice shortcut did not return the configured identity");
+        window.execute_ui_command("acceptance.choice");settle(window);key(window,SDLK_ESCAPE);
+        require(window.status_text()=="Action cancelled","Choice cancellation did not settle the JS workflow");
+        require(SDL_SetWindowSize(window.window(),static_cast<int>(1440*state.layout.scale),static_cast<int>(900*state.layout.scale)),"Cannot restore from vertical choices");settle(window);
         window.execute_ui_command("ui.closeWindow");
         const auto deadline=Clock::now()+std::chrono::seconds(20);
-        while(window.pump()) {require(Clock::now()<deadline,"Workbench shutdown timed out");SDL_Delay(1);}
+        while(window.pump()) {require(window.last_error().empty(),"Workbench shutdown failed: "+window.last_error());require(Clock::now()<deadline,"Workbench shutdown timed out");SDL_Delay(1);}
     }
     host->shutdown();
 }

@@ -340,6 +340,130 @@ TEST_CASE("workbench reload confirmation captures a revision before awaiting inp
     CHECK(workbench.idle());
 }
 
+TEST_CASE("workbench close owns captured revision decisions and retains edits arriving during save") {
+    auto channel=std::make_shared<Channel>();std::promise<Json> choice;std::vector<Json> updates;Json spec;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.read") {
+            CHECK(params.at("id")=="captured");
+            return ready({{"document",{{"id","captured"},{"revision","7"},{"dirty",true},{"path","source.cpp"}}}});
+        }
+        if(method=="_ui.dialog"){spec=params;return choice.get_future();}
+        if(method=="_ui.update")updates.push_back(params);
+        return ready(nullptr);
+    },modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.closeTab",{{"id","captured"}},[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<5;++tick)workbench.poll();
+    CHECK(workbench.awaiting_input());CHECK(channel->requests.empty());CHECK_FALSE(outcome);
+    CHECK(spec.at("kind")=="choice");CHECK(spec.at("items")==Json::array({"Save","Don't save","Cancel"}));
+    const auto no_close=[&]{CHECK(std::ranges::none_of(updates,[](const Json& update){return update.contains("closedDocument");}));};
+    SUBCASE("cancellation never closes or writes") {
+        choice.set_value(nullptr);for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==false);CHECK(channel->requests.empty());no_close();
+    }
+    SUBCASE("discard uses the revision reviewed before the choice") {
+        choice.set_value(1);for(int tick=0;tick<6;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);
+        CHECK(channel->requests.front().body.at("method")=="document.close");
+        CHECK(channel->requests.front().body.at("params")==Json{{"id","captured"},{"baseRevision","7"},{"discardChanges",true}});
+        channel->reply(true);for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==true);CHECK(updates.back().at("closedDocument")=="captured");
+    }
+    SUBCASE("a changed revision rejects discard without removing the tab") {
+        choice.set_value(1);for(int tick=0;tick<6;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);auto incoming=std::move(channel->requests.front());channel->requests.pop_front();
+        incoming.response.set_value(Json{{"jsonrpc","2.0"},{"id",incoming.body.at("id")},{"error",{{"code",-32001},{"message","Stale revision"}}}}.dump());
+        for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(outcome);REQUIRE(outcome->error);CHECK(outcome->error->at("code")==-32001);no_close();
+    }
+    SUBCASE("save uses its resulting revision including formatting") {
+        choice.set_value(0);for(int tick=0;tick<6;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="workspace.save");
+        CHECK(channel->requests.front().body.at("params")==Json{{"id","captured"},{"baseRevision","7"}});
+        channel->reply({{"id","captured"},{"revision","8"},{"dirty",false},{"path","source.cpp"}});
+        for(int tick=0;tick<6;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="workspace.tree");
+        channel->reply({{"entries",Json::array()}});for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="document.close");
+        CHECK(channel->requests.front().body.at("params")==Json{{"id","captured"},{"baseRevision","8"},{"discardChanges",false}});
+        channel->reply(true);for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==true);
+    }
+    SUBCASE("new dirty edits during save keep the buffer open") {
+        choice.set_value(0);for(int tick=0;tick<6;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="workspace.save");
+        channel->reply({{"id","captured"},{"revision","8"},{"dirty",true},{"path","source.cpp"}});
+        for(int tick=0;tick<6;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="workspace.tree");
+        channel->reply({{"entries",Json::array()}});for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==false);CHECK(channel->requests.empty());no_close();
+    }
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench untitled close retains the buffer when Save As is dismissed") {
+    auto channel=std::make_shared<Channel>();std::promise<Json> path;unsigned inputs{};bool removed{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.read")return ready({{"document",{{"id","untitled"},{"revision","3"},{"dirty",true},{"path",""}}}});
+        if(method=="_ui.dialog") {
+            if(params.at("kind")=="choice")return ready(0);
+            CHECK(params.at("kind")=="input");++inputs;return path.get_future();
+        }
+        if(method=="_ui.update" && params.contains("closedDocument"))removed=true;
+        return ready(nullptr);
+    },modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.closeTab",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<8;++tick)workbench.poll();
+    CHECK(inputs==1);CHECK(workbench.awaiting_input());CHECK(channel->requests.empty());
+    path.set_value(nullptr);for(int tick=0;tick<8;++tick)workbench.poll();
+    REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==false);CHECK_FALSE(removed);CHECK(channel->requests.empty());CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench closing composes the current user save command") {
+    auto channel=std::make_shared<Channel>();bool removed{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.read")return ready({{"document",{{"id","captured"},{"revision","7"},{"dirty",true},{"path","source.cpp"}}}});
+        if(method=="_ui.dialog")return ready(0);
+        if(method=="_ui.update" && params.contains("closedDocument"))removed=true;
+        return ready(nullptr);
+    },modules(),"astra.registerCommand('ui.save',async parameters=>await astra.request('custom.save',parameters));");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.closeTab",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<8;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="custom.save");
+    CHECK(channel->requests.front().body.at("params").at("id")=="captured");CHECK_FALSE(outcome);CHECK_FALSE(removed);
+    channel->reply({{"id","captured"},{"revision","9"},{"dirty",false}});
+    for(int tick=0;tick<8;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="document.close");
+    CHECK(channel->requests.front().body.at("params").at("baseRevision")=="9");
+    channel->reply(true);for(int tick=0;tick<8;++tick)workbench.poll();
+    REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==true);CHECK(removed);CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench named choices correlate answers and reject duplicate active identities") {
+    auto channel=std::make_shared<Channel>();std::promise<Json> choice;Json spec;unsigned shown{},answered{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.dialog"){++shown;spec=params;return choice.get_future();}
+        if(method=="_ui.dialog.answer") {
+            ++answered;CHECK(params.at("id")==spec.at("id"));choice.set_value(params.at("index"));
+        }
+        return ready(nullptr);
+    },modules(),"astra.registerCommand('choose',()=>astra.ui.choose({id:'named',title:'Choice',choices:[{label:'First',value:1},{label:'中🙂',value:2,retained:'original'}]}));astra.registerCommand('answer',p=>astra.ui.answerChoice(p.id,p.index));");
+    std::optional<astra::script::Runtime::Outcome> result,duplicate;
+    workbench.execute("choose",Json::object(),[&](const auto& value){result=value;});
+    for(int tick=0;tick<4;++tick)workbench.poll();REQUIRE(shown==1);CHECK_FALSE(result);
+    workbench.execute("choose",Json::object(),[&](const auto& value){duplicate=value;});
+    for(int tick=0;tick<6;++tick)workbench.poll();REQUIRE(duplicate);REQUIRE(duplicate->error);CHECK(shown==1);CHECK_FALSE(result);
+    workbench.execute("answer",{{"id","other"},{"index",0}},{});
+    for(int tick=0;tick<4;++tick)workbench.poll();CHECK(answered==0);CHECK_FALSE(result);
+    workbench.execute("answer",{{"id","named"},{"index",1}},{});
+    for(int tick=0;tick<8;++tick)workbench.poll();REQUIRE(result);CHECK_FALSE(result->error);
+    CHECK(result->value==Json{{"label","中🙂"},{"value",2},{"retained","original"}});CHECK(answered==1);CHECK(workbench.idle());
+    workbench.execute("answer",{{"id","named"},{"index",0}},{});
+    for(int tick=0;tick<4;++tick)workbench.poll();CHECK(answered==1);CHECK(workbench.idle());
+}
+
 TEST_CASE("workbench composed commands honor user replacements through awaited execution") {
     auto channel=std::make_shared<Channel>();
     astra::ui::Workbench workbench(channel,[](std::string_view,const Json&){return ready(nullptr);},modules(),

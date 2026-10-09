@@ -5,6 +5,30 @@
 #include <stdexcept>
 
 namespace astra::ui {
+ChoiceLayout ChoiceLayout::measure(float width,float height,float scale,std::size_t choices) {
+    if(!std::isfinite(width)||!std::isfinite(height)||!std::isfinite(scale)||width<=0||height<=0||scale<=0 || choices<2 || choices>4)throw std::invalid_argument("Invalid choice dialog dimensions");
+    ChoiceLayout result;
+    const auto margin=std::min(12*scale,std::min(width,height)/6);
+    const auto pw=std::min(560*scale,width-2*margin);
+    const bool vertical=pw<420*scale;
+    const auto count=static_cast<float>(choices);
+    const auto desired=(vertical ? 136+42*count : 178)*scale;
+    const auto ph=std::min(desired,height-2*margin);
+    const auto x=(width-pw)/2,y=std::min(90*scale,std::max(margin,height-ph-margin));
+    result.panel={x,y,pw,ph};
+    const auto pad=std::min(24*scale,std::min(pw,ph)/8);
+    const auto gap=std::min(8*scale,std::min(pw,ph)/(count*4));
+    const auto button_height=std::min(34*scale,std::max(0.0F,(ph-2*pad-(vertical ? gap*(count-1) : 0))/(vertical ? count : 1)));
+    const auto area_height=vertical ? count*button_height+(count-1)*gap : button_height;
+    const auto button_y=result.panel.bottom()-pad-area_height;
+    const auto button_width=vertical ? pw-2*pad : (pw-2*pad-(count-1)*gap)/count;
+    for(std::size_t i=0;i<choices;++i)result.buttons.push_back({x+pad+(vertical ? 0 : static_cast<float>(i)*(button_width+gap)),button_y+(vertical ? static_cast<float>(i)*(button_height+gap) : 0),button_width,button_height});
+    const auto title_y=std::min(y+pad,button_y);
+    result.title={x+pad,title_y,pw-2*pad,std::min(24*scale,std::max(0.0F,button_y-title_y))};
+    const auto detail_y=std::min(result.title.bottom()+12*scale,button_y);
+    result.detail={x+pad,detail_y,pw-2*pad,std::max(0.0F,button_y-detail_y-gap)};
+    return result;
+}
 ConfirmationLayout ConfirmationLayout::measure(float width,float height,float scale,bool has_items) {
     if(!std::isfinite(width)||!std::isfinite(height)||!std::isfinite(scale)||width<=0||height<=0||scale<=0)throw std::invalid_argument("Invalid confirmation dimensions");
     ConfirmationLayout result;

@@ -58,6 +58,28 @@ Json call(const std::shared_ptr<astra::service::ServiceHost>& host, const std::s
 Json read_document(const std::shared_ptr<astra::service::ServiceHost>& host, const std::string& id) {
     return call(host,"document.get",{{"id",id}});
 }
+class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
+public:
+    ConcurrentSyntaxChannel(std::shared_ptr<astra::ui::EditorChannel> channel,std::shared_ptr<astra::service::ServiceHost> host)
+        :channel_(std::move(channel)),host_(std::move(host)) {}
+    std::future<std::optional<std::string>> submit(std::string body) override {
+        const auto request=Json::parse(body);
+        if(!changed && request.at("method")=="document.syntax") {
+            changed=true;
+            const auto id=request.at("params").at("id").get<std::string>();
+            const auto original=read_document(host_,id);
+            const auto edited=call(host_,"document.command",{{"id",id},{"baseRevision",original.at("revision")},
+                {"command","insert_text"},{"text","other client"}});
+            static_cast<void>(call(host_,"document.undo",{{"id",id},{"baseRevision",edited.at("revision")}}));
+        }
+        return channel_->submit(std::move(body));
+    }
+    std::vector<std::string> take_notifications() override { return channel_->take_notifications(); }
+    bool changed{};
+private:
+    std::shared_ptr<astra::ui::EditorChannel> channel_;
+    std::shared_ptr<astra::service::ServiceHost> host_;
+};
 template<class Predicate>
 void pump_until(astra::ui::EditorWindow& window, Predicate ready, const std::string& failure) {
     const auto deadline=Clock::now()+std::chrono::seconds(15);
@@ -82,6 +104,7 @@ int main(int argc, char* argv[]) {
         { std::ofstream file(workspace / "src/main.cpp", std::ios::binary); file << "// GUI acceptance\nint main() { return 0; }\n"; }
         { std::ofstream file(workspace / "README.md", std::ios::binary); file << "# Astra GUI acceptance\n"; }
         { std::ofstream file(workspace / "rename.txt", std::ios::binary); file << "needle and needle\n"; }
+        { std::ofstream file(workspace / "closing.txt", std::ios::binary); file << "baseline"; }
         const auto long_line = std::string(70'000, 'a') + "\t中文🙂";
         { std::ofstream file(workspace / "long.txt", std::ios::binary); file << long_line; }
         { std::ofstream file(workspace / ".editorconfig", std::ios::binary); file << "root = true\n[*]\nindent_style = space\nindent_size = 4\nend_of_line = lf\n[README.md]\nend_of_line = crlf\n"; }
@@ -149,9 +172,11 @@ int main(int argc, char* argv[]) {
         })js";
         std::shared_ptr<astra::ui::EditorChannel> channel = host;
         if (remote) { channel = std::make_shared<astra::transport::TcpEditorChannel>("127.0.0.1", host->port()); }
+        const auto concurrent=std::make_shared<ConcurrentSyntaxChannel>(channel,host);channel=concurrent;
         astra::ui::EditorWindow window(channel, std::move(options));
         settle(window);
         std::cerr << "GUI acceptance: initial viewport and syntax ready\n";
+        require(concurrent->changed,"Concurrent syntax revision acceptance did not run");
         const auto id = window.active_document_id();
         require(!id.empty(), "Workspace file did not open in the editor");
         require(read_document(host, id).at("text") == "// GUI acceptance\nint main() { return 0; }\n", "Opened wrong file");
@@ -313,6 +338,36 @@ int main(int argc, char* argv[]) {
         text(window,"Move to document start");key(window,SDLK_RETURN);
         require(read_document(host,window.active_document_id()).at("selections").front().at("head")==0,
             "JS command palette did not await and publish a service editing command");
+        window.open_path("closing.txt");settle(window);key(window,SDLK_END,SDL_KMOD_CTRL);
+        const auto closing_id=window.active_document_id();
+        SDL_Event closing_input{};closing_input.type=SDL_EVENT_TEXT_INPUT;closing_input.text.text=" change";
+        closing_input.text.windowID=SDL_GetWindowID(window.window());
+        SDL_Event closing_key{};closing_key.type=SDL_EVENT_KEY_DOWN;closing_key.key.key=SDLK_W;closing_key.key.mod=SDL_KMOD_CTRL;
+        closing_key.key.down=true;closing_key.key.windowID=SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&closing_input)&&SDL_PushEvent(&closing_key),"Cannot enqueue same-batch input and close");settle(window);
+        require(window.active_document_id()==closing_id && read_document(host,closing_id).at("text")=="baseline change",
+            "Close bypassed preceding input or discarded newly dirty content");
+        require(astra::io::read_file(workspace/"closing.txt").text=="baseline","Close saved before its explicit choice");
+        window.request_screenshot("build/graphics/gui-close-choice.png");settle(window);
+        key(window,SDLK_RETURN);
+        require(window.active_document_id()!=closing_id && astra::io::read_file(workspace/"closing.txt").text=="baseline change",
+            "JS save-and-close did not await durable save");
+        window.open_path("closing.txt");settle(window);key(window,SDLK_END,SDL_KMOD_CTRL);text(window," discard");
+        window.execute_ui_command("ui.closeTab");settle(window);key(window,SDLK_D);
+        require(astra::io::read_file(workspace/"closing.txt").text=="baseline change","Discard-close wrote dirty content");
+        window.open_path("closing.txt");settle(window);key(window,SDLK_END,SDL_KMOD_CTRL);text(window," cancel");
+        const auto cancelled_id=window.active_document_id();
+        window.execute_ui_command("ui.closeTab");settle(window);key(window,SDLK_ESCAPE);
+        require(window.active_document_id()==cancelled_id && read_document(host,cancelled_id).at("dirty")==true,
+            "Cancel-close discarded the captured dirty document");
+        window.execute_ui_command("ui.closeTab");settle(window);window.execute_ui_command("ui.discard");settle(window);
+        require(window.active_document_id()!=cancelled_id,"JS close decision command did not answer the matching native choice");
+        window.execute_ui_command("ui.new");settle(window);text(window,"untitled preserved");
+        const auto untitled_id=window.active_document_id();
+        window.execute_ui_command("ui.closeTab");settle(window);key(window,SDLK_RETURN);key(window,SDLK_ESCAPE);
+        require(window.active_document_id()==untitled_id && read_document(host,untitled_id).at("text")=="untitled preserved",
+            "Cancelling Save As lost an untitled buffer during close");
+        window.execute_ui_command("ui.closeTab");settle(window);key(window,SDLK_D);
         window.open_path("long.txt"); settle(window);
         key(window, SDLK_END, SDL_KMOD_CTRL); text(window, "!"); key(window, SDLK_S, SDL_KMOD_CTRL);
         require(astra::io::read_file(workspace / "long.txt").text == long_line + "!", "Long-line continuation or caret clipped text beyond 64 KiB");

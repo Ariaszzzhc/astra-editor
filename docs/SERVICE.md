@@ -246,6 +246,29 @@ source to 8 MiB and 100,000 lines; diff shaping caches only a bounded visible-ro
 working set. The clipboard adapter reads/writes at most 8 MiB and rejects
 oversized/NUL text rather than silently truncating it.
 
+`astra.ui.choose({title, detail, choices, defaultChoice, keys, id}, options)`
+awaits one of 2–4 choices, returning the original string/object or `null` on
+dismissal. Objects carry a `label`; optional keys are unique ASCII letters/digits
+(empty entries have no shortcut). Default choice indexes are zero-based. Arrows,
+Tab and Enter select; narrow windows stack the buttons. Optional `id` names a JS
+choice session; `astra.ui.answerChoice(id,index)` answers only that active session.
+Native identities remain unique across dialog types, and duplicate active names
+are rejected before showing another component. Content/deadline/cancellation
+bounds match the other modal primitives.
+
+Client JS owns dirty-tab and captured-document close decisions, including those
+invoked by native window-exit coordination. Save/Save As return the durable save
+result (or `null` on dismissal), and close awaits the current registered `ui.save`
+handler. A clean saved result supplies the revision for `document.close`; new
+dirty edits during save keep the buffer open. Discard uses the revision captured
+before the choice, so another client's intervening edit rejects it. Cancellation,
+Save As dismissal, save failure and invalid custom save results do not close the
+document. `ui.saveAndClose`/`ui.discard` are hidden decision actions answering the
+active close choice; the original close command owns the remaining workflow.
+Native window exit schedules JS close work from the outer owner loop and does
+not report idle between pending close continuations. Recovery/checkpoint/exit
+policy migration is still unfinished.
+
 `document.syntax` accepts UTF-8 highlight `begin`/`end` bounds plus
 `outlineBegin` (nonnegative, default 0), `outlineLimit` (0..1000, default 1000)
 and `includeOutline` (boolean, default true). Ready responses include

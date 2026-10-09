@@ -111,7 +111,7 @@ struct EditorWindow::Impl {
     struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; std::shared_ptr<PendingEdit> edit; std::string document; };
     struct FindState { std::string id; std::string revision; std::string query; std::string replacement; std::string text; std::size_t cursor{}; std::size_t size{}; bool replace{}; };
     struct ViewState { std::string id; std::string revision; std::size_t first{}; std::size_t limit{}; std::map<std::size_t, Line> lines; };
-    enum class Prompt { none, policy_input, policy_confirm, policy_pick, policy_text, save_as, close, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, git_diff, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed };
+    enum class Prompt { none, policy_input, policy_confirm, policy_choice, policy_pick, policy_text, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, git_diff, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed };
     struct Dialog {
         std::string id; Json spec; std::promise<Json> completion;
         TextLineIndex detail_lines; std::map<std::size_t,TextLayout> detail_layout; float detail_width{},detail_scale{};
@@ -232,7 +232,6 @@ struct EditorWindow::Impl {
     Json recovery_sessions = Json::array();
     Json recovery_selected;
     std::set<std::string> closing_pending;
-    std::set<std::string> close_after_save;
     bool dragging{};
     bool dragging_scroll{};
     Clock::time_point drag_scroll_after{};
@@ -242,8 +241,6 @@ struct EditorWindow::Impl {
     Prompt prompt{Prompt::none};
     std::optional<Dialog> dialog;
     std::string prompt_text;
-    std::string prompt_document;
-    std::string prompt_revision;
     std::size_t prompt_choice{};
     bool prompt_select_all{};
     std::string preedit;
@@ -404,7 +401,6 @@ struct EditorWindow::Impl {
         workspace_notices.erase(id);
         std::erase(tabs, id);
         if (active_id == id) { active_id = tabs.empty() ? std::string{} : tabs.back(); }
-        if (closing_window) { continue_close_window(); }
     }
     void new_document() {
         execute_policy("ui.new");
@@ -463,7 +459,6 @@ struct EditorWindow::Impl {
     void settle_edit(const std::shared_ptr<PendingEdit>& edit, const Json& result, std::exception_ptr failure = {});
     void cancel_edit(const std::shared_ptr<PendingEdit>& edit);
     void set_selections(Json selections, std::string revision = {});
-    void save_document(const std::string& id, bool save_as = false);
     void close_document(const std::string& id, bool discard = false);
     void continue_close_window();
     void fetch_recovery_status();
@@ -567,6 +562,8 @@ void EditorWindow::Impl::service_responses() {
                 if (completed.request.method == "script.command" || completed.request.method == "document.edit") { error.clear(); }
             } catch (const std::exception& failure) {
                 bool script_handles_failure=static_cast<bool>(completed.request.edit);
+                const auto* rpc_failure=dynamic_cast<const protocol::RpcError*>(&failure);
+                const bool obsolete_syntax=completed.request.method=="document.syntax" && rpc_failure && rpc_failure->code()==-32001;
                 settle_edit(completed.request.edit,nullptr,std::current_exception());
                 if (completed.request.failure) { completed.request.failure(); }
                 if (completed.request.method == "operation.get") {
@@ -579,13 +576,13 @@ void EditorWindow::Impl::service_responses() {
                     } }
                     std::erase_if(operations, [&](const auto& operation) { return operation->id == id; });
                 }
-                if(!script_handles_failure){error = failure.what(); status = "Action failed";}
+                if(!script_handles_failure && !obsolete_syntax){error = failure.what(); status = "Action failed";}
                 if (completed.request.method == "document.close") {
                     closing_pending.erase(completed.request.document); closing_window = false;
                 }
                 if (completed.request.method == "document.syntax" && documents.contains(completed.request.document)) {
                     auto& document = documents.at(completed.request.document);
-                    document.syntax_loading = false; document.needs_syntax = false; document.syntax_state = "failed";
+                    document.syntax_loading = false; document.needs_syntax = obsolete_syntax; document.syntax_state = obsolete_syntax ? "pending" : "failed";
                 }
                 if (completed.request.method == "language.diagnostics" && documents.contains(completed.request.document)) {
                     auto& document = documents.at(completed.request.document);
@@ -616,6 +613,10 @@ void EditorWindow::Impl::service_responses() {
         if (request.edit && request.edit->cancelled) { continue; }
         if (!request.document.empty() && !documents.contains(request.document)) {
             settle_edit(request.edit,nullptr,std::make_exception_ptr(protocol::RpcError(-32001,"Document closed before the edit was dispatched"))); continue;
+        }
+        if(request.method=="document.syntax" && request.params.at("baseRevision")!=documents.at(request.document).metadata.at("revision")) {
+            auto& document=documents.at(request.document);document.syntax_loading=false;document.needs_syntax=true;document.syntax_state="pending";
+            continue;
         }
         try {
         if (request.build_params) { request.params = request.build_params(); }
@@ -916,31 +917,17 @@ void EditorWindow::Impl::reveal_caret() {
     else if (line >= document->first_line + rows) { document->first_line = line - rows + 1; document->needs_lines = true; }
 }
 
-void EditorWindow::Impl::save_document(const std::string& id, bool save_as) {
-    const auto found = documents.find(id);
-    if (found == documents.end()) { return; }
-    if (save_as || found->second.path.empty()) {
-        prompt = Prompt::save_as; prompt_document = id; prompt_text = found->second.path;
-        return;
-    }
-    status = "Saving " + found->second.path;
-    start_operation("workspace.save", {{"id", id}}, [this, id](const Json& result) {
-        accept_metadata(result); status = "Saved";
-        if (close_after_save.erase(id) != 0) { close_document(id); }
-        refresh_tree();
-    }, id, true);
-}
-
 void EditorWindow::Impl::close_document(const std::string& id, bool discard) {
     const auto found = documents.find(id);
     if (found == documents.end() || closing_pending.contains(id)) { return; }
-    if (found->second.metadata.value("dirty", false) && !discard) {
-        prompt = Prompt::close; prompt_document = id; prompt_text.clear();
-        return;
-    }
     closing_pending.insert(id);
-    enqueue({"document.close", {{"id", id}, {"discardChanges", discard}}, id, true,
-        [this, id](const Json&) { closing_pending.erase(id); remove_document(id); }, {}});
+    try { workbench->execute("workbench.close",{{"id",id},{"discardChanges",discard}},[this,id](const script::Runtime::Outcome& outcome) {
+        closing_pending.erase(id);
+        if(outcome.error) {
+            closing_window=false;
+            if(outcome.error->value("name",std::string{})!="AbortError"){error=outcome.error->value("message",std::string("Close failed"));status="Action failed";}
+        } else if(outcome.value!=true)closing_window=false;
+    }); } catch (...) { closing_pending.erase(id);closing_window=false;throw; }
 }
 
 void EditorWindow::Impl::continue_close_window() {
@@ -1025,7 +1012,7 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
     if (dialog || prompt != Prompt::none) { throw protocol::RpcError(-32004, "Another modal input is active"); }
     const auto id = spec.at("id").get<std::string>();
     const auto kind = spec.at("kind").get<std::string>();
-    if (kind != "input" && kind != "confirm" && kind != "pick" && kind != "text") { throw protocol::RpcError(-32602, "Unknown dialog kind"); }
+    if (kind != "input" && kind != "confirm" && kind != "choice" && kind != "pick" && kind != "text") { throw protocol::RpcError(-32602, "Unknown dialog kind"); }
     const auto title = spec.at("title").get<std::string>();
     const auto value = spec.value("value", std::string{});
     const auto detail = spec.value(kind=="text" ? "text" : "detail", std::string{});
@@ -1041,12 +1028,25 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
         if(label.empty() || label.find_first_of("\r\n")!=std::string::npos || label.size()>4096 || item_text.size()+label.size()+1>65536)throw protocol::RpcError(-32602,"Confirmation item text exceeds its bounds");
         if(!item_text.empty())item_text+='\n';item_text+=label;
     }
+    if(kind=="choice") {
+        if(items.size()<2 || items.size()>4)throw protocol::RpcError(-32602,"Choice dialogs require 2 to 4 choices");
+        const auto selected=spec.value("defaultChoice",Json(0));
+        if(!selected.is_number_integer() || (selected.is_number_integer() && !selected.is_number_unsigned() && selected.get<std::int64_t>()<0) || selected.get<std::uint64_t>()>=items.size())throw protocol::RpcError(-32602,"Invalid default choice");
+        const auto keys=spec.value("keys",Json::array());
+        if(!keys.is_array() || (!keys.empty() && keys.size()!=items.size()))throw protocol::RpcError(-32602,"Choice keys must match the choices");
+        std::set<std::string> used;
+        for(const auto& key:keys) {
+            const auto text=lower_ascii(key.get<std::string>());
+            if(text.empty())continue;
+            if(text.size()!=1 || !((text[0]>='a' && text[0]<='z') || (text[0]>='0' && text[0]<='9')) || !used.insert(text).second)throw protocol::RpcError(-32602,"Choice keys must be unique ASCII letters or digits");
+        }
+    }
     if(kind=="pick")pending.picker.reset(items.get<std::vector<std::string>>());
     else if(!items.empty())pending.items.reset(item_text);
     auto result = pending.completion.get_future();
     dialog.emplace(std::move(pending));
-    prompt = kind == "input" ? Prompt::policy_input : (kind=="pick" ? Prompt::policy_pick : (kind=="text" ? Prompt::policy_text : Prompt::policy_confirm));
-    prompt_text = value; prompt_choice = 0; prompt_select_all = false; preedit.clear();
+    prompt = kind == "input" ? Prompt::policy_input : (kind=="pick" ? Prompt::policy_pick : (kind=="text" ? Prompt::policy_text : (kind=="choice" ? Prompt::policy_choice : Prompt::policy_confirm)));
+    prompt_text = value; prompt_choice = kind=="choice" ? spec.value("defaultChoice",std::size_t{0}) : 0; prompt_select_all = false; preedit.clear();
     return result;
 }
 
@@ -1058,6 +1058,12 @@ void EditorWindow::Impl::finish_dialog(Json value) {
 }
 
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
+    if(method=="_ui.dialog.answer") {
+        if(!dialog || prompt!=Prompt::policy_choice || dialog->id!=params.at("id").get<std::string>())return nullptr;
+        const auto& index=params.at("index");
+        if(!index.is_number_integer() || (!index.is_number_unsigned() && index.get<std::int64_t>()<0) || index.get<std::uint64_t>()>=dialog->spec.at("items").size())throw protocol::RpcError(-32602,"Invalid choice index");
+        finish_dialog(index);return nullptr;
+    }
     if(method=="_ui.read.cancel") {
         const auto found=pending_reads.find(params.at("readId").get<std::string>());
         if(found!=pending_reads.end()){const auto read=found->second;settle_read(read,nullptr);}
@@ -1109,7 +1115,8 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
     if (params.contains("document")) { accept_metadata(params.at("document")); }
     if(params.contains("documents"))for(const auto& metadata:params.at("documents"))accept_metadata(metadata);
     for (const auto& [name, value] : params.items()) {
-        if (name == "status") { status = value.get<std::string>(); }
+        if(name=="closedDocument") { remove_document(value.get<std::string>()); }
+        else if (name == "status") { status = value.get<std::string>(); }
         else if (name == "sidebarVisible") { show_sidebar = value.get<bool>(); }
         else if (name == "outlineVisible") { show_outline = value.get<bool>(); }
         else if (name == "sidebar") {
@@ -1198,8 +1205,6 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     if (name.starts_with("editor.")) {
         editor_command(std::string(name));
     }
-    else if (name == "ui.save") { save_document(active_id); }
-    else if (name == "ui.saveAs") { save_document(active_id, true); }
     else if (name == "ui.dismissWorkspaceNotice") {
         if (!watch_error.empty()) { watch_error.clear(); }
         else if (workspace_notices.contains(active_id)) { workspace_notices.erase(active_id); }
@@ -1210,7 +1215,7 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     else if (name == "ui.toggleSearchRegex") { search_regex = !search_regex; }
     else if (name == "ui.toggleSearchWholeWord") { search_whole_word = !search_whole_word; }
     else if (name == "ui.closeTab") { close_document(active_id); }
-    else if (name == "ui.closeWindow") { finish_dialog(nullptr); closing_window = true; continue_close_window(); }
+    else if (name == "ui.closeWindow") { finish_dialog(nullptr); closing_window = true; }
     else if (name == "ui.recovery") { refresh_recovery(true); }
     else if (name == "ui.checkpoint") { flush_recovery(false); }
     else if (name == "ui.confirmRecovery") {
@@ -1278,11 +1283,7 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     } else if (name == "ui.cancel") {
         finish_dialog(nullptr);
         prompt = Prompt::none; closing_window = false; ++recovery_close_generation;
-        close_after_save.clear(); preedit.clear(); error.clear();
-    } else if (name == "ui.discard") {
-        if (prompt == Prompt::close) { const auto id = prompt_document; prompt = Prompt::none; close_document(id, true); }
-    } else if (name == "ui.saveAndClose") {
-        if (prompt == Prompt::close) { const auto id = prompt_document; prompt = Prompt::none; close_after_save.insert(id); save_document(id); }
+        preedit.clear(); error.clear();
     } else if (!name.starts_with("ui.")) {
         enqueue({"script.command", {{"name", name}, {"params", Json::object()}}, active_id, !active_id.empty(),
             [this](const Json& result) { if (result.is_object() && result.contains("id") && result.contains("revision")) { accept_metadata(result); reveal_caret(); } }, {}});
@@ -1322,16 +1323,7 @@ void EditorWindow::Impl::accept_prompt() {
     } else if (prompt == Prompt::recovery_confirm) { command("ui.confirmRecovery"); }
     else if (prompt == Prompt::recovery_exit_failed) { command("ui.retryExit"); }
     else if (prompt == Prompt::git_diff) { prompt = Prompt::none; }
-    else if (prompt == Prompt::save_as) {
-        if (prompt_text.empty()) { return; }
-        const auto id = prompt_document;
-        const auto path = prompt_text;
-        prompt = Prompt::none;
-        start_operation("workspace.save", {{"id", id}, {"path", path}}, [this, id](const Json& result) {
-            accept_metadata(result); status = "Saved"; refresh_tree();
-            if (close_after_save.erase(id) != 0) { close_document(id); }
-        }, id, true);
-    } else if (prompt == Prompt::find) {
+    else if (prompt == Prompt::find) {
         if (prompt_text.empty()) { return; }
         search_query = prompt_text; prompt = Prompt::none; find_document(false);
     } else if (prompt == Prompt::replace_query || prompt == Prompt::workspace_replace_query) {
@@ -1464,6 +1456,20 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
     if (input.key == SDLK_ESCAPE) { command("ui.cancel"); return; }
     if (!preedit.empty()) { return; }
     if (prompt != Prompt::none) {
+        if(prompt==Prompt::policy_choice && dialog) {
+            const auto count=dialog->spec.at("items").size();
+            if(input.key==SDLK_RETURN || input.key==SDLK_KP_ENTER){finish_dialog(prompt_choice);return;}
+            if(input.key==SDLK_RIGHT || input.key==SDLK_DOWN || (input.key==SDLK_TAB && !shift))prompt_choice=(prompt_choice+1)%count;
+            else if(input.key==SDLK_LEFT || input.key==SDLK_UP || (input.key==SDLK_TAB && shift))prompt_choice=(prompt_choice+count-1)%count;
+            else if(!control && !alt) {
+                const auto keys=dialog->spec.value("keys",Json::array());
+                for(std::size_t i=0;i<keys.size();++i) {
+                    const auto key=lower_ascii(keys[i].get<std::string>());
+                    if(!key.empty() && input.key==static_cast<SDL_Keycode>(key[0])){finish_dialog(i);return;}
+                }
+            }
+            return;
+        }
         if (prompt == Prompt::policy_confirm) {
             if (input.key == SDLK_RETURN || input.key == SDLK_KP_ENTER) { finish_dialog(true); }
             else if(input.key==SDLK_DOWN)++prompt_choice;
@@ -1479,11 +1485,6 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
         if (prompt == Prompt::recovery_exit_failed) {
             if (input.key == SDLK_RETURN) { command("ui.retryExit"); }
             else if (input.key == SDLK_E) { command("ui.exitWithoutCheckpoint"); }
-            return;
-        }
-        if (prompt == Prompt::close) {
-            if (input.key == SDLK_RETURN) { command("ui.saveAndClose"); }
-            else if (input.key == SDLK_D) { command("ui.discard"); }
             return;
         }
         if (prompt == Prompt::git_diff || prompt == Prompt::policy_text) {
@@ -1642,7 +1643,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
     case SDL_EVENT_TEXT_INPUT:
         preedit.clear();
         if (!input.text.text) { break; }
-        if (prompt != Prompt::none && prompt != Prompt::close && prompt != Prompt::replace_confirm &&
+        if (prompt != Prompt::none && prompt != Prompt::policy_choice && prompt != Prompt::replace_confirm &&
             prompt != Prompt::policy_text && prompt != Prompt::git_diff &&
             prompt != Prompt::recovery_confirm && prompt != Prompt::recovery_flushing && prompt != Prompt::recovery_exit_failed && prompt != Prompt::policy_confirm) {
             const std::string_view entered(input.text.text);
@@ -1685,6 +1686,11 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             }
             break;
         }
+        if(prompt==Prompt::policy_choice && dialog) {
+            const auto layout=ChoiceLayout::measure(width,static_cast<float>(pixels.height),scale,dialog->spec.at("items").size());
+            for(std::size_t i=0;i<layout.buttons.size();++i)if(layout.buttons[i].contains(mouse_x,mouse_y)){finish_dialog(i);break;}
+            break;
+        }
         if (prompt == Prompt::policy_confirm) {
             const auto layout=ConfirmationLayout::measure(width,static_cast<float>(pixels.height),scale,dialog && dialog->items.size()>0);
             if(layout.accept.contains(mouse_x,mouse_y))finish_dialog(true);
@@ -1706,16 +1712,6 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             if (mouse_y >= 425 * scale && mouse_y < 461 * scale) {
                 if (mouse_x >= bx + 24 * scale && mouse_x < bx + 308 * scale) { command("ui.confirmRecovery"); }
                 else if (mouse_x >= bx + 370 * scale && mouse_x < bx + 654 * scale) { command("ui.cancel"); }
-            }
-            break;
-        }
-        if (prompt == Prompt::close) {
-            const auto bx = (width - 520 * scale) / 2;
-            const auto by = 190 * scale;
-            if (mouse_y >= by && mouse_y < by + 34 * scale) {
-                if (mouse_x >= bx + 24 * scale && mouse_x < bx + 160 * scale) { command("ui.saveAndClose"); }
-                else if (mouse_x >= bx + 178 * scale && mouse_x < bx + 324 * scale) { command("ui.discard"); }
-                else if (mouse_x >= bx + 342 * scale && mouse_x < bx + 496 * scale) { command("ui.cancel"); }
             }
             break;
         }
@@ -1945,6 +1941,30 @@ void EditorWindow::Impl::measure_layout() {
 void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height) {
     if (prompt == Prompt::none) { return; }
     rectangle(canvas, 0, 0, width, height, SkColorSetA(background, 160));
+    if(prompt==Prompt::policy_choice && dialog) {
+        const auto& choices=dialog->spec.at("items");
+        const auto layout=ChoiceLayout::measure(width,height,scale,choices.size());
+        rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,layout.panel.height,panel_background);
+        rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,2*scale,accent);
+        elided_label(canvas,dialog->spec.at("title").get<std::string>(),layout.title.x,layout.title.y,16,layout.title.width,foreground);
+        TextLayoutOptions style;style.font_size=13;style.dpi_scale=scale;style.color=muted;style.wrap_width=layout.detail.width;
+        style.font_families={"Segoe UI","Microsoft YaHei UI","sans-serif"};
+        if(dialog->detail_width!=style.wrap_width || dialog->detail_scale!=scale){dialog->detail_layout.clear();dialog->detail_width=style.wrap_width;dialog->detail_scale=scale;}
+        canvas->save();canvas->clipRect(SkRect::MakeXYWH(layout.detail.x,layout.detail.y,layout.detail.width,layout.detail.height));
+        float y=layout.detail.y;
+        dialog->detail_lines.for_each_range(0,std::min(dialog->detail_lines.size(),std::size_t{8}),[&](std::size_t row,const std::string& text) {
+            if(y>=layout.detail.bottom())return;
+            auto found=dialog->detail_layout.find(row);
+            if(found==dialog->detail_layout.end())found=dialog->detail_layout.emplace(row,fonts.layout(text,style)).first;
+            found->second.draw(canvas,layout.detail.x,y);y+=found->second.height();
+        });canvas->restore();
+        for(std::size_t i=0;i<choices.size();++i) {
+            const auto& box=layout.buttons[i];
+            rectangle(canvas,box.x,box.y,box.width,box.height,i==prompt_choice ? accent : border_color);
+            elided_label(canvas,choices[i].get<std::string>(),box.x+12*scale,box.y+8*scale,13,box.width-24*scale,foreground);
+        }
+        return;
+    }
     if (prompt == Prompt::policy_text && dialog) {
         const auto layout=TextPanelLayout::measure(width,height,scale,dialog->detail_lines.size());
         rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,layout.panel.height,panel_background);
@@ -2090,22 +2110,6 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         rectangle(canvas, x + 370 * scale, 425 * scale, 284 * scale, 36 * scale, border_color);
         label(canvas, "Restore session", x + 97 * scale, 433 * scale, 13);
         label(canvas, "Cancel", x + 481 * scale, 433 * scale, 13);
-        return;
-    }
-    if (prompt == Prompt::close) {
-        const auto x = (width - 520 * scale) / 2;
-        rectangle(canvas, x, 90 * scale, 520 * scale, 154 * scale, panel_background);
-        rectangle(canvas, x, 90 * scale, 520 * scale, 2 * scale, accent);
-        label(canvas, "Save changes before closing?", x + 24 * scale, 110 * scale, 18);
-        const auto found = documents.find(prompt_document);
-        const auto name = found == documents.end() || found->second.path.empty() ? "Untitled" : basename(found->second.path);
-        label(canvas, name + " has unsaved edits.", x + 24 * scale, 147 * scale, 13, muted);
-        rectangle(canvas, x + 24 * scale, 190 * scale, 136 * scale, 34 * scale, accent);
-        rectangle(canvas, x + 178 * scale, 190 * scale, 146 * scale, 34 * scale, border_color);
-        rectangle(canvas, x + 342 * scale, 190 * scale, 154 * scale, 34 * scale, border_color);
-        label(canvas, "Save", x + 72 * scale, 197 * scale, 13);
-        label(canvas, "Don't save", x + 213 * scale, 197 * scale, 13);
-        label(canvas, "Cancel", x + 398 * scale, 197 * scale, 13);
         return;
     }
     if (prompt == Prompt::git_diff) {
@@ -2518,7 +2522,8 @@ void EditorWindow::open_path(std::string path) { impl_->open_path(std::move(path
 std::string EditorWindow::active_document_id() const { return impl_->active_id; }
 bool EditorWindow::idle() const noexcept {
     const auto* document = impl_->current();
-    return impl_->requests.empty() && !impl_->active_request && impl_->operations.empty() &&
+    return (!impl_->closing_window || impl_->prompt!=Impl::Prompt::none) &&
+        impl_->requests.empty() && !impl_->active_request && impl_->operations.empty() &&
         (impl_->workbench->idle() || (impl_->dialog && impl_->workbench->awaiting_input())) &&
         (!document || (!document->needs_lines && !document->loading && !document->needs_syntax && !document->syntax_loading));
 }

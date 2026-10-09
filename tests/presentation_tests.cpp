@@ -92,6 +92,25 @@ TEST_CASE("presentation confirmation layout shares bounded review and button reg
     }
 }
 
+TEST_CASE("presentation choice buttons remain distinct and inside narrow and scaled dialogs") {
+    for(const auto scale:{1.0F,1.25F,1.5F,2.0F})for(const auto width:{40.0F,260.0F,640.0F,1440.0F})for(const auto height:{40.0F,200.0F,600.0F})for(std::size_t choices=2;choices<=4;++choices) {
+        const auto layout=astra::ui::ChoiceLayout::measure(width*scale,height*scale,scale,choices);
+        REQUIRE(layout.buttons.size()==choices);
+        CHECK(layout.panel.x>=0);CHECK(layout.panel.y>=0);CHECK(layout.panel.right()<=width*scale);CHECK(layout.panel.bottom()<=height*scale);
+        CHECK(layout.title.bottom()<=layout.detail.y);CHECK(layout.detail.bottom()<=layout.buttons.front().y);
+        for(std::size_t i=0;i<choices;++i) {
+            const auto& box=layout.buttons[i];
+            CHECK(box.width>0);CHECK(box.height>0);CHECK(box.x>=layout.panel.x);CHECK(box.y>=layout.panel.y);
+            CHECK(box.right()<=layout.panel.right());CHECK(box.bottom()<=layout.panel.bottom());
+            const auto cx=box.x+box.width/2,cy=box.y+box.height/2;
+            CHECK(box.contains(cx,cy));
+            for(std::size_t j=0;j<choices;++j)if(i!=j)CHECK_FALSE(layout.buttons[j].contains(cx,cy));
+        }
+    }
+    CHECK_THROWS_AS((void)astra::ui::ChoiceLayout::measure(100,100,1,1),std::invalid_argument);
+    CHECK_THROWS_AS((void)astra::ui::ChoiceLayout::measure(100,100,1,5),std::invalid_argument);
+}
+
 namespace {
 using Json = astra::protocol::Json;
 Json entry(std::string path, bool directory) { return {{"path", path}, {"directory", directory}}; }

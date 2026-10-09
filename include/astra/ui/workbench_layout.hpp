@@ -22,6 +22,11 @@ struct ConfirmationLayout {
     Box panel,title,detail,items,accept,cancel;
     static ConfirmationLayout measure(float width,float height,float scale,bool has_items);
 };
+struct ChoiceLayout {
+    Box panel,title,detail;
+    std::vector<Box> buttons;
+    static ChoiceLayout measure(float width,float height,float scale,std::size_t choices);
+};
 struct PickerLayout {
     Box panel,title,input,rows;
     float row_height{};

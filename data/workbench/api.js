@@ -8,6 +8,21 @@ export const ui = {
     },
     input: (spec, options) => dialog('input', spec, options),
     confirm: (spec, options) => dialog('confirm', spec, options),
+    async choose(spec, options) {
+        const choices=spec.choices.slice();
+        const id=`dialog-${++dialogId}`, alias=spec.id;
+        if(alias && (typeof alias!=='string' || alias.length>128 || activeChoices.has(alias)))throw new TypeError('Invalid or active choice identity');
+        if(alias)activeChoices.set(alias,id);
+        try {
+            const index=await dialog('choice',{...spec,items:choices.map(choice=>typeof choice==='string' ? choice : choice.label)},options,id);
+            return index===null ? null : choices[index];
+        } finally { if(alias && activeChoices.get(alias)===id)activeChoices.delete(alias); }
+    },
+    async answerChoice(id,index) {
+        const nativeId=activeChoices.get(id);
+        if(nativeId)return await request('_ui.dialog.answer',{id:nativeId,index});
+        return null;
+    },
     async pick(spec, options) {
         const items = spec.items.slice();
         const index = await dialog('pick', {...spec, items:items.map(item => typeof item === 'string' ? item : item.label)}, options);
@@ -68,6 +83,7 @@ export const ui = {
 };
 const providers = new Map();
 const generations = new Map();
+const activeChoices = new Map();
 let dialogId = 0;
 let actionId = 0;
 let readId = 0;
@@ -93,8 +109,8 @@ async function edit(command, parameters, options = {}) {
         await (cancellation || request('_ui.action.cancel', {actionId:id}));
     }
 }
-async function dialog(kind, spec, options = {}) {
-    const id = `dialog-${++dialogId}`;
+async function dialog(kind, spec, options = {}, identity) {
+    const id = identity || `dialog-${++dialogId}`;
     const signal = options.signal;
     let cancellation;
     const cancel = () => { cancellation = request('_ui.dialog.cancel', {id}); };
