@@ -5,6 +5,7 @@ import {registerNativeCommands} from 'astra/commands';
 import {registerClipboard} from 'astra/clipboard';
 import {registerLanguage} from 'astra/language';
 import {registerRecovery} from 'astra/recovery';
+import {registerLifecycle} from 'astra/lifecycle';
 export function initialize() {
-    registerNativeCommands(); registerFiles(); registerGit(); registerSearch(); registerClipboard(); registerLanguage(); registerRecovery();
+    registerNativeCommands(); registerFiles(); registerGit(); registerSearch(); registerClipboard(); registerLanguage(); registerRecovery(); registerLifecycle();
 }

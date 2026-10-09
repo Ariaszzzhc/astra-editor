@@ -40,6 +40,29 @@ export const ui = {
         return index === null ? null : items[index];
     },
     showText: (spec, options) => dialog('text', spec, options),
+    waitForIdle: options => fence('_ui.barrier',options),
+    requestClose: options => fence('_ui.window.close',options),
+    async withProgress(spec,work,options={}) {
+        const control=new AbortController(), signal=options.signal;
+        if(signal?.aborted)throw cancelled('Progress cancelled');
+        const abort=()=>control.abort();
+        signal?.addEventListener('abort',abort);
+        const id=`dialog-${++dialogId}`;
+        const input=dialog('progress',spec,{...options,signal:control.signal},id);
+        // Both promises belong to this command and are observed even if the
+        // component is dismissed while its operation is still completing.
+        // Observe an open failure while awaiting the native acknowledgement.
+        input.catch(()=>{});
+        let running;
+        try {
+            await request('_ui.dialog.present',{id});
+            running=Promise.resolve().then(()=>work({signal:control.signal}));
+            return await Promise.race([running,input.then(()=>{throw cancelled('Progress dismissed');})]);
+        } finally {
+            control.abort();signal?.removeEventListener('abort',abort);
+            await Promise.allSettled([input,running]);
+        }
+    },
     async execute(id, parameters = {}) {
         return await astra._invokeCommand(id, parameters);
     },
@@ -99,6 +122,17 @@ const activeConfirmations = new Map();
 let dialogId = 0;
 let actionId = 0;
 let readId = 0;
+let fenceId = 0;
+function cancelled(message) { const error=new Error(message);error.name='AbortError';return error; }
+async function fence(method,options={}) {
+    const id=`wait-${++fenceId}`, signal=options.signal;
+    let cancellation;
+    const cancel=()=>{cancellation=request('_ui.wait.cancel',{waitId:id});};
+    signal?.addEventListener('abort',cancel);
+    try { return await request(method,{waitId:id},options); }
+    catch(error) { await (cancellation || request('_ui.wait.cancel',{waitId:id}));throw error; }
+    finally { signal?.removeEventListener('abort',cancel);if(cancellation)await cancellation; }
+}
 async function read(parameters, options = {}) {
     if(parameters.immediate)return await request('_ui.read',parameters,options);
     const id=`read-${++readId}`, signal=options.signal;

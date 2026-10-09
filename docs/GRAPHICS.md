@@ -206,10 +206,12 @@ using the real RecoveryStore, ServiceHost, native renderer and input path. It
 covers startup notification, explicit Unicode/selection recovery, unchanged disk
 before Save, dirty-state preservation, and durable exit. Its failure-path channel
 injects one checkpoint RPC error and can withhold a real completion to check that
-the window waits. This is fault injection around the actual service, not a
-replacement persistence implementation. At source integration time it has passed
-strict MSVC compilation only; execution results belong in `docs/STATUS.md` after
-the rebuilt service and all dependent binaries share the updated ABI.
+the window waits. It also checks cancelled exit followed by actual Unicode
+editing, a dirty document created by another client during checkpoint I/O, fresh
+checkpointing after that close decision, and the real Retry command. This is
+fault injection around the actual service, not a replacement persistence
+implementation. Execution results and their exact source scope belong in
+`docs/STATUS.md`.
 
 Logs, independent MSVC response files, executables, and PNGs are under `build/graphics/`.
 The standalone smoke sources are checked in under `tests/` and have their own

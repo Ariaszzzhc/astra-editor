@@ -96,6 +96,7 @@ struct EditorWindow::Impl {
         std::string operation;
     };
     struct PendingRead { std::promise<Json> completion; bool settled{}; };
+    struct PendingFence { std::string method; std::promise<Json> completion; };
     struct Request {
         std::string method;
         Json params;
@@ -111,7 +112,7 @@ struct EditorWindow::Impl {
     struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; std::shared_ptr<PendingEdit> edit; std::string document; };
     struct FindState { std::string id; std::string revision; std::string query; std::string replacement; std::string text; std::size_t cursor{}; std::size_t size{}; bool replace{}; };
     struct ViewState { std::string id; std::string revision; std::size_t first{}; std::size_t limit{}; std::map<std::size_t, Line> lines; };
-    enum class Prompt { none, policy_input, policy_confirm, policy_choice, policy_pick, policy_text, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, git_diff, recovery_flushing, recovery_exit_failed };
+    enum class Prompt { none, policy_input, policy_confirm, policy_choice, policy_pick, policy_text, policy_progress, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, git_diff };
     struct Dialog {
         std::string id; Json spec; std::promise<Json> completion;
         TextLineIndex detail_lines; std::map<std::size_t,TextLayout> detail_layout; float detail_width{},detail_scale{};
@@ -135,6 +136,7 @@ struct EditorWindow::Impl {
     std::map<std::string,std::shared_ptr<Operation>> ordered_inputs;
     std::map<std::string,std::shared_ptr<PendingEdit>> pending_edits;
     std::map<std::string,std::shared_ptr<PendingRead>> pending_reads;
+    std::map<std::string,PendingFence> pending_fences;
     std::uint64_t next_read{1};
     std::uint64_t next_request{1};
     std::map<std::string, std::string> keybindings;
@@ -220,10 +222,9 @@ struct EditorWindow::Impl {
     bool running{true};
     bool stopping_workbench{};
     Clock::time_point workbench_shutdown_deadline{};
-    bool closing_window{};
+    bool quit_requested{};
+    std::set<std::string> quitting_fences;
     bool recovery_available{};
-    bool recovery_flushing{};
-    std::uint64_t recovery_close_generation{};
     std::set<std::string> closing_pending;
     bool dragging{};
     bool dragging_scroll{};
@@ -253,12 +254,13 @@ struct EditorWindow::Impl {
         std::map<std::string, std::string> modules;
         for (const auto& [name, file] : std::map<std::string, std::string>{
             {"astra/ui", "api.js"}, {"astra/files", "files.js"}, {"astra/git", "git.js"},
-            {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/language","language.js"}, {"astra/recovery","recovery.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
+            {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/language","language.js"}, {"astra/recovery","recovery.js"}, {"astra/lifecycle","lifecycle.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
             modules.emplace(name, io::read_file(options.resource_directory / "data" / "workbench" / file, 1024 * 1024).text);
         }
         workbench = std::make_unique<Workbench>(channel, [this](std::string_view method, const Json& params) {
             if (method == "_ui.dialog") { return begin_dialog(params); }
             if (method == "_ui.read") { return begin_read(params); }
+            if (method == "_ui.barrier" || method == "_ui.window.close") { return begin_fence(method,params); }
             if (method == "_ui.action" && params.at("command").get<std::string>().starts_with("editor.")) { return begin_edit(params); }
             std::promise<Json> completed;
             try { completed.set_value(native_ui_request(method, params)); }
@@ -453,8 +455,9 @@ struct EditorWindow::Impl {
     void cancel_edit(const std::shared_ptr<PendingEdit>& edit);
     void set_selections(Json selections, std::string revision = {});
     void close_document(const std::string& id, bool discard = false);
-    void continue_close_window();
-    void flush_recovery(bool close);
+    std::future<Json> begin_fence(std::string_view method,const Json& params);
+    bool finish_fences();
+    bool native_idle() const;
     void command(std::string_view name);
     void execute_policy(std::string_view name, const Json& params = Json::object());
     void native_command(std::string_view name);
@@ -562,9 +565,6 @@ void EditorWindow::Impl::service_responses() {
                     std::erase_if(operations, [&](const auto& operation) { return operation->id == id; });
                 }
                 if(!script_handles_failure && !obsolete_syntax){error = failure.what(); status = "Action failed";}
-                if (completed.request.method == "document.close") {
-                    closing_pending.erase(completed.request.document); closing_window = false;
-                }
                 if (completed.request.method == "document.syntax" && documents.contains(completed.request.document)) {
                     auto& document = documents.at(completed.request.document);
                     document.syntax_loading = false; document.needs_syntax = obsolete_syntax; document.syntax_state = obsolete_syntax ? "pending" : "failed";
@@ -664,7 +664,6 @@ void EditorWindow::Impl::service_responses() {
     fetch_syntax();
     if (const auto* document = current(); document && document->language_active && !document->diagnostics_loading &&
         Clock::now() >= document->diagnostics_after && requests.empty() && !active_request) { fetch_diagnostics(active_id); }
-    if (closing_window && prompt == Prompt::none && requests.empty() && !active_request && operations.empty()) { continue_close_window(); }
 }
 
 void EditorWindow::Impl::fetch_lines() {
@@ -906,54 +905,53 @@ void EditorWindow::Impl::close_document(const std::string& id, bool discard) {
     try { workbench->execute("workbench.close",{{"id",id},{"discardChanges",discard}},[this,id](const script::Runtime::Outcome& outcome) {
         closing_pending.erase(id);
         if(outcome.error) {
-            closing_window=false;
             if(outcome.error->value("name",std::string{})!="AbortError"){error=outcome.error->value("message",std::string("Close failed"));status="Action failed";}
-        } else if(outcome.value!=true)closing_window=false;
-    }); } catch (...) { closing_pending.erase(id);closing_window=false;throw; }
+        }
+    }); } catch (...) { closing_pending.erase(id);throw; }
 }
 
-void EditorWindow::Impl::continue_close_window() {
-    if (!closing_window || !closing_pending.empty() || recovery_flushing) { return; }
-    if (tabs.empty()) {
-        if (requests.empty() && !active_request && operations.empty()) { flush_recovery(true); }
-        return;
+bool EditorWindow::Impl::native_idle() const {
+    return requests.empty() && !active_request && operations.empty() && pending_edits.empty() && pending_reads.empty() && closing_pending.empty();
+}
+
+std::future<Json> EditorWindow::Impl::begin_fence(std::string_view method,const Json& params) {
+    const auto id=params.at("waitId").get<std::string>();
+    if(id.empty() || id.size()>128 || pending_fences.contains(id) || quitting_fences.contains(id))throw protocol::RpcError(-32602,"Invalid UI wait identity");
+    if(pending_fences.size()>=256)throw protocol::RpcError(-32004,"UI wait queue is full");
+    PendingFence fence;fence.method=method;auto result=fence.completion.get_future();
+    pending_fences.emplace(id,std::move(fence));return result;
+}
+
+bool EditorWindow::Impl::finish_fences() {
+    if(!native_idle() || dialog || pending_fences.empty())return false;
+    constexpr std::string_view methods[]{"_ui.barrier","_ui.window.close"};
+    if(!workbench->awaiting(methods))return false;
+    for(const auto method:{"_ui.barrier","_ui.window.close"}) {
+        // The waiting command itself owns one fence. All other script jobs and
+        // transport responses must have settled before teardown is granted.
+        const bool closing=std::string_view(method)=="_ui.window.close";
+        const bool accepted=!closing || tabs.empty();
+        for(auto it=pending_fences.begin();it!=pending_fences.end();) {
+            if(it->second.method!=method){++it;continue;}
+            if(closing && accepted){quitting_fences.insert(it->first);quit_requested=true;}
+            auto pending=std::move(it->second);it=pending_fences.erase(it);
+            pending.completion.set_value(accepted);
+        }
     }
-    activate(tabs.back());
-    close_document(tabs.back());
-}
-
-void EditorWindow::Impl::flush_recovery(bool close) {
-    if (recovery_flushing) { return; }
-    recovery_flushing = true;
-    const auto generation = ++recovery_close_generation;
-    if (close) { prompt = Prompt::recovery_flushing; }
-    status = "Writing recovery checkpoint...";
-    start_operation("recovery.flush", Json::object(), [this, close, generation](const Json&) {
-        recovery_flushing = false;
-        status = "Recovery checkpoint saved"; error.clear();
-        if (close && generation == recovery_close_generation && closing_window) {
-            prompt = Prompt::none;
-            if (tabs.empty()) { running = false; }
-            else { continue_close_window(); }
-        }
-    }, {}, false, [this, close, generation] {
-        recovery_flushing = false;
-        if (close && generation == recovery_close_generation && closing_window) {
-            closing_window = false; prompt = Prompt::recovery_exit_failed;
-        }
-    });
+    return true;
 }
 
 std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
     if (dialog || prompt != Prompt::none) { throw protocol::RpcError(-32004, "Another modal input is active"); }
     const auto id = spec.at("id").get<std::string>();
     const auto kind = spec.at("kind").get<std::string>();
-    if (kind != "input" && kind != "confirm" && kind != "choice" && kind != "pick" && kind != "text") { throw protocol::RpcError(-32602, "Unknown dialog kind"); }
+    if (kind != "input" && kind != "confirm" && kind != "choice" && kind != "pick" && kind != "text" && kind != "progress") { throw protocol::RpcError(-32602, "Unknown dialog kind"); }
     const auto title = spec.at("title").get<std::string>();
     const auto value = spec.value("value", std::string{});
     const auto detail = spec.value(kind=="text" ? "text" : "detail", std::string{});
     const auto accept = spec.value("accept", std::string("Confirm"));
     const auto placeholder = spec.value("placeholder", std::string{});
+    if(spec.value("cancel",std::string{}).size()>4096)throw protocol::RpcError(-32602,"Dialog cancel label exceeds its bounds");
     if (id.empty() || id.size()>128 || title.empty() || title.size() > 4096 || value.size() > 16384 || detail.size() > (kind=="text" ? 8*1024*1024U : 65536U) || accept.size()>4096 || placeholder.size()>4096 || value.find_first_of("\r\n")!=value.npos || value.find('\0')!=value.npos) { throw protocol::RpcError(-32602, "Dialog content exceeds its bounds"); }
     Dialog pending;pending.id=id;pending.spec=spec;pending.detail_lines.reset(detail);
     const auto items=spec.value("items",Json::array());
@@ -981,7 +979,7 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
     else if(!items.empty())pending.items.reset(item_text);
     auto result = pending.completion.get_future();
     dialog.emplace(std::move(pending));
-    prompt = kind == "input" ? Prompt::policy_input : (kind=="pick" ? Prompt::policy_pick : (kind=="text" ? Prompt::policy_text : (kind=="choice" ? Prompt::policy_choice : Prompt::policy_confirm)));
+    prompt = kind == "input" ? Prompt::policy_input : (kind=="pick" ? Prompt::policy_pick : (kind=="text" ? Prompt::policy_text : (kind=="choice" ? Prompt::policy_choice : (kind=="progress" ? Prompt::policy_progress : Prompt::policy_confirm))));
     prompt_text = value; prompt_choice = kind=="choice" ? spec.value("defaultChoice",std::size_t{0}) : 0; prompt_select_all = false; preedit.clear();
     return result;
 }
@@ -994,6 +992,19 @@ void EditorWindow::Impl::finish_dialog(Json value) {
 }
 
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
+    if(method=="_ui.dialog.present") {
+        if(!dialog || dialog->id!=params.at("id").get<std::string>())throw protocol::RpcError(-32004,"The progress component could not be opened");
+        return true;
+    }
+    if(method=="_ui.wait.cancel") {
+        const auto id=params.at("waitId").get<std::string>();
+        if(quitting_fences.contains(id)){quit_requested=false;quitting_fences.clear();}
+        const auto found=pending_fences.find(id);
+        if(found!=pending_fences.end()) {
+            auto pending=std::move(found->second);pending_fences.erase(found);pending.completion.set_value(false);
+        }
+        return nullptr;
+    }
     if(method=="_ui.dialog.answer") {
         if(!dialog || dialog->id!=params.at("id").get<std::string>())return nullptr;
         if(prompt==Prompt::policy_confirm) { finish_dialog(params.at("accepted").get<bool>());return nullptr; }
@@ -1134,7 +1145,7 @@ void EditorWindow::Impl::execute_policy(std::string_view name, const Json& param
 
 void EditorWindow::Impl::command(std::string_view name) {
     prompt_select_all = false;
-    if (recovery_flushing && prompt == Prompt::recovery_flushing && name != "ui.cancel") { return; }
+    if ((quit_requested || prompt==Prompt::policy_progress) && name != "ui.cancel") { return; }
     if (service_ui_commands.contains(std::string(name))) {
         enqueue({"script.command", {{"name", name}, {"params", Json::object()}}, active_id, !active_id.empty(),
             [this](const Json& result) { if (result.is_object() && result.contains("id") && result.contains("revision")) { accept_metadata(result); reveal_caret(); } }, {}});
@@ -1145,7 +1156,6 @@ void EditorWindow::Impl::command(std::string_view name) {
 void EditorWindow::Impl::native_command(std::string_view name) {
     if (dialog && name != "ui.cancel" && name != "ui.closeWindow") { throw protocol::RpcError(-32004, "Dismiss the active dialog before changing its focus"); }
     prompt_select_all = false;
-    if (recovery_flushing && prompt == Prompt::recovery_flushing && name != "ui.cancel") { return; }
     if (name.starts_with("editor.")) {
         editor_command(std::string(name));
     }
@@ -1158,14 +1168,6 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     else if (name == "ui.toggleSearchCase") { search_case_sensitive = !search_case_sensitive; }
     else if (name == "ui.toggleSearchRegex") { search_regex = !search_regex; }
     else if (name == "ui.toggleSearchWholeWord") { search_whole_word = !search_whole_word; }
-    else if (name == "ui.closeTab") { close_document(active_id); }
-    else if (name == "ui.closeWindow") { finish_dialog(nullptr); closing_window = true; }
-    else if (name == "ui.retryExit") {
-        if (prompt == Prompt::recovery_exit_failed) { prompt = Prompt::none; closing_window = true; continue_close_window(); }
-    }
-    else if (name == "ui.exitWithoutCheckpoint") {
-        if (prompt == Prompt::recovery_exit_failed) { ++recovery_close_generation; running = false; }
-    }
     else if (name == "ui.toggleSidebar") { show_sidebar = !show_sidebar; if (auto* doc = current()) { doc->needs_lines = true; } }
     else if (name == "ui.explorer") { show_sidebar = true; search_view = false; git_view = false; tree_scroll = 0; }
     else if (name == "ui.toggleOutline") { show_outline = !show_outline; }
@@ -1212,7 +1214,7 @@ void EditorWindow::Impl::native_command(std::string_view name) {
         activate(tabs[(index + tabs.size() - 1) % tabs.size()]);
     } else if (name == "ui.cancel") {
         finish_dialog(nullptr);
-        prompt = Prompt::none; closing_window = false; ++recovery_close_generation;
+        prompt = Prompt::none; quit_requested=false;quitting_fences.clear();
         preedit.clear(); error.clear();
     } else if (!name.starts_with("ui.")) {
         enqueue({"script.command", {{"name", name}, {"params", Json::object()}}, active_id, !active_id.empty(),
@@ -1245,7 +1247,6 @@ void EditorWindow::Impl::accept_prompt() {
         if(dialog->picker.size())finish_dialog(dialog->picker.at(std::min(prompt_choice,dialog->picker.size()-1)).source);
     }
     else if (prompt == Prompt::policy_text) { finish_dialog(nullptr); }
-    else if (prompt == Prompt::recovery_exit_failed) { command("ui.retryExit"); }
     else if (prompt == Prompt::git_diff) { prompt = Prompt::none; }
     else if (prompt == Prompt::find) {
         if (prompt_text.empty()) { return; }
@@ -1405,12 +1406,7 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
             if (input.key == SDLK_R) { command("ui.toggleSearchRegex"); return; }
             if (input.key == SDLK_W) { command("ui.toggleSearchWholeWord"); return; }
         }
-        if (prompt == Prompt::recovery_flushing) { return; }
-        if (prompt == Prompt::recovery_exit_failed) {
-            if (input.key == SDLK_RETURN) { command("ui.retryExit"); }
-            else if (input.key == SDLK_E) { command("ui.exitWithoutCheckpoint"); }
-            return;
-        }
+        if (prompt == Prompt::policy_progress) { return; }
         if (prompt == Prompt::git_diff || prompt == Prompt::policy_text) {
             if (prompt == Prompt::git_diff) {
                 if (input.key == SDLK_S) { command("ui.gitStage"); return; }
@@ -1551,6 +1547,10 @@ void EditorWindow::Impl::scroll_to(float y) {
 }
 
 void EditorWindow::Impl::event(const SDL_Event& input) {
+    if(quit_requested) {
+        if(input.type==SDL_EVENT_KEY_DOWN && input.key.key==SDLK_ESCAPE)command("ui.cancel");
+        return;
+    }
     int logical_width{}, logical_height{};
     if (!SDL_GetWindowSize(renderer.window(), &logical_width, &logical_height)) { throw std::runtime_error(SDL_GetError()); }
     const auto pixels = renderer.pixel_size();
@@ -1569,7 +1569,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         if (!input.text.text) { break; }
         if (prompt != Prompt::none && prompt != Prompt::policy_choice && prompt != Prompt::replace_confirm &&
             prompt != Prompt::policy_text && prompt != Prompt::git_diff &&
-            prompt != Prompt::recovery_flushing && prompt != Prompt::recovery_exit_failed && prompt != Prompt::policy_confirm) {
+            prompt != Prompt::policy_progress && prompt != Prompt::policy_confirm) {
             const std::string_view entered(input.text.text);
             if(dialog && entered.find_first_of("\r\n")!=entered.npos){error="Input must contain one logical line";break;}
             const auto existing=prompt_select_all ? std::size_t{0} : prompt_text.size();
@@ -1615,20 +1615,10 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             for(std::size_t i=0;i<layout.buttons.size();++i)if(layout.buttons[i].contains(mouse_x,mouse_y)){finish_dialog(i);break;}
             break;
         }
-        if (prompt == Prompt::policy_confirm) {
+        if (prompt == Prompt::policy_confirm || prompt==Prompt::policy_progress) {
             const auto layout=ConfirmationLayout::measure(width,static_cast<float>(pixels.height),scale,dialog ? dialog->items.size() : 0);
-            if(layout.accept.contains(mouse_x,mouse_y))finish_dialog(true);
+            if(prompt==Prompt::policy_confirm && layout.accept.contains(mouse_x,mouse_y))finish_dialog(true);
             else if(layout.cancel.contains(mouse_x,mouse_y))finish_dialog(nullptr);
-            break;
-        }
-        if (prompt == Prompt::recovery_flushing) { command("ui.cancel"); break; }
-        if (prompt == Prompt::recovery_exit_failed) {
-            const auto bx = (width - 640 * scale) / 2;
-            if (mouse_y >= 245 * scale && mouse_y < 281 * scale) {
-                if (mouse_x >= bx + 24 * scale && mouse_x < bx + 190 * scale) { command("ui.retryExit"); }
-                else if (mouse_x >= bx + 218 * scale && mouse_x < bx + 400 * scale) { command("ui.cancel"); }
-                else if (mouse_x >= bx + 426 * scale && mouse_x < bx + 616 * scale) { command("ui.exitWithoutCheckpoint"); }
-            }
             break;
         }
         if (prompt == Prompt::replace_confirm) {
@@ -1894,7 +1884,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
             found->second.draw(canvas,layout.content.x-dialog->horizontal,y);y+=found->second.height();
         });canvas->restore();return;
     }
-    if (prompt == Prompt::policy_confirm && dialog) {
+    if ((prompt == Prompt::policy_confirm || prompt==Prompt::policy_progress) && dialog) {
         const auto layout=ConfirmationLayout::measure(width,height,scale,dialog->items.size());
         const auto fill=[&](const Box& box,SkColor color){rectangle(canvas,box.x,box.y,box.width,box.height,color);};
         fill(layout.panel,panel_background);
@@ -1920,9 +1910,12 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                 elided_label(canvas,text,layout.items.x,y+4*scale,13,layout.items.width,foreground);
             });canvas->restore();
         }
-        fill(layout.accept,accent);fill(layout.cancel,border_color);
-        elided_label(canvas,dialog->spec.value("accept",std::string("Confirm")),layout.accept.x+16*scale,layout.accept.y+8*scale,13,layout.accept.width-32*scale,foreground);
-        label(canvas,"Cancel",layout.cancel.x+16*scale,layout.cancel.y+8*scale,13);
+        if(prompt==Prompt::policy_confirm) {
+            fill(layout.accept,accent);
+            elided_label(canvas,dialog->spec.value("accept",std::string("Confirm")),layout.accept.x+16*scale,layout.accept.y+8*scale,13,layout.accept.width-32*scale,foreground);
+        }
+        fill(layout.cancel,border_color);
+        elided_label(canvas,dialog->spec.value("cancel",std::string("Cancel")),layout.cancel.x+16*scale,layout.cancel.y+8*scale,13,layout.cancel.width-32*scale,foreground);
         return;
     }
     if ((prompt == Prompt::policy_input || prompt == Prompt::policy_pick) && dialog) {
@@ -1966,31 +1959,6 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
             if(!dialog->picker.size())label(canvas,"No matching items",layout.rows.x+8*scale,layout.rows.y+7*scale,13,muted);
             canvas->restore();
         }
-        return;
-    }
-    if (prompt == Prompt::recovery_flushing) {
-        const auto x = (width - 520 * scale) / 2;
-        rectangle(canvas, x, 90 * scale, 520 * scale, 130 * scale, panel_background);
-        label(canvas, "Saving recovery checkpoint before exit...", x + 24 * scale, 115 * scale, 17);
-        label(canvas, "The window will close after durable storage succeeds.", x + 24 * scale, 153 * scale, 13, muted);
-        label(canvas, "Esc or click to keep this window open", x + 24 * scale, 186 * scale, 12, accent);
-        return;
-    }
-    if (prompt == Prompt::recovery_exit_failed) {
-        const auto x = (width - 640 * scale) / 2;
-        rectangle(canvas, x, 90 * scale, 640 * scale, 210 * scale, panel_background);
-        label(canvas, "Recovery checkpoint failed — window kept open", x + 24 * scale, 110 * scale, 17, warning_color);
-        TextLayoutOptions style; style.font_size = 13; style.dpi_scale = scale; style.color = foreground; style.wrap_width = 590 * scale;
-        auto message = fonts.layout(error.empty() ? "The service could not persist the recovery state." : error, style);
-        canvas->save(); canvas->clipRect(SkRect::MakeLTRB(x + 24 * scale, 147 * scale, x + 616 * scale, 205 * scale));
-        message.draw(canvas, x + 24 * scale, 147 * scale); canvas->restore();
-        label(canvas, "Exit anyway may leave recovery state incomplete.", x + 24 * scale, 216 * scale, 13, warning_color);
-        rectangle(canvas, x + 24 * scale, 245 * scale, 166 * scale, 36 * scale, accent);
-        rectangle(canvas, x + 218 * scale, 245 * scale, 182 * scale, 36 * scale, border_color);
-        rectangle(canvas, x + 426 * scale, 245 * scale, 190 * scale, 36 * scale, error_background);
-        label(canvas, "Retry (Enter)", x + 48 * scale, 253 * scale, 13);
-        label(canvas, "Keep open (Esc)", x + 239 * scale, 253 * scale, 13);
-        label(canvas, "Exit anyway (E)", x + 449 * scale, 253 * scale, 13);
         return;
     }
     if (prompt == Prompt::git_diff) {
@@ -2385,8 +2353,7 @@ void EditorWindow::open_path(std::string path) { impl_->open_path(std::move(path
 std::string EditorWindow::active_document_id() const { return impl_->active_id; }
 bool EditorWindow::idle() const noexcept {
     const auto* document = impl_->current();
-    return (!impl_->closing_window || impl_->prompt!=Impl::Prompt::none) &&
-        impl_->requests.empty() && !impl_->active_request && impl_->operations.empty() &&
+    return !impl_->quit_requested && impl_->pending_fences.empty() && impl_->native_idle() &&
         (impl_->workbench->idle() || (impl_->dialog && impl_->workbench->awaiting_input())) &&
         (!document || (!document->needs_lines && !document->loading && !document->needs_syntax && !document->syntax_loading));
 }
@@ -2406,6 +2373,10 @@ bool EditorWindow::pump() {
             impl_->finish_dialog(nullptr);
             while(!impl_->pending_edits.empty()){const auto edit=impl_->pending_edits.begin()->second;impl_->cancel_edit(edit);}
             while(!impl_->pending_reads.empty()){const auto read=impl_->pending_reads.begin()->second;impl_->settle_read(read,nullptr);}
+            while(!impl_->pending_fences.empty()) {
+                auto found=impl_->pending_fences.begin();auto pending=std::move(found->second);impl_->pending_fences.erase(found);
+                pending.completion.set_value(false);
+            }
             impl_->stopping_workbench = true;
             impl_->workbench_shutdown_deadline = Clock::now() + std::chrono::seconds(5);
             impl_->workbench->shutdown();
@@ -2422,6 +2393,11 @@ bool EditorWindow::pump() {
         });
         impl_->service_responses();
         impl_->workbench->poll();
+        if(impl_->finish_fences())impl_->workbench->poll();
+        if(impl_->quit_requested && impl_->workbench->idle() && impl_->native_idle()) {
+            if(impl_->tabs.empty())impl_->running=false;
+            else { impl_->quit_requested=false;impl_->quitting_fences.clear();impl_->error="Documents opened during teardown; window kept open"; }
+        }
         for (const auto& error : impl_->workbench->take_errors()) { impl_->error = error.value("message", std::string("Workbench event failed")); }
         if (impl_->dragging && (impl_->mouse_y < impl_->content_top || impl_->mouse_y > impl_->content_bottom) && Clock::now() >= impl_->drag_scroll_after) {
             impl_->drag_scroll_after = Clock::now() + std::chrono::milliseconds(50);

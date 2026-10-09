@@ -64,6 +64,21 @@ void run(const fs::path& workspace) {
         astra::ui::EditorWindowOptions options;
         options.workspace_name="ASTRA WORKBENCH";options.resource_directory=fs::current_path();options.open_paths={"one.cpp"};
         options.user_script=R"js(if(astra.context==='client') {
+            let backgroundOpenComplete=false;
+            astra.registerCommand('acceptance.backgroundOpen',async()=>{
+                await astra.sleep(100);
+                const document=await astra.request('workspace.open',{path:'three.cpp'});
+                await astra.ui.update({document,activate:document.id});backgroundOpenComplete=true;
+            });
+            astra.registerCommand('ui.checkpoint',async context=>{
+                if(!backgroundOpenComplete)throw Error('Exit checkpoint overtook accepted script work');
+                return await astra.request('recovery.flush',{},context);
+            });
+            astra.registerCommand('acceptance.waiters',async()=>{
+                const [idle,closed]=await Promise.all([astra.ui.waitForIdle(),astra.ui.requestClose()]);
+                if(!idle || closed)throw Error('Concurrent native waits did not retain open documents');
+                await astra.ui.update({status:'Concurrent waits settled'});
+            });
             astra.ui.registerCommand({id:'acceptance.choice',title:'Choose an action'},async()=>{
                 const selected=await astra.ui.choose({title:'CHOOSE AN ACTION',detail:'A generic native component returns the selected identity to JavaScript.',
                     choices:[{label:'First 中🙂',value:1},{label:'Second',value:2},{label:'Third',value:3},{label:'Fourth',value:4}],defaultChoice:2,keys:['a','b','c','d']});
@@ -192,6 +207,9 @@ void run(const fs::path& workspace) {
         window.execute_ui_command("acceptance.choice");settle(window);key(window,SDLK_ESCAPE);
         require(window.status_text()=="Action cancelled","Choice cancellation did not settle the JS workflow");
         require(SDL_SetWindowSize(window.window(),static_cast<int>(1440*state.layout.scale),static_cast<int>(900*state.layout.scale)),"Cannot restore from vertical choices");settle(window);
+        window.execute_ui_command("acceptance.waiters");settle(window);
+        require(window.status_text()=="Concurrent waits settled","Concurrent idle/close requests deadlocked");
+        window.execute_ui_command("acceptance.backgroundOpen");
         window.execute_ui_command("ui.closeWindow");
         const auto deadline=Clock::now()+std::chrono::seconds(20);
         while(window.pump()) {require(window.last_error().empty(),"Workbench shutdown failed: "+window.last_error());require(Clock::now()<deadline,"Workbench shutdown timed out");SDL_Delay(1);}

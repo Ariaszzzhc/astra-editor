@@ -55,14 +55,15 @@ export function registerFiles() {
     }
 }
 async function save(saveAs,parameters = {}) {
-    const state = await ui.read(parameters.id ? {id:parameters.id} : {}), document = state.document;
+    const options={signal:parameters.signal};
+    const state = await ui.read(parameters.id ? {id:parameters.id} : {},options), document = state.document;
     if (!document) return null;
     let path = document.path;
     if (saveAs || !path) {
-        path = await ui.input({title:'SAVE AS — WORKSPACE RELATIVE PATH',value:path || ''});
+        path = await ui.input({title:'SAVE AS — WORKSPACE RELATIVE PATH',value:path || ''},options);
         if (!path) return null;
     }
-    const saved = await request('workspace.save',{id:document.id,baseRevision:document.revision,...((saveAs || !document.path) ? {path} : {})});
+    const saved = await request('workspace.save',{id:document.id,baseRevision:document.revision,...((saveAs || !document.path) ? {path} : {})},options);
     await ui.update({...(!saved.closed ? {document:saved} : {}),status:'Saved'});
     await ui.refresh('explorer');
     if(state.sidebar==='git')await ui.refresh('git');
@@ -72,27 +73,29 @@ async function save(saveAs,parameters = {}) {
 const closing=new Map();
 let closeChoice,closeIdentity=0;
 async function close(parameters = {}) {
-    const state=await ui.read(parameters.id ? {id:parameters.id} : {}), document=state.document;
+    const options={signal:parameters.signal};
+    const state=await ui.read(parameters.id ? {id:parameters.id} : {},options), document=state.document;
     if(!document)return true;
     const pending=closing.get(document.id);if(pending)return await pending;
-    const workflow=closeDocument(document,parameters.discardChanges===true);
+    const workflow=closeDocument(document,parameters.discardChanges===true,options);
     closing.set(document.id,workflow);
     try { return await workflow; }
     finally { if(closing.get(document.id)===workflow)closing.delete(document.id); }
 }
-async function closeDocument(document,discardChanges) {
+async function closeDocument(document,discardChanges,options) {
     if(document.dirty && !discardChanges) {
         if(closeChoice)throw new Error('Another document is awaiting a close decision');
         const id=`close-${++closeIdentity}`;
         closeChoice=id;
         let decision;
         try { decision=await ui.choose({id,title:'Save changes before closing?',detail:`${document.path?.split(/[\\/]/).at(-1) || 'Untitled'} has unsaved edits.`,
-            choices:[{label:'Save',value:'save'},{label:"Don't save",value:'discard'},{label:'Cancel',value:'cancel'}],keys:['','d','']}); }
+            choices:[{label:'Save',value:'save'},{label:"Don't save",value:'discard'},{label:'Cancel',value:'cancel'}],keys:['','d','']},options); }
         finally { if(closeChoice===id)closeChoice=undefined; }
         if(!decision || decision.value==='cancel')return false;
         if(decision.value==='discard')discardChanges=true;
         else {
-            const saved=await ui.execute('ui.save',{id:document.id});
+            const saved=await ui.execute('ui.save',{id:document.id,...(options.signal ? {signal:options.signal} : {})});
+            options.signal?.throwIfAborted();
             if(!saved)return false;
             if(saved.closed)return true;
             if(saved.id!==document.id || !saved.revision)throw new Error('Save did not return the captured document revision');
@@ -100,7 +103,7 @@ async function closeDocument(document,discardChanges) {
             document=saved;
         }
     }
-    await request('document.close',{id:document.id,baseRevision:document.revision,discardChanges});
+    await request('document.close',{id:document.id,baseRevision:document.revision,discardChanges},options);
     await ui.update({closedDocument:document.id,status:'Closed'});
     return true;
 }

@@ -734,9 +734,12 @@ bool Runtime::idle() const {
     return impl_->pending.empty() && impl_->tasks.empty() && impl_->cancellations.empty() && impl_->abandoned.empty();
 }
 bool Runtime::waiting_only(std::string_view method) const {
+    return waiting_only(std::span<const std::string_view>(&method,1));
+}
+bool Runtime::waiting_only(std::span<const std::string_view> methods) const {
     impl_->require_owner();
     if (impl_->pending.empty() || !impl_->cancellations.empty() || !impl_->abandoned.empty() || JS_IsJobPending(impl_->runtime)) { return false; }
-    if (!std::ranges::all_of(impl_->pending,[method](const auto& entry){return entry.second->method==method && entry.second->future.has_value();})) { return false; }
+    if (!std::ranges::all_of(impl_->pending,[methods](const auto& entry){return std::ranges::find(methods,entry.second->method)!=methods.end() && entry.second->future.has_value();})) { return false; }
     return std::ranges::all_of(impl_->tasks,[this](const auto& entry){
         return !entry.second.cancelled && !entry.second.outcome && std::ranges::any_of(impl_->pending,[id=entry.first](const auto& request){return request.second->owner==id;});
     });

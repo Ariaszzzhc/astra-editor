@@ -6,6 +6,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -30,6 +31,8 @@ public:
     void emit(std::string_view event, const Json& params);
     [[nodiscard]] bool idle() const;
     [[nodiscard]] bool awaiting_input() const;
+    [[nodiscard]] bool awaiting(std::string_view method) const;
+    [[nodiscard]] bool awaiting(std::span<const std::string_view> methods) const;
     [[nodiscard]] Json settings() const;
     [[nodiscard]] std::map<std::string, std::string> keybindings() const;
     [[nodiscard]] std::vector<Json> take_errors();

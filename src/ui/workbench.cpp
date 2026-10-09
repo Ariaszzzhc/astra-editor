@@ -88,7 +88,9 @@ void Workbench::execute(std::string_view name, const Json& params, Completion co
 void Workbench::poll() { impl_->poll(); }
 void Workbench::emit(std::string_view event, const Json& params) { impl_->runtime->emit(event, params); }
 bool Workbench::idle() const { return impl_->commands.empty() && impl_->requests.empty() && impl_->runtime->idle(); }
-bool Workbench::awaiting_input() const { return impl_->requests.empty() && impl_->runtime->waiting_only("_ui.dialog"); }
+bool Workbench::awaiting_input() const { return awaiting("_ui.dialog"); }
+bool Workbench::awaiting(std::string_view method) const { return impl_->requests.empty() && impl_->runtime->waiting_only(method); }
+bool Workbench::awaiting(std::span<const std::string_view> methods) const { return impl_->requests.empty() && impl_->runtime->waiting_only(methods); }
 Workbench::Json Workbench::settings() const { return impl_->runtime->settings(); }
 std::map<std::string, std::string> Workbench::keybindings() const {
     auto result = impl_->runtime->keybindings();

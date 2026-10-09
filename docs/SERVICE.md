@@ -256,8 +256,8 @@ Native identities remain unique across dialog types, and duplicate active names
 are rejected before showing another component. Content/deadline/cancellation
 bounds match the other modal primitives.
 
-Client JS owns dirty-tab and captured-document close decisions, including those
-invoked by native window-exit coordination. Save/Save As return the durable save
+Client JS owns dirty-tab, captured-document and window-exit decisions.
+Save/Save As return the durable save
 result (or `null` on dismissal), and close awaits the current registered `ui.save`
 handler. A clean saved result supplies the revision for `document.close`; new
 dirty edits during save keep the buffer open. Discard uses the revision captured
@@ -265,9 +265,32 @@ before the choice, so another client's intervening edit rejects it. Cancellation
 Save As dismissal, save failure and invalid custom save results do not close the
 document. `ui.saveAndClose`/`ui.discard` are hidden decision actions answering the
 active close choice; the original close command owns the remaining workflow.
-Native window exit schedules JS close work from the outer owner loop and does
-not report idle between pending close continuations. Recovery/checkpoint/exit
-policy migration is still unfinished.
+Save and captured-close commands accept an optional JS `signal` in their command
+parameters. The signal reaches input, save and close requests; cancelling exit
+also prevents a late user save result from dispatching the subsequent close.
+
+`astra.ui.withProgress({title, detail, cancel}, work, options)` opens a cancellable
+native progress component and awaits `work({signal})`. Work starts only after
+the component is acknowledged. Dismissal/abort cancels the operation and drains
+its late result; successful completion returns its value and dismisses the
+component. Operations must honor the supplied signal to settle promptly.
+The same content/deadline bounds apply as for confirmation components.
+
+`astra.ui.waitForIdle(options)` asynchronously waits for accepted native input,
+script tasks and client transport responses to settle. `astra.ui.requestClose(options)`
+returns false while any tabs remain, or grants native teardown after that same
+quiescence check. Both have cancellable unique native wait identities; mixed
+concurrent waits settle together. They default to the normal 30-second request
+timeout. These APIs coordinate this client; they do not lock other server clients.
+
+The `astra/lifecycle` JS module closes captured tabs using the current registered
+close/save handlers, checkpoints with the current `ui.checkpoint` handler and
+rechecks newly arriving documents before requesting native teardown. A checkpoint
+failure opens a generic Retry/Keep open/Exit anyway choice. The hidden
+`ui.retryExit`/`ui.exitWithoutCheckpoint` commands answer only that failed attempt;
+calling bypass during normal editing cannot close the window. Cancellation
+removes the close continuation, so a late checkpoint cannot finish the cancelled
+exit. Native C++ owns retained progress/choice input and physical window lifetime.
 
 `document.syntax` accepts UTF-8 highlight `begin`/`end` bounds plus
 `outlineBegin` (nonnegative, default 0), `outlineLimit` (0..1000, default 1000)

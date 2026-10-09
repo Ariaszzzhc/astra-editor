@@ -99,11 +99,11 @@ public:
     std::size_t flush_requests{};
 };
 
-void wait_closed(astra::ui::EditorWindow& window) {
+void wait_closed(astra::ui::EditorWindow& window, bool confirmed_bypass = false) {
     const auto deadline = Clock::now() + std::chrono::seconds(20);
     do {
         if (!window.pump()) { return; }
-        require(window.last_error().empty(), "Checkpoint failed during successful exit: " + window.last_error());
+        require(confirmed_bypass || window.last_error().empty(), "Checkpoint failed during successful exit: " + window.last_error());
         SDL_Delay(2);
     } while (Clock::now() < deadline);
     throw std::runtime_error("Successful checkpoint did not release window shutdown");
@@ -173,6 +173,33 @@ int main() {
         window.request_screenshot("build/graphics/gui-recovery-exit-failed.png"); settle(window, true);
         window.execute_ui_command("ui.cancel"); settle(window);
         require(window.pump(), "Keep open dismissed the window after checkpoint failure");
+        // Cancellation must sever the close continuation while the real service
+        // reply is withheld; its later operation ID is drained without exiting.
+        channel->hold_next_flush = true;
+        window.execute_ui_command("ui.closeWindow");
+        const auto cancelled_deadline=Clock::now()+std::chrono::seconds(15);
+        while(!channel->withheld && Clock::now()<cancelled_deadline){require(window.pump(),"Exit preceded the held checkpoint");SDL_Delay(2);}
+        require(channel->withheld.has_value(),"Cancellation test did not dispatch a checkpoint");
+        window.execute_ui_command("ui.cancel");
+        for(int tick=0;tick<8;++tick)require(window.pump(),"Cancelled checkpoint closed the window");
+        window.execute_ui_command("ui.new");
+        const auto create_deadline=Clock::now()+std::chrono::seconds(15);
+        while(window.active_document_id().empty() && Clock::now()<create_deadline){require(window.pump(),"Cancelled exit rejected new editing");SDL_Delay(2);}
+        const auto after_cancel=window.active_document_id();require(!after_cancel.empty(),"Editing did not resume after cancelling exit");
+        SDL_Event continued{};continued.type=SDL_EVENT_TEXT_INPUT;continued.text.windowID=SDL_GetWindowID(window.window());continued.text.text="continued 中🙂 edits";
+        require(SDL_PushEvent(&continued),"Cannot enqueue editing after exit cancellation");
+        const auto edit_deadline=Clock::now()+std::chrono::seconds(15);
+        while(Clock::now()<edit_deadline) {
+            require(window.pump(),"Editing after cancellation closed the window");
+            if(rpc(host,"document.get",{{"id",after_cancel}}).at("text")=="continued 中🙂 edits")break;
+            SDL_Delay(2);
+        }
+        channel->release_checkpoint();settle(window);
+        require(window.pump() && window.active_document_id()==after_cancel,"A late cancelled checkpoint completed window exit");
+        require(rpc(host,"document.get",{{"id",after_cancel}}).at("text")=="continued 中🙂 edits","Cancellation lost accepted Unicode editing");
+        window.execute_ui_command("ui.closeTab");settle(window);
+        window.execute_ui_command("ui.discard");settle(window);
+        require(channel->flush_requests==before_exit+2,"Cancelled exit performed an unexpected checkpoint retry");
         channel->hold_next_flush = true;
         window.execute_ui_command("ui.closeWindow");
         const auto checkpoint_deadline = Clock::now() + std::chrono::seconds(15);
@@ -182,8 +209,18 @@ int main() {
         require(channel->withheld.has_value(), "Exit did not dispatch a checkpoint");
         window.request_screenshot("build/graphics/gui-recovery-flushing.png");
         require(window.pump(), "Window closed while checkpoint completion was pending");
-        channel->release_checkpoint(); wait_closed(window);
-        require(channel->flush_requests == before_exit + 2, "Retry did not perform a real checkpoint");
+        // Another real client can create a dirty document during durable I/O.
+        // Its arrival must cause a fresh user close decision and checkpoint.
+        const auto late=rpc(host,"document.create");
+        const auto late_id=late.at("id").get<std::string>();
+        const auto late_edit=rpc(host,"document.insert",{{"id",late_id},{"baseRevision",late.at("revision")},{"text","late 中🙂 edits\n"}});
+        require(late_edit.at("dirty")==true,"Concurrent-exit fixture must contain actual unsaved editing");
+        channel->release_checkpoint();settle(window);
+        require(window.active_document_id()==late_id,"New dirty document was lost during checkpoint exit");
+        require(rpc(host,"document.get",{{"id",late_id}}).at("text")=="late 中🙂 edits\n","Checkpoint exit changed newly accepted content");
+        require(channel->flush_requests==before_exit+3,"Exit bypassed the new document close decision");
+        window.execute_ui_command("ui.discard");wait_closed(window);
+        require(channel->flush_requests == before_exit + 4, "Newly closed document did not receive a fresh exit checkpoint");
 
         // The explicit bypass is available only after a failed checkpoint. Calling
         // it during ordinary editing must not close the window.
@@ -192,8 +229,22 @@ int main() {
         second.execute_ui_command("ui.exitWithoutCheckpoint"); settle(second);
         channel->fail_next_flush = true;
         second.execute_ui_command("ui.closeWindow"); settle(second, true);
+        const auto before_bypass=channel->flush_requests;
         second.execute_ui_command("ui.exitWithoutCheckpoint");
-        require(!second.pump(), "Explicit exit confirmation did not close the failed-checkpoint window");
+        wait_closed(second,true);
+        require(channel->flush_requests==before_bypass,"Confirmed bypass dispatched an unexpected successful-checkpoint requirement");
+        astra::ui::EditorWindowOptions retry_options;retry_options.title="Astra — retry failed checkpoint";
+        astra::ui::EditorWindow retry_window(channel,std::move(retry_options));settle(retry_window);
+        const auto before_retry=channel->flush_requests;
+        channel->fail_next_flush=true;
+        retry_window.execute_ui_command("ui.closeWindow");settle(retry_window,true);
+        channel->hold_next_flush=true;
+        retry_window.execute_ui_command("ui.retryExit");
+        const auto retry_deadline=Clock::now()+std::chrono::seconds(15);
+        while(!channel->withheld && Clock::now()<retry_deadline){require(retry_window.pump(),"Retry closed before durable completion");SDL_Delay(2);}
+        require(channel->withheld.has_value(),"Retry did not dispatch another real checkpoint");
+        require(channel->flush_requests==before_retry+2,"Retry did not follow the failed checkpoint with exactly one new attempt");
+        channel->release_checkpoint();wait_closed(retry_window);
         std::cout << "Real Windows GPU GUI + RecoveryStore/ServiceHost: explicit Unicode recovery, dirty selection, save, durable exit, failure retention/retry/confirmation: PASS (session " << abandoned_session << ")\n";
         return 0;
     } catch (const std::exception& error) {

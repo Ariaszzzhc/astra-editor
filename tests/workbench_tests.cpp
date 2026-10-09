@@ -30,7 +30,7 @@ std::map<std::string, std::string> modules() {
     std::map<std::string, std::string> result;
     for (const auto& [name, file] : std::map<std::string, std::string>{
         {"astra/ui", "api.js"}, {"astra/files", "files.js"}, {"astra/git", "git.js"},
-        {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/language","language.js"}, {"astra/recovery","recovery.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
+        {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/language","language.js"}, {"astra/recovery","recovery.js"}, {"astra/lifecycle","lifecycle.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
         result[name] = astra::io::read_file(std::filesystem::path("data/workbench") / file).text;
     }
     return result;
@@ -807,6 +807,176 @@ TEST_CASE("workbench navigation verifies a target revision before selection or a
     for(int tick=0;tick<6;++tick)workbench.poll();
     CHECK(channel->requests.empty());CHECK(workbench.idle());
     for(const auto& update:updates)CHECK_FALSE(update.contains("activate"));
+}
+
+TEST_CASE("workbench close cancellation stops an awaited user save from closing the document") {
+    auto channel=std::make_shared<Channel>();bool removed{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.read")return ready({{"document",{{"id","captured"},{"revision","7"},{"dirty",true},{"path","source.cpp"}}}});
+        if(method=="_ui.dialog")return ready(0);
+        if(method=="_ui.update" && params.contains("closedDocument"))removed=true;
+        return ready(nullptr);
+    },modules(),"let controller=new AbortController();astra.registerCommand('close',()=>astra.ui.execute('workbench.close',{id:'captured',signal:controller.signal}));astra.registerCommand('abort',()=>controller.abort());astra.registerCommand('ui.save',async parameters=>{if(!parameters.signal)throw Error('Missing close cancellation');return await astra.request('user.save',{id:parameters.id});});");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("close",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<8;++tick)workbench.poll();REQUIRE(channel->requests.size()==1);
+    CHECK(channel->requests.front().body.at("method")=="user.save");
+    workbench.execute("abort",Json::object(),{});for(int tick=0;tick<5;++tick)workbench.poll();
+    channel->reply({{"id","captured"},{"revision","8"},{"dirty",false}});for(int tick=0;tick<12;++tick)workbench.poll();
+    REQUIRE(outcome);REQUIRE(outcome->error);CHECK(outcome->error->at("name")=="AbortError");CHECK_FALSE(removed);CHECK(channel->requests.empty());CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench progress awaits completion and cancels late service replies") {
+    auto channel=std::make_shared<Channel>();std::promise<Json> input;Json shown;bool open{};unsigned dismissed{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.dialog"){shown=params;open=true;return input.get_future();}
+        if(method=="_ui.dialog.present"){CHECK(open);CHECK(params.at("id")==shown.at("id"));return ready(true);}
+        if(method=="_ui.dialog.cancel") {
+            ++dismissed;if(open){open=false;input.set_value(nullptr);}return ready(nullptr);
+        }
+        return ready(nullptr);
+    },modules(),"astra.registerCommand('progress',()=>astra.ui.withProgress({title:'Durable work'},options=>astra.request('slow',{},options)));");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("progress",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<8;++tick)workbench.poll();
+    CHECK(shown.at("kind")=="progress");REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="slow");
+    CHECK_FALSE(outcome);CHECK_FALSE(workbench.awaiting_input());
+    SUBCASE("completed work returns its result and dismisses the component") {
+        channel->reply({{"durable",true}});for(int tick=0;tick<12;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value.at("durable")==true);CHECK_FALSE(open);CHECK(dismissed==1);CHECK(workbench.idle());
+    }
+    SUBCASE("dismissed work rejects cancellation and drains its late operation ID") {
+        open=false;input.set_value(nullptr);for(int tick=0;tick<12;++tick)workbench.poll();
+        REQUIRE(outcome);REQUIRE(outcome->error);CHECK(outcome->error->at("name")=="AbortError");CHECK_FALSE(workbench.idle());
+        channel->reply({{"operationId","late-checkpoint"}});for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="operation.cancel");
+        CHECK(channel->requests.front().body.at("params").at("id")=="late-checkpoint");
+        channel->reply(nullptr);for(int tick=0;tick<8;++tick)workbench.poll();CHECK(workbench.idle());
+    }
+}
+
+TEST_CASE("workbench progress does not start work when its component cannot open") {
+    auto channel=std::make_shared<Channel>();unsigned cancelled{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json&) {
+        if(method=="_ui.dialog" || method=="_ui.dialog.present") {
+            std::promise<Json> failed;failed.set_exception(std::make_exception_ptr(astra::protocol::RpcError(-32004,"Another component is active")));return failed.get_future();
+        }
+        CHECK(method=="_ui.dialog.cancel");++cancelled;return ready(nullptr);
+    },modules(),"astra.registerCommand('progress',()=>astra.ui.withProgress({title:'Work'},options=>astra.request('must.not.start',{},options)));");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("progress",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<12;++tick)workbench.poll();
+    REQUIRE(outcome);REQUIRE(outcome->error);CHECK(outcome->error->at("code")==-32004);CHECK(channel->requests.empty());CHECK(cancelled==1);CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench idle fences exclude other pending script work and drain cancellation") {
+    auto channel=std::make_shared<Channel>();std::promise<Json> fence;Json identity;unsigned cancelled{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.barrier"){identity=params;return fence.get_future();}
+        CHECK(method=="_ui.wait.cancel");CHECK(params.at("waitId")==identity.at("waitId"));++cancelled;fence.set_value(false);return ready(nullptr);
+    },modules(),"let controller=new AbortController();astra.registerCommand('barrier',()=>astra.ui.waitForIdle({signal:controller.signal}));astra.registerCommand('pending',()=>astra.request('prior'));astra.registerCommand('abort',()=>controller.abort());");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("pending",Json::object(),{});workbench.execute("barrier",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<5;++tick)workbench.poll();
+    CHECK_FALSE(workbench.awaiting("_ui.barrier"));CHECK_FALSE(outcome);
+    channel->reply(nullptr);for(int tick=0;tick<5;++tick)workbench.poll();
+    CHECK(workbench.awaiting("_ui.barrier"));
+    workbench.execute("abort",Json::object(),{});for(int tick=0;tick<12;++tick)workbench.poll();
+    REQUIRE(outcome);REQUIRE(outcome->error);CHECK(outcome->error->at("name")=="AbortError");CHECK(cancelled==1);CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench concurrent fence kinds remain distinguishable from unrelated jobs") {
+    auto channel=std::make_shared<Channel>();std::promise<Json> idle,close;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json&) {
+        if(method=="_ui.barrier")return idle.get_future();
+        REQUIRE(method=="_ui.window.close");return close.get_future();
+    },modules(),"astra.registerCommand('waiters',()=>Promise.all([astra.ui.waitForIdle(),astra.ui.requestClose()]));");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("waiters",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<5;++tick)workbench.poll();
+    constexpr std::string_view methods[]{"_ui.barrier","_ui.window.close"};
+    CHECK(workbench.awaiting(methods));CHECK_FALSE(workbench.awaiting("_ui.barrier"));CHECK_FALSE(workbench.awaiting_input());CHECK_FALSE(outcome);
+    idle.set_value(true);close.set_value(false);for(int tick=0;tick<8;++tick)workbench.poll();
+    REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==Json::array({true,false}));CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench window exit composes captured closes before its durable checkpoint") {
+    auto channel=std::make_shared<Channel>();std::vector<std::string> tabs{"left","right"};std::promise<Json> progress,teardown;
+    bool progress_open{},requested{};std::vector<std::string> activated;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.read")return ready({{"tabs",tabs}});
+        if(method=="_ui.barrier")return ready(true);
+        if(method=="_ui.window.close"){requested=true;CHECK(tabs.empty());return teardown.get_future();}
+        if(method=="_ui.dialog"){CHECK(params.at("kind")=="progress");progress_open=true;return progress.get_future();}
+        if(method=="_ui.dialog.cancel"){if(progress_open){progress_open=false;progress.set_value(nullptr);}return ready(nullptr);}
+        if(method=="_ui.update") {
+            if(params.contains("activate"))activated.push_back(params.at("activate"));
+            if(params.contains("closedDocument"))std::erase(tabs,params.at("closedDocument").get<std::string>());
+        }
+        return ready(nullptr);
+    },modules(),"astra.registerCommand('workbench.close',async p=>{const accepted=await astra.request('custom.close',p);if(accepted)await astra.ui.update({closedDocument:p.id});return accepted;});");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.closeWindow",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<8;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="custom.close");
+    CHECK(channel->requests.front().body.at("params").at("id")=="right");CHECK_FALSE(requested);
+    SUBCASE("cancelled document close stops exit without checkpointing") {
+        channel->reply(false);for(int tick=0;tick<12;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==false);CHECK_FALSE(requested);CHECK(channel->requests.empty());CHECK(tabs.size()==2);
+    }
+    SUBCASE("accepted closes await the actual durable reply and teardown acknowledgement") {
+        channel->reply(true);for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("params").at("id")=="left");
+        channel->reply(true);for(int tick=0;tick<8;++tick)workbench.poll();
+        CHECK(activated==std::vector<std::string>{"right","left"});REQUIRE(channel->requests.size()==1);
+        CHECK(channel->requests.front().body.at("method")=="recovery.flush");CHECK_FALSE(outcome);CHECK_FALSE(requested);
+        channel->reply({{"enabled",true}});for(int tick=0;tick<12;++tick)workbench.poll();
+        CHECK(requested);CHECK_FALSE(progress_open);CHECK_FALSE(outcome);
+        teardown.set_value(true);for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==true);
+    }
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench window checkpoint failure requires an explicit retry keep-open or bypass") {
+    auto channel=std::make_shared<Channel>();std::optional<std::promise<Json>> dialog;
+    Json spec;unsigned closes{},progresses{};std::vector<Json> updates;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.read")return ready({{"tabs",Json::array()}});
+        if(method=="_ui.barrier")return ready(true);
+        if(method=="_ui.window.close"){++closes;return ready(true);}
+        if(method=="_ui.dialog"){spec=params;dialog.emplace();if(params.at("kind")=="progress")++progresses;return dialog->get_future();}
+        if(method=="_ui.dialog.cancel" || (method=="_ui.action" && params.at("command")=="ui.cancel")) {
+            if(dialog){dialog->set_value(nullptr);dialog.reset();}return ready(nullptr);
+        }
+        if(method=="_ui.dialog.answer"){REQUIRE(dialog);CHECK(params.at("id")==spec.at("id"));dialog->set_value(params.at("index"));dialog.reset();return ready(nullptr);}
+        if(method=="_ui.update")updates.push_back(params);
+        return ready(nullptr);
+    },modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.exitWithoutCheckpoint",Json::object(),{});for(int tick=0;tick<4;++tick)workbench.poll();
+    CHECK(closes==0);CHECK(channel->requests.empty());
+    workbench.execute("ui.closeWindow",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<8;++tick)workbench.poll();REQUIRE(channel->requests.size()==1);
+    auto incoming=std::move(channel->requests.front());channel->requests.pop_front();
+    incoming.response.set_value(Json{{"jsonrpc","2.0"},{"id",incoming.body.at("id")},{"error",{{"code",-32010},{"message","storage failed"}}}}.dump());
+    for(int tick=0;tick<12;++tick)workbench.poll();
+    CHECK(closes==0);CHECK_FALSE(outcome);REQUIRE(spec.at("kind")=="choice");CHECK(spec.at("keys")[2]=="e");CHECK(workbench.awaiting_input());
+    SUBCASE("keep open cancels without teardown") {
+        workbench.execute("ui.cancel",Json::object(),{});for(int tick=0;tick<12;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==false);CHECK(closes==0);CHECK(channel->requests.empty());
+    }
+    SUBCASE("retry awaits another durable service result") {
+        workbench.execute("ui.retryExit",Json::object(),{});for(int tick=0;tick<12;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="recovery.flush");CHECK(progresses==2);CHECK(closes==0);
+        channel->reply({{"enabled",true}});for(int tick=0;tick<16;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==true);CHECK(closes==1);
+    }
+    SUBCASE("explicit bypass is enabled only for this failed checkpoint") {
+        workbench.execute("ui.exitWithoutCheckpoint",Json::object(),{});for(int tick=0;tick<16;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==true);CHECK(closes==1);CHECK(channel->requests.empty());CHECK(progresses==1);
+    }
+    CHECK(workbench.idle());
 }
 
 TEST_CASE("workbench formatting discards obsolete results without applying edits") {

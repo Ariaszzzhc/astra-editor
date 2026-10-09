@@ -72,9 +72,9 @@ export function registerRecovery() {
     ui.registerCommand({id:'ui.confirmRecovery',title:'Confirm recovery',palette:false},async () => {
         if(confirmation)await ui.answerConfirm(confirmation);
     });
-    ui.registerCommand({id:'ui.checkpoint',title:'Write recovery checkpoint'},async () => {
-        await ui.update({status:'Writing recovery checkpoint...'});
-        const result=await request('recovery.flush');
+    ui.registerCommand({id:'ui.checkpoint',title:'Write recovery checkpoint'},async (parameters={}) => {
+        await ui.update({status:'Writing recovery checkpoint...',error:''});
+        const result=await request('recovery.flush',{}, {signal:parameters.signal});
         await ui.update({status:result.enabled===false ? 'Recovery is disabled' : 'Recovery checkpoint saved',error:''});
         return result;
     });

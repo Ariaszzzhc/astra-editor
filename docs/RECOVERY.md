@@ -48,8 +48,13 @@ Issue-only sessions open a read-only report. Selected session identity is captur
 before confirmation, so a newer discovery cannot change the restore target.
 Superseded scans are cancelled and older list replies cannot replace a newer
 availability notification. The `ui.checkpoint` command resolves only after the service's
-durable result and propagates storage failures. Native final-window checkpoint
-and exit decisions remain pending migration to JS in the active revision.
+durable result and propagates storage failures. The client `astra/lifecycle`
+module owns final-window checkpoint and exit decisions: it awaits accepted client
+work, closes captured tabs through their registered JS policy, checkpoints and
+rechecks new tabs. Failed attempts offer Retry, Keep open or explicit bypass.
+Cancelled checkpoints cannot continue exit when their late replies arrive.
+C++ retains asynchronous wait handles and guards native teardown against open
+tabs or unfinished accepted client work.
 
 ## Windows acceptance
 

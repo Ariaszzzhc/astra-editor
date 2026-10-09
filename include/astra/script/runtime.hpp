@@ -8,6 +8,7 @@
 #include <future>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -73,6 +74,7 @@ public:
     [[nodiscard]] bool idle() const;
     // True only when every outstanding task/request awaits this host method.
     [[nodiscard]] bool waiting_only(std::string_view method) const;
+    [[nodiscard]] bool waiting_only(std::span<const std::string_view> methods) const;
     void emit(std::string_view event, const Json& payload);
     void define_module(std::string name, std::string source);
     [[nodiscard]] Json evaluate_module(std::string_view source, std::string_view filename);

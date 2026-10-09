@@ -9,7 +9,71 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
-### JS recovery review and compact confirmation
+### JS window exit and asynchronous native waits (2026-10-10)
+
+The client `astra/lifecycle` module now owns sequential captured-document close,
+the final checkpoint, retry/keep-open/bypass decisions and rechecking documents
+that arrive during checkpoint I/O. It composes the currently registered close,
+save and checkpoint commands, including user replacements. Cancel propagates
+through close choices, save/close requests and checkpoint work; an awaited user
+save result cannot dispatch a subsequent close after exit cancellation.
+
+Native C++ owns cancellable wait handles and physical teardown. `ui.waitForIdle`
+waits for accepted native input, other script jobs and client transport responses;
+`ui.requestClose` refuses open tabs and grants teardown only after the same
+quiescence check. Mixed wait kinds settle together, and cancellation identities
+cannot cancel another attempt. The JS `ui.withProgress` API starts work only
+after its generic native component opens, dismisses it on completion/cancellation
+and drains late operation replies. Dedicated native checkpoint/exit policy,
+failure prompts and retry/bypass branches have been removed.
+
+Final Windows Debug commands:
+
+```powershell
+./scripts/xmake.ps1 build -y astra-tests gui-recovery-smoke gui-presentation-smoke gui-smoke
+./build/windows/x64/debug/astra-tests.exe --no-version '--test-case=workbench*,presentation*,QuickJS*,JavaScript*'
+./build/windows/x64/debug/gui-recovery-smoke.exe
+./build/windows/x64/debug/gui-presentation-smoke.exe
+./build/windows/x64/debug/gui-smoke.exe
+./build/windows/x64/debug/gui-smoke.exe --tcp
+```
+
+All final invocations passed: **75 cases / 219,246 assertions**, 408 unrelated
+cases skipped, and four real GUI runs. New policy cases cover component-open
+failure, late operation cancellation/drain, captured close ordering, an awaited
+user save after cancellation, quiescence, mixed wait kinds and explicit
+retry/keep-open/bypass. The real recovery GUI cancels a withheld checkpoint,
+accepts subsequent SDL Unicode editing, releases the late reply and keeps that
+content open. Another actual client creates and edits a document during a later
+checkpoint; the GUI preserves it, requests a new close decision, then dispatches
+a fresh checkpoint. Both explicit bypass and the real `ui.retryExit` command are
+checked with exact checkpoint-request counts. Presentation acceptance runs a
+delayed user script immediately before exit and requires it to finish before
+the user-defined checkpoint handler, and tests concurrent idle/close waits.
+Actual progress/failure PNGs under `build/graphics/gui-recovery-*.png` were
+inspected; the staged lifecycle JS matches its repository source. GUI checks ran
+after each build completed, without copying mapped runtime resources.
+
+Intermediate failures were preserved and resolved:
+
+- `gui-recovery-223219871291300`: the old one-pump bypass assertion did not
+  account for asynchronous teardown waits. It now waits for actual closure and
+  retains checks that bypass is unavailable before failure and sends no extra
+  checkpoint after confirmation.
+- `gui-recovery-223561582781900`: the concurrent document fixture used initial
+  baseline text and therefore was clean. It now performs an actual insert and
+  asserts dirty metadata before continuing; the preserved content/close-decision
+  assertions pass.
+- `gui-recovery-224150531852900`: real Retry retained the previous failure text
+  during its new attempt. Starting a checkpoint now clears that stale error;
+  fresh checkpoint failures still propagate and open the explicit failure choice.
+
+This increment does not establish full current Debug/Release acceptance or a
+current package. Remaining native find/replace policy, general custom views,
+editing policy boundaries and incremental presentation/parser requirements
+remain part of the active, unfinished architecture revision.
+
+### Earlier JS recovery review and compact confirmation
 
 The client `astra/recovery` module now owns recovery discovery, inactive-session
 filtering, confirmation, restoration presentation, manual checkpoints and storage
@@ -50,7 +114,8 @@ was inspected at `build/graphics/gui-recovery-confirm.png`; the staged JS resour
 matches the repository source. Build and GUI runs were serialized to avoid
 copying mapped runtime resources.
 
-Final-window checkpoint/exit policy still resides in C++; its JS migration,
+At this earlier increment (`f0c7534`), final-window checkpoint/exit policy still
+resided in C++; its JS migration,
 remaining native find/replace policy, general custom views, and the other active
 architecture requirements remain unfinished. This affected Debug run is not a
 new full Debug/Release acceptance or a current distribution-package verification.
