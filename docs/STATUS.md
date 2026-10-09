@@ -205,6 +205,36 @@ hover, picker and text screenshots were visually inspected. An intermediate buil
 failed on a duplicated local test variable; it was renamed before the passing
 build. The final idle-frame Skia warning remains.
 
+Non-Markdown semantic analysis now retains immutable hierarchical units with
+measured byte/outline/object/node summaries. Unchanged units reuse their highlight
+SumTrees; only changed units rebuild captures. Outline range reads seek the
+measured hierarchy, and enclosing-object queries descend only into a containing
+partition. Compatibility full-vector reads materialize lazily and safely across
+threads. The service reads its bounded outline result through the new range API.
+Cache publication still visits semantic units, and rebuilding a wide parent visits
+its direct children; this is not a claim that the complete parser/index update is
+logarithmic. Markdown's two-stage semantic indexes still use full traversal.
+
+Windows Debug `build -y astra-tests gui-services-smoke gui-workspace-smoke
+gui-presentation-smoke` passed. `--source-file=*syntax_tests.cpp` passed
+**26 cases / 7,360 assertions**; `--test-case=application syntax*` passed
+**2 cases / 96 assertions**. All three real GUI executables passed after integration.
+New tests compare against a separate full-traversal analysis mode: a same-length
+edit among 400 C++ declarations reuses over 300 units and over 75% of source bytes,
+visits fewer than 10% of the oracle's analyzed nodes, and proves shared prefix and
+suffix highlight runs. Forty edits inside one large function (seed `0xA57A5E`)
+exercise nested units; 24 random Unicode edits in each of seven grammars
+(seed `0xA57A6A`) include malformed input and compare highlights, hierarchy and
+textobjects. Retained snapshots and stricter limits on cached results are checked.
+
+Initial new tests exposed two real failures: slot-only candidate matching could
+reuse an edited same-size region, and repeated ambiguous Tree-sitter error recovery
+could differ from a fresh tree even without the semantic cache. Reuse now requires
+an unchanged Rope interval, current origin and child/field stamps; malformed/error
+recovery uses a fresh tree and honestly reports `incremental=false`. These failing
+runs preceded the passing suites. A warning-as-error for a shadowed local name was
+also fixed before rebuilding. The final idle-frame Skia warning remains.
+
 Remaining work includes the rest of the public UI/provider contract,
 native component extraction, indexed diagnostic/display views, incremental
 syntax indexes, full Debug/Release and native GUI acceptance, and packaging the

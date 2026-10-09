@@ -63,6 +63,9 @@ public:
     [[nodiscard]] std::size_t tree_height() const noexcept;
     [[nodiscard]] std::vector<HighlightSpan> intersecting(SyntaxRange range) const;
     [[nodiscard]] bool validate() const;
+    [[nodiscard]] HighlightIndex concat(const HighlightIndex& other) const;
+    [[nodiscard]] std::size_t shared_prefix_bytes(const HighlightIndex& other) const;
+    [[nodiscard]] std::size_t shared_suffix_bytes(const HighlightIndex& other) const;
 private:
     SumTree<HighlightRun, HighlightSummary, MeasureHighlight> runs_;
 };
@@ -93,6 +96,11 @@ struct ParseOptions {
     std::size_t max_spans{1'000'000};
     std::size_t max_outline_items{100'000};
     std::size_t max_text_objects{250'000};
+    // Full traversal remains available as an independent differential oracle.
+    bool incremental_analysis{true};
+};
+struct AnalysisStatistics {
+    std::size_t visited_nodes{}, rebuilt_units{}, reused_units{}, reused_bytes{};
 };
 
 class ParseCancelled final : public std::runtime_error {
@@ -108,8 +116,11 @@ public:
     [[nodiscard]] LanguageId language() const noexcept;
     [[nodiscard]] const Rope& text() const noexcept;
     [[nodiscard]] const HighlightIndex& highlights() const noexcept;
-    [[nodiscard]] const std::vector<OutlineItem>& outline() const noexcept;
-    [[nodiscard]] const std::vector<TextObject>& text_objects() const noexcept;
+    [[nodiscard]] const std::vector<OutlineItem>& outline() const;
+    [[nodiscard]] std::size_t outline_size() const noexcept;
+    [[nodiscard]] std::vector<OutlineItem> outline_range(std::size_t begin,std::size_t end) const;
+    [[nodiscard]] const std::vector<TextObject>& text_objects() const;
+    [[nodiscard]] AnalysisStatistics analysis_statistics() const noexcept;
     [[nodiscard]] const std::vector<SyntaxRange>& changed_ranges() const noexcept;
     [[nodiscard]] bool has_errors() const noexcept;
     [[nodiscard]] bool incremental() const noexcept;

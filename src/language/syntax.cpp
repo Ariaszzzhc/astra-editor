@@ -11,6 +11,8 @@
 #include <limits>
 #include <mutex>
 #include <set>
+#include <map>
+#include <tuple>
 #include <utility>
 
 extern "C" {
@@ -381,9 +383,9 @@ void add_inline_ranges(TSNode node, Analysis& analysis) {
     if (!ranges.empty()) { analysis.inline_groups.push_back(std::move(ranges)); }
 }
 
-void analyze(const TSTree* tree, const Rope& text, Analysis& output, Budget& budget,
-             bool markdown_inline = false) {
-    Cursor cursor(ts_tree_root_node(tree));
+void analyze_node(TSNode root, const Rope& text, Analysis& output, Budget& budget,
+             bool markdown_inline = false, bool shallow = false) {
+    Cursor cursor(root);
     std::vector<std::size_t> outline_depths;
     bool more = true;
     while (more) {
@@ -426,11 +428,15 @@ void analyze(const TSTree* tree, const Rope& text, Analysis& output, Budget& bud
             output.objects.push_back({*kind, node_range, inner});
         }
         if (!markdown_inline && one_of(type, {"inline", "pipe_table_cell"})) { add_inline_ranges(node, output); }
+        if (shallow) break;
         if (ts_tree_cursor_goto_first_child(cursor.get())) { continue; }
         while (!ts_tree_cursor_goto_next_sibling(cursor.get())) {
             if (!ts_tree_cursor_goto_parent(cursor.get())) { more = false; break; }
         }
     }
+}
+void analyze(const TSTree* tree,const Rope& text,Analysis& output,Budget& budget,bool markdown_inline=false) {
+    analyze_node(ts_tree_root_node(tree),text,output,budget,markdown_inline);
 }
 
 [[nodiscard]] HighlightIndex index_captures(std::vector<Capture> captures,
@@ -472,6 +478,190 @@ void analyze(const TSTree* tree, const Rope& text, Analysis& output, Budget& bud
     return HighlightIndex(std::move(runs));
 }
 
+struct SemanticUnit;
+struct SemanticSummary {
+    std::size_t bytes{},outlines{},objects{},nodes{},captures{};
+    friend bool operator==(const SemanticSummary&,const SemanticSummary&) = default;
+    friend SemanticSummary operator+(SemanticSummary left,SemanticSummary right) {
+        const auto add=[](std::size_t a,std::size_t b){
+            if(b>std::numeric_limits<std::size_t>::max()-a)throw std::length_error("Semantic summary overflow");
+            return a+b;
+        };
+        return {add(left.bytes,right.bytes),add(left.outlines,right.outlines),add(left.objects,right.objects),add(left.nodes,right.nodes),add(left.captures,right.captures)};
+    }
+};
+struct SemanticPiece { std::size_t bytes{};std::shared_ptr<const SemanticUnit> unit; };
+struct MeasureSemantic { SemanticSummary operator()(const SemanticPiece& piece) const; };
+using SemanticPieces=SumTree<SemanticPiece,SemanticSummary,MeasureSemantic>;
+// IDs are looked up only while the previous TSTree is retained. Parent-derived
+// classification and inherited color are part of the key; byte origins are not.
+using SemanticKey=std::tuple<std::uintptr_t,std::uint16_t,int,int,int,std::size_t,std::string>;
+struct SemanticEntry { std::shared_ptr<const SemanticUnit> unit;std::size_t origin{}; };
+using SemanticCache=std::map<SemanticKey,SemanticEntry>;
+using GapCache=std::map<std::pair<std::size_t,std::optional<HighlightKind>>,HighlightIndex>;
+using ChildStamp=std::tuple<std::uintptr_t,std::uint16_t,std::uint16_t,std::uint32_t,std::size_t,std::size_t,std::string>;
+std::vector<ChildStamp> child_stamps(TSNode node) {
+    std::vector<ChildStamp> result;result.reserve(ts_node_child_count(node));
+    const auto origin=ts_node_start_byte(node);
+    for(std::uint32_t index=0;index<ts_node_child_count(node);++index){
+        const auto child=ts_node_child(node,index);
+        const auto name=ts_node_field_name_for_child(node,index);
+        result.emplace_back(reinterpret_cast<std::uintptr_t>(child.id),ts_node_symbol(child),ts_node_grammar_symbol(child),child.context[3],
+            ts_node_start_byte(child)-origin,ts_node_end_byte(child)-origin,name ? name : "");
+    }
+    return result;
+}
+struct SemanticUnit {
+    SemanticKey key;
+    SemanticSummary summary;
+    HighlightIndex highlights;
+    std::vector<OutlineItem> outline;
+    std::vector<TextObject> objects;
+    SemanticPieces children;
+    bool errors{};
+    std::vector<ChildStamp> stamps;
+};
+SemanticSummary MeasureSemantic::operator()(const SemanticPiece& piece) const {
+    auto result=piece.unit ? piece.unit->summary : SemanticSummary{};
+    result.bytes=piece.bytes;return result;
+}
+SyntaxRange relative(SyntaxRange value,std::size_t origin) {
+    return {{value.begin.value-origin},{value.end.value-origin}};
+}
+SyntaxRange absolute(SyntaxRange value,std::size_t origin) {
+    return {{value.begin.value+origin},{value.end.value+origin}};
+}
+void semantic_limits(const SemanticUnit& unit,const ParseOptions& options) {
+    if(unit.summary.nodes>options.max_nodes)throw std::length_error("syntax node limit exceeded");
+    if(unit.summary.captures>options.max_spans || unit.highlights.run_count()>options.max_spans)throw std::length_error("syntax span limit exceeded");
+    if(unit.summary.outlines>options.max_outline_items)throw std::length_error("syntax outline limit exceeded");
+    if(unit.summary.objects>options.max_text_objects)throw std::length_error("syntax text-object limit exceeded");
+}
+std::shared_ptr<const SemanticUnit> build_semantic(TSNode node,const Rope& text,
+    std::optional<HighlightKind> inherited,std::size_t depth,const SemanticCache* previous,
+    const RopeChangedExtent* changed,SemanticCache& built,const GapCache* previous_gaps,GapCache& gaps,Budget& budget,AnalysisStatistics& statistics) {
+    budget.check();
+    const auto node_range=range(node);
+    const auto bytes=node_range.end.value-node_range.begin.value;
+    const auto own_color=color(node,text);
+    const auto own_object=object_kind(node);
+    const auto code=[](const auto& value){return value ? static_cast<int>(*value) : -1;};
+    // A node's slot can move when a sibling changes. The first visible child
+    // selects a candidate; child stamps and an unchanged Rope range certify it.
+    const auto literal=ts_node_child_count(node)==0 && bytes<=1024;
+    const auto anchor=literal ? nullptr : (ts_node_child_count(node) ? ts_node_child(node,0).id : node.id);
+    // Short leaves have no retained child array. Exact bounded text plus their
+    // semantic context safely interns equivalent tokens without relying on slots.
+    const SemanticKey key{reinterpret_cast<std::uintptr_t>(anchor),ts_node_symbol(node),code(inherited),code(own_color),code(own_object),depth,
+        literal ? text.slice(node_range.begin.value,node_range.end.value) : std::string{}};
+    if(literal){if(const auto found=built.find(key);found!=built.end()){semantic_limits(*found->second.unit,budget.options);return found->second.unit;}}
+    std::optional<std::size_t> old_origin;
+    if(changed){
+        if(node_range.end.value<=changed->begin)old_origin=node_range.begin.value;
+        else if(node_range.begin.value>=changed->new_end)old_origin=node_range.begin.value-changed->new_end+changed->old_end;
+    }
+    if(previous && (literal || !ts_node_has_changes(node))){
+        if(const auto found=previous->find(key);found!=previous->end() && found->second.unit->summary.bytes==bytes &&
+            (literal || (old_origin && found->second.origin==*old_origin && !found->second.unit->errors && !ts_node_has_error(node) && found->second.unit->stamps==child_stamps(node)))){
+            semantic_limits(*found->second.unit,budget.options);
+            ++statistics.reused_units;statistics.reused_bytes+=bytes;
+            built.insert_or_assign(key,SemanticEntry{found->second.unit,node_range.begin.value});
+            return found->second.unit;
+        }
+    }
+    auto unit=std::make_shared<SemanticUnit>();unit->key=key;
+    unit->errors=ts_node_has_error(node);
+    unit->stamps=child_stamps(node);
+    ++statistics.rebuilt_units;
+    constexpr std::size_t leaf_bytes=1024,maximum_depth=128;
+    const auto split=bytes>leaf_bytes && ts_node_child_count(node)>0 && depth<maximum_depth;
+    Analysis local;
+    const auto visited=budget.nodes;
+    analyze_node(node,text,local,budget,false,split);
+    unit->summary={bytes,local.outline.size(),local.objects.size(),budget.nodes-visited,local.captures.size()};
+    unit->outline=std::move(local.outline);unit->objects=std::move(local.objects);
+    for(auto& item:unit->outline){item.range=relative(item.range,node_range.begin.value);item.selection=relative(item.selection,node_range.begin.value);}
+    for(auto& item:unit->objects){item.outer=relative(item.outer,node_range.begin.value);item.inner=relative(item.inner,node_range.begin.value);}
+    if(!split){
+        for(auto& capture:local.captures){capture.range=relative(capture.range,node_range.begin.value);++capture.priority;}
+        if(inherited && bytes)local.captures.insert(local.captures.begin(),{{{0},{bytes}},*inherited,0});
+        unit->highlights=index_captures(std::move(local.captures),bytes,budget);
+    }else{
+        std::vector<SemanticPiece> pieces;
+        std::size_t position=node_range.begin.value;
+        const auto fill=own_color ? own_color : inherited;
+        const auto gap=[&](std::size_t length){
+            if(!length)return;
+            pieces.push_back({length,{}});
+            const auto gap_key=std::pair(length,fill);
+            auto found=gaps.find(gap_key);
+            if(found==gaps.end()){
+                HighlightIndex index({{length,fill}});
+                if(previous_gaps){if(const auto retained=previous_gaps->find(gap_key);retained!=previous_gaps->end())index=retained->second;}
+                found=gaps.emplace(gap_key,std::move(index)).first;
+            }
+            unit->highlights=unit->highlights.concat(found->second);
+        };
+        for(std::uint32_t index=0;index<ts_node_child_count(node);++index){
+            budget.check();
+            const auto child=ts_node_child(node,index);
+            const auto child_range=range(child);
+            if(child_range.begin.value<position || child_range.end>node_range.end)throw std::logic_error("Syntax children overlap their semantic partition");
+            gap(child_range.begin.value-position);
+            auto child_unit=build_semantic(child,text,fill,depth+1,previous,changed,built,previous_gaps,gaps,budget,statistics);
+            unit->highlights=unit->highlights.concat(child_unit->highlights);
+            pieces.push_back({child_unit->summary.bytes,std::move(child_unit)});
+            position=child_range.end.value;
+        }
+        gap(node_range.end.value-position);
+        unit->children=SemanticPieces(std::move(pieces));
+        auto own=unit->summary;own.bytes=0;
+        unit->summary=own+unit->children.summary();
+    }
+    semantic_limits(*unit,budget.options);built.insert_or_assign(key,SemanticEntry{unit,node_range.begin.value});return unit;
+}
+void collect_cache(const std::shared_ptr<const SemanticUnit>& unit,std::size_t origin,SemanticCache& cache,Budget& budget) {
+    budget.check();cache.insert_or_assign(unit->key,SemanticEntry{unit,origin});
+    auto offset=origin;
+    unit->children.for_each_range(0,unit->children.size(),[&](const SemanticPiece& piece){if(piece.unit)collect_cache(piece.unit,offset,cache,budget);offset+=piece.bytes;});
+}
+void collect_outline(const SemanticUnit& unit,std::size_t origin,std::size_t depth,
+    std::size_t begin,std::size_t end,std::vector<OutlineItem>& result) {
+    const auto own=unit.outline.size();
+    for(auto index=begin;index<std::min(end,own);++index){
+        auto item=unit.outline[index];item.range=absolute(item.range,origin);item.selection=absolute(item.selection,origin);
+        if(item.kind!=OutlineKind::heading)item.depth+=depth;
+        result.push_back(std::move(item));
+    }
+    if(end<=own)return;
+    const auto first=unit.children.seek(begin>own ? begin-own : 0,[](SemanticSummary value){return value.outlines;});
+    const auto last=unit.children.seek(end-own-1,[](SemanticSummary value){return value.outlines;});
+    auto row=own+first.prefix.outlines,offset=origin+first.prefix.bytes;
+    unit.children.for_each_range(first.index,last.index+1,[&](const SemanticPiece& piece){
+        if(piece.unit){
+            const auto size=piece.unit->summary.outlines;
+            if(size && row<end)collect_outline(*piece.unit,offset,depth+own,begin>row ? begin-row : 0,std::min(end-row,size),result);
+            row+=size;
+        }
+        offset+=piece.bytes;
+    });
+}
+void collect_objects(const SemanticUnit& unit,std::size_t origin,std::vector<TextObject>& result) {
+    for(auto item:unit.objects){item.outer=absolute(item.outer,origin);item.inner=absolute(item.inner,origin);result.push_back(std::move(item));}
+    auto offset=origin;
+    unit.children.for_each_range(0,unit.children.size(),[&](const SemanticPiece& piece){
+        if(piece.unit)collect_objects(*piece.unit,offset,result);offset+=piece.bytes;
+    });
+}
+template<typename Function>
+void containing_objects(const SemanticUnit& unit,std::size_t origin,SyntaxRange selection,Function&& function) {
+    for(auto item:unit.objects){item.outer=absolute(item.outer,origin);item.inner=absolute(item.inner,origin);function(item);}
+    if(selection.begin.value<origin || selection.end.value>origin+unit.summary.bytes || unit.children.empty())return;
+    const auto child=unit.children.seek(selection.begin.value-origin,[](SemanticSummary value){return value.bytes;});
+    if(!child.item || !child.item->unit)return;
+    const auto child_origin=origin+child.prefix.bytes;
+    if(selection.end.value<=child_origin+child.item->bytes)containing_objects(*child.item->unit,child_origin,selection,function);
+}
 void normalize_ranges(std::vector<SyntaxRange>& ranges) {
     std::ranges::sort(ranges);
     std::vector<SyntaxRange> merged;
@@ -494,12 +684,31 @@ struct SyntaxSnapshot::State {
     Tree tree;
     std::vector<Tree> inline_trees;
     HighlightIndex highlights;
-    std::vector<OutlineItem> outline;
-    std::vector<TextObject> objects;
+    mutable std::vector<OutlineItem> outline;
+    mutable std::vector<TextObject> objects;
+    std::shared_ptr<const SemanticUnit> semantic;
+    std::size_t semantic_origin{};
+    SemanticCache semantic_cache;
+    GapCache gap_cache;
+    AnalysisStatistics statistics;
+    mutable std::once_flag outline_once,objects_once;
     std::vector<SyntaxRange> changed;
     bool errors{};
     bool incremental{};
     mutable std::mutex copy_mutex;
+    void index_semantics(const State* previous,Budget& budget) {
+        const auto root=ts_tree_root_node(tree.get());semantic_origin=ts_node_start_byte(root);
+        const auto extent=previous ? previous->text.changed_extent(text) : RopeChangedExtent{};
+        semantic=build_semantic(root,text,std::nullopt,0,previous ? &previous->semantic_cache : nullptr,previous ? &extent : nullptr,semantic_cache,previous ? &previous->gap_cache : nullptr,gap_cache,budget,statistics);
+        if(semantic_origin)highlights=HighlightIndex({{semantic_origin,std::nullopt}});
+        highlights=highlights.concat(semantic->highlights);
+        const auto ending=semantic_origin+semantic->summary.bytes;
+        if(ending<text.size_bytes())highlights=highlights.concat(HighlightIndex({{text.size_bytes()-ending,std::nullopt}}));
+        if(highlights.run_count()>budget.options.max_spans)throw std::length_error("syntax index limit exceeded");
+        collect_cache(semantic,semantic_origin,semantic_cache,budget);
+        statistics.visited_nodes=budget.nodes;
+        errors=ts_node_has_error(root);
+    }
 };
 
 struct SyntaxParser::Impl {
@@ -562,6 +771,19 @@ std::size_t HighlightIndex::size_bytes() const noexcept { return runs_.summary()
 std::size_t HighlightIndex::run_count() const noexcept { return runs_.size(); }
 std::size_t HighlightIndex::tree_height() const noexcept { return runs_.height(); }
 bool HighlightIndex::validate() const { return runs_.validate(); }
+HighlightIndex HighlightIndex::concat(const HighlightIndex& other) const {
+    HighlightIndex result;
+    if(runs_.empty()){result.runs_=other.runs_;return result;}
+    if(other.runs_.empty()){result.runs_=runs_;return result;}
+    const auto& last=runs_.at(runs_.size()-1);const auto& first=other.runs_.at(0);
+    if(last.kind==first.kind){
+        const auto bytes=(HighlightSummary{last.bytes}+HighlightSummary{first.bytes}).bytes;
+        result.runs_=runs_.split(runs_.size()-1).first.concat(decltype(runs_)::singleton({bytes,last.kind})).concat(other.runs_.split(1).second);
+    }else result.runs_=runs_.concat(other.runs_);
+    return result;
+}
+std::size_t HighlightIndex::shared_prefix_bytes(const HighlightIndex& other) const { return runs_.shared_prefix_summary(other.runs_).bytes; }
+std::size_t HighlightIndex::shared_suffix_bytes(const HighlightIndex& other) const { return runs_.shared_suffix_summary(other.runs_).bytes; }
 
 std::vector<HighlightSpan> HighlightIndex::intersecting(SyntaxRange query) const {
     if (query.begin > query.end || query.end.value > size_bytes()) {
@@ -591,8 +813,26 @@ ContentId SyntaxSnapshot::content_identity() const noexcept { return state_->ide
 LanguageId SyntaxSnapshot::language() const noexcept { return state_->language; }
 const Rope& SyntaxSnapshot::text() const noexcept { return state_->text; }
 const HighlightIndex& SyntaxSnapshot::highlights() const noexcept { return state_->highlights; }
-const std::vector<OutlineItem>& SyntaxSnapshot::outline() const noexcept { return state_->outline; }
-const std::vector<TextObject>& SyntaxSnapshot::text_objects() const noexcept { return state_->objects; }
+std::size_t SyntaxSnapshot::outline_size() const noexcept { return state_->semantic ? state_->semantic->summary.outlines : state_->outline.size(); }
+std::vector<OutlineItem> SyntaxSnapshot::outline_range(std::size_t begin,std::size_t end) const {
+    if(begin>end || end>outline_size())throw std::out_of_range("Syntax outline range exceeds its index");
+    std::vector<OutlineItem> result;result.reserve(end-begin);
+    if(state_->semantic){if(begin!=end)collect_outline(*state_->semantic,state_->semantic_origin,0,begin,end,result);}
+    else result.assign(state_->outline.begin()+static_cast<std::ptrdiff_t>(begin),state_->outline.begin()+static_cast<std::ptrdiff_t>(end));
+    return result;
+}
+const std::vector<OutlineItem>& SyntaxSnapshot::outline() const {
+    if(state_->semantic)std::call_once(state_->outline_once,[&]{state_->outline=outline_range(0,outline_size());});
+    return state_->outline;
+}
+const std::vector<TextObject>& SyntaxSnapshot::text_objects() const {
+    if(state_->semantic)std::call_once(state_->objects_once,[&]{
+        std::vector<TextObject> result;result.reserve(state_->semantic->summary.objects);
+        collect_objects(*state_->semantic,state_->semantic_origin,result);state_->objects=std::move(result);
+    });
+    return state_->objects;
+}
+AnalysisStatistics SyntaxSnapshot::analysis_statistics() const noexcept { return state_->statistics; }
 const std::vector<SyntaxRange>& SyntaxSnapshot::changed_ranges() const noexcept { return state_->changed; }
 bool SyntaxSnapshot::has_errors() const noexcept { return state_->errors; }
 bool SyntaxSnapshot::incremental() const noexcept { return state_->incremental; }
@@ -608,8 +848,8 @@ std::optional<SyntaxRange> SyntaxSnapshot::enclosing_object(SyntaxRange selectio
     }
     std::optional<SyntaxRange> best;
     std::size_t best_size = std::numeric_limits<std::size_t>::max();
-    for (const auto& object : state_->objects) {
-        if (object.kind != kind) { continue; }
+    const auto consider=[&](const TextObject& object) {
+        if (object.kind != kind) { return; }
         const auto candidate = inner ? object.inner : object.outer;
         if (object.outer.begin <= selection.begin && object.outer.end >= selection.end &&
             !(strictly_larger && candidate == selection) &&
@@ -619,7 +859,9 @@ std::optional<SyntaxRange> SyntaxSnapshot::enclosing_object(SyntaxRange selectio
             best = candidate;
             best_size = object.outer.end.value - object.outer.begin.value;
         }
-    }
+    };
+    if(state_->semantic)containing_objects(*state_->semantic,state_->semantic_origin,selection,consider);
+    else for(const auto& object:state_->objects)consider(object);
     return best;
 }
 
@@ -640,6 +882,8 @@ SyntaxSnapshot SyntaxParser::parse(const DocumentSnapshot& document, const Parse
     state->language = impl_->language;
     state->text = document.text;
     state->tree = parse_tree(impl_->parser.get(), state->text, nullptr, budget);
+    if(!impl_->inline_parser && options.incremental_analysis)state->index_semantics(nullptr,budget);
+    else {
     Analysis analysis;
     analyze(state->tree.get(), state->text, analysis, budget);
     state->errors = ts_node_has_error(ts_tree_root_node(state->tree.get()));
@@ -657,6 +901,8 @@ SyntaxSnapshot SyntaxParser::parse(const DocumentSnapshot& document, const Parse
     state->highlights = index_captures(std::move(analysis.captures), state->text.size_bytes(), budget);
     state->outline = std::move(analysis.outline);
     state->objects = std::move(analysis.objects);
+    state->statistics.visited_nodes=budget.nodes;
+    }
     if (!state->text.empty()) { state->changed.push_back({{0}, {state->text.size_bytes()}}); }
     budget.check();
     return SyntaxSnapshot(std::move(state));
@@ -723,6 +969,13 @@ SyntaxSnapshot SyntaxParser::update(const SyntaxSnapshot& previous, Transaction 
     if (state->text.size_bytes() > options.max_bytes) { throw std::length_error("syntax input limit exceeded"); }
     (void)narrow(state->text.size_bytes());
     state->tree = parse_tree(impl_->parser.get(), state->text, old_tree.get(), budget);
+    // Error recovery can depend on earlier ambiguous incremental states even
+    // when their visible captures agree. A fresh tree restores the grammar's
+    // canonical result before retaining semantic indexes for malformed input.
+    const auto fresh_recovery=previous.has_errors() || ts_node_has_error(ts_tree_root_node(state->tree.get()));
+    if(fresh_recovery){state->tree=parse_tree(impl_->parser.get(),state->text,nullptr,budget);old_inline.clear();}
+    if(!impl_->inline_parser && options.incremental_analysis)state->index_semantics(previous.state_.get(),budget);
+    else {
     Analysis analysis;
     analyze(state->tree.get(), state->text, analysis, budget);
     state->errors = ts_node_has_error(ts_tree_root_node(state->tree.get()));
@@ -742,6 +995,8 @@ SyntaxSnapshot SyntaxParser::update(const SyntaxSnapshot& previous, Transaction 
     state->highlights = index_captures(std::move(analysis.captures), state->text.size_bytes(), budget);
     state->outline = std::move(analysis.outline);
     state->objects = std::move(analysis.objects);
+    state->statistics.visited_nodes=budget.nodes;
+    }
     std::uint32_t count = 0;
     const std::unique_ptr<TSRange, decltype(&std::free)> changed(
         ts_tree_get_changed_ranges(old_tree.get(), state->tree.get(), &count), &std::free);
@@ -758,7 +1013,7 @@ SyntaxSnapshot SyntaxParser::update(const SyntaxSnapshot& previous, Transaction 
         original_offset = edit.end.value;
     }
     normalize_ranges(state->changed);
-    state->incremental = true;
+    state->incremental = !fresh_recovery;
     budget.check();
     return SyntaxSnapshot(std::move(state));
 }

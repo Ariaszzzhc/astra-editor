@@ -81,8 +81,8 @@ Json ApplicationService::syntax_view(const Json& params) {
             highlights.push_back({{"begin", span.range.begin.value}, {"end", span.range.end.value}, {"kind", highlight_name(span.kind)}});
         }
         auto outline = Json::array();
-        for (const auto& item : syntax.outline()) {
-            if (outline.size() == 1000) { result["outlineTruncated"] = true; break; }
+        if(syntax.outline_size()>1000)result["outlineTruncated"]=true;
+        for (const auto& item : syntax.outline_range(0,std::min(syntax.outline_size(),std::size_t{1000}))) {
             outline.push_back({{"name", item.name}, {"kind", outline_name(item.kind)}, {"begin", item.range.begin.value},
                                {"end", item.range.end.value}, {"selectionBegin", item.selection.begin.value},
                                {"selectionEnd", item.selection.end.value}, {"depth", item.depth}});

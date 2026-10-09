@@ -31,3 +31,19 @@ The design follows the measured-tree concepts in the product's references:
 [Rope & SumTree](https://zed.dev/blog/zed-decoded-rope-sumtree) and
 [Rope Optimizations](https://zed.dev/blog/zed-decoded-rope-optimizations-part-1).
 The implementation and differential tests in this repository were written for Astra.
+
+Syntax indexes retain measured semantic partitions in worker-owned immutable
+snapshots. Each partition holds relative ranges, canonical persistent highlight
+runs and cached byte/outline/object/node counts; parent offsets project them into
+the current document without rewriting unchanged descendants. Cache candidates
+must match an unchanged Rope interval, syntax child/field stamps and parent-derived
+semantic context. Small token values and uncolored gaps are interned with exact
+bounded keys. Update work includes changed units, direct-child enumeration and
+semantic cache publication; those latter traversals are explicit costs.
+
+`outline_range` reads bounded ordinal pages without materializing the full outline.
+Enclosing-object lookup uses the containing byte partition. Full-vector adapters
+materialize once on demand. `ParseOptions::incremental_analysis=false` preserves an
+independent full-traversal oracle for differential tests. Error recovery reparses
+from scratch to preserve canonical Tree-sitter results. Markdown block/inline
+analysis has not yet migrated to these persistent semantic partitions.
