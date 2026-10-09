@@ -1,6 +1,7 @@
 #pragma once
 
 #include "astra/ui/editor_channel.hpp"
+#include "astra/ui/workbench_layout.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -22,6 +23,13 @@ struct EditorWindowOptions {
     float font_size{16};
     std::filesystem::path resource_directory;
     std::string user_script;
+};
+
+struct WorkbenchViewState {
+    WorkbenchLayout layout;
+    TabStrip tab_strip;
+    std::vector<std::string> tabs;
+    std::size_t visible_file_rows{};
 };
 
 // Main-thread editor front end. Every document change goes through EditorChannel.
@@ -46,6 +54,8 @@ public:
     [[nodiscard]] std::string last_error() const;
     [[nodiscard]] std::string status_text() const;
     [[nodiscard]] std::string workspace_notice() const;
+    [[nodiscard]] WorkbenchLayout layout() const;
+    [[nodiscard]] WorkbenchViewState view_state() const;
 
 private:
     struct Impl;

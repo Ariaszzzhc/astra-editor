@@ -29,5 +29,7 @@ export function registerSearch() {
         await ui.update({sidebar:'search', sidebarVisible:true, status:'Searching workspace and unsaved buffers...'});
         await ui.refresh('search', parameters);
     });
-    ui.registerCommand({id:'workbench.cancelView', title:'Cancel view operation'}, ({id}) => ui.cancel(id));
+    ui.registerCommand({id:'workbench.cancelView', title:'Cancel view operation'}, async ({id}) => {
+        ui.cancel(id); await ui.update({status:'Cancelled'});
+    });
 }

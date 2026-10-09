@@ -1,0 +1,121 @@
+#include <astra/ui/file_tree_index.hpp>
+#include <astra/ui/workbench_layout.hpp>
+#include <doctest/doctest.h>
+
+#include <random>
+#include <set>
+#include <string>
+
+namespace {
+using Json = astra::protocol::Json;
+Json entry(std::string path, bool directory) { return {{"path", path}, {"directory", directory}}; }
+std::vector<std::string> flattened(const Json& source, const std::set<std::string>& collapsed) {
+    std::vector<std::string> result;
+    for (const auto& item : source) {
+        const auto path = item.at("path").get<std::string>();
+        bool hidden{};
+        for (const auto& parent : collapsed) { hidden |= path.size()>parent.size() && path.starts_with(parent) && path[parent.size()]=='/'; }
+        if (!hidden) { result.push_back(path); }
+    }
+    return result;
+}
+std::vector<std::string> paths(const astra::ui::FileTreeIndex::Snapshot& snapshot) {
+    std::vector<std::string> result;
+    snapshot.for_each([&](const auto& row) { result.push_back(row.value->at("path").template get<std::string>()); });
+    return result;
+}
+}
+
+TEST_CASE("presentation file tree collapse preserves nested state and old snapshots") {
+    astra::ui::FileTreeIndex index;
+    const auto source = Json::array({entry("a",true), entry("a/b",true), entry("a/b/x.cpp",false), entry("a/y.js",false), entry("z.md",false)});
+    index.reset(source);
+    const auto snapshot = index.snapshot();
+    index.toggle(1); CHECK(paths(index.snapshot()) == std::vector<std::string>{"a","a/b","a/y.js","z.md"});
+    index.toggle(0); CHECK(paths(index.snapshot()) == std::vector<std::string>{"a","z.md"});
+    index.toggle(0); CHECK(paths(index.snapshot()) == std::vector<std::string>{"a","a/b","a/y.js","z.md"});
+    index.toggle(1); CHECK(paths(index.snapshot()) == flattened(source, {}));
+    CHECK(paths(snapshot) == flattened(source, {})); CHECK(index.snapshot().validate());
+    CHECK_THROWS_AS(index.toggle(4), std::invalid_argument);
+    index.toggle(0); index.reset(source); CHECK(index.size()==2);
+    index.reset(Json::array({entry("z.md",false)})); CHECK(index.size()==1); CHECK_FALSE(index.collapsed("a"));
+    CHECK_THROWS_AS(index.reset(Json::array({entry("z",false),entry("z",false)})),std::invalid_argument);
+    CHECK(index.at(0)["path"]=="z.md");
+}
+
+TEST_CASE("presentation file tree random collapse matches a flat reference") {
+    constexpr std::uint32_t seed = 0xA57A2026;
+    INFO(seed);
+    std::mt19937 random(seed);
+    Json source = Json::array();
+    for (int folder=0;folder<80;++folder) {
+        const auto path = "folder"+std::to_string(folder);
+        source.push_back(entry(path,true));
+        for (int sub=0;sub<8;++sub) {
+            const auto child=path+"/sub"+std::to_string(sub);
+            source.push_back(entry(child,true));
+            for (int file=0;file<4;++file) { source.push_back(entry(child+"/file"+std::to_string(file)+".cpp",false)); }
+        }
+    }
+    astra::ui::FileTreeIndex index; index.reset(source);
+    std::set<std::string> collapsed;
+    for (int iteration=0;iteration<300;++iteration) {
+        const auto expected = flattened(source,collapsed);
+        const auto retained=index.snapshot();
+        const auto position = random()%index.size();
+        if (index.at(position)["directory"].get<bool>()) {
+            const auto path = index.at(position)["path"].get<std::string>();
+            if (!collapsed.erase(path)) { collapsed.insert(path); }
+            index.toggle(position);
+        }
+        CHECK(paths(index.snapshot())==flattened(source,collapsed));
+        CHECK(paths(retained)==expected); CHECK(index.snapshot().validate());
+        std::size_t visited{};
+        const auto count=std::min(index.size(),std::size_t{20});
+        index.for_each_range(index.size()-count,index.size(),[&](std::size_t row,const Json& value){CHECK(value==index.at(row));++visited;});
+        CHECK(visited==count);
+    }
+}
+
+TEST_CASE("presentation measured prefix seeking uses ordered nonadditive summaries") {
+    using Index=astra::ui::FileTreeIndex;
+    std::vector<Index::Row> rows;
+    for (std::size_t i=0;i<100;++i) { rows.push_back({std::make_shared<const Json>(entry(std::to_string(i),false)),i*3,i*3+1}); }
+    Index::Snapshot tree(std::move(rows));
+    for (std::size_t target=0;target<310;++target) {
+        const auto result=tree.seek_prefix([&](const Index::Summary& value){return value.last_source>target;});
+        const auto expected=std::min((target+2)/3,std::size_t{100});
+        CHECK(result.index==expected);
+        if (expected<100) { REQUIRE(result.item); CHECK(result.item->ordinal==expected*3); }
+        else { CHECK(result.item==nullptr); }
+    }
+}
+
+TEST_CASE("presentation workbench layout stays bounded across DPI and narrow windows") {
+    for (const auto scale : {1.0F,1.25F,1.5F,2.0F}) {
+        for (const auto width : {260.0F,640.0F,1440.0F}) {
+            const auto layout=astra::ui::WorkbenchLayout::measure(width*scale,900*scale,scale,true,300,true,true);
+            CHECK(layout.editor.x==layout.sidebar.right());
+            CHECK(layout.editor.right()==doctest::Approx(width*scale));
+            CHECK(layout.editor.bottom()==layout.status.y);
+            CHECK(layout.sidebar_rows.bottom()==layout.outline_header.y);
+            CHECK(layout.outline_rows.bottom()==layout.status.y);
+            CHECK(layout.editor.width>=0); CHECK(layout.sidebar.width>=0);
+            CHECK(layout.sidebar_handle.contains(layout.editor.x,100*scale)==(layout.sidebar.width>0));
+        }
+    }
+    const auto closed=astra::ui::WorkbenchLayout::measure(1440,900,1,false,300,false,true);
+    CHECK(closed.editor.x==44); CHECK(closed.sidebar.width==0);
+    CHECK_THROWS_AS((void)astra::ui::WorkbenchLayout::measure(0,900,1,true,300,true,true),std::invalid_argument);
+}
+
+TEST_CASE("presentation tabs use measured labels reveal active tabs and expose close hits") {
+    using astra::ui::TabStrip;
+    auto strip=TabStrip::measure({44,32,600,34},1,{40,150,20},0,0,true);
+    REQUIRE(strip.visible.size()==3); CHECK(strip.visible[0].bounds.width!=strip.visible[1].bounds.width);
+    CHECK(strip.next.width==0); CHECK(strip.visible[1].close.contains(strip.visible[1].bounds.right()-10,40));
+    strip=TabStrip::measure({44,32,360,34},1,{100,100,100,100},0,3,true);
+    REQUIRE_FALSE(strip.visible.empty()); CHECK(strip.visible.back().index==3);
+    CHECK(strip.next.right()==404); CHECK(strip.previous.width>0);
+    for (const auto& tab:strip.visible) { CHECK(tab.bounds.right()<=strip.previous.x); }
+}

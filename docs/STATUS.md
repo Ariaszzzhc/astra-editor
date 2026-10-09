@@ -61,8 +61,42 @@ logged `Submit called with no active command buffer` during its final idle frame
 the workflow assertions passed. `/INCREMENTAL:NO` now avoids reusing failed
 Windows linker images; the affected target rebuilds completed normally.
 
+The native workbench now uses one shared logical/DPI layout for painting and
+pointer hit testing: compact header/activity bar, resizable sidebar, collapsible
+Explorer root, folded Outline section, adaptive shaped tabs with overflow and
+drag reorder, and responsive metadata status. UI text uses its own configurable
+font size; theme roles cover chrome, inputs, selections, status and notices.
+Icons are consistent Skia vector paths. File rows use a persistent measured
+SumTree with source-order prefix seeking and structurally shared collapse/expand
+ranges; rendering visits only the visible viewport. Encoding metadata reports
+the persisted UTF-8/BOM/UTF-16/Latin-1 file format instead of a constant label.
+
+Current Windows Debug checks:
+
+```powershell
+./scripts/xmake.ps1 build -y gui-presentation-smoke astra-tests gui-smoke gui-workspace-smoke
+./build/windows/x64/debug/astra-tests.exe --no-version '--test-case=SumTree*,presentation*,workbench*,QuickJS*,JavaScript*,application file metadata*'
+./build/windows/x64/debug/gui-presentation-smoke.exe
+./build/windows/x64/debug/gui-smoke.exe --tcp
+./build/windows/x64/debug/gui-workspace-smoke.exe
+```
+
+All passed: **35 cases / 68,556 assertions** in the focused suite, and all three
+real GUI executables. Presentation differential tests retain old snapshots while
+performing 300 toggles over 3,280 rows (seed `0xA57A2026`). Layout checks cover
+1/1.25/1.5/2 scale factors and narrow/wide logical widths. The native GUI fixture
+uses 1,505 real workspace entries, SDL folder/splitter/Outline/tab interactions,
+tab overflow/reorder, resize and a shortcut followed by text in the same event
+batch. Actual GPU screenshots `build/graphics/gui-workbench.png` and
+`gui-workbench-narrow.png` were visually inspected. The resize fixture was fixed
+to convert logical dimensions using the actual window scale. This establishes
+automated scale/layout checks, not physical monitor DPI transitions or installed
+IME candidate interaction. The final idle-frame Skia warning noted above remains.
+Intermediate build failures (float narrowing, missing summary equality and an
+incorrect test-only file-save argument order) were corrected before these runs.
+
 Remaining work includes the rest of the public UI/provider contract,
-component/layout/theme/icon migration, virtualized indexed views, incremental
+native component extraction, indexed diagnostic/display views, incremental
 syntax indexes, full Debug/Release and native GUI acceptance, and packaging the
 new revision. Historical M0-M8 states below are not completion claims for this
 active revision.

@@ -99,6 +99,7 @@ For a focused check after configuring the desired mode:
 | `gui-services-smoke` | Actual clangd and Git through production GUI commands |
 | `gui-recovery-smoke` | Restore review, dirty preservation, durable exit and checkpoint-error handling |
 | `gui-workspace-smoke` | Dirty/untitled search navigation, search options, confirmed replacement, external conflict and guarded reload |
+| `gui-presentation-smoke` | Indexed file-tree collapse, resizable sidebar, Outline, adaptive tabs/reorder/overflow, logical resize and same-batch prompt focus |
 
 Screenshots and acceptance fixtures stay under `build/`; GUI failures preserve
 their fixture for diagnosis. Timers and bounded polling wait for observable

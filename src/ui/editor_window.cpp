@@ -2,6 +2,8 @@
 #include "astra/ui/renderer.hpp"
 #include "astra/ui/text_layout.hpp"
 #include "astra/ui/workbench.hpp"
+#include "astra/ui/file_tree_index.hpp"
+#include "astra/ui/icons.hpp"
 #include "astra/io/file_store.hpp"
 
 #include "include/core/SkCanvas.h"
@@ -65,6 +67,7 @@ struct EditorWindow::Impl {
         Json metadata;
         std::string path;
         Json editor_config = Json::object();
+        std::string encoding{"UTF-8"};
         std::string view_revision;
         std::map<std::size_t, Line> lines;
         std::size_t first_line{};
@@ -142,11 +145,25 @@ struct EditorWindow::Impl {
     SkColor active_tab_background{0xFF191D27};
     SkColor error_color{0xFFF14C4C};
     SkColor warning_color{0xFFD7BA7D};
+    SkColor hover_color{0xFF2A2D2E};
+    SkColor current_line_color{0xFF272727};
+    SkColor input_color{0xFF313131};
+    SkColor cursor_color{0xFFAEAFAD};
+    SkColor scrollbar_color{0xFF424242};
+    SkColor folder_color{0xFFD7BA7D};
+    SkColor code_icon_color{0xFF75BEFF};
+    SkColor script_icon_color{0xFFE5C07B};
+    SkColor added_color{0xFF73C991};
+    SkColor changed_color{0xFF75BEFF};
+    SkColor notice_background{0xFF332D18};
+    SkColor recovery_background{0xFF263222};
+    SkColor error_background{0xFF3A1D1D};
+    SkColor status_foreground{0xFFCCCCCC};
     std::map<std::string, SkColor> syntax_colors{
         {"comment", 0xFF6A9955}, {"string", 0xFFCE9178}, {"number", 0xFFB5CEA8}, {"keyword", 0xFFC586C0},
         {"type", 0xFF4EC9B0}, {"function", 0xFFDCDCAA}, {"property", 0xFF9CDCFE}, {"variable", 0xFF9CDCFE},
         {"heading", 0xFF569CD6}, {"error", 0xFFF44747}};
-    Json tree_entries = Json::array();
+    FileTreeIndex file_tree;
     Json search_results = Json::array();
     std::string search_query;
     std::string search_operation;
@@ -172,8 +189,6 @@ struct EditorWindow::Impl {
     std::string git_path;
     std::string git_preview;
     bool git_staged{};
-    std::set<std::string> collapsed;
-    std::vector<Json> visible_tree;
     std::size_t tree_scroll{};
     std::map<std::string, TextLayout> labels;
     float scale{1};
@@ -184,7 +199,16 @@ struct EditorWindow::Impl {
     float content_bottom{};
     float gutter{};
     bool show_sidebar{true};
-    bool show_outline{true};
+    bool show_outline{};
+    bool explorer_expanded{true};
+    float sidebar_width{248};
+    float ui_font_size{13};
+    WorkbenchLayout geometry;
+    TabStrip tab_strip;
+    bool reveal_tab{true};
+    bool dragging_sidebar{};
+    std::string dragging_tab;
+    float tab_drag_start{};
     bool running{true};
     bool stopping_workbench{};
     Clock::time_point workbench_shutdown_deadline{};
@@ -268,6 +292,7 @@ struct EditorWindow::Impl {
         };
         enqueue({"script.settings", Json::object(), {}, false, [this](const Json& result) {
             settings = result.value("settings", Json::object());
+            settings.merge_patch(workbench->settings());
             editor_settings = settings.value("editor", Json::object());
             options.font_size = editor_settings.value("fontSize", options.font_size);
             if (!std::isfinite(options.font_size) || options.font_size < 6 || options.font_size > 128) {
@@ -289,6 +314,16 @@ struct EditorWindow::Impl {
             color("accent", accent); color("selection", selection_color); color("status", status_color);
             color("activityBar", activity_background); color("activeTab", active_tab_background);
             color("error", error_color); color("warning", warning_color);
+            color("hover", hover_color); color("currentLine", current_line_color); color("input", input_color);
+            color("cursor", cursor_color); color("scrollbar", scrollbar_color); color("folder", folder_color);
+            color("codeIcon", code_icon_color); color("scriptIcon", script_icon_color);
+            color("added", added_color); color("changed", changed_color); color("noticeBackground", notice_background);
+            color("recoveryBackground", recovery_background); color("errorBackground", error_background);
+            color("statusForeground", status_foreground);
+            const auto desired_sidebar=settings.value("workbench",Json::object()).value("sidebarWidth",248.0F);
+            const auto desired_ui_font=settings.value("workbench",Json::object()).value("uiFontSize",13.0F);
+            if (!std::isfinite(desired_sidebar) || !std::isfinite(desired_ui_font) || desired_ui_font<9 || desired_ui_font>16) { throw std::runtime_error("Invalid workbench sidebarWidth or uiFontSize (9 to 16)"); }
+            sidebar_width=std::clamp(desired_sidebar,180.0F,480.0F);ui_font_size=desired_ui_font;
             for (auto& [name, value] : syntax_colors) { color(name, value); }
             if (result.contains("keybindings") && result["keybindings"].is_object()) {
                 for (const auto& [key, command] : result["keybindings"].items()) {
@@ -350,6 +385,7 @@ struct EditorWindow::Impl {
             document.path = path;
         }
         if (metadata.contains("editorConfig")) { document.editor_config = metadata["editorConfig"]; }
+        if (metadata.contains("encoding")) { document.encoding = metadata.at("encoding").get<std::string>(); }
         if (document.view_revision != revision) { document.needs_lines = true; document.needs_syntax = true; document.diagnostics.clear(); }
         document.metadata = metadata;
         if (metadata.value("dirty", false)) { document.git_gutter.clear(); }
@@ -359,6 +395,7 @@ struct EditorWindow::Impl {
     void activate(const std::string& id) {
         if (!documents.contains(id)) { return; }
         active_id = id;
+        reveal_tab = true;
         documents.at(id).needs_lines = true;
         preedit.clear();
         vertical_column.reset();
@@ -452,8 +489,11 @@ struct EditorWindow::Impl {
     void scroll_to(float y);
     void vertical(bool down, bool extend);
     void draw();
+    void measure_layout();
     void draw_prompt(SkCanvas* canvas, float width, float height);
     void label(SkCanvas* canvas, std::string_view text, float x, float y, float size, SkColor color = 0);
+    const TextLayout& label_layout(std::string_view text, float size, SkColor color);
+    void elided_label(SkCanvas* canvas,std::string_view text,float x,float y,float size,float available,SkColor color);
     void rectangle(SkCanvas* canvas, float x, float y, float width, float height, SkColor color);
     void reveal_caret();
     std::vector<const MenuCommand*> filtered_commands() const;
@@ -974,7 +1014,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         const auto view = params.at("view").get<std::string>();
         const auto& model = params.at("model");
         if (view == "explorer") {
-            tree_entries = model.at("entries");
+            file_tree.reset(model.at("entries"));
             status = model.value("truncated", false) ? "File tree reached its configured limit" : "Workspace ready";
         } else if (view == "git") { git_status = model; }
         else if (view == "search") {
@@ -995,6 +1035,9 @@ void EditorWindow::Impl::execute_policy(std::string_view name, const Json& param
             if (outcome.error->value("name", std::string{}) != "AbortError") { error = outcome.error->value("message", std::string("Workbench action failed")); status = "Action failed"; }
         } else if (outcome.value.is_object() && outcome.value.contains("id") && outcome.value.contains("revision")) { accept_metadata(outcome.value); reveal_caret(); }
     });
+    // Settle ready native focus/layout primitives before the next SDL event.
+    // Neither tick waits for a service future, parser or disk operation.
+    workbench->poll(); workbench->poll();
 }
 
 void EditorWindow::Impl::command(std::string_view name) {
@@ -1626,6 +1669,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
     const auto pixels = renderer.pixel_size();
     const auto ratio_x = logical_width > 0 ? static_cast<float>(pixels.width) / static_cast<float>(logical_width) : 1;
     const auto ratio_y = logical_height > 0 ? static_cast<float>(pixels.height) / static_cast<float>(logical_height) : 1;
+    measure_layout();
     switch (input.type) {
     case SDL_EVENT_QUIT: case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
         command("ui.closeWindow"); break;
@@ -1645,7 +1689,19 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         break;
     case SDL_EVENT_MOUSE_MOTION:
         mouse_x = input.motion.x * ratio_x; mouse_y = input.motion.y * ratio_y;
-        if (dragging_scroll) { scroll_to(mouse_y); }
+        if (dragging_sidebar) { sidebar_width=std::clamp((mouse_x-geometry.activity.right())/scale,180.0F,480.0F); }
+        else if (!dragging_tab.empty() && std::abs(mouse_x-tab_drag_start)>8*scale) {
+            for (const auto& tab : tab_strip.visible) {
+                if (!tab.bounds.contains(mouse_x,mouse_y)) { continue; }
+                const auto found=std::ranges::find(tabs,dragging_tab);
+                if (found!=tabs.end() && tabs[tab.index]!=dragging_tab) {
+                    const auto id=*found; tabs.erase(found);
+                    tabs.insert(tabs.begin()+static_cast<std::ptrdiff_t>(tab.index),id); reveal_tab=true;
+                }
+                break;
+            }
+        }
+        else if (dragging_scroll) { scroll_to(mouse_y); }
         else if (dragging) { point(mouse_x, mouse_y, true, false); }
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: {
@@ -1712,15 +1768,42 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         }
         if (recovery_available && mouse_x >= left + 12 * scale && mouse_x < right - 12 * scale &&
             mouse_y >= content_bottom - 100 * scale && mouse_y < content_bottom - 64 * scale) { command("ui.recovery"); break; }
-        if (mouse_y < 40 * scale) { command("ui.commandPalette"); break; }
-        if (mouse_x < 48 * scale) {
-            if (mouse_y >= 95 * scale && mouse_y < 143 * scale) { git_view = false; show_sidebar = true; command("ui.search"); }
-            else if (mouse_y >= 143 * scale && mouse_y < 191 * scale) { command("ui.gitStatus"); }
-            else { search_view = false; git_view = false; show_sidebar = true; tree_scroll = 0; }
+        if (geometry.header.contains(mouse_x,mouse_y)) { command("ui.commandPalette"); break; }
+        if (geometry.sidebar_handle.contains(mouse_x,mouse_y)) { dragging_sidebar=true; break; }
+        if (geometry.activity.contains(mouse_x,mouse_y)) {
+            const auto index=static_cast<int>((mouse_y-geometry.activity.y)/(48*scale));
+            if (mouse_y>geometry.status.y-40*scale) command("ui.commandPalette");
+            else if (index==1) { git_view=false; show_sidebar=true; command("ui.search"); }
+            else if (index==2) command("ui.gitStatus");
+            else if (index==3) command("ui.diagnostics");
+            else command("ui.explorer");
             break;
         }
-        if (show_sidebar && mouse_x < left && mouse_y >= 100 * scale) {
-            const auto row = tree_scroll + static_cast<std::size_t>((mouse_y - 100 * scale) / (25 * scale));
+        if (geometry.outline_header.contains(mouse_x,mouse_y)) { command("ui.toggleOutline"); break; }
+        if (geometry.sidebar.contains(mouse_x,mouse_y) && mouse_y<geometry.sidebar_rows.y) {
+            const Box refresh{left-34*scale,geometry.sidebar.y+5*scale,28*scale,26*scale};
+            if (refresh.contains(mouse_x,mouse_y)) {
+                const auto view=git_view ? "git" : (search_view ? "search" : "explorer");
+                if (busy_views.value(view,false)) execute_policy("workbench.cancelView",{{"id",view}});
+                else if (git_view) command("ui.gitStatus");
+                else if (search_view) search_workspace(false);
+                else command("ui.refreshTree");
+            } else if (!git_view && !search_view && mouse_y>=geometry.sidebar.y+32*scale) { explorer_expanded=!explorer_expanded; tree_scroll=0; }
+            break;
+        }
+        if (geometry.outline_rows.contains(mouse_x,mouse_y)) {
+            if (const auto* document=current();document && document->syntax_revision==document->view_revision) {
+                const auto index=static_cast<std::size_t>((mouse_y-geometry.outline_rows.y)/geometry.sidebar_row_height);
+                if (index<document->outline.size()) {
+                    const auto& symbol=document->outline[index];
+                    set_selections(Json::array({{{"anchor",symbol.at("selectionBegin")},{"head",symbol.at("selectionEnd")}}}),document->syntax_revision);
+                }
+            }
+            break;
+        }
+        if (geometry.sidebar_rows.contains(mouse_x,mouse_y)) {
+            if (!git_view && !search_view && !explorer_expanded) break;
+            const auto row = tree_scroll + static_cast<std::size_t>((mouse_y-geometry.sidebar_rows.y)/geometry.sidebar_row_height);
             if (git_view) {
                 const auto entries = git_status.value("entries", Json::array());
                 if (row < entries.size()) {
@@ -1730,29 +1813,23 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                 }
             } else if (search_view) {
                 if (row < search_results.size()) { open_search_result(search_results[row]); }
-            } else if (row < visible_tree.size()) {
-                const auto path = visible_tree[row].at("path").get<std::string>();
-                if (visible_tree[row].value("directory", false)) {
-                    if (collapsed.contains(path)) { collapsed.erase(path); } else { collapsed.insert(path); }
+            } else if (row < file_tree.size()) {
+                const auto path = file_tree.at(row).at("path").get<std::string>();
+                if (file_tree.at(row).at("directory").get<bool>()) {
+                    file_tree.toggle(row);
                 } else { open_path(path); }
             }
             break;
         }
-        if (mouse_y >= 40 * scale && mouse_y < 78 * scale && mouse_x >= left && mouse_x < right) {
-            const auto index = first_tab + static_cast<std::size_t>((mouse_x - left) / (180 * scale));
-            if (index < tabs.size()) {
-                const auto id = tabs[index]; activate(id);
-                if (std::fmod(mouse_x - left, 180 * scale) > 153 * scale) { close_document(id); }
-            }
-            break;
-        }
-        if (show_outline && mouse_x >= right && mouse_y >= 110 * scale) {
-            if (const auto* document = current(); document && document->syntax_revision == document->view_revision) {
-                const auto index = static_cast<std::size_t>((mouse_y - 110 * scale) / (27 * scale));
-                if (index < document->outline.size()) {
-                    const auto& symbol = document->outline[index];
-                    set_selections(Json::array({{{"anchor", symbol.at("selectionBegin")}, {"head", symbol.at("selectionEnd")}}}), document->syntax_revision);
-                }
+        if (geometry.tabs.contains(mouse_x,mouse_y)) {
+            if (tab_strip.previous.contains(mouse_x,mouse_y)) { if (first_tab) --first_tab; reveal_tab=false; }
+            else if (tab_strip.next.contains(mouse_x,mouse_y)) { if (first_tab+1<tabs.size()) ++first_tab; reveal_tab=false; }
+            else for (const auto& tab : tab_strip.visible) {
+                if (!tab.bounds.contains(mouse_x,mouse_y)) continue;
+                const auto id=tabs[tab.index]; activate(id);
+                if (tab.close.contains(mouse_x,mouse_y)) { close_document(id); }
+                else { dragging_tab=id; tab_drag_start=mouse_x; }
+                break;
             }
             break;
         }
@@ -1768,7 +1845,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         break;
     }
     case SDL_EVENT_MOUSE_BUTTON_UP:
-        if (input.button.button == SDL_BUTTON_LEFT) { dragging = false; dragging_scroll = false; }
+        if (input.button.button == SDL_BUTTON_LEFT) { dragging=false; dragging_scroll=false; dragging_sidebar=false; dragging_tab.clear(); }
         break;
     case SDL_EVENT_MOUSE_WHEEL: {
         const auto direction = input.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0F : 1.0F;
@@ -1777,7 +1854,10 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             prompt_choice = static_cast<std::size_t>(std::max(0LL, static_cast<long long>(prompt_choice) - shift));
             break;
         }
-        if (show_sidebar && mouse_x < left) {
+        if (geometry.tabs.contains(mouse_x,mouse_y)) {
+            const auto direction_step=input.wheel.y*direction<0 ? 1 : -1;
+            first_tab=static_cast<std::size_t>(std::clamp(static_cast<long long>(first_tab)+direction_step,0LL,static_cast<long long>(tabs.empty() ? 0 : tabs.size()-1))); reveal_tab=false;
+        } else if (geometry.sidebar.contains(mouse_x,mouse_y)) {
             const auto shift = static_cast<long long>(std::round(input.wheel.y * direction * 3));
             tree_scroll = static_cast<std::size_t>(std::max(0LL, static_cast<long long>(tree_scroll) - shift));
         } else if (auto* document = current()) {
@@ -1814,6 +1894,11 @@ void EditorWindow::Impl::rectangle(SkCanvas* canvas, float x, float y, float wid
 
 void EditorWindow::Impl::label(SkCanvas* canvas, std::string_view text, float x, float y, float size, SkColor color) {
     if (text.empty()) { return; }
+    label_layout(text, size, color).draw(canvas, x, y);
+}
+
+const TextLayout& EditorWindow::Impl::label_layout(std::string_view text, float size, SkColor color) {
+    size=size*ui_font_size/13.0F;
     if (color == 0) { color = foreground; }
     std::string display(text);
     std::ranges::replace(display, '\n', ' ');
@@ -1826,12 +1911,47 @@ void EditorWindow::Impl::label(SkCanvas* canvas, std::string_view text, float x,
         style.font_families = {"Segoe UI", "Microsoft YaHei UI", "Segoe UI Emoji"};
         found = labels.emplace(cache_key, fonts.layout(std::move(display), style)).first;
     }
-    found->second.draw(canvas, x, y);
+    return found->second;
+}
+
+void EditorWindow::Impl::elided_label(SkCanvas* canvas,std::string_view text,float x,float y,float size,float available,SkColor color) {
+    if (text.empty() || available<=0) return;
+    const auto& full=label_layout(text,size,color);
+    if (full.width()<=available) { full.draw(canvas,x,y); return; }
+    const auto points=full.grapheme_boundaries();
+    const std::vector<std::size_t> boundaries(points.begin(),points.end());
+    if (label_layout("…",size,color).width()>available) return;
+    std::size_t low{},high=boundaries.size()-1;
+    while (low<high) {
+        const auto middle=(low+high+1)/2;
+        const auto candidate=std::string(text.substr(0,boundaries[middle]))+"…";
+        if (label_layout(candidate,size,color).width()<=available) low=middle;
+        else high=middle-1;
+    }
+    label(canvas,std::string(text.substr(0,boundaries[low]))+"…",x,y,size,color);
+}
+
+void EditorWindow::Impl::measure_layout() {
+    const auto pixels = renderer.pixel_size();
+    scale = renderer.dpi_scale();
+    geometry = WorkbenchLayout::measure(static_cast<float>(pixels.width), static_cast<float>(pixels.height), scale,
+        show_sidebar, sidebar_width, show_outline, !search_view && !git_view);
+    left = geometry.editor.x; right = geometry.editor.right();
+    content_top = geometry.editor.y; content_bottom = geometry.editor.bottom();
+    std::vector<float> widths;
+    for (const auto& id : tabs) {
+        const auto& path = documents.at(id).path;
+        widths.push_back(label_layout(path.empty() ? "Untitled" : basename(path), 13, foreground).width());
+    }
+    const auto active = std::ranges::find(tabs, active_id);
+    const auto index = active == tabs.end() ? 0 : static_cast<std::size_t>(active-tabs.begin());
+    tab_strip = TabStrip::measure(geometry.tabs, scale, widths, first_tab, index, reveal_tab);
+    first_tab = tab_strip.first; reveal_tab = false;
 }
 
 void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height) {
     if (prompt == Prompt::none) { return; }
-    rectangle(canvas, 0, 0, width, height, SkColorSetARGB(140, 6, 9, 15));
+    rectangle(canvas, 0, 0, width, height, SkColorSetA(background, 160));
     if (prompt == Prompt::recovery_flushing) {
         const auto x = (width - 520 * scale) / 2;
         rectangle(canvas, x, 90 * scale, 520 * scale, 130 * scale, panel_background);
@@ -1849,9 +1969,9 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         canvas->save(); canvas->clipRect(SkRect::MakeLTRB(x + 24 * scale, 147 * scale, x + 616 * scale, 205 * scale));
         message.draw(canvas, x + 24 * scale, 147 * scale); canvas->restore();
         label(canvas, "Exit anyway may leave recovery state incomplete.", x + 24 * scale, 216 * scale, 13, warning_color);
-        rectangle(canvas, x + 24 * scale, 245 * scale, 166 * scale, 36 * scale, 0xFF345F9D);
+        rectangle(canvas, x + 24 * scale, 245 * scale, 166 * scale, 36 * scale, accent);
         rectangle(canvas, x + 218 * scale, 245 * scale, 182 * scale, 36 * scale, border_color);
-        rectangle(canvas, x + 426 * scale, 245 * scale, 190 * scale, 36 * scale, 0xFF673746);
+        rectangle(canvas, x + 426 * scale, 245 * scale, 190 * scale, 36 * scale, error_background);
         label(canvas, "Retry (Enter)", x + 48 * scale, 253 * scale, 13);
         label(canvas, "Keep open (Esc)", x + 239 * scale, 253 * scale, 13);
         label(canvas, "Exit anyway (E)", x + 449 * scale, 253 * scale, 13);
@@ -1877,7 +1997,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         }
         if (entries.empty()) { label(canvas, "This session contains no recoverable buffers.", x + 24 * scale, 185 * scale, 13, muted); }
         canvas->restore();
-        rectangle(canvas, x + 24 * scale, 425 * scale, 284 * scale, 36 * scale, 0xFF345F9D);
+        rectangle(canvas, x + 24 * scale, 425 * scale, 284 * scale, 36 * scale, accent);
         rectangle(canvas, x + 370 * scale, 425 * scale, 284 * scale, 36 * scale, border_color);
         label(canvas, "Restore session", x + 97 * scale, 433 * scale, 13);
         label(canvas, "Cancel", x + 481 * scale, 433 * scale, 13);
@@ -1891,7 +2011,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         const auto found = documents.find(prompt_document);
         const auto name = found == documents.end() || found->second.path.empty() ? "Untitled" : basename(found->second.path);
         label(canvas, name + " has unsaved edits.", x + 24 * scale, 147 * scale, 13, muted);
-        rectangle(canvas, x + 24 * scale, 190 * scale, 136 * scale, 34 * scale, 0xFF345F9D);
+        rectangle(canvas, x + 24 * scale, 190 * scale, 136 * scale, 34 * scale, accent);
         rectangle(canvas, x + 178 * scale, 190 * scale, 146 * scale, 34 * scale, border_color);
         rectangle(canvas, x + 342 * scale, 190 * scale, 154 * scale, 34 * scale, border_color);
         label(canvas, "Save", x + 72 * scale, 197 * scale, 13);
@@ -1915,8 +2035,8 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
             if (line++ >= prompt_choice) {
                 TextLayoutOptions style; style.font_size = 14; style.dpi_scale = scale; style.color = foreground; style.wrap_width = 630 * scale;
                 if (prompt == Prompt::git_diff) {
-                    if (part.starts_with('+') && !part.starts_with("+++")) { style.color = 0xFF81B88B; }
-                    else if (part.starts_with('-') && !part.starts_with("---")) { style.color = 0xFFFF8C8C; }
+                    if (part.starts_with('+') && !part.starts_with("+++")) { style.color = added_color; }
+                    else if (part.starts_with('-') && !part.starts_with("---")) { style.color = error_color; }
                     else if (part.starts_with("@@")) { style.color = accent; }
                 }
                 auto layout = fonts.layout(std::move(part), style);
@@ -1938,7 +2058,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         label(canvas, reload ? "Reload from disk and replace unsaved edits?" : (rename ? "Apply symbol rename?" : (discard ? "Discard the previewed working tree change?" : "Replace " + std::to_string(search_results.size()) + " workspace matches?")), x + 24 * scale, 108 * scale, 17);
         label(canvas, reload ? "The disk version will replace this buffer's unsaved content." : (rename ? std::to_string(rename_plan.at("documents").size()) + " file(s) will become edited buffers" : (discard ? git_path : "Find: " + search_query)), x + 24 * scale, 146 * scale, 13, muted);
         label(canvas, reload ? "Cancel to preserve the current buffer." : (rename ? "Review files below. Save afterward to persist changes." : (discard ? "This removes changes from disk. It cannot be undone here." : "Replace with: " + replacement_text)), x + 24 * scale, 172 * scale, 13, muted);
-        rectangle(canvas, x + 24 * scale, 211 * scale, 236 * scale, 34 * scale, 0xFF345F9D);
+        rectangle(canvas, x + 24 * scale, 211 * scale, 236 * scale, 34 * scale, accent);
         rectangle(canvas, x + 340 * scale, 211 * scale, 236 * scale, 34 * scale, border_color);
         label(canvas, reload ? "Reload file" : (rename ? "Apply rename" : (discard ? "Discard changes" : "Replace matches")), x + 85 * scale, 218 * scale, 13);
         label(canvas, "Cancel", x + 432 * scale, 218 * scale, 13);
@@ -1991,7 +2111,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         const char* titles[] = {"Match case (Alt+C)", "Regex (Alt+R)", "Whole word (Alt+W)"};
         for (std::size_t i = 0; i < 3; ++i) {
             const auto bx = x + (12 + static_cast<float>(i) * 194) * scale;
-            rectangle(canvas, bx, 132 * scale, 184 * scale, 26 * scale, selected[i] ? 0xFF345F9D : border_color);
+            rectangle(canvas, bx, 132 * scale, 184 * scale, 26 * scale, selected[i] ? accent : border_color);
             label(canvas, titles[i], bx + 10 * scale, 138 * scale, 11, selected[i] ? foreground : muted);
         }
     }
@@ -2011,7 +2131,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
     }
     for (std::size_t i = 0; i < count; ++i) {
         const auto y = (130 + static_cast<float>(i) * 34) * scale;
-        if (first + i == prompt_choice) { rectangle(canvas, x + 6 * scale, y, 588 * scale, 32 * scale, 0xFF2A3C59); }
+        if (first + i == prompt_choice) { rectangle(canvas, x + 6 * scale, y, 588 * scale, 32 * scale, hover_color); }
         canvas->save(); canvas->clipRect(SkRect::MakeLTRB(x + 12 * scale, y, x + 588 * scale, y + 33 * scale));
         if (language_list) {
             const auto& item = language_items[language_matches[first + i]];
@@ -2038,123 +2158,128 @@ void EditorWindow::Impl::draw() {
     const auto height = static_cast<float>(pixels.height);
     scale = renderer.dpi_scale();
     row_height = std::ceil(options.font_size * scale * std::clamp(editor_settings.value("lineHeight", 1.4F), 1.0F, 4.0F) + 3 * scale);
-    left = (show_sidebar ? 280.0F : 48.0F) * scale;
-    const bool outline_visible = show_outline && width > 1150 * scale;
-    right = width - (outline_visible ? 248 * scale : 0);
-    content_top = 108 * scale;
-    content_bottom = height - 28 * scale;
-    gutter = 64 * scale;
+    measure_layout();
+    gutter = 60 * scale;
     canvas->clear(background);
-
-    // Native window decorations handle resize/title controls. The application
-    // chrome stays inside SDL's drawable area and uses the same GPU canvas.
-    rectangle(canvas, 0, 0, width, 40 * scale, activity_background);
-    rectangle(canvas, 0, 39 * scale, width, scale, border_color);
-    label(canvas, "A", 17 * scale, 8 * scale, 18, accent);
-    label(canvas, "ASTRA", 50 * scale, 12 * scale, 12, foreground);
-    const auto search_width = std::min(420 * scale, width * 0.35F);
-    if ((width - search_width) / 2 > 300 * scale) { label(canvas, options.workspace_name, 123 * scale, 12 * scale, 12, muted); }
-    rectangle(canvas, (width - search_width) / 2, 7 * scale, search_width, 26 * scale, panel_background);
-    label(canvas, search_width > 360 * scale ? "Search commands or open a file" : "Commands", (width - search_width) / 2 + 16 * scale, 11 * scale, 12, muted);
-    label(canvas, "Ctrl+Shift+P", (width + search_width) / 2 - 90 * scale, 13 * scale, 10, muted);
-
-    rectangle(canvas, 0, 40 * scale, 48 * scale, height - 68 * scale, activity_background);
-    rectangle(canvas, 0, 53 * scale, 3 * scale, 32 * scale, accent);
-    SkPaint icon; icon.setColor(foreground); icon.setStyle(SkPaint::kStroke_Style); icon.setStrokeWidth(1.6F * scale); icon.setAntiAlias(true);
-    canvas->drawRect(SkRect::MakeXYWH(16 * scale, 56 * scale, 17 * scale, 21 * scale), icon);
-    canvas->drawRect(SkRect::MakeXYWH(12 * scale, 52 * scale, 17 * scale, 21 * scale), icon);
-    icon.setColor(muted);
-    canvas->drawCircle(23 * scale, 115 * scale, 8 * scale, icon);
-    canvas->drawLine(29 * scale, 121 * scale, 35 * scale, 128 * scale, icon);
-    label(canvas, "Y", 17 * scale, 158 * scale, 21, muted);
-    label(canvas, "{ }", 10 * scale, 204 * scale, 15, muted);
-    label(canvas, "⚙", 13 * scale, height - 66 * scale, 19, muted);
-
-    if (show_sidebar) {
-        rectangle(canvas, 48 * scale, 40 * scale, left - 48 * scale, height - 68 * scale, sidebar_background);
-        label(canvas, git_view ? "SOURCE CONTROL" : (search_view ? "SEARCH" : "EXPLORER"), 66 * scale, 55 * scale, 11, muted);
-        label(canvas, "···", left - 31 * scale, 51 * scale, 16, muted);
-        rectangle(canvas, 48 * scale, 81 * scale, left - 48 * scale, 22 * scale, 0xFF1C222E);
-        label(canvas, git_view ? git_status.value("branch", std::string("Loading repository...")) : (search_view ? (std::to_string(search_results.size()) + " matches: " + search_query) : "⌄  " + options.workspace_name), 64 * scale, 83 * scale, 11, foreground);
-        visible_tree.clear();
-        for (const auto& entry : tree_entries) {
-            const auto path = entry.at("path").get<std::string>();
-            bool hidden{};
-            for (const auto& folder : collapsed) {
-                if (path.size() > folder.size() && path.starts_with(folder) && (path[folder.size()] == '/' || path[folder.size()] == '\\')) { hidden = true; break; }
-            }
-            if (!hidden) { visible_tree.push_back(entry); }
-        }
-        const auto git_entries = git_status.value("entries", Json::array());
-        const auto sidebar_count = git_view ? git_entries.size() : (search_view ? search_results.size() : visible_tree.size());
-        if (tree_scroll >= sidebar_count) { tree_scroll = sidebar_count == 0 ? 0 : sidebar_count - 1; }
-        canvas->save();
-        canvas->clipRect(SkRect::MakeLTRB(48 * scale, 104 * scale, left, content_bottom));
-        for (std::size_t i = tree_scroll; i < sidebar_count; ++i) {
-            const auto y = (105 + static_cast<float>(i - tree_scroll) * 25) * scale;
-            if (y > content_bottom) { break; }
-            if (git_view) {
-                const auto& entry = git_entries[i];
-                const auto change = entry.at("unstaged") != "unchanged" ? entry.at("unstaged").get<std::string>() : entry.at("staged").get<std::string>();
-                const auto mark = change == "untracked" ? "?" : (change.empty() ? " " : std::string(1, static_cast<char>(std::toupper(static_cast<unsigned char>(change.front())))));
-                label(canvas, mark, 62 * scale, y, 12, entry.value("conflict", false) ? 0xFFF44747 : 0xFF8BC78A);
-                label(canvas, entry.at("path").get<std::string>(), 82 * scale, y, 12, foreground);
-                if (entry.at("staged") != "unchanged" && entry.at("staged") != "untracked") { label(canvas, "+", left - 24 * scale, y, 12, accent); }
-                continue;
-            }
-            if (search_view) {
-                const auto& match = search_results[i];
-                label(canvas, match.at("path").get<std::string>() + ":" + std::to_string(match.at("line").get<std::size_t>() + 1), 66 * scale, y, 12, foreground);
-                continue;
-            }
-            const auto path = visible_tree[i].at("path").get<std::string>();
-            const auto depth = static_cast<float>(std::count(path.begin(), path.end(), '/') + std::count(path.begin(), path.end(), '\\'));
-            const auto x = (65 + 12 * depth) * scale;
-            const auto directory = visible_tree[i].value("directory", false);
-            if (const auto* document = current(); document && document->path == path) { rectangle(canvas, 48 * scale, y - 2 * scale, left - 48 * scale, 25 * scale, 0xFF27364D); }
-            if (directory) {
-                label(canvas, collapsed.contains(path) ? "›" : "⌄", x, y, 13, muted);
-                rectangle(canvas, x + 15 * scale, y + 5 * scale, 13 * scale, 10 * scale, 0xFFB8A179);
-                rectangle(canvas, x + 15 * scale, y + 2 * scale, 6 * scale, 5 * scale, 0xFFB8A179);
-            } else {
-                const auto extension = path.substr(path.find_last_of('.') == std::string::npos ? path.size() : path.find_last_of('.'));
-                const auto color = extension == ".cpp" || extension == ".hpp" ? 0xFF80ADF3 : (extension == ".js" || extension == ".json" ? 0xFFE4C474 : 0xFF9AACBE);
-                label(canvas, extension == ".cpp" || extension == ".hpp" ? "C" : (extension == ".js" ? "JS" : "·"), x + 13 * scale, y + scale, 11, color);
-            }
-            label(canvas, basename(path), x + 35 * scale, y, 12, foreground);
-        }
-        if (sidebar_count == 0) { label(canvas, git_view ? "No changes" : (search_view ? "No search results" : "No files in this workspace"), 66 * scale, 117 * scale, 12, muted); }
-        canvas->restore();
-        rectangle(canvas, left - scale, 40 * scale, scale, height - 68 * scale, border_color);
-    }
-
-    rectangle(canvas, left, 40 * scale, right - left, 38 * scale, 0xFF151923);
-    canvas->save(); canvas->clipRect(SkRect::MakeLTRB(left, 40 * scale, right, 78 * scale));
-    const auto active_tab = std::ranges::find(tabs, active_id);
-    if (active_tab != tabs.end()) {
-        const auto index = static_cast<std::size_t>(active_tab - tabs.begin());
-        const auto visible = static_cast<std::size_t>(std::max(1.0F, (right - left) / (180 * scale)));
-        if (index < first_tab) { first_tab = index; }
-        else if (index >= first_tab + visible) { first_tab = index - visible + 1; }
-    }
-    for (std::size_t i = first_tab; i < tabs.size(); ++i) {
-        const auto& document = documents.at(tabs[i]);
-        const auto x = left + static_cast<float>(i - first_tab) * 180 * scale;
-        if (tabs[i] == active_id) {
-            rectangle(canvas, x, 40 * scale, 180 * scale, 38 * scale, active_tab_background);
-            rectangle(canvas, x, 40 * scale, 180 * scale, 2 * scale, accent);
-        }
-        rectangle(canvas, x + 179 * scale, 40 * scale, scale, 38 * scale, border_color);
-        label(canvas, document.path.empty() ? "Untitled" : basename(document.path), x + 14 * scale, 51 * scale, 12,
-              tabs[i] == active_id ? foreground : muted);
-        label(canvas, document.metadata.value("dirty", false) ? "●" : "×", x + 159 * scale, 51 * scale, 12, muted);
-    }
+    const auto fill = [&](const Box& box, SkColor color) { rectangle(canvas,box.x,box.y,box.width,box.height,color); };
+    const auto file_icon = [&](std::string_view path, float x, float y, float size) {
+        const auto dot = path.find_last_of('.');
+        const auto extension = dot == std::string_view::npos ? std::string_view{} : path.substr(dot);
+        const bool code = extension==".cpp" || extension==".hpp" || extension==".c" || extension==".h";
+        const bool script = extension==".js" || extension==".ts" || extension==".json";
+        draw_icon(canvas,code ? Icon::code : (script ? Icon::braces : Icon::document),x,y,size,
+                  code ? code_icon_color : (script ? script_icon_color : muted));
+    };
+    fill(geometry.header, activity_background);
+    rectangle(canvas,0,geometry.header.bottom()-scale,width,scale,border_color);
+    label(canvas,"Astra",14*scale,8*scale,12,muted);
+    const auto search_width = std::min(480*scale,width*0.44F);
+    const auto search_x = (width-search_width)/2;
+    SkPaint search_paint; search_paint.setColor(input_color); search_paint.setAntiAlias(true);
+    canvas->drawRoundRect(SkRect::MakeXYWH(search_x,5*scale,search_width,22*scale),4*scale,4*scale,search_paint);
+    draw_icon(canvas,Icon::search,search_x+9*scale,8*scale,15*scale,muted);
+    canvas->save(); canvas->clipRect(SkRect::MakeXYWH(search_x+30*scale,5*scale,search_width-115*scale,22*scale));
+    label(canvas,options.workspace_name,search_x+31*scale,8*scale,12,foreground);
     canvas->restore();
-    rectangle(canvas, left, 78 * scale, right - left, 27 * scale, background);
-    if (const auto* document = current()) {
-        label(canvas, document->path.empty() ? "Untitled" : document->path, left + 18 * scale, 84 * scale, 11, muted);
+    if (search_width>260*scale) label(canvas,"Ctrl+Shift+P",search_x+search_width-85*scale,9*scale,10,muted);
+    fill(geometry.activity,activity_background);
+    const auto selected_activity = git_view ? 2 : (search_view ? 1 : 0);
+    if (geometry.sidebar.width>0) rectangle(canvas,0,geometry.header.bottom()+static_cast<float>(selected_activity)*48*scale,2*scale,48*scale,accent);
+    const Icon activity_icons[]={Icon::files,Icon::search,Icon::branch,Icon::braces};
+    for (int index=0;index<4;++index) draw_icon(canvas,activity_icons[index],10*scale,geometry.header.bottom()+(13+static_cast<float>(index)*48)*scale,24*scale,
+                  selected_activity==index ? foreground : muted);
+    draw_icon(canvas,Icon::settings,10*scale,geometry.status.y-32*scale,22*scale,muted);
+    rectangle(canvas,geometry.activity.right()-scale,geometry.activity.y,scale,geometry.activity.height,border_color);
+    if (geometry.sidebar.width>0) {
+        fill(geometry.sidebar,sidebar_background);
+        const auto sx=geometry.sidebar.x;
+        label(canvas,git_view ? "SOURCE CONTROL" : (search_view ? "SEARCH" : "EXPLORER"),sx+16*scale,geometry.sidebar.y+12*scale,11,foreground);
+        const auto busy=busy_views.value(git_view ? "git" : (search_view ? "search" : "explorer"),false);
+        const Box refresh{left-34*scale,geometry.sidebar.y+5*scale,28*scale,26*scale};
+        draw_icon(canvas,busy && refresh.contains(mouse_x,mouse_y) ? Icon::close : Icon::refresh,left-29*scale,geometry.sidebar.y+9*scale,16*scale,busy ? accent : muted);
+        rectangle(canvas,sx,geometry.sidebar.y+32*scale,geometry.sidebar.width,24*scale,panel_background);
+        if (!git_view && !search_view) draw_icon(canvas,explorer_expanded ? Icon::chevron_down : Icon::chevron_right,sx+6*scale,geometry.sidebar.y+36*scale,16*scale,muted);
+        canvas->save(); canvas->clipRect(SkRect::MakeXYWH(sx+22*scale,geometry.sidebar.y+32*scale,geometry.sidebar.width-30*scale,24*scale));
+        label(canvas,git_view ? git_status.value("branch",std::string("Loading repository...")) :
+              (search_view ? std::to_string(search_results.size())+" matches: "+search_query : options.workspace_name),
+              sx+24*scale,geometry.sidebar.y+37*scale,12,foreground);
+        canvas->restore();
+        const Json empty_entries=Json::array();
+        const auto& git_entries=git_status.contains("entries") ? git_status.at("entries") : empty_entries;
+        const auto count=git_view ? git_entries.size() : (search_view ? search_results.size() : (explorer_expanded ? file_tree.size() : 0));
+        if (tree_scroll>=count) tree_scroll=count ? count-1 : 0;
+        const auto visible_count=static_cast<std::size_t>(std::ceil(geometry.sidebar_rows.height/geometry.sidebar_row_height))+1;
+        const auto end=std::min(count,tree_scroll+visible_count);
+        std::vector<const Json*> rows;
+        if (!git_view && !search_view) file_tree.for_each_range(tree_scroll,end,[&](std::size_t,const Json& row){rows.push_back(&row);});
+        canvas->save(); canvas->clipRect(SkRect::MakeXYWH(geometry.sidebar_rows.x,geometry.sidebar_rows.y,geometry.sidebar_rows.width,geometry.sidebar_rows.height));
+        for (auto i=tree_scroll;i<end;++i) {
+            const auto y=geometry.sidebar_rows.y+static_cast<float>(i-tree_scroll)*geometry.sidebar_row_height;
+            const auto& item=git_view ? git_entries[i] : (search_view ? search_results[i] : *rows[i-tree_scroll]);
+            const auto path=item.at("path").get<std::string>();
+            if (geometry.sidebar_rows.contains(mouse_x,mouse_y) && mouse_y>=y && mouse_y<y+geometry.sidebar_row_height)
+                rectangle(canvas,sx,y,geometry.sidebar.width,geometry.sidebar_row_height,hover_color);
+            if (git_view) {
+                const auto change=item.at("unstaged")!="unchanged" ? item.at("unstaged").get<std::string>() : item.at("staged").get<std::string>();
+                file_icon(path,sx+13*scale,y+4*scale,16*scale);
+                label(canvas,basename(path),sx+38*scale,y+4*scale,13,foreground);
+                const auto mark=change=="untracked" ? "U" : (change.empty() ? " " : std::string(1,static_cast<char>(std::toupper(static_cast<unsigned char>(change.front())))));
+                label(canvas,mark,left-25*scale,y+4*scale,12,item.value("conflict",false) ? error_color : added_color);
+            } else if (search_view) {
+                file_icon(path,sx+13*scale,y+4*scale,16*scale);
+                label(canvas,basename(path)+":"+std::to_string(item.at("line").get<std::size_t>()+1),sx+38*scale,y+4*scale,13);
+            } else {
+                const auto depth=static_cast<float>(std::count(path.begin(),path.end(),'/')+std::count(path.begin(),path.end(),'\\'));
+                const auto x=sx+(8+12*depth)*scale;
+                if (const auto* document=current();document && document->path==path)
+                    rectangle(canvas,sx,y,geometry.sidebar.width,geometry.sidebar_row_height,selection_color);
+                if (item.at("directory").get<bool>()) {
+                    draw_icon(canvas,file_tree.collapsed(path) ? Icon::chevron_right : Icon::chevron_down,x,y+4*scale,16*scale,muted);
+                    draw_icon(canvas,Icon::folder,x+18*scale,y+4*scale,16*scale,folder_color);
+                } else file_icon(path,x+18*scale,y+4*scale,16*scale);
+                label(canvas,basename(path),x+42*scale,y+4*scale,13,foreground);
+            }
+        }
+        if (!count && (git_view || search_view || explorer_expanded)) label(canvas,git_view ? "No changes" : (search_view ? "No search results" : "No files in this workspace"),sx+16*scale,geometry.sidebar_rows.y+12*scale,12,muted);
+        canvas->restore();
+        if (geometry.outline_header.height>0) {
+            fill(geometry.outline_header,panel_background);
+            draw_icon(canvas,show_outline ? Icon::chevron_down : Icon::chevron_right,sx+6*scale,geometry.outline_header.y+5*scale,16*scale,muted);
+            label(canvas,"OUTLINE",sx+27*scale,geometry.outline_header.y+7*scale,11,foreground);
+        }
+        rectangle(canvas,left-scale,geometry.sidebar.y,scale,geometry.sidebar.height,border_color);
     }
-    rectangle(canvas, left, 104 * scale, right - left, scale, border_color);
+    fill(geometry.tabs,panel_background);
+    for (const auto& tab : tab_strip.visible) {
+        const auto& document=documents.at(tabs[tab.index]);
+        const bool active=tabs[tab.index]==active_id;
+        if (active) {
+            fill(tab.bounds,active_tab_background);
+            rectangle(canvas,tab.bounds.x,tab.bounds.y,tab.bounds.width,2*scale,accent);
+        }
+        rectangle(canvas,tab.bounds.right()-scale,tab.bounds.y,scale,tab.bounds.height,border_color);
+        file_icon(document.path,tab.bounds.x+12*scale,tab.bounds.y+9*scale,16*scale);
+        canvas->save(); canvas->clipRect(SkRect::MakeXYWH(tab.bounds.x+34*scale,tab.bounds.y,tab.bounds.width-62*scale,tab.bounds.height));
+        elided_label(canvas,document.path.empty() ? "Untitled" : basename(document.path),tab.bounds.x+34*scale,tab.bounds.y+10*scale,13,tab.bounds.width-62*scale,active ? foreground : muted);
+        canvas->restore();
+        if (document.metadata.value("dirty",false)) {
+            SkPaint dirty; dirty.setColor(active ? foreground : muted); dirty.setAntiAlias(true);
+            canvas->drawCircle(tab.close.x+13*scale,tab.close.y+17*scale,3*scale,dirty);
+        } else draw_icon(canvas,Icon::close,tab.close.x+6*scale,tab.close.y+10*scale,14*scale,muted);
+    }
+    if (tab_strip.previous.width>0) {
+        fill(tab_strip.previous,panel_background); fill(tab_strip.next,panel_background);
+        canvas->save(); canvas->translate(tab_strip.previous.x+18*scale,tab_strip.previous.y+10*scale); canvas->scale(-1,1);
+        draw_icon(canvas,Icon::chevron_right,0,0,14*scale,muted); canvas->restore();
+        draw_icon(canvas,Icon::chevron_right,tab_strip.next.x+6*scale,tab_strip.next.y+10*scale,14*scale,muted);
+    }
+    fill(geometry.breadcrumb,background);
+    if (const auto* document=current()) {
+        canvas->save(); canvas->clipRect(SkRect::MakeXYWH(geometry.breadcrumb.x,geometry.breadcrumb.y,geometry.breadcrumb.width,geometry.breadcrumb.height));
+        label(canvas,document->path.empty() ? "Untitled" : document->path,left+18*scale,geometry.breadcrumb.y+5*scale,12,muted);
+        canvas->restore();
+    }
+    rectangle(canvas,left,geometry.breadcrumb.bottom()-scale,right-left,scale,border_color);
 
     if (auto* document = current()) {
         const auto& selections = document->metadata.at("selections");
@@ -2194,17 +2319,17 @@ void EditorWindow::Impl::draw() {
                     document->reveal_horizontal = false;
                 }
             }
-            if (number == active_line) { rectangle(canvas, left, y, right - left, row_height, 0xFF202635); }
+            if (number == active_line) { rectangle(canvas, left, y, right - left, row_height, current_line_color); }
             for (const auto& change : document->git_gutter) {
                 const auto begin = change.at("line").get<std::size_t>();
                 const auto count = std::max(std::size_t{1}, change.at("count").get<std::size_t>());
                 if (number >= begin && number - begin < count) {
                     const auto kind = change.at("kind").get<std::string>();
                     rectangle(canvas, left + 3 * scale, y, 3 * scale, kind == "deleted" ? 4 * scale : row_height,
-                              kind == "added" ? 0xFF81B88B : (kind == "deleted" ? 0xFFF14C4C : 0xFF569CD6));
+                              kind == "added" ? added_color : (kind == "deleted" ? error_color : changed_color));
                 }
             }
-            label(canvas, std::to_string(number + 1), left + 15 * scale, y + 3 * scale, 12, number == active_line ? foreground : 0xFF62718B);
+            label(canvas, std::to_string(number + 1), left + 15 * scale, y + 3 * scale, 12, number == active_line ? foreground : muted);
             const auto text_x = left + gutter - document->horizontal;
             canvas->save(); canvas->clipRect(SkRect::MakeLTRB(left + gutter - 5 * scale, y, right, y + row_height));
             for (const auto& selection : selections) {
@@ -2241,7 +2366,7 @@ void EditorWindow::Impl::draw() {
                 const auto cursor_x = text_x + caret.x;
                 const auto cursor_y = y + caret.y;
                 if (!editor_settings.value("cursorBlink", true) || (SDL_GetTicks() / 550) % 2 == 0 || !requests.empty() || active_request) {
-                    rectangle(canvas, cursor_x, cursor_y, std::max(1.0F, 1.5F * scale), caret.height, 0xFFC7D7F7);
+                    rectangle(canvas, cursor_x, cursor_y, std::max(1.0F, 1.5F * scale), caret.height, cursor_color);
                 }
                 if (index == 0) {
                     int logical_width{}, logical_height{};
@@ -2269,62 +2394,79 @@ void EditorWindow::Impl::draw() {
             const auto track = content_bottom - content_top;
             const auto thumb = std::max(28 * scale, track * rows / static_cast<float>(lines));
             const auto y = content_top + (track - thumb) * static_cast<float>(document->first_line) / static_cast<float>(std::max(std::size_t{1}, lines - 1));
-            rectangle(canvas, right - 7 * scale, y, 5 * scale, thumb, 0xFF414E64);
+            rectangle(canvas, right - 7 * scale, y, 5 * scale, thumb, scrollbar_color);
         }
     } else {
-        label(canvas, "ASTRA", left + 85 * scale, content_top + 96 * scale, 40, 0xFF566680);
+        label(canvas, "ASTRA", left + 85 * scale, content_top + 96 * scale, 40, muted);
         label(canvas, "A focused place to write code.", left + 88 * scale, content_top + 159 * scale, 15, muted);
         label(canvas, "New file        Ctrl+N", left + 90 * scale, content_top + 211 * scale, 13, muted);
         label(canvas, "Open file       Ctrl+P", left + 90 * scale, content_top + 248 * scale, 13, muted);
         label(canvas, "Commands        Ctrl+Shift+P", left + 90 * scale, content_top + 285 * scale, 13, muted);
     }
 
-    if (outline_visible) {
-        rectangle(canvas, right, 40 * scale, width - right, height - 68 * scale, sidebar_background);
-        rectangle(canvas, right, 40 * scale, scale, height - 68 * scale, border_color);
-        label(canvas, "OUTLINE", right + 18 * scale, 55 * scale, 11, muted);
+    if (geometry.outline_rows.height>0 && geometry.sidebar.width>0) {
         if (const auto* document = current()) {
-            label(canvas, document->path.empty() ? "Untitled" : basename(document->path), right + 18 * scale, 86 * scale, 12, muted);
-            canvas->save(); canvas->clipRect(SkRect::MakeLTRB(right + scale, 110 * scale, width, content_bottom));
+            const auto ox=geometry.outline_rows.x+16*scale, oy=geometry.outline_rows.y;
+            canvas->save(); canvas->clipRect(SkRect::MakeXYWH(geometry.outline_rows.x,oy,geometry.outline_rows.width,geometry.outline_rows.height));
             if (document->syntax_revision != document->view_revision || document->syntax_state == "pending") {
-                label(canvas, "Parsing document...", right + 18 * scale, 115 * scale, 12, muted);
+                label(canvas, "Parsing document...", ox, oy+6*scale, 12, muted);
             } else if (document->outline.empty()) {
-                label(canvas, document->syntax_state == "unsupported" ? "No parser for this file type" : "No symbols", right + 18 * scale, 115 * scale, 12, muted);
+                label(canvas, document->syntax_state == "unsupported" ? "No parser for this file type" : "No symbols", ox, oy+6*scale, 12, muted);
             } else for (std::size_t i = 0; i < document->outline.size(); ++i) {
-                const auto y = (113 + static_cast<float>(i) * 27) * scale;
-                if (y >= content_bottom) { break; }
+                const auto y = oy+static_cast<float>(i)*geometry.sidebar_row_height;
+                if (y >= geometry.outline_rows.bottom()) { break; }
                 const auto& symbol = document->outline[i];
                 const auto depth = std::min(symbol.value("depth", 0U), 8U);
-                const auto x = right + (18 + static_cast<float>(depth) * 10) * scale;
-                label(canvas, symbol.at("kind") == "function" ? "ƒ" : "◇", x, y, 12, accent);
-                label(canvas, symbol.at("name").get<std::string>(), x + 18 * scale, y, 12, foreground);
+                const auto x = ox+static_cast<float>(depth)*10*scale;
+                draw_icon(canvas,symbol.at("kind")=="function" ? Icon::function : Icon::symbol,x,y+4*scale,16*scale,accent);
+                label(canvas, symbol.at("name").get<std::string>(), x + 22 * scale, y+4*scale, 13, foreground);
             }
             canvas->restore();
         }
     }
-    rectangle(canvas, 0, height - 28 * scale, width, 28 * scale, status_color);
-    label(canvas, "Astra", 17 * scale, height - 22 * scale, 11);
-    label(canvas, status, 82 * scale, height - 22 * scale, 11, 0xFFD0DCEE);
+    fill(geometry.status,status_color);
+    rectangle(canvas,0,geometry.status.y,width,scale,border_color);
+    const auto status_y=geometry.status.y+6*scale;
+    draw_icon(canvas,Icon::branch,12*scale,geometry.status.y+4*scale,16*scale,status_foreground);
+    const auto branch=git_status.value("branch",std::string("Astra"));
+    elided_label(canvas,branch,34*scale,status_y,11,90*scale,status_foreground);
+    canvas->save(); canvas->clipRect(SkRect::MakeXYWH(130*scale,geometry.status.y,std::max(0.0F,width-600*scale),geometry.status.height));
+    label(canvas,status,140*scale,status_y,11,status_foreground); canvas->restore();
     if (const auto* document = current()) {
         const auto& positions = document->metadata.contains("selectionPositions") ? document->metadata["selectionPositions"] : document->metadata["selections"];
         const auto line = positions.empty() ? std::size_t{0} : positions.front().value("line", std::size_t{0});
-        const auto column = positions.empty() ? std::size_t{0} : positions.front().value("utf16Column", std::size_t{0});
-        label(canvas, "Ln " + std::to_string(line + 1) + ", Col " + std::to_string(column + 1) + "    UTF-8    Spaces: " + std::to_string(editor_settings.value("tabSize", 4)),
-              std::max(300 * scale, width - 300 * scale), height - 22 * scale, 11);
+        auto column=positions.empty() ? std::size_t{0} : positions.front().value("utf16Column",std::size_t{0});
+        std::string unit="UTF16 Col ";
+        auto tab_size=editor_settings.value("tabSize",4U);
+        if (document->editor_config.contains("tab_width")) tab_size=static_cast<unsigned>(std::stoul(document->editor_config.at("tab_width").get<std::string>()));
+        const auto found=document->lines.find(line);
+        if (found!=document->lines.end() && found->second.layout) {
+            const auto head=document->metadata.at("selections").front().at("head").get<std::size_t>();
+            if (head>=found->second.begin && head<=found->second.end) {
+                const auto advance=found->second.layout->tab_stop_width()/static_cast<float>(tab_size);
+                if (advance>0) { column=static_cast<std::size_t>(std::round(found->second.layout->caret(head-found->second.begin).x/advance)); unit="Col "; }
+            }
+        }
+        const auto spaces=document->editor_config.value("indent_style",std::string(editor_settings.value("insertSpaces",true) ? "space" : "tab"))=="space";
+        auto detail="Ln "+std::to_string(line+1)+", "+unit+std::to_string(column+1);
+        if (width>500*scale) detail+="    "+document->encoding;
+        if (width>820*scale) detail+="    "+std::string(spaces ? "Spaces: " : "Tab Size: ")+std::to_string(tab_size)+(document->language_active ? "    LSP" : "");
+        const auto detail_width=label_layout(detail,11,status_foreground).width();
+        label(canvas,detail,std::max(130*scale,width-detail_width-16*scale),status_y,11,status_foreground);
     }
     if (recovery_available) {
-        rectangle(canvas, left + 12 * scale, content_bottom - 100 * scale, std::max(100 * scale, right - left - 24 * scale), 36 * scale, 0xFF39442E);
-        label(canvas, "Unsaved recovery sessions are available — click to review", left + 24 * scale, content_bottom - 91 * scale, 12, 0xFFE7E8BC);
+        rectangle(canvas, left + 12 * scale, content_bottom - 100 * scale, std::max(100 * scale, right - left - 24 * scale), 36 * scale, recovery_background);
+        label(canvas, "Unsaved recovery sessions are available — click to review", left + 24 * scale, content_bottom - 91 * scale, 12, foreground);
     }
     if (const auto notice = workspace_notice(); !notice.empty()) {
-        rectangle(canvas, left + 12 * scale, content_bottom - 142 * scale, std::max(100 * scale, right - left - 24 * scale), 36 * scale, 0xFF423D2E);
+        rectangle(canvas, left + 12 * scale, content_bottom - 142 * scale, std::max(100 * scale, right - left - 24 * scale), 36 * scale, notice_background);
         canvas->save(); canvas->clipRect(SkRect::MakeLTRB(left + 24 * scale, content_bottom - 142 * scale, right - 44 * scale, content_bottom - 106 * scale));
         label(canvas, notice, left + 24 * scale, content_bottom - 133 * scale, 12, warning_color); canvas->restore();
         label(canvas, "×", right - 34 * scale, content_bottom - 133 * scale, 13, warning_color);
     }
     if (!error.empty()) {
-        rectangle(canvas, left + 12 * scale, content_bottom - 58 * scale, std::max(100 * scale, right - left - 24 * scale), 46 * scale, 0xFF522C39);
-        label(canvas, error, left + 24 * scale, content_bottom - 44 * scale, 12, 0xFFFFDAE1);
+        rectangle(canvas, left + 12 * scale, content_bottom - 58 * scale, std::max(100 * scale, right - left - 24 * scale), 46 * scale, error_background);
+        label(canvas, error, left + 24 * scale, content_bottom - 44 * scale, 12, foreground);
     }
     draw_prompt(canvas, width, height);
     if (screenshot) { renderer.capture_png(*screenshot); screenshot.reset(); }
@@ -2348,6 +2490,8 @@ bool EditorWindow::idle() const noexcept {
 std::string EditorWindow::last_error() const { return impl_->error; }
 std::string EditorWindow::status_text() const { return impl_->status; }
 std::string EditorWindow::workspace_notice() const { return impl_->workspace_notice(); }
+WorkbenchLayout EditorWindow::layout() const { return impl_->geometry; }
+WorkbenchViewState EditorWindow::view_state() const { return {impl_->geometry,impl_->tab_strip,impl_->tabs,impl_->file_tree.size()}; }
 bool EditorWindow::pump() {
     if (!impl_->running) {
         if (!impl_->stopping_workbench) {

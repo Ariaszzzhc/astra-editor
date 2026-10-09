@@ -429,6 +429,18 @@ TEST_CASE("application asynchronous script results preserve scalar and array val
     CHECK(app.done("script.command", {{"name", "array"}}) == Json::array({1,2,3}));
 }
 
+TEST_CASE("application file metadata reports the actual persisted text encoding") {
+    AppFiles files;
+    static_cast<void>(astra::io::save_file(files.root()/"utf16.txt","中文",astra::io::TextEncoding::utf16_le));
+    LiveApp app(files.root());
+    const auto document=app.done("workspace.open",{{"path","utf16.txt"}});
+    CHECK(document["encoding"]=="UTF-16 LE");
+    const auto edited=app.call("document.insert",{{"id",document["id"]},{"baseRevision","0"},{"text","🙂"}});
+    const auto saved=app.done("workspace.save",{{"id",document["id"]},{"baseRevision",edited["revision"]}});
+    CHECK(saved["encoding"]=="UTF-16 LE");
+    CHECK(astra::io::read_file(files.root()/"utf16.txt").encoding==astra::io::TextEncoding::utf16_le);
+}
+
 TEST_CASE("application syntax powers real highlight outline and textobject commands") {
     AppFiles files;
     const std::string source = "int answer(int value) { return value + 42; }\n";

@@ -161,6 +161,27 @@ public:
         return {SumTree(std::move(left)), SumTree(std::move(right))};
     }
 
+    // First item whose inclusive prefix satisfies a monotone predicate.
+    // Supports ordered summaries (for example the largest source ordinal),
+    // whose projection is not an additive distance. O(log n), no flattening.
+    template <typename Predicate>
+    [[nodiscard]] SeekResult seek_prefix(Predicate predicate) const {
+        if (!root_ || !std::invoke(predicate, summary())) { return {size(), summary(), nullptr}; }
+        SeekResult result;
+        auto node = root_.get();
+        while (!node->is_leaf()) {
+            const auto before = result.prefix + node->left->summary;
+            if (std::invoke(predicate, before)) { node = node->left.get(); }
+            else {
+                result.index += node->left->count;
+                result.prefix = before;
+                node = node->right.get();
+            }
+        }
+        result.item = std::addressof(*node->item);
+        return result;
+    }
+
     [[nodiscard]] SumTree concat(const SumTree& other) const {
         return SumTree(join(root_, other.root_));
     }

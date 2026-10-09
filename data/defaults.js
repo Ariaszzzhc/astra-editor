@@ -7,14 +7,20 @@ astra.configure({
         lineHeight: 1.4, cursorBlink: true
     },
     theme: {
-        name: "Astra Dark", background: "#1E1E1E", foreground: "#D4D4D4",
-        sidebar: "#252526", activityBar: "#333333", tabs: "#2D2D2D",
-        activeTab: "#1E1E1E", border: "#3C3C3C", selection: "#264F78",
-        accent: "#007ACC", status: "#007ACC", muted: "#858585",
+        name: "Astra Dark", background: "#1F1F1F", foreground: "#CCCCCC",
+        sidebar: "#181818", activityBar: "#181818", tabs: "#181818",
+        activeTab: "#1F1F1F", border: "#2B2B2B", selection: "#264F78",
+        accent: "#0078D4", status: "#181818", muted: "#9D9D9D",
+        statusForeground: "#CCCCCC", hover: "#2A2D2E", currentLine: "#272727",
+        input: "#313131", cursor: "#AEAFAD", scrollbar: "#424242",
+        folder: "#D7BA7D", codeIcon: "#75BEFF", scriptIcon: "#E5C07B",
+        added: "#73C991", changed: "#75BEFF", noticeBackground: "#332D18",
+        recoveryBackground: "#263222", errorBackground: "#3A1D1D",
         error: "#F48771", warning: "#CCA700", keyword: "#C586C0",
         string: "#CE9178", comment: "#6A9955", number: "#B5CEA8",
         type: "#4EC9B0", function: "#DCDCAA"
     },
+    workbench: {sidebarWidth:248, uiFontSize:13},
     git: {inheritGlobalConfig: true},
     languageServers: {
         c: {command: "clangd", arguments: ["--background-index"]},

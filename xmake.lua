@@ -58,7 +58,7 @@ target("astra-tests")
               "tests/editor_config_tests.cpp", "tests/script_tests.cpp", "tests/tcp_tests.cpp", "tests/workspace_tests.cpp", "tests/editing_tests.cpp",
               "tests/application_tests.cpp", "tests/application_language_tests.cpp", "tests/application_recovery_tests.cpp", "tests/tcp_client_tests.cpp", "tests/syntax_tests.cpp",
               "tests/process_tests.cpp", "tests/lsp_tests.cpp", "tests/git_tests.cpp", "tests/recovery_tests.cpp",
-              "tests/file_monitor_tests.cpp", "tests/application_watch_tests.cpp", "tests/application_search_tests.cpp", "tests/workbench_tests.cpp")
+              "tests/file_monitor_tests.cpp", "tests/application_watch_tests.cpp", "tests/application_search_tests.cpp", "tests/workbench_tests.cpp", "tests/presentation_tests.cpp")
     set_exceptions("cxx")
     add_tests("unit", {runargs = {"--no-version", "--duration=true"}})
 
@@ -256,14 +256,14 @@ target("astra-ui")
     add_includedirs("include", {public = true})
     add_deps("astra-renderer", "astra-workbench", "astra-io")
     add_packages("nlohmann_json", {public = true})
-    add_files("src/ui/editor_window.cpp")
+    add_files("src/ui/editor_window.cpp", "src/ui/icons.cpp")
     set_exceptions("cxx")
 
 target("astra-workbench")
     set_kind("static")
     add_includedirs("include", {public = true})
-    add_deps("astra-script")
-    add_files("src/ui/workbench.cpp")
+    add_deps("astra-script", "astra-core")
+    add_files("src/ui/workbench.cpp", "src/ui/file_tree_index.cpp", "src/ui/workbench_layout.cpp")
     set_exceptions("cxx")
 
 target("astra")
@@ -322,6 +322,16 @@ target("gui-workspace-smoke")
     add_packages("skia-graphite", "libsdl3")
     add_rules("astra.resources", "astra.graphics-runtime")
     add_files("tests/gui_workspace_smoke.cpp")
+    set_exceptions("cxx")
+
+target("gui-presentation-smoke")
+    set_kind("binary")
+    set_rundir(os.projectdir())
+    set_default(false)
+    add_deps("astra-ui", "astra-service")
+    add_packages("skia-graphite", "libsdl3")
+    add_rules("astra.resources", "astra.graphics-runtime")
+    add_files("tests/gui_presentation_smoke.cpp")
     set_exceptions("cxx")
 
 target("astra-process-host")

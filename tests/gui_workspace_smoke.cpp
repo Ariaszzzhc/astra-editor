@@ -117,12 +117,11 @@ void click_search_row(Window& window, std::size_t row) {
             "Could not read the real SDL window dimensions");
     require(logical_width > 0 && logical_height > 0 && pixel_width > 0 && pixel_height > 0,
             "SDL returned an empty window");
-    const auto scale = SDL_GetWindowDisplayScale(window.window());
-    require(scale > 0, "Could not read the display scale");
+    const auto layout = window.layout();
     // Search rows use UI units. SDL input coordinates and renderer pixels can
     // differ on high-DPI Windows displays; convert through the actual window.
-    const auto x = 120.0F * scale * static_cast<float>(logical_width) / static_cast<float>(pixel_width);
-    const auto y = (112.5F + 25.0F * static_cast<float>(row)) * scale *
+    const auto x = (layout.sidebar_rows.x+layout.sidebar_rows.width/2) * static_cast<float>(logical_width) / static_cast<float>(pixel_width);
+    const auto y = (layout.sidebar_rows.y+layout.sidebar_row_height*(static_cast<float>(row)+0.5F)) *
                    static_cast<float>(logical_height) / static_cast<float>(pixel_height);
     SDL_Event event{};
     event.type = SDL_EVENT_MOUSE_BUTTON_DOWN;

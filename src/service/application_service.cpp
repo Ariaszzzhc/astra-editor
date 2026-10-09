@@ -358,6 +358,13 @@ Json ApplicationService::describe(const Document& document) const {
     if (const auto found = files_.find(document.id().value); found != files_.end()) {
         result["path"] = path_text(found->second.path);
         result["editorConfig"] = found->second.config.properties;
+        switch (found->second.encoding) {
+        case io::TextEncoding::utf8: result["encoding"]="UTF-8"; break;
+        case io::TextEncoding::utf8_bom: result["encoding"]="UTF-8 BOM"; break;
+        case io::TextEncoding::utf16_le: result["encoding"]="UTF-16 LE"; break;
+        case io::TextEncoding::utf16_be: result["encoding"]="UTF-16 BE"; break;
+        case io::TextEncoding::latin1: result["encoding"]="Latin-1"; break;
+        }
     }
     return result;
 }
