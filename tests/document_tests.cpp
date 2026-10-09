@@ -443,6 +443,77 @@ TEST_CASE("randomized Unicode multicursor transactions match a flat reference") 
     }
 }
 
+TEST_CASE("snapshot restoration starts a new buffer history without changing retained text") {
+    astra::Document source(astra::BufferId{1}, "before");
+    source.set_selections({selection(0, 6)});
+    REQUIRE(source.replace_selections("\xe4\xb8\xad\xf0\x9f\x98\x80"));
+    source.set_selections({selection(3, 7)});
+    const auto snapshot = source.snapshot();
+    auto restored = astra::Document::from_snapshot(astra::BufferId{9}, snapshot);
+    CHECK(restored.id() == astra::BufferId{9});
+    CHECK(restored.revision() == astra::Revision{0});
+    const auto difference = restored.text().changed_extent(snapshot.text);
+    CHECK(difference.begin == difference.old_end);
+    CHECK(difference.begin == difference.new_end);
+    CHECK(restored.selections() == snapshot.selections);
+    CHECK_FALSE(restored.can_undo());
+    CHECK_FALSE(restored.can_redo());
+    restored.invalidate_saved_state();
+    REQUIRE(restored.replace_selections("new"));
+    REQUIRE(restored.undo());
+    CHECK(restored.dirty());
+    CHECK(restored.text().str() == snapshot.text.str());
+    CHECK(source.revision() == snapshot.revision);
+    auto invalid = snapshot;
+    invalid.selections = {selection(1, 1)};
+    CHECK_THROWS_AS((void)astra::Document::from_snapshot(astra::BufferId{10}, invalid), std::invalid_argument);
+}
+
+TEST_CASE("prepared document saved-state guards reject invalidation even when both copies are dirty") {
+    astra::Document current({81}, "disk baseline");
+    REQUIRE(current.replace_selections("local "));
+    auto prepared = current.clone();
+    REQUIRE(prepared.replace_selections("replacement "));
+    CHECK(current.same_saved_state(prepared));
+    CHECK(current.dirty());
+    CHECK(prepared.dirty());
+    const auto revision = current.revision();
+    current.invalidate_saved_state();
+    CHECK(current.revision() == revision);
+    CHECK(current.dirty());
+    CHECK(prepared.dirty());
+    CHECK_FALSE(current.same_saved_state(prepared));
+    // Refusing this prepared value preserves invalidation through history.
+    REQUIRE(current.undo());
+    CHECK(current.text().str() == "disk baseline");
+    CHECK(current.dirty());
+    prepared.invalidate_saved_state();
+    CHECK(current.same_saved_state(prepared));
+    astra::Document other({82}, "disk baseline");
+    other.invalidate_saved_state();
+    CHECK_FALSE(current.same_saved_state(other));
+}
+
+TEST_CASE("prepared document saved-state guards distinguish saved snapshots independently of dirty state") {
+    astra::Document current({83}, "A");
+    REQUIRE(current.replace_selections("B"));
+    const auto newly_saved = current.snapshot();
+    REQUIRE(current.replace_selections("C"));
+    auto prepared = current.clone();
+    current.mark_saved(newly_saved);
+    CHECK(current.dirty());
+    CHECK(prepared.dirty());
+    CHECK(current.revision() == prepared.revision());
+    CHECK(current.content_identity() == prepared.content_identity());
+    CHECK_FALSE(current.same_saved_state(prepared));
+    REQUIRE(current.undo());
+    REQUIRE(prepared.undo());
+    CHECK_FALSE(current.dirty());
+    CHECK(prepared.dirty());
+    prepared.mark_saved(newly_saved);
+    CHECK(current.same_saved_state(prepared));
+}
+
 TEST_CASE("randomized document edit history matches a flat reference") {
     constexpr std::uint64_t seed = 0x4153545241444f43ULL;
     INFO("seed = ", seed);

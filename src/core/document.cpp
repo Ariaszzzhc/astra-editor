@@ -118,6 +118,13 @@ Document::Document(BufferId id, std::string_view text, std::size_t history_limit
     : id_(id), state_{Rope(text), {Selection{}}, ContentId{}},
       history_limit_(history_limit) {}
 
+Document Document::from_snapshot(BufferId id, const DocumentSnapshot& snapshot) {
+    Document result(id);
+    result.state_.text = snapshot.text;
+    result.set_selections(snapshot.selections);
+    return result;
+}
+
 BufferId Document::id() const noexcept { return id_; }
 Revision Document::revision() const noexcept { return revision_; }
 ContentId Document::content_identity() const noexcept { return state_.identity; }
@@ -130,6 +137,10 @@ DocumentSnapshot Document::snapshot() const {
 
 bool Document::dirty() const noexcept {
     return !saved_identity_valid_ || state_.identity != saved_identity_;
+}
+bool Document::same_saved_state(const Document& other) const noexcept {
+    return id_ == other.id_ && saved_identity_ == other.saved_identity_ &&
+        saved_identity_valid_ == other.saved_identity_valid_;
 }
 bool Document::can_undo() const noexcept { return !undo_.empty(); }
 bool Document::can_redo() const noexcept { return !redo_.empty(); }

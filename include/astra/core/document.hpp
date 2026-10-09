@@ -94,6 +94,9 @@ public:
     // Explicit transactional preparation for multi-document operations. Text
     // nodes remain shared; selections and complete undo/redo state are isolated.
     [[nodiscard]] Document clone() const;
+    // A new buffer identity/history over immutable snapshot text. Recovery callers
+    // explicitly invalidate the saved state after restoring the external version.
+    [[nodiscard]] static Document from_snapshot(BufferId id, const DocumentSnapshot& snapshot);
 
     [[nodiscard]] BufferId id() const noexcept;
     [[nodiscard]] Revision revision() const noexcept;
@@ -102,6 +105,10 @@ public:
     [[nodiscard]] const std::vector<Selection>& selections() const noexcept;
     [[nodiscard]] DocumentSnapshot snapshot() const;
     [[nodiscard]] bool dirty() const noexcept;
+    // Prepared clones must not overwrite a save/invalidation that happened while
+    // their worker was running. dirty() alone cannot distinguish two dirty
+    // documents with different saved-history baselines.
+    [[nodiscard]] bool same_saved_state(const Document& other) const noexcept;
     [[nodiscard]] bool can_undo() const noexcept;
     [[nodiscard]] bool can_redo() const noexcept;
 
