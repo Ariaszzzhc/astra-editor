@@ -46,7 +46,7 @@ foundation only; the active workbench revision remains in progress.
 The client workbench now loads ES modules for command/menu registration, files,
 search and Git. Open/new/save, sidebar/tab changes, file traversal, search paging
 and Git status/stage policy execute in the client runtime over the same local/TCP
-dispatcher. Native modal/language/recovery workflow migration remains
+dispatcher. Remaining close/recovery/find/replace workflow migration remains
 unfinished. Providers cancel superseded generations before publishing a model.
 User client commands can replace `ui.*` actions; the native GUI smoke exercises
 that override through real SDL keys. Client shutdown drains late transport
@@ -297,11 +297,31 @@ Local/TCP `gui-smoke` and `gui-presentation-smoke` all passed afterward **withou
 the previously recorded empty-submit warning**. Those older warnings remain in
 their historical evidence; physical GPU loss still has not been induced.
 
+The Windows validation checkpoint at source **`0469874`** passed the complete
+suite: **456 cases / 428,194 assertions in Debug** and **456 cases / 428,318
+assertions in Release**. Both configurations passed actual `graphics-smoke`,
+`renderer-smoke`, `text-layout-tests`, all five GUI smoke executables, the TCP
+`gui-smoke` variant, and `tests/cli_smoke.ps1 -Mode <configuration>`. Async polling
+causes assertion totals to vary. The full Release build included all these
+targets plus `astra` and `astra-server`, after `./scripts/xmake.ps1 f -m release
+-y`; every build finished before Release tests started. The full suite command
+was `./build/windows/x64/<configuration>/astra-tests.exe --no-version`.
+
+The first Debug build of the remaining GUI targets failed copying `icudtl.dat`
+because a GUI check had been started before resource copying finished. Windows
+reported that a user-mapped region prevented the copy. After the GUI checks
+exited, the same build completed successfully and graphics/text-layout,
+language/workspace/recovery GUI and CLI checks were rerun serially and passed.
+No platform outside Windows was tested. This checkpoint does not establish a
+new package or completion of the remaining architecture work.
+
 Remaining work includes the rest of the public UI/provider contract,
 native component extraction, indexed diagnostic/display views, incremental
-syntax indexes, full Debug/Release and native GUI acceptance, and packaging the
+Markdown syntax indexes, final acceptance and packaging of the
 new revision. Historical M0-M8 states below are not completion claims for this
 active revision.
+
+## Historical integrated implementation
 
 The final Windows integrated suites pass in both configurations: **408 cases /
 211,698 assertions in Debug** and **408 cases / 211,712 assertions in Release**.
@@ -342,23 +362,24 @@ retained rather than presented as current full-suite totals.
 
 | Check | Windows Debug | Windows Release |
 | --- | --- | --- |
-| Latest integrated `astra-tests` | 408 cases / 211,698 assertions PASS | 408 cases / 211,712 assertions PASS |
+| Integrated `astra-tests` at `0469874` | 456 cases / 428,194 assertions PASS | 456 cases / 428,318 assertions PASS |
 | `graphics-smoke`, `renderer-smoke`, `text-layout-tests` | PASS | PASS |
-| `gui-smoke`: editing, Unicode/IME events, multicursor undo, save/close and long-line paging | PASS | PASS before final file-I/O fix |
-| `gui-services-smoke`: real clangd completion/navigation/rename/formatting and real Git actions | PASS | PASS before final file-I/O fix |
-| `gui-recovery-smoke`: startup review, restore, dirty preservation and durable/failing exit | PASS | PASS again after final file-I/O fix |
-| `gui-workspace-smoke`: search-result activation, Alt+C/R/W, confirmed replace, conflict notice and guarded reload | PASS | PASS again after final file-I/O fix |
+| `gui-smoke`: editing, awaited commands/cancellation, Unicode/IME events, multicursor undo, save/close, palette and long-line paging | PASS | PASS |
+| `gui-services-smoke`: real clangd completion/navigation/rename/formatting and real Git actions | PASS | PASS |
+| `gui-recovery-smoke`: startup review, restore, dirty preservation and durable/failing exit | PASS | PASS |
+| `gui-workspace-smoke`: search-result activation, Alt+C/R/W, confirmed replace, conflict notice and guarded reload | PASS | PASS |
+| `gui-presentation-smoke`: 1,505 entries, shared geometry, paged Outline, tabs and indexed dialogs | PASS | PASS |
 | Real clangd historical-content/undo diagnostic regressions | Focused 7 cases / 152 assertions PASS; final suite PASS | Final suite PASS |
-| `astra-recovery-tests`: persistent store, ownership, corruption and real crash/reopen | 15 cases / 105 assertions PASS | 15 cases / 105 assertions PASS |
+| Earlier independent `astra-recovery-tests`: persistent store, ownership, corruption and real crash/reopen | 15 cases / 105 assertions PASS | 15 cases / 105 assertions PASS |
 | Earlier Process/Git/LSP platform snapshot | 52 cases / 378 assertions PASS | 52 cases / 378 assertions PASS |
 | Two low-level LSP `clangd_force_rebuild` cases | Final suite PASS | Final suite PASS |
 | RecoveryState integration, including five lifecycle/concurrency regressions | All 9 cases PASS | All 9 cases PASS |
-| Production TCP GUI channel, `gui-smoke --tcp` | PASS | PASS before final file-I/O fix |
-| Independent-process `tests/cli_smoke.ps1` | PASS | PASS again after final file-I/O fix |
+| Production TCP GUI channel, `gui-smoke --tcp` | PASS | PASS |
+| Independent-process `tests/cli_smoke.ps1` | PASS | PASS |
 | `astra-core-benchmark`: 1/8/64 MiB | Not run; Release benchmark | PASS; see [PERFORMANCE.md](PERFORMANCE.md) |
 | Final ZIP in a freshly extracted directory | Not applicable | 6,527-file inventory, archive SHA-256, clean-source identity and isolated runtime smoke PASS after final file-I/O fix |
 
-The final suite logs are `build/debug-integrated-results.txt` and
+The earlier 408-case suite logs are `build/debug-integrated-results.txt` and
 `build/release-integrated-results.txt`. The corresponding configured binaries
 were run with `--no-version --duration=true`. Asynchronous polling produces small
 differences in successful assertion totals between configurations. The complete
