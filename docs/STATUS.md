@@ -9,6 +9,52 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### JS recovery review and compact confirmation
+
+The client `astra/recovery` module now owns recovery discovery, inactive-session
+filtering, confirmation, restoration presentation, manual checkpoints and storage
+notifications. Startup discovery and user commands use the same asynchronous
+dispatcher. A selected session is captured before confirmation; cancellation
+does not restore content, issue-only sessions produce a report, and late list
+results cannot overwrite newer availability notifications. Checkpoint commands
+await durable service completion and propagate failures. Named confirmations
+correlate automation answers with a unique native dialog identity.
+
+C++ retains persistence services, native indexed picker/review components and
+presentation state. The previous per-frame recovery JSON scan and dedicated
+recovery workflow/dialog branches have been removed. Confirmation height now
+follows its item count with a bounded scrolling area; the shared layout remains
+the source for paint and pointer hit testing. Recovery rows put the filename and
+byte count first, so long absolute paths do not obscure the document name.
+
+Windows Debug validation for this increment:
+
+```powershell
+./scripts/xmake.ps1 build -y astra-tests gui-recovery-smoke gui-presentation-smoke gui-smoke
+./build/windows/x64/debug/astra-tests.exe --no-version '--test-case=workbench*,presentation*,QuickJS*,JavaScript*'
+./build/windows/x64/debug/gui-recovery-smoke.exe
+./build/windows/x64/debug/gui-presentation-smoke.exe
+./build/windows/x64/debug/gui-smoke.exe
+./build/windows/x64/debug/gui-smoke.exe --tcp
+```
+
+All passed: **68 cases / 219,093 assertions**, with 408 unrelated cases skipped,
+and the four real GUI invocations. New policy cases cover deferred confirmation,
+captured session identity, dismissed recovery, damaged sessions, superseded scans,
+availability races, disabled/failed initialization, checkpoint failure and storage
+notifications. The recovery GUI verifies actual Unicode content and selection,
+dirty state, unchanged source files before Save, explicit save, checkpoint failure,
+keep-open/retry and durable exit. Presentation checks preserve scaled pointer
+cancellation for a 40-item review. The final native recovery confirmation image
+was inspected at `build/graphics/gui-recovery-confirm.png`; the staged JS resource
+matches the repository source. Build and GUI runs were serialized to avoid
+copying mapped runtime resources.
+
+Final-window checkpoint/exit policy still resides in C++; its JS migration,
+remaining native find/replace policy, general custom views, and the other active
+architecture requirements remain unfinished. This affected Debug run is not a
+new full Debug/Release acceptance or a current distribution-package verification.
+
 Implemented so far: Promise-based script requests, owner-loop polling of real
 service operations, paged result collection with byte limits, cancellation,
 timeouts, async command operations, event subscriptions and registered ES modules.

@@ -30,7 +30,7 @@ std::map<std::string, std::string> modules() {
     std::map<std::string, std::string> result;
     for (const auto& [name, file] : std::map<std::string, std::string>{
         {"astra/ui", "api.js"}, {"astra/files", "files.js"}, {"astra/git", "git.js"},
-        {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/language","language.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
+        {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/language","language.js"}, {"astra/recovery","recovery.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
         result[name] = astra::io::read_file(std::filesystem::path("data/workbench") / file).text;
     }
     return result;
@@ -462,6 +462,176 @@ TEST_CASE("workbench named choices correlate answers and reject duplicate active
     CHECK(result->value==Json{{"label","中🙂"},{"value",2},{"retained","original"}});CHECK(answered==1);CHECK(workbench.idle());
     workbench.execute("answer",{{"id","named"},{"index",0}},{});
     for(int tick=0;tick<4;++tick)workbench.poll();CHECK(answered==1);CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench recovery waits for selection and confirmation of the captured session") {
+    auto channel=std::make_shared<Channel>();std::promise<Json> picker,confirmation;
+    Json confirm_spec;std::vector<Json> updates;unsigned dialogs{},answers{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.update"){updates.push_back(params);return ready(nullptr);}
+        if(method=="_ui.dialog") {
+            ++dialogs;
+            if(params.at("kind")=="pick") {
+                REQUIRE(params.at("items").size()==1);
+                CHECK(params.at("items")[0].get<std::string>().find("中🙂.txt")!=std::string::npos);
+                return picker.get_future();
+            }
+            CHECK(params.at("kind")=="confirm");confirm_spec=params;return confirmation.get_future();
+        }
+        if(method=="_ui.dialog.answer") {
+            ++answers;CHECK(params.at("id")==confirm_spec.at("id"));confirmation.set_value(params.at("accepted"));
+        }
+        return ready(nullptr);
+    },modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.confirmRecovery",Json::object(),{});
+    for(int tick=0;tick<4;++tick)workbench.poll();CHECK(answers==0);
+    workbench.execute("ui.recovery",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="recovery.status");
+    channel->reply({{"enabled",true},{"ready",true}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="recovery.list");
+    channel->reply({{"sessions",Json::array({
+        {{"id","active"},{"active",true},{"buffers",Json::array({{{"id","1"}}})}},
+        {{"id","empty"},{"active",false}},
+        {{"id","captured"},{"active",false},{"buffers",Json::array({{{"path","中🙂.txt"},{"bytes",27}}})}}
+    })}});
+    for(int tick=0;tick<8;++tick)workbench.poll();
+    CHECK(dialogs==1);CHECK_FALSE(outcome);CHECK(channel->requests.empty());CHECK(workbench.awaiting_input());
+    picker.set_value(0);for(int tick=0;tick<8;++tick)workbench.poll();
+    CHECK(dialogs==2);CHECK(confirm_spec.at("items")[0]=="中🙂.txt (27 bytes)");CHECK(channel->requests.empty());
+    // New discovery cannot change the session selected by the open confirmation.
+    workbench.emit("recovery.available",{{"sessions",Json::array({{{"id","new"},{"buffers",Json::array({{{"id","2"}}})}}})}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    SUBCASE("cancel leaves all documents untouched") {
+        confirmation.set_value(nullptr);for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(channel->requests.empty());
+    }
+    SUBCASE("accepted recovery awaits real restore before publishing documents") {
+        workbench.execute("ui.confirmRecovery",Json::object(),{});
+        for(int tick=0;tick<8;++tick)workbench.poll();
+        CHECK(answers==1);CHECK_FALSE(outcome);REQUIRE(channel->requests.size()==1);
+        CHECK(channel->requests.front().body.at("method")=="recovery.restore");
+        CHECK(channel->requests.front().body.at("params")==Json{{"sessionId","captured"}});
+        CHECK_FALSE(std::ranges::any_of(updates,[](const Json& update){return update.contains("documents");}));
+        channel->reply({{"documents",Json::array({{{"id","restored"},{"revision","9"},{"dirty",true}}})}});
+        for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="recovery.list");
+        channel->reply({{"sessions",Json::array()}});for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);
+        const auto restored=std::ranges::find_if(updates,[](const Json& update){return update.contains("documents");});
+        REQUIRE(restored!=updates.end());CHECK(restored->at("activate")=="restored");CHECK(restored->at("documents")[0].at("dirty")==true);
+        CHECK(updates.back().at("recoveryAvailable")==false);
+    }
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench recovery displays damaged sessions without attempting restore") {
+    auto channel=std::make_shared<Channel>();Json shown;std::promise<Json> dismissal;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.dialog") {
+            if(params.at("kind")=="pick")return ready(0);
+            CHECK(params.at("kind")=="text");shown=params;return dismissal.get_future();
+        }
+        return ready(nullptr);
+    },modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.recovery",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<4;++tick)workbench.poll();channel->reply({{"enabled",true},{"ready",true}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    channel->reply({{"sessions",Json::array({{{"id","damaged"},{"issues",Json::array({{{"path","checkpoint.json"},{"message","checksum mismatch"}}})}}})}});
+    for(int tick=0;tick<8;++tick)workbench.poll();
+    CHECK(shown.at("text")=="Issue: checkpoint.json — checksum mismatch");CHECK(channel->requests.empty());CHECK_FALSE(outcome);CHECK(workbench.awaiting_input());
+    dismissal.set_value(nullptr);for(int tick=0;tick<8;++tick)workbench.poll();
+    REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(channel->requests.empty());CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench recovery superseded discovery cannot publish older availability") {
+    auto channel=std::make_shared<Channel>();std::vector<bool> availability;
+    astra::ui::Workbench workbench(channel,[&](std::string_view,const Json& params) {
+        if(params.contains("recoveryAvailable"))availability.push_back(params.at("recoveryAvailable"));return ready(nullptr);
+    },modules());
+    std::optional<astra::script::Runtime::Outcome> older,newer;
+    workbench.execute("workbench.recoveryScan",Json::object(),[&](const auto& value){older=value;});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    workbench.execute("workbench.recoveryScan",Json::object(),[&](const auto& value){newer=value;});
+    for(int tick=0;tick<6;++tick)workbench.poll();REQUIRE(channel->requests.size()==2);
+    channel->reply({{"enabled",false},{"ready",true}});for(int tick=0;tick<6;++tick)workbench.poll();
+    CHECK(availability.empty());
+    channel->reply({{"enabled",true},{"ready",true}});for(int tick=0;tick<6;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="recovery.list");
+    channel->reply({{"sessions",Json::array({{{"id","current"},{"buffers",Json::array({{{"id","2"}}})}}})}});
+    for(int tick=0;tick<8;++tick)workbench.poll();
+    REQUIRE(older);CHECK_FALSE(older->error);REQUIRE(newer);CHECK_FALSE(newer->error);
+    CHECK(availability==std::vector<bool>{true});CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench recovery availability notifications supersede a pending list") {
+    auto channel=std::make_shared<Channel>();std::vector<bool> availability;
+    astra::ui::Workbench workbench(channel,[&](std::string_view,const Json& params) {
+        if(params.contains("recoveryAvailable"))availability.push_back(params.at("recoveryAvailable"));return ready(nullptr);
+    },modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("workbench.recoveryScan",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<4;++tick)workbench.poll();channel->reply({{"enabled",true},{"ready",true}});
+    for(int tick=0;tick<4;++tick)workbench.poll();REQUIRE(channel->requests.size()==1);
+    workbench.emit("recovery.available",{{"sessions",Json::array({{{"id","announced"},{"buffers",Json::array({{{"id","2"}}})}}})}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    channel->reply({{"sessions",Json::array()}});for(int tick=0;tick<8;++tick)workbench.poll();
+    REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(availability==std::vector<bool>{true});CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench recovery disabled and initialization failure do not list sessions") {
+    auto channel=std::make_shared<Channel>();std::vector<Json> updates;
+    astra::ui::Workbench workbench(channel,[&](std::string_view,const Json& params){updates.push_back(params);return ready(nullptr);},modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("workbench.recoveryScan",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<4;++tick)workbench.poll();REQUIRE(channel->requests.size()==1);
+    SUBCASE("disabled") {
+        channel->reply({{"enabled",false},{"ready",false}});for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(updates.back().at("recoveryAvailable")==false);
+    }
+    SUBCASE("failed initialization") {
+        channel->reply({{"enabled",true},{"ready",false},{"error","Recovery session lock denied"}});
+        for(int tick=0;tick<8;++tick)workbench.poll();REQUIRE(outcome);REQUIRE(outcome->error);
+        CHECK(outcome->error->at("message")=="Recovery: Recovery session lock denied");CHECK(updates.empty());
+    }
+    CHECK(channel->requests.empty());CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench recovery checkpoints await durable completion and propagate failure") {
+    auto channel=std::make_shared<Channel>();std::vector<Json> updates;
+    astra::ui::Workbench workbench(channel,[&](std::string_view,const Json& params){updates.push_back(params);return ready(nullptr);},modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.checkpoint",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="recovery.flush");
+    CHECK_FALSE(outcome);REQUIRE(updates.size()==1);CHECK(updates[0].at("status")=="Writing recovery checkpoint...");
+    SUBCASE("durable completion") {
+        channel->reply({{"enabled",true},{"durable",true}});for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value.at("durable")==true);
+        CHECK(updates.back().at("status")=="Recovery checkpoint saved");CHECK(updates.back().at("error")=="");
+    }
+    SUBCASE("failure is never presented as saved") {
+        auto incoming=std::move(channel->requests.front());channel->requests.pop_front();
+        incoming.response.set_value(Json{{"jsonrpc","2.0"},{"id",incoming.body.at("id")},{"error",{{"code",-32010},{"message","checkpoint storage failed"}}}}.dump());
+        for(int tick=0;tick<8;++tick)workbench.poll();
+        REQUIRE(outcome);REQUIRE(outcome->error);CHECK(outcome->error->at("code")==-32010);CHECK(updates.size()==1);
+    }
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench recovery notifications publish availability and storage issues") {
+    auto channel=std::make_shared<Channel>();std::vector<Json> updates;
+    astra::ui::Workbench workbench(channel,[&](std::string_view,const Json& params){updates.push_back(params);return ready(nullptr);},modules());
+    workbench.emit("recovery.available",{{"sessions",Json::array({{{"id","active"},{"active",true},{"buffers",Json::array({{{"id","1"}}})}}})}});
+    for(int tick=0;tick<4;++tick)workbench.poll();CHECK(updates.back().at("recoveryAvailable")==false);
+    workbench.emit("recovery.warning",{{"issues",Json::array({{{"path","checkpoint.json"},{"message","cleanup failed"}}})}});
+    for(int tick=0;tick<4;++tick)workbench.poll();CHECK(updates.back().at("error")=="checkpoint.json: cleanup failed");
+    workbench.emit("recovery.error",{{"message","disk full"}});
+    for(int tick=0;tick<4;++tick)workbench.poll();CHECK(updates.back().at("error")=="Recovery checkpoint: disk full");
+    CHECK(channel->requests.empty());CHECK(workbench.take_errors().empty());CHECK(workbench.idle());
 }
 
 TEST_CASE("workbench composed commands honor user replacements through awaited execution") {

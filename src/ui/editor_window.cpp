@@ -111,7 +111,7 @@ struct EditorWindow::Impl {
     struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; std::shared_ptr<PendingEdit> edit; std::string document; };
     struct FindState { std::string id; std::string revision; std::string query; std::string replacement; std::string text; std::size_t cursor{}; std::size_t size{}; bool replace{}; };
     struct ViewState { std::string id; std::string revision; std::size_t first{}; std::size_t limit{}; std::map<std::size_t, Line> lines; };
-    enum class Prompt { none, policy_input, policy_confirm, policy_choice, policy_pick, policy_text, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, git_diff, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed };
+    enum class Prompt { none, policy_input, policy_confirm, policy_choice, policy_pick, policy_text, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, git_diff, recovery_flushing, recovery_exit_failed };
     struct Dialog {
         std::string id; Json spec; std::promise<Json> completion;
         TextLineIndex detail_lines; std::map<std::size_t,TextLayout> detail_layout; float detail_width{},detail_scale{};
@@ -221,16 +221,9 @@ struct EditorWindow::Impl {
     bool stopping_workbench{};
     Clock::time_point workbench_shutdown_deadline{};
     bool closing_window{};
-    bool recovery_enabled{true};
-    bool recovery_ready{};
-    bool recovery_status_loading{};
-    bool recovery_list_loading{};
     bool recovery_available{};
     bool recovery_flushing{};
     std::uint64_t recovery_close_generation{};
-    Clock::time_point recovery_status_after{};
-    Json recovery_sessions = Json::array();
-    Json recovery_selected;
     std::set<std::string> closing_pending;
     bool dragging{};
     bool dragging_scroll{};
@@ -260,7 +253,7 @@ struct EditorWindow::Impl {
         std::map<std::string, std::string> modules;
         for (const auto& [name, file] : std::map<std::string, std::string>{
             {"astra/ui", "api.js"}, {"astra/files", "files.js"}, {"astra/git", "git.js"},
-            {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/language","language.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
+            {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/language","language.js"}, {"astra/recovery","recovery.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
             modules.emplace(name, io::read_file(options.resource_directory / "data" / "workbench" / file, 1024 * 1024).text);
         }
         workbench = std::make_unique<Workbench>(channel, [this](std::string_view method, const Json& params) {
@@ -353,7 +346,7 @@ struct EditorWindow::Impl {
             for (const auto& path : options.open_paths) { open_path(path); }
         }, {}});
         refresh_tree();
-        fetch_recovery_status();
+        execute_policy("workbench.recoveryScan", Json::object());
     }
 
     Document* current() {
@@ -461,10 +454,7 @@ struct EditorWindow::Impl {
     void set_selections(Json selections, std::string revision = {});
     void close_document(const std::string& id, bool discard = false);
     void continue_close_window();
-    void fetch_recovery_status();
-    void refresh_recovery(bool show);
     void flush_recovery(bool close);
-    std::vector<std::size_t> filtered_recovery_sessions() const;
     void command(std::string_view name);
     void execute_policy(std::string_view name, const Json& params = Json::object());
     void native_command(std::string_view name);
@@ -499,11 +489,6 @@ void EditorWindow::Impl::service_responses() {
         workbench->emit(method, notification.value("params", Json::object()));
         if (method == "document.changed" || method == "document.created") { accept_metadata(notification.at("params")); }
         else if (method == "document.closed") { remove_document(notification.at("params").at("id").get<std::string>()); }
-        else if (method == "recovery.available") { recovery_available = true; refresh_recovery(false); }
-        else if (method == "recovery.error") {
-            error = "Recovery checkpoint: " + notification.at("params").value("message", std::string("Storage failed"));
-            status = "Recovery needs attention";
-        }
         else if (method == "language.diagnosticsChanged") {
             const auto id = notification.at("params").at("id").get<std::string>();
             if (const auto found = documents.find(id); found != documents.end()) {
@@ -679,9 +664,6 @@ void EditorWindow::Impl::service_responses() {
     fetch_syntax();
     if (const auto* document = current(); document && document->language_active && !document->diagnostics_loading &&
         Clock::now() >= document->diagnostics_after && requests.empty() && !active_request) { fetch_diagnostics(active_id); }
-    if (recovery_enabled && !recovery_ready && !recovery_status_loading && now >= recovery_status_after && requests.empty() && !active_request) {
-        fetch_recovery_status();
-    }
     if (closing_window && prompt == Prompt::none && requests.empty() && !active_request && operations.empty()) { continue_close_window(); }
 }
 
@@ -940,38 +922,6 @@ void EditorWindow::Impl::continue_close_window() {
     close_document(tabs.back());
 }
 
-void EditorWindow::Impl::fetch_recovery_status() {
-    if (recovery_status_loading) { return; }
-    recovery_status_loading = true;
-    enqueue({"recovery.status", Json::object(), {}, false, [this](const Json& result) {
-        recovery_status_loading = false;
-        recovery_enabled = result.value("enabled", false);
-        recovery_ready = result.value("ready", false);
-        recovery_status_after = Clock::now() + std::chrono::milliseconds(500);
-        if (result.contains("error") && result["error"].is_string() && !result["error"].get<std::string>().empty()) {
-            error = "Recovery: " + result["error"].get<std::string>();
-            recovery_status_after = Clock::time_point::max();
-        } else if (recovery_enabled && recovery_ready) { refresh_recovery(false); }
-    }, {}, [this] { recovery_status_loading = false; recovery_status_after = Clock::time_point::max(); }});
-}
-
-void EditorWindow::Impl::refresh_recovery(bool show) {
-    if (show) {
-        prompt = Prompt::recovery; prompt_text.clear(); prompt_choice = 0; preedit.clear();
-        status = "Looking for recoverable sessions...";
-    }
-    if (recovery_list_loading) { return; }
-    recovery_list_loading = true;
-    start_operation("recovery.list", Json::object(), [this](const Json& result) {
-        recovery_list_loading = false;
-        recovery_sessions = result.value("sessions", Json::array());
-        recovery_available = std::ranges::any_of(recovery_sessions, [](const Json& session) {
-            return !session.value("active", false) && (!session.value("buffers", Json::array()).empty() || !session.value("issues", Json::array()).empty());
-        });
-        if (prompt == Prompt::recovery) { status = recovery_available ? "Select a session to review recovery" : "No abandoned unsaved sessions found"; }
-    }, {}, false, [this] { recovery_list_loading = false; });
-}
-
 void EditorWindow::Impl::flush_recovery(bool close) {
     if (recovery_flushing) { return; }
     recovery_flushing = true;
@@ -992,20 +942,6 @@ void EditorWindow::Impl::flush_recovery(bool close) {
             closing_window = false; prompt = Prompt::recovery_exit_failed;
         }
     });
-}
-
-std::vector<std::size_t> EditorWindow::Impl::filtered_recovery_sessions() const {
-    std::vector<std::size_t> result;
-    const auto query = lower_ascii(prompt_text);
-    for (std::size_t i = 0; i < recovery_sessions.size(); ++i) {
-        const auto& session = recovery_sessions[i];
-        if (session.value("active", false)) { continue; }
-        if (session.value("buffers", Json::array()).empty() && session.value("issues", Json::array()).empty()) { continue; }
-        auto searchable = session.at("id").get<std::string>();
-        for (const auto& buffer : session.value("buffers", Json::array())) { searchable += " " + buffer.value("path", std::string("Untitled")); }
-        if (query.empty() || lower_ascii(std::move(searchable)).find(query) != std::string::npos) { result.push_back(i); }
-    }
-    return result;
 }
 
 std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
@@ -1059,7 +995,9 @@ void EditorWindow::Impl::finish_dialog(Json value) {
 
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
     if(method=="_ui.dialog.answer") {
-        if(!dialog || prompt!=Prompt::policy_choice || dialog->id!=params.at("id").get<std::string>())return nullptr;
+        if(!dialog || dialog->id!=params.at("id").get<std::string>())return nullptr;
+        if(prompt==Prompt::policy_confirm) { finish_dialog(params.at("accepted").get<bool>());return nullptr; }
+        if(prompt!=Prompt::policy_choice)return nullptr;
         const auto& index=params.at("index");
         if(!index.is_number_integer() || (!index.is_number_unsigned() && index.get<std::int64_t>()<0) || index.get<std::uint64_t>()>=dialog->spec.at("items").size())throw protocol::RpcError(-32602,"Invalid choice index");
         finish_dialog(index);return nullptr;
@@ -1117,6 +1055,12 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
     for (const auto& [name, value] : params.items()) {
         if(name=="closedDocument") { remove_document(value.get<std::string>()); }
         else if (name == "status") { status = value.get<std::string>(); }
+        else if (name == "recoveryAvailable") { recovery_available=value.get<bool>(); }
+        else if (name == "error") {
+            const auto message=value.get<std::string>();
+            if(message.size()>64*1024)throw protocol::RpcError(-32602,"UI error exceeds its 64 KiB limit");
+            error=message;
+        }
         else if (name == "sidebarVisible") { show_sidebar = value.get<bool>(); }
         else if (name == "outlineVisible") { show_outline = value.get<bool>(); }
         else if (name == "sidebar") {
@@ -1216,20 +1160,6 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     else if (name == "ui.toggleSearchWholeWord") { search_whole_word = !search_whole_word; }
     else if (name == "ui.closeTab") { close_document(active_id); }
     else if (name == "ui.closeWindow") { finish_dialog(nullptr); closing_window = true; }
-    else if (name == "ui.recovery") { refresh_recovery(true); }
-    else if (name == "ui.checkpoint") { flush_recovery(false); }
-    else if (name == "ui.confirmRecovery") {
-        if (prompt != Prompt::recovery_confirm || recovery_selected.value("active", false)) { return; }
-        if (recovery_selected.value("buffers", Json::array()).empty()) { status = "This session contains issues but no recoverable buffers"; return; }
-        const auto session = recovery_selected.at("id").get<std::string>();
-        prompt = Prompt::none;
-        start_operation("recovery.restore", {{"sessionId", session}}, [this](const Json& result) {
-            for (const auto& metadata : result.at("documents")) { accept_metadata(metadata); }
-            if (!result.at("documents").empty()) { activate(result.at("documents").front().at("id").get<std::string>()); }
-            status = "Recovered buffers are unsaved; review and save to persist";
-            error.clear(); refresh_recovery(false);
-        });
-    }
     else if (name == "ui.retryExit") {
         if (prompt == Prompt::recovery_exit_failed) { prompt = Prompt::none; closing_window = true; continue_close_window(); }
     }
@@ -1315,12 +1245,6 @@ void EditorWindow::Impl::accept_prompt() {
         if(dialog->picker.size())finish_dialog(dialog->picker.at(std::min(prompt_choice,dialog->picker.size()-1)).source);
     }
     else if (prompt == Prompt::policy_text) { finish_dialog(nullptr); }
-    else if (prompt == Prompt::recovery) {
-        const auto matches = filtered_recovery_sessions();
-        if (matches.empty()) { return; }
-        recovery_selected = recovery_sessions[matches[std::min(prompt_choice, matches.size() - 1)]];
-        prompt = Prompt::recovery_confirm; prompt_choice = 0; prompt_text.clear();
-    } else if (prompt == Prompt::recovery_confirm) { command("ui.confirmRecovery"); }
     else if (prompt == Prompt::recovery_exit_failed) { command("ui.retryExit"); }
     else if (prompt == Prompt::git_diff) { prompt = Prompt::none; }
     else if (prompt == Prompt::find) {
@@ -1645,7 +1569,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         if (!input.text.text) { break; }
         if (prompt != Prompt::none && prompt != Prompt::policy_choice && prompt != Prompt::replace_confirm &&
             prompt != Prompt::policy_text && prompt != Prompt::git_diff &&
-            prompt != Prompt::recovery_confirm && prompt != Prompt::recovery_flushing && prompt != Prompt::recovery_exit_failed && prompt != Prompt::policy_confirm) {
+            prompt != Prompt::recovery_flushing && prompt != Prompt::recovery_exit_failed && prompt != Prompt::policy_confirm) {
             const std::string_view entered(input.text.text);
             if(dialog && entered.find_first_of("\r\n")!=entered.npos){error="Input must contain one logical line";break;}
             const auto existing=prompt_select_all ? std::size_t{0} : prompt_text.size();
@@ -1692,7 +1616,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             break;
         }
         if (prompt == Prompt::policy_confirm) {
-            const auto layout=ConfirmationLayout::measure(width,static_cast<float>(pixels.height),scale,dialog && dialog->items.size()>0);
+            const auto layout=ConfirmationLayout::measure(width,static_cast<float>(pixels.height),scale,dialog ? dialog->items.size() : 0);
             if(layout.accept.contains(mouse_x,mouse_y))finish_dialog(true);
             else if(layout.cancel.contains(mouse_x,mouse_y))finish_dialog(nullptr);
             break;
@@ -1704,23 +1628,6 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                 if (mouse_x >= bx + 24 * scale && mouse_x < bx + 190 * scale) { command("ui.retryExit"); }
                 else if (mouse_x >= bx + 218 * scale && mouse_x < bx + 400 * scale) { command("ui.cancel"); }
                 else if (mouse_x >= bx + 426 * scale && mouse_x < bx + 616 * scale) { command("ui.exitWithoutCheckpoint"); }
-            }
-            break;
-        }
-        if (prompt == Prompt::recovery_confirm) {
-            const auto bx = (width - 680 * scale) / 2;
-            if (mouse_y >= 425 * scale && mouse_y < 461 * scale) {
-                if (mouse_x >= bx + 24 * scale && mouse_x < bx + 308 * scale) { command("ui.confirmRecovery"); }
-                else if (mouse_x >= bx + 370 * scale && mouse_x < bx + 654 * scale) { command("ui.cancel"); }
-            }
-            break;
-        }
-        if (prompt == Prompt::recovery) {
-            const auto bx = (width - 600 * scale) / 2;
-            if (mouse_x > bx && mouse_x < bx + 600 * scale && mouse_y >= 130 * scale) {
-                const auto first = prompt_choice >= 12 ? prompt_choice - 11 : 0;
-                const auto row = static_cast<std::size_t>((mouse_y - 130 * scale) / (34 * scale));
-                if (row < 12) { prompt_choice = first + row; accept_prompt(); }
             }
             break;
         }
@@ -1988,7 +1895,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         });canvas->restore();return;
     }
     if (prompt == Prompt::policy_confirm && dialog) {
-        const auto layout=ConfirmationLayout::measure(width,height,scale,dialog->items.size()>0);
+        const auto layout=ConfirmationLayout::measure(width,height,scale,dialog->items.size());
         const auto fill=[&](const Box& box,SkColor color){rectangle(canvas,box.x,box.y,box.width,box.height,color);};
         fill(layout.panel,panel_background);
         rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,2*scale,accent);
@@ -2086,32 +1993,6 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         label(canvas, "Exit anyway (E)", x + 449 * scale, 253 * scale, 13);
         return;
     }
-    if (prompt == Prompt::recovery_confirm) {
-        const auto x = (width - 680 * scale) / 2;
-        rectangle(canvas, x, 90 * scale, 680 * scale, 390 * scale, panel_background);
-        label(canvas, "Restore unsaved buffers from this session?", x + 24 * scale, 110 * scale, 17);
-        label(canvas, "Recovered buffers stay unsaved. Review and save them afterward.", x + 24 * scale, 146 * scale, 13, muted);
-        std::vector<std::string> entries;
-        for (const auto& buffer : recovery_selected.value("buffers", Json::array())) {
-            entries.push_back(buffer.value("path", std::string("Untitled")) + "  (" + std::to_string(buffer.value("bytes", std::size_t{})) + " bytes)");
-        }
-        for (const auto& issue : recovery_selected.value("issues", Json::array())) {
-            entries.push_back("Issue: " + issue.value("path", std::string{}) + " — " + issue.value("message", std::string{}));
-        }
-        const auto first = entries.empty() ? 0 : std::min(prompt_choice, entries.size() - 1);
-        canvas->save(); canvas->clipRect(SkRect::MakeLTRB(x + 24 * scale, 182 * scale, x + 654 * scale, 409 * scale));
-        for (std::size_t i = first; i < std::min(first + 8, entries.size()); ++i) {
-            label(canvas, entries[i], x + 24 * scale, (185 + static_cast<float>(i - first) * 28) * scale, 13,
-                  entries[i].starts_with("Issue:") ? warning_color : foreground);
-        }
-        if (entries.empty()) { label(canvas, "This session contains no recoverable buffers.", x + 24 * scale, 185 * scale, 13, muted); }
-        canvas->restore();
-        rectangle(canvas, x + 24 * scale, 425 * scale, 284 * scale, 36 * scale, accent);
-        rectangle(canvas, x + 370 * scale, 425 * scale, 284 * scale, 36 * scale, border_color);
-        label(canvas, "Restore session", x + 97 * scale, 433 * scale, 13);
-        label(canvas, "Cancel", x + 481 * scale, 433 * scale, 13);
-        return;
-    }
     if (prompt == Prompt::git_diff) {
         const auto x = (width - 680 * scale) / 2;
         const auto panel_bottom = std::min(height - 70 * scale, 610 * scale);
@@ -2142,12 +2023,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         return;
     }
     const auto x = (width - 600 * scale) / 2;
-    const auto recovery_matches = filtered_recovery_sessions();
-    const auto total = prompt == Prompt::recovery ? recovery_matches.size() : std::size_t{0};
-    if (total != 0) { prompt_choice = std::min(prompt_choice, total - 1); }
-    const auto first = prompt_choice >= 12 ? prompt_choice - 11 : 0;
-    const auto count = std::min(total, std::size_t{12});
-    rectangle(canvas, x, 64 * scale, 600 * scale, (76 + static_cast<float>(count) * 34 + (search_prompt() ? 32 : 0)) * scale, panel_background);
+    rectangle(canvas, x, 64 * scale, 600 * scale, (76 + (search_prompt() ? 32 : 0)) * scale, panel_background);
     rectangle(canvas, x, 64 * scale, 600 * scale, 2 * scale, accent);
     const char* hint = "SAVE AS — WORKSPACE RELATIVE PATH";
     if (prompt == Prompt::find) { hint = "FIND NEXT IN DOCUMENT — LITERAL TEXT"; }
@@ -2155,12 +2031,10 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
     else if (prompt == Prompt::replace_value || prompt == Prompt::workspace_replace_value) { hint = "REPLACEMENT TEXT — ENTER TO CONTINUE"; }
     else if (prompt == Prompt::search) { hint = "SEARCH WORKSPACE AND UNSAVED BUFFERS"; }
     else if (prompt == Prompt::workspace_replace_query) { hint = "REPLACE ACROSS WORKSPACE — FIND TEXT"; }
-    else if (prompt == Prompt::recovery) { hint = "RECOVERY — SELECT A SESSION TO REVIEW · ESC TO KEEP EDITING"; }
     label(canvas, prompt == Prompt::policy_input && dialog ? dialog->spec.at("title").get<std::string>() : hint, x + 16 * scale, 73 * scale, 10, muted);
     rectangle(canvas, x + 12 * scale, 94 * scale, 576 * scale, 30 * scale, background);
     if (prompt_select_all && !prompt_text.empty()) { rectangle(canvas, x + 20 * scale, 97 * scale, 560 * scale, 25 * scale, selection_color); }
-    const auto placeholder = prompt == Prompt::recovery ?
-        (recovery_list_loading ? "Looking for sessions..." : (total == 0 ? "No abandoned sessions found" : "Filter by session or file path")) : "Type text, then press Enter";
+    const auto placeholder = "Type text, then press Enter";
     label(canvas, prompt_text.empty() ? placeholder : prompt_text,
           x + 22 * scale, 100 * scale, 14, prompt_text.empty() ? muted : foreground);
     if (search_prompt()) {
@@ -2185,17 +2059,6 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         const auto rx = width / static_cast<float>(logical_width);
         const auto ry = height / static_cast<float>(logical_height);
         renderer.set_text_input_area({static_cast<int>(input_x / rx), static_cast<int>(98 * scale / ry), 2, static_cast<int>(26 * scale / ry)}, 0);
-    }
-    for (std::size_t i = 0; i < count; ++i) {
-        const auto y = (130 + static_cast<float>(i) * 34) * scale;
-        if (first + i == prompt_choice) { rectangle(canvas, x + 6 * scale, y, 588 * scale, 32 * scale, hover_color); }
-        canvas->save(); canvas->clipRect(SkRect::MakeLTRB(x + 12 * scale, y, x + 588 * scale, y + 33 * scale));
-        if (prompt == Prompt::recovery) {
-            const auto& session = recovery_sessions[recovery_matches[first + i]];
-            label(canvas, session.at("id").get<std::string>() + " — " + std::to_string(session.value("buffers", Json::array()).size()) + " unsaved buffers",
-                  x + 20 * scale, y + 7 * scale, 13);
-        }
-        canvas->restore();
     }
 }
 

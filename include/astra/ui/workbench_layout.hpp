@@ -20,7 +20,7 @@ struct WorkbenchLayout {
 };
 struct ConfirmationLayout {
     Box panel,title,detail,items,accept,cancel;
-    static ConfirmationLayout measure(float width,float height,float scale,bool has_items);
+    static ConfirmationLayout measure(float width,float height,float scale,std::size_t items);
 };
 struct ChoiceLayout {
     Box panel,title,detail;

@@ -7,7 +7,18 @@ export const ui = {
         write: text => request('_ui.clipboard.write', {text})
     },
     input: (spec, options) => dialog('input', spec, options),
-    confirm: (spec, options) => dialog('confirm', spec, options),
+    async confirm(spec, options) {
+        const id=`dialog-${++dialogId}`, alias=spec.id;
+        if(alias && (typeof alias!=='string' || alias.length>128 || activeConfirmations.has(alias)))throw new TypeError('Invalid or active confirmation identity');
+        if(alias)activeConfirmations.set(alias,id);
+        try { return await dialog('confirm',spec,options,id); }
+        finally { if(alias && activeConfirmations.get(alias)===id)activeConfirmations.delete(alias); }
+    },
+    async answerConfirm(id,accepted=true) {
+        const nativeId=activeConfirmations.get(id);
+        if(nativeId)return await request('_ui.dialog.answer',{id:nativeId,accepted});
+        return null;
+    },
     async choose(spec, options) {
         const choices=spec.choices.slice();
         const id=`dialog-${++dialogId}`, alias=spec.id;
@@ -84,6 +95,7 @@ export const ui = {
 const providers = new Map();
 const generations = new Map();
 const activeChoices = new Map();
+const activeConfirmations = new Map();
 let dialogId = 0;
 let actionId = 0;
 let readId = 0;

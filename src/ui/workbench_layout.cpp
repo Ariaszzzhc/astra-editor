@@ -29,11 +29,12 @@ ChoiceLayout ChoiceLayout::measure(float width,float height,float scale,std::siz
     result.detail={x+pad,detail_y,pw-2*pad,std::max(0.0F,button_y-detail_y-gap)};
     return result;
 }
-ConfirmationLayout ConfirmationLayout::measure(float width,float height,float scale,bool has_items) {
+ConfirmationLayout ConfirmationLayout::measure(float width,float height,float scale,std::size_t items) {
     if(!std::isfinite(width)||!std::isfinite(height)||!std::isfinite(scale)||width<=0||height<=0||scale<=0)throw std::invalid_argument("Invalid confirmation dimensions");
     ConfirmationLayout result;
     const auto pw=std::max(0.0F,std::min(600*scale,width-24*scale));
-    const auto ph=std::max(0.0F,std::min((has_items?430.0F:175.0F)*scale,height-24*scale));
+    const auto desired=175.0F+(items ? 12.0F+28.0F*static_cast<float>(std::min(items,std::size_t{9})) : 0.0F);
+    const auto ph=std::max(0.0F,std::min(desired*scale,height-24*scale));
     const auto x=(width-pw)/2,y=std::min(90*scale,std::max(0.0F,height-ph-12*scale));
     result.panel={x,y,pw,ph};
     const auto padding=std::min(24*scale,pw/6),button_y=std::max(y,result.panel.bottom()-54*scale);
@@ -45,7 +46,7 @@ ConfirmationLayout ConfirmationLayout::measure(float width,float height,float sc
     const auto dy=std::min(y+55*scale,button_y);
     result.detail={x+padding,dy,pw-2*padding,std::min(58*scale,std::max(0.0F,button_y-dy-8*scale))};
     const auto iy=std::min(result.detail.bottom()+8*scale,button_y);
-    result.items={x+padding,iy,pw-2*padding,has_items?std::max(0.0F,button_y-iy-12*scale):0.0F};
+    result.items={x+padding,iy,pw-2*padding,items?std::max(0.0F,button_y-iy-12*scale):0.0F};
     return result;
 }
 PickerLayout PickerLayout::measure(float width,float height,float scale,std::size_t rows) {

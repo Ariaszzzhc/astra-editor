@@ -83,12 +83,14 @@ TEST_CASE("presentation decoration adapters distinguish bytes lines and UTF16 co
 }
 
 TEST_CASE("presentation confirmation layout shares bounded review and button regions") {
-    for(const auto scale:{1.0F,1.25F,1.5F,2.0F})for(const auto width:{260.0F,640.0F,1440.0F})for(const auto review:{false,true}){
-        const auto layout=astra::ui::ConfirmationLayout::measure(width*scale,600*scale,scale,review);
+    for(const auto scale:{1.0F,1.25F,1.5F,2.0F})for(const auto width:{260.0F,640.0F,1440.0F})for(const std::size_t rows:{0,1,5,40}){
+        const auto layout=astra::ui::ConfirmationLayout::measure(width*scale,600*scale,scale,rows);
         CHECK(layout.panel.x>=0);CHECK(layout.panel.right()<=width*scale);CHECK(layout.panel.bottom()<=600*scale);
         CHECK(layout.accept.right()<=layout.cancel.x);CHECK(layout.items.bottom()<=layout.accept.y);
         CHECK(layout.accept.contains(layout.accept.x+layout.accept.width/2,layout.accept.y+layout.accept.height/2));
-        CHECK((layout.items.height>0)==review);
+        CHECK((layout.items.height>0)==(rows>0));
+        if(rows==1)CHECK(layout.items.height<=28*scale+1);
+        if(rows==40)CHECK(layout.items.height<40*28*scale);
     }
 }
 

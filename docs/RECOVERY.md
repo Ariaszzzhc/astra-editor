@@ -40,6 +40,17 @@ platform's application-data location. `--state-directory` overrides it; automate
 tests use repository-local state. Shutdown drains accepted work before its final
 checkpoint and reports storage errors.
 
+The client `astra/recovery` JavaScript module owns discovery, inactive-session
+selection, recovery confirmation, storage notifications and manual checkpoints.
+The `ui.recovery` command composes indexed native picker/confirmation components and awaits
+`recovery.restore`; dismissing either component leaves documents untouched.
+Issue-only sessions open a read-only report. Selected session identity is captured
+before confirmation, so a newer discovery cannot change the restore target.
+Superseded scans are cancelled and older list replies cannot replace a newer
+availability notification. The `ui.checkpoint` command resolves only after the service's
+durable result and propagates storage failures. Native final-window checkpoint
+and exit decisions remain pending migration to JS in the active revision.
+
 ## Windows acceptance
 
 The standalone `astra-recovery-tests` target covers 15 cases and 105 assertions

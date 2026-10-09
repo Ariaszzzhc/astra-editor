@@ -157,7 +157,7 @@ void run(const fs::path& workspace) {
         window.request_screenshot("build/graphics/gui-workbench-review.png");settle(window);
         int review_width{},review_height{};
         require(SDL_GetWindowSizeInPixels(window.window(),&review_width,&review_height),"Cannot read confirmation viewport");
-        const auto review=astra::ui::ConfirmationLayout::measure(static_cast<float>(review_width),static_cast<float>(review_height),window.layout().scale,true);
+        const auto review=astra::ui::ConfirmationLayout::measure(static_cast<float>(review_width),static_cast<float>(review_height),window.layout().scale,40);
         click(window,review.cancel.x+review.cancel.width/2,review.cancel.y+review.cancel.height/2);
         require(window.status_text()=="Review cancelled","Review pointer hit did not settle its awaited JS workflow");
         window.execute_ui_command("acceptance.pick");settle(window);
