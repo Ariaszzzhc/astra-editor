@@ -138,10 +138,10 @@ struct Renderer::Impl {
     ~Impl() {
         frame.reset();
         acquired_texture = nullptr;
-        if (context && device_state && !device_state->lost.load()) {
-            (void)context->submit(skgpu::graphite::SyncToCpu::kYes);
-        }
         recorder.reset();
+        // Graphite's queue manager waits for outstanding submissions when the
+        // context is destroyed. Submitted frames must not be submitted again;
+        // unsubmitted recordings belong to the recorder and are discarded here.
         context.reset();
         if (configured && surface) { surface.Unconfigure(); }
         surface = nullptr;

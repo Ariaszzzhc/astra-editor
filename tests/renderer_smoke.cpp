@@ -80,7 +80,18 @@ int main() {
         }
         require((SDL_WasInit(SDL_INIT_VIDEO) & SDL_INIT_VIDEO) == 0, "Renderer leaked SDL video lifetime");
         // A fresh instance checks teardown of the old native surface and device.
-        { astra::ui::Renderer renderer("Astra renderer restart verification", 320, 240); draw(renderer); }
+        { astra::ui::Renderer renderer("Astra renderer restart verification", 320, 240);
+            for(unsigned frame=0;frame<8;++frame)draw(renderer);
+        }
+        // Teardown also owns a frame whose recording has never been submitted.
+        { astra::ui::Renderer renderer("Astra abandoned frame verification",320,240);
+            auto* canvas=renderer.begin_frame();require(canvas!=nullptr,"Abandoned frame acquisition failed");
+            canvas->clear(SK_ColorRED);
+        }
+        { astra::ui::Renderer renderer("Astra restart after abandoned frame",320,240);
+            draw(renderer,screenshot);verify_png(screenshot,renderer.pixel_size());
+        }
+        require((SDL_WasInit(SDL_INIT_VIDEO) & SDL_INIT_VIDEO) == 0, "Repeated teardown leaked SDL video lifetime");
         std::cout << "SDL3 native window + Graphite/Dawn present, GPU PNG, resize, minimize, IME lifetime, restart: PASS\n";
         return 0;
     } catch (const std::exception& error) {

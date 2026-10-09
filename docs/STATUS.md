@@ -286,6 +286,17 @@ and TCP checks were rerun after refining labels. The regenerated native
 `build/graphics/gui-palette.png` was visually inspected. The idle-frame Skia
 warning remains in these runs.
 
+Renderer teardown no longer redundantly submits already-submitted frames.
+The pinned Graphite queue manager owns waiting for outstanding submissions during
+context destruction, before Dawn device/surface teardown. Unsubmitted recordings
+are discarded with their owning recorder. Windows Debug
+`build -y renderer-smoke gui-smoke gui-presentation-smoke` passed. Real
+`renderer-smoke` passed resize/minimize/readback, eight successive submitted
+frames, destruction with an unsubmitted frame, restart and verified PNG pixels.
+Local/TCP `gui-smoke` and `gui-presentation-smoke` all passed afterward **without
+the previously recorded empty-submit warning**. Those older warnings remain in
+their historical evidence; physical GPU loss still has not been induced.
+
 Remaining work includes the rest of the public UI/provider contract,
 native component extraction, indexed diagnostic/display views, incremental
 syntax indexes, full Debug/Release and native GUI acceptance, and packaging the
