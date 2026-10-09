@@ -517,24 +517,29 @@ FileRecoveryRequired::FileRecoveryRequired(fs::path original, fs::path backup)
 const fs::path& FileRecoveryRequired::original_path() const noexcept { return original_; }
 const fs::path& FileRecoveryRequired::backup_path() const noexcept { return backup_; }
 
+DecodedText decode_bytes(std::string_view raw, std::optional<TextEncoding> encoding_override) {
+    if (encoding_override == TextEncoding::latin1) {
+        std::string text;
+        text.reserve(raw.size());
+        for (const auto character : raw) {
+            if (character == '\0') { throw std::invalid_argument("binary NUL is not supported in text files"); }
+            append_utf8(text, static_cast<unsigned char>(character));
+        }
+        return {std::move(text), TextEncoding::latin1};
+    }
+    auto [text, encoding] = decode_file(raw);
+    if (encoding_override && *encoding_override != encoding) {
+        throw std::invalid_argument("file encoding does not match the requested encoding");
+    }
+    return {std::move(text), encoding};
+}
+
 FileSnapshot read_file(const fs::path& input_path, std::size_t max_bytes,
                        std::optional<TextEncoding> encoding_override) {
     const auto path = normalized_path(input_path);
     auto raw = std::make_shared<const std::string>(read_raw(path, max_bytes));
-    if (encoding_override == TextEncoding::latin1) {
-        std::string text;
-        text.reserve(raw->size());
-        for (const auto character : *raw) {
-            if (character == '\0') { throw std::invalid_argument("binary NUL is not supported in text files"); }
-            append_utf8(text, static_cast<unsigned char>(character));
-        }
-        return {std::move(text), TextEncoding::latin1, FileVersion{path, std::move(raw)}};
-    }
-    auto [text, encoding] = decode_file(*raw);
-    if (encoding_override && *encoding_override != encoding) {
-        throw std::invalid_argument("file encoding does not match the requested encoding");
-    }
-    return {std::move(text), encoding, FileVersion{path, std::move(raw)}};
+    auto decoded = decode_bytes(*raw, encoding_override);
+    return {std::move(decoded.text), decoded.encoding, FileVersion{path, std::move(raw)}};
 }
 
 FileVersion save_file(const fs::path& input_path, std::string_view text,

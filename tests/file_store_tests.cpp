@@ -106,6 +106,22 @@ std::string raw_file(const fs::path& path) {
 
 } // namespace
 
+TEST_CASE("pure file decoding preserves strict encoding and raw newline semantics") {
+    using astra::io::decode_bytes;
+    const auto utf8 = decode_bytes("\xef\xbb\xbf" "hello\r\n");
+    CHECK(utf8.encoding == TextEncoding::utf8_bom);
+    CHECK(utf8.text == "hello\r\n");
+    const auto utf16 = decode_bytes(std::string("\xff\xfe" "A\0\x3d\xd8\x00\xde", 8));
+    CHECK(utf16.encoding == TextEncoding::utf16_le);
+    CHECK(utf16.text == "A\xf0\x9f\x98\x80");
+    const auto latin = decode_bytes("caf\xe9", TextEncoding::latin1);
+    CHECK(latin.encoding == TextEncoding::latin1);
+    CHECK(latin.text == "caf\xc3\xa9");
+    CHECK_THROWS_AS((void)decode_bytes("caf\xe9"), std::invalid_argument);
+    CHECK_THROWS_AS((void)decode_bytes(std::string("x\0y", 3)), std::invalid_argument);
+    CHECK_THROWS_AS((void)decode_bytes("text", TextEncoding::utf16_le), std::invalid_argument);
+}
+
 TEST_CASE("file store creates and replaces real files using explicit versions") {
     TestDirectory directory;
     const auto path = directory.file();

@@ -47,6 +47,12 @@ do not constitute Linux/macOS verification. No CI jobs for those systems are ena
 - `./tests/cli_smoke.ps1 -Mode release` passes: independent server/client processes,
   Content-Length TCP requests, Unicode/spaced workspace paths, literal backslashes,
   and durable asynchronous save. The fixture terminates only its own temporary server.
+- Process/Git modules: 17 real child-process cases and 19 real repository cases
+  pass in Windows Debug and Release. Coverage includes Job Object descendants,
+  immediate working-directory release, stream limits, cancellation, filtered
+  CRLF discard, Unicode literal paths, merge conflicts and guarded staging.
+  The file-store/strict-decoding subset also passes: 16 cases / 151 assertions.
+  See `docs/PROCESS_GIT.md` for the independent module target and guarantees.
 - Resolved build infrastructure failures: Windows sandbox blocked MSVC PDB/MSYS named
   objects; normal Windows execution plus embedded CodeView records works. xmake's automatic
   partial-clone lock path recursed on this host; the checked-in manifest now locks a

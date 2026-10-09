@@ -25,6 +25,16 @@ struct FileSnapshot {
     FileVersion version;
 };
 
+struct DecodedText {
+    std::string text;
+    TextEncoding encoding{TextEncoding::utf8};
+};
+
+// Pure strict decoding for worker outputs such as Git's working-tree filters.
+// Applies exactly the same BOM, UTF-8, UTF-16, Latin-1 and NUL rules as read_file.
+[[nodiscard]] DecodedText decode_bytes(std::string_view raw,
+    std::optional<TextEncoding> encoding_override = std::nullopt);
+
 class FileConflict final : public std::runtime_error {
 public:
     explicit FileConflict(const std::string& message);
