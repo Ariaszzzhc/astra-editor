@@ -1,0 +1,10 @@
+/.tools/
+/.xmake/
+/build/
+/dist/
+/.cache/
+*.user
+*.pdb
+*.ilk
+*.dmp
+compile_commands.json
