@@ -194,7 +194,9 @@ Client document calls use the same in-process/TCP protocol as other clients.
 `astra.ui.execute(id, parameters)` awaits a registered UI command, including user
 overrides. `astra.ui.input({title, value, placeholder}, {signal, timeoutMs})`
 returns entered text or `null` on dismissal. `astra.ui.confirm({title, detail,
-accept}, options)` returns `true` or `null`. These are native retained modal
+accept, items}, options)` returns `true` or `null`. Optional `items` are a
+scrollable review list, bounded to 4,096 single-line labels, 4 KiB per label and
+64 KiB combined. These are native retained modal
 components with Promise completion; input/focus/drawing stays in C++ and the
 following service workflow stays in JS. Abort dismisses the matching dialog and
 drains its native future. Dialogs default to five minutes, with a separate bounded

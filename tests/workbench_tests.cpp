@@ -29,7 +29,7 @@ std::map<std::string, std::string> modules() {
     std::map<std::string, std::string> result;
     for (const auto& [name, file] : std::map<std::string, std::string>{
         {"astra/ui", "api.js"}, {"astra/files", "files.js"}, {"astra/git", "git.js"},
-        {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
+        {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/language","language.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
         result[name] = astra::io::read_file(std::filesystem::path("data/workbench") / file).text;
     }
     return result;
@@ -284,4 +284,52 @@ TEST_CASE("workbench Git commit skips input when no staged changes exist") {
     channel->reply({{"entries",Json::array({{{"path","untracked.cpp"},{"staged","untracked"}}})}});
     for(int tick=0;tick<4;++tick)workbench.poll();
     CHECK_FALSE(prompted);CHECK(channel->requests.empty());CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench rename awaits name and plan review before applying captured edits") {
+    auto channel=std::make_shared<Channel>();
+    std::promise<Json> name,approval;unsigned dialogs{};Json review;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params){
+        if(method=="_ui.read")return ready({{"document",{{"id","source"},{"revision","7"},{"selections",Json::array({{{"anchor",12},{"head",12}}})}}}});
+        if(method=="_ui.dialog"){
+            if(++dialogs==1)return name.get_future();
+            review=params;return approval.get_future();
+        }
+        return ready(nullptr);
+    },modules());
+    workbench.execute("ui.rename",Json::object(),{});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    CHECK(channel->requests.empty());CHECK(workbench.awaiting_input());
+    name.set_value("renamed");
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);
+    CHECK(channel->requests.front().body.at("method")=="language.request");
+    CHECK(channel->requests.front().body.at("params")==Json{{"id","source"},{"baseRevision","7"},{"method","rename"},{"byteOffset",12},{"newName","renamed"}});
+    channel->reply({{"id","source"},{"revision","7"},{"planId","captured-plan"},{"documents",Json::array({{{"path","source.cpp"},{"editCount",2}},{{"path","other.cpp"},{"editCount",1}}})}});
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    CHECK(channel->requests.empty());CHECK(workbench.awaiting_input());
+    CHECK(review.at("items")==Json::array({"source.cpp (2 edits)","other.cpp (1 edits)"}));
+    approval.set_value(true);
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);
+    CHECK(channel->requests.front().body.at("method")=="language.applyWorkspaceEdit");
+    CHECK(channel->requests.front().body.at("params").at("planId")=="captured-plan");
+    channel->reply({{"documents",Json::array()}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench formatting discards obsolete results without applying edits") {
+    auto channel=std::make_shared<Channel>();
+    astra::ui::Workbench workbench(channel,[](std::string_view method,const Json&){
+        if(method=="_ui.read")return ready({{"document",{{"id","source"},{"revision","8"}}}});
+        return ready(nullptr);
+    },modules());
+    workbench.execute("ui.format",Json::object(),{});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);
+    CHECK(channel->requests.front().body.at("method")=="language.request");
+    channel->reply({{"obsolete",true},{"result",Json::array({{{"newText","changed"}}})}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    CHECK(channel->requests.empty());CHECK(workbench.idle());
 }

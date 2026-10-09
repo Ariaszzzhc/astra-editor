@@ -165,6 +165,21 @@ were visually inspected. The first Git GUI run failed because a multi-line dialo
 description reached the one-logical-line shaper; the indexed multi-line component
 fix preceded these passing runs. The final idle-frame renderer warning remains.
 
+Formatting and rename now execute in the client JS language module. Rename captures
+document identity/revision before awaiting its name, reviews the returned service
+plan with a scrollable native file list, and commits only the captured plan ID.
+Formatting rejects obsolete responses before applying edits. The removed native
+branches no longer orchestrate these service requests. Confirmation item painting
+and pointer actions use one shared DPI-aware layout and a measured text-line index.
+
+Windows Debug `build -y astra-tests gui-services-smoke gui-workspace-smoke
+gui-presentation-smoke` passed. The focused
+`--test-case=presentation*,workbench*,QuickJS*,JavaScript*` run passed
+**40 cases / 8,651 assertions**. All three real GUI executables passed; clangd
+format/rename, deferred rename confirmation, and a 40-item review scrolled with
+real Down keys and cancelled with a pointer were exercised. The rename and review
+GPU screenshots were visually inspected. The final idle-frame Skia warning remains.
+
 Remaining work includes the rest of the public UI/provider contract,
 native component extraction, indexed diagnostic/display views, incremental
 syntax indexes, full Debug/Release and native GUI acceptance, and packaging the

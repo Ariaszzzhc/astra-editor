@@ -3,6 +3,7 @@ import {registerGit} from 'astra/git';
 import {registerSearch} from 'astra/search';
 import {registerNativeCommands} from 'astra/commands';
 import {registerClipboard} from 'astra/clipboard';
+import {registerLanguage} from 'astra/language';
 export function initialize() {
-    registerNativeCommands(); registerFiles(); registerGit(); registerSearch(); registerClipboard();
+    registerNativeCommands(); registerFiles(); registerGit(); registerSearch(); registerClipboard(); registerLanguage();
 }

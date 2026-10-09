@@ -18,6 +18,10 @@ struct WorkbenchLayout {
     static WorkbenchLayout measure(float width, float height, float scale,
                                    bool sidebar, float sidebar_width, bool outline, bool explorer);
 };
+struct ConfirmationLayout {
+    Box panel,title,detail,items,accept,cancel;
+    static ConfirmationLayout measure(float width,float height,float scale,bool has_items);
+};
 struct TabBox { std::size_t index{}; Box bounds; Box close; };
 struct TabStrip {
     std::vector<TabBox> visible;

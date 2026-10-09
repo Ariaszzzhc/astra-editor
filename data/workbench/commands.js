@@ -20,8 +20,7 @@ export function registerNativeCommands() {
         ['ui.selectBlock','Select enclosing block'], ['ui.selectString','Select string content'],
         ['ui.completion','Trigger completion','Ctrl+Space'], ['ui.hover','Show hover information','Ctrl+K'],
         ['ui.diagnostics','Show document diagnostics','Ctrl+Shift+M'], ['ui.definition','Go to definition','F12'],
-        ['ui.references','Find all references','Shift+F12'], ['ui.rename','Rename symbol','F2'],
-        ['ui.format','Format document','Shift+Alt+F'], ['ui.recovery','Review unsaved sessions'],
+        ['ui.references','Find all references','Shift+F12'], ['ui.recovery','Review unsaved sessions'],
         ['ui.checkpoint','Write recovery checkpoint']
     ];
     for (const [id, title, shortcut] of commands) {

@@ -61,6 +61,7 @@ void run(const fs::path& workspace) {
     {
         astra::ui::EditorWindowOptions options;
         options.workspace_name="ASTRA WORKBENCH";options.resource_directory=fs::current_path();options.open_paths={"one.cpp"};
+        options.user_script="if(astra.context==='client')astra.ui.registerCommand({id:'acceptance.review',title:'Review items'},async()=>{const accepted=await astra.ui.confirm({title:'Review changes',items:Array.from({length:40},(_,i)=>'File '+i+' (2 edits)'),accept:'Apply changes'});await astra.ui.update({status:accepted?'Review accepted':'Review cancelled'});});";
         Window window(host,std::move(options));settle(window);
         const auto original=window.view_state();
         require(original.visible_file_rows==files+5,"Indexed file rows were lost");
@@ -112,6 +113,14 @@ void run(const fs::path& workspace) {
         require(SDL_PushEvent(&mode)&&SDL_PushEvent(&select)&&SDL_PushEvent(&text)&&SDL_PushEvent(&enter),"Cannot enqueue async save-as event batch");settle(window);
         require(astra::io::read_file(workspace/"renamed-three.cpp").text==astra::io::read_file(workspace/"three.cpp").text,
             "Async save dialog lost same-batch text/focus or changed document content");
+        window.execute_ui_command("acceptance.review");settle(window);
+        for(int row=0;row<10;++row)key(window,SDLK_DOWN);
+        window.request_screenshot("build/graphics/gui-workbench-review.png");settle(window);
+        int review_width{},review_height{};
+        require(SDL_GetWindowSizeInPixels(window.window(),&review_width,&review_height),"Cannot read confirmation viewport");
+        const auto review=astra::ui::ConfirmationLayout::measure(static_cast<float>(review_width),static_cast<float>(review_height),window.layout().scale,true);
+        click(window,review.cancel.x+review.cancel.width/2,review.cancel.y+review.cancel.height/2);
+        require(window.status_text()=="Review cancelled","Review pointer hit did not settle its awaited JS workflow");
         window.execute_ui_command("ui.closeWindow");
         const auto deadline=Clock::now()+std::chrono::seconds(20);
         while(window.pump()) {require(Clock::now()<deadline,"Workbench shutdown timed out");SDL_Delay(1);}

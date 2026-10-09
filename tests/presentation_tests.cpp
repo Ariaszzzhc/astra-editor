@@ -26,6 +26,16 @@ TEST_CASE("presentation text panels index mixed line endings and preserve snapsh
     lines.reset("");CHECK(lines.size()==1);CHECK(lines.bytes()==0);CHECK(lines.at(0).empty());
 }
 
+TEST_CASE("presentation confirmation layout shares bounded review and button regions") {
+    for(const auto scale:{1.0F,1.25F,1.5F,2.0F})for(const auto width:{260.0F,640.0F,1440.0F})for(const auto review:{false,true}){
+        const auto layout=astra::ui::ConfirmationLayout::measure(width*scale,600*scale,scale,review);
+        CHECK(layout.panel.x>=0);CHECK(layout.panel.right()<=width*scale);CHECK(layout.panel.bottom()<=600*scale);
+        CHECK(layout.accept.right()<=layout.cancel.x);CHECK(layout.items.bottom()<=layout.accept.y);
+        CHECK(layout.accept.contains(layout.accept.x+layout.accept.width/2,layout.accept.y+layout.accept.height/2));
+        CHECK((layout.items.height>0)==review);
+    }
+}
+
 namespace {
 using Json = astra::protocol::Json;
 Json entry(std::string path, bool directory) { return {{"path", path}, {"directory", directory}}; }

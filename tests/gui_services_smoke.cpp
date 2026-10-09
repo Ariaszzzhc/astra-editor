@@ -123,7 +123,7 @@ int main() {
         key(window, SDLK_F2); text(window, "cube"); key(window, SDLK_RETURN);
         require(document(host, id).at("text") == valid, "Rename mutated buffers before confirmation");
         window.request_screenshot("build/graphics/gui-rename-confirm.png"); settle(window);
-        window.execute_ui_command("ui.confirmRename"); settle(window);
+        key(window, SDLK_RETURN);
         auto renamed = document(host, id).at("text").get<std::string>();
         require(renamed.find("square") == std::string::npos && renamed.find("cube(2)") != std::string::npos, "Rename failed to apply the previewed edits");
         window.execute_ui_command("ui.format"); settle(window);

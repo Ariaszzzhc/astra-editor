@@ -102,10 +102,11 @@ struct EditorWindow::Impl {
     struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; };
     struct FindState { std::string id; std::string revision; std::string query; std::string replacement; std::string text; std::size_t cursor{}; std::size_t size{}; bool replace{}; };
     struct ViewState { std::string id; std::string revision; std::size_t first{}; std::size_t limit{}; std::map<std::size_t, Line> lines; };
-    enum class Prompt { none, policy_input, policy_confirm, palette, save_as, close, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, completion, locations, hover, rename, rename_confirm, git_diff, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed };
+    enum class Prompt { none, policy_input, policy_confirm, palette, save_as, close, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, completion, locations, hover, git_diff, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed };
     struct Dialog {
         std::string id; Json spec; std::promise<Json> completion;
         TextLineIndex detail_lines; std::map<std::size_t,TextLayout> detail_layout; float detail_width{},detail_scale{};
+        TextLineIndex items;
         std::optional<TextLayout> input_layout; std::string input_text; float input_scale{};
     };
 
@@ -180,7 +181,6 @@ struct EditorWindow::Impl {
     std::size_t language_offset{};
     std::uint64_t language_generation{};
     std::string hover_text;
-    Json rename_plan;
     bool git_view{};
     Json git_status = Json::object();
     std::string git_path;
@@ -255,7 +255,7 @@ struct EditorWindow::Impl {
         std::map<std::string, std::string> modules;
         for (const auto& [name, file] : std::map<std::string, std::string>{
             {"astra/ui", "api.js"}, {"astra/files", "files.js"}, {"astra/git", "git.js"},
-            {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
+            {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/language","language.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
             modules.emplace(name, io::read_file(options.resource_directory / "data" / "workbench" / file, 1024 * 1024).text);
         }
         workbench = std::make_unique<Workbench>(channel, [this](std::string_view method, const Json& params) {
@@ -449,7 +449,7 @@ struct EditorWindow::Impl {
     void fetch_lines();
     void fetch_lines_page(std::shared_ptr<ViewState> view, std::size_t first, std::optional<std::size_t> begin = {});
     void fetch_syntax();
-    void language_request(std::string method, std::string new_name = {});
+    void language_request(std::string method);
     void accept_language(const Json& result, std::size_t offset);
     void fetch_diagnostics(const std::string& id, bool show = false);
     std::vector<std::size_t> filtered_language_items() const;
@@ -738,7 +738,7 @@ void EditorWindow::Impl::editor_command(std::string name, Json extra) {
         [this](const Json& result) { accept_metadata(result); reveal_caret(); status = "Ready"; }, {}});
 }
 
-void EditorWindow::Impl::language_request(std::string method, std::string new_name) {
+void EditorWindow::Impl::language_request(std::string method) {
     const auto* document = current();
     if (!document) { return; }
     language_document = active_id;
@@ -746,8 +746,7 @@ void EditorWindow::Impl::language_request(std::string method, std::string new_na
     language_revision = document->metadata.at("revision").get<std::string>();
     language_offset = document->metadata.at("selections").front().at("head").get<std::size_t>();
     Json params{{"id", language_document}, {"baseRevision", language_revision}, {"method", method}};
-    if (method != "formatting") { params["byteOffset"] = language_offset; }
-    if (method == "rename") { params["newName"] = std::move(new_name); }
+    params["byteOffset"] = language_offset;
     status = "Language server: " + method;
     const auto generation = ++language_generation;
     const auto offset = language_offset;
@@ -789,14 +788,6 @@ void EditorWindow::Impl::accept_language(const Json& result, std::size_t offset)
         if (language_items.empty()) { status = "No locations found"; return; }
         prompt = Prompt::locations;
         if (language_items.size() == 1) { accept_prompt(); }
-    } else if (method == "formatting") {
-        if (value.is_null() || value.empty()) { status = "Document is already formatted"; return; }
-        enqueue({"language.applyTextEdits", {{"id", id}, {"baseRevision", revision}, {"edits", value}}, {}, false,
-            [this](const Json& metadata) { accept_metadata(metadata); reveal_caret(); status = "Document formatted"; }, {}});
-    } else if (method == "rename") {
-        rename_plan = result;
-        if (!result.contains("planId") || result.value("documents", Json::array()).empty()) { status = "No rename edits"; return; }
-        prompt = Prompt::rename_confirm;
     }
 }
 
@@ -977,6 +968,15 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
     const auto placeholder = spec.value("placeholder", std::string{});
     if (id.empty() || id.size()>128 || title.empty() || title.size() > 4096 || value.size() > 16384 || detail.size() > 65536 || accept.size()>4096 || placeholder.size()>4096) { throw protocol::RpcError(-32602, "Dialog content exceeds its bounds"); }
     Dialog pending;pending.id=id;pending.spec=spec;pending.detail_lines.reset(detail);
+    const auto items=spec.value("items",Json::array());
+    if(!items.is_array() || items.size()>4096)throw protocol::RpcError(-32602,"Confirmation items must be an array of at most 4096 strings");
+    std::string item_text;
+    for(const auto& item:items){
+        const auto label=item.get<std::string>();
+        if(label.empty() || label.find_first_of("\r\n")!=std::string::npos || label.size()>4096 || item_text.size()+label.size()+1>65536)throw protocol::RpcError(-32602,"Confirmation item text exceeds its bounds");
+        if(!item_text.empty())item_text+='\n';item_text+=label;
+    }
+    if(!items.empty())pending.items.reset(item_text);
     auto result = pending.completion.get_future();
     dialog.emplace(std::move(pending));
     prompt = kind == "input" ? Prompt::policy_input : Prompt::policy_confirm;
@@ -1028,6 +1028,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
     if(params.contains("gitDiff") && dialog) { throw protocol::RpcError(-32004,"Dismiss the active dialog before showing a comparison"); }
     // Establish document state before activation regardless of JSON key order.
     if (params.contains("document")) { accept_metadata(params.at("document")); }
+    if(params.contains("documents"))for(const auto& metadata:params.at("documents"))accept_metadata(metadata);
     for (const auto& [name, value] : params.items()) {
         if (name == "status") { status = value.get<std::string>(); }
         else if (name == "sidebarVisible") { show_sidebar = value.get<bool>(); }
@@ -1036,7 +1037,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             const auto view = value.get<std::string>();
             if (view != "explorer" && view != "search" && view != "git") { throw protocol::RpcError(-32602, "Unknown sidebar view"); }
             search_view = view == "search"; git_view = view == "git"; tree_scroll = 0;
-        } else if (name == "document") { /* Applied before activation above. */ }
+        } else if (name == "document" || name == "documents") { /* Applied before activation above. */ }
         else if (name == "activate") { activate(value.get<std::string>()); }
         else if (name == "revealCaret") { if (value.get<bool>()) { reveal_caret(); } }
         else if (name == "workspaceNotice") { workspace_notices[value.at("id").get<std::string>()] = value.at("text").get<std::string>(); }
@@ -1157,16 +1158,6 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     else if (name == "ui.diagnostics") { if (current()) { fetch_diagnostics(active_id, true); } }
     else if (name == "ui.definition") { language_request("definition"); }
     else if (name == "ui.references") { language_request("references"); }
-    else if (name == "ui.format") { language_request("formatting"); }
-    else if (name == "ui.rename") { prompt = Prompt::rename; prompt_text.clear(); }
-    else if (name == "ui.confirmRename") {
-        if (prompt != Prompt::rename_confirm) { return; }
-        prompt = Prompt::none;
-        start_operation("language.applyWorkspaceEdit", {{"planId", rename_plan.at("planId")}}, [this](const Json& result) {
-            for (const auto& metadata : result.at("documents")) { accept_metadata(metadata); }
-            status = "Rename applied to buffers; save files to persist";
-        });
-    }
     else if (name == "ui.selectFunction" || name == "ui.selectClass" || name == "ui.selectBlock" || name == "ui.selectString") {
         const auto* document = current();
         if (!document) { return; }
@@ -1288,10 +1279,7 @@ void EditorWindow::Impl::accept_prompt() {
         }
     } else if (prompt == Prompt::hover) { prompt = Prompt::none; }
     else if (prompt == Prompt::git_diff) { prompt = Prompt::none; }
-    else if (prompt == Prompt::rename) {
-        if (prompt_text.empty()) { return; }
-        const auto name = prompt_text; prompt = Prompt::none; language_request("rename", name);
-    } else if (prompt == Prompt::palette) {
+    else if (prompt == Prompt::palette) {
         const auto matches = filtered_commands();
         if (matches.empty()) { return; }
         const auto id = std::string(matches[std::min(prompt_choice, matches.size() - 1)]->id);
@@ -1321,7 +1309,6 @@ void EditorWindow::Impl::accept_prompt() {
         else { replacement_text = prompt_text; }
         prompt = Prompt::none; search_workspace(replace);
     } else if (prompt == Prompt::replace_confirm) { command("ui.confirmReplace"); }
-    else if (prompt == Prompt::rename_confirm) { command("ui.confirmRename"); }
 }
 
 void EditorWindow::Impl::find_document(bool replace) {
@@ -1441,6 +1428,8 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
     if (prompt != Prompt::none) {
         if (prompt == Prompt::policy_confirm) {
             if (input.key == SDLK_RETURN || input.key == SDLK_KP_ENTER) { finish_dialog(true); }
+            else if(input.key==SDLK_DOWN)++prompt_choice;
+            else if(input.key==SDLK_UP && prompt_choice)--prompt_choice;
             return;
         }
         if (search_prompt() && alt) {
@@ -1611,7 +1600,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
     case SDL_EVENT_TEXT_INPUT:
         preedit.clear();
         if (!input.text.text) { break; }
-        if (prompt != Prompt::none && prompt != Prompt::close && prompt != Prompt::replace_confirm && prompt != Prompt::rename_confirm &&
+        if (prompt != Prompt::none && prompt != Prompt::close && prompt != Prompt::replace_confirm &&
             prompt != Prompt::hover && prompt != Prompt::git_diff &&
             prompt != Prompt::recovery_confirm && prompt != Prompt::recovery_flushing && prompt != Prompt::recovery_exit_failed && prompt != Prompt::policy_confirm) {
             if (prompt_select_all) { prompt_text.clear(); prompt_select_all = false; }
@@ -1641,12 +1630,9 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         mouse_x = input.button.x * ratio_x; mouse_y = input.button.y * ratio_y;
         const auto width = static_cast<float>(pixels.width);
         if (prompt == Prompt::policy_confirm) {
-            const auto bx = (width - std::min(600 * scale,width - 24 * scale)) / 2;
-            const auto button_width = (std::min(600 * scale,width - 24 * scale) - 72 * scale) / 2;
-            if (mouse_y >= 211 * scale && mouse_y < 245 * scale) {
-                if (mouse_x >= bx + 24 * scale && mouse_x < bx + 24 * scale + button_width) { finish_dialog(true); }
-                else if (mouse_x >= bx + 48 * scale + button_width && mouse_x < width - bx - 24 * scale) { finish_dialog(nullptr); }
-            }
+            const auto layout=ConfirmationLayout::measure(width,static_cast<float>(pixels.height),scale,dialog && dialog->items.size()>0);
+            if(layout.accept.contains(mouse_x,mouse_y))finish_dialog(true);
+            else if(layout.cancel.contains(mouse_x,mouse_y))finish_dialog(nullptr);
             break;
         }
         if (prompt == Prompt::recovery_flushing) { command("ui.cancel"); break; }
@@ -1686,10 +1672,10 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             }
             break;
         }
-        if (prompt == Prompt::replace_confirm || prompt == Prompt::rename_confirm) {
+        if (prompt == Prompt::replace_confirm) {
             const auto bx = (width - 600 * scale) / 2;
             if (mouse_y >= 211 * scale && mouse_y < 245 * scale) {
-                if (mouse_x >= bx + 24 * scale && mouse_x < bx + 260 * scale) { command(prompt == Prompt::rename_confirm ? "ui.confirmRename" : "ui.confirmReplace"); }
+                if (mouse_x >= bx + 24 * scale && mouse_x < bx + 260 * scale) { command("ui.confirmReplace"); }
                 else if (mouse_x >= bx + 340 * scale && mouse_x < bx + 576 * scale) { command("ui.cancel"); }
             }
             break;
@@ -1894,27 +1880,34 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
     if (prompt == Prompt::none) { return; }
     rectangle(canvas, 0, 0, width, height, SkColorSetA(background, 160));
     if (prompt == Prompt::policy_confirm && dialog) {
-        const auto panel_width = std::min(600 * scale,width - 24 * scale);
-        const auto x = (width-panel_width)/2;
-        rectangle(canvas,x,90*scale,panel_width,175*scale,panel_background);
-        rectangle(canvas,x,90*scale,panel_width,2*scale,accent);
-        elided_label(canvas,dialog->spec.at("title").get<std::string>(),x+24*scale,108*scale,16,panel_width-48*scale,foreground);
-        TextLayoutOptions style; style.font_size=13; style.dpi_scale=scale; style.color=muted; style.wrap_width=panel_width-48*scale;
+        const auto layout=ConfirmationLayout::measure(width,height,scale,dialog->items.size()>0);
+        const auto fill=[&](const Box& box,SkColor color){rectangle(canvas,box.x,box.y,box.width,box.height,color);};
+        fill(layout.panel,panel_background);
+        rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,2*scale,accent);
+        elided_label(canvas,dialog->spec.at("title").get<std::string>(),layout.title.x,layout.title.y,16,layout.title.width,foreground);
+        TextLayoutOptions style; style.font_size=13; style.dpi_scale=scale; style.color=muted; style.wrap_width=layout.detail.width;
         style.font_families={"Segoe UI","Microsoft YaHei UI","sans-serif"};
         if(dialog->detail_width!=style.wrap_width || dialog->detail_scale!=scale){dialog->detail_layout.clear();dialog->detail_width=style.wrap_width;dialog->detail_scale=scale;}
-        canvas->save(); canvas->clipRect(SkRect::MakeXYWH(x+24*scale,145*scale,panel_width-48*scale,58*scale));
-        float detail_y=145*scale;
+        canvas->save(); canvas->clipRect(SkRect::MakeXYWH(layout.detail.x,layout.detail.y,layout.detail.width,layout.detail.height));
+        float detail_y=layout.detail.y;
         dialog->detail_lines.for_each_range(0,std::min(dialog->detail_lines.size(),std::size_t{8}),[&](std::size_t row,const std::string& text){
-            if(detail_y>=203*scale)return;
+            if(detail_y>=layout.detail.bottom())return;
             auto found=dialog->detail_layout.find(row);
             if(found==dialog->detail_layout.end())found=dialog->detail_layout.emplace(row,fonts.layout(text,style)).first;
-            found->second.draw(canvas,x+24*scale,detail_y);detail_y+=found->second.height();
+            found->second.draw(canvas,layout.detail.x,detail_y);detail_y+=found->second.height();
         });canvas->restore();
-        const auto button_width=(panel_width-72*scale)/2;
-        rectangle(canvas,x+24*scale,211*scale,button_width,34*scale,accent);
-        rectangle(canvas,x+48*scale+button_width,211*scale,button_width,34*scale,border_color);
-        elided_label(canvas,dialog->spec.value("accept",std::string("Confirm")),x+40*scale,219*scale,13,button_width-32*scale,foreground);
-        label(canvas,"Cancel",x+64*scale+button_width,219*scale,13);
+        if(dialog->items.size()>0){
+            prompt_choice=std::min(prompt_choice,dialog->items.size()-1);
+            const auto count=static_cast<std::size_t>(std::ceil(layout.items.height/(28*scale)))+1;
+            canvas->save();canvas->clipRect(SkRect::MakeXYWH(layout.items.x,layout.items.y,layout.items.width,layout.items.height));
+            dialog->items.for_each_range(prompt_choice,std::min(dialog->items.size(),prompt_choice+count),[&](std::size_t row,const std::string& text){
+                const auto y=layout.items.y+static_cast<float>(row-prompt_choice)*28*scale;
+                elided_label(canvas,text,layout.items.x,y+4*scale,13,layout.items.width,foreground);
+            });canvas->restore();
+        }
+        fill(layout.accept,accent);fill(layout.cancel,border_color);
+        elided_label(canvas,dialog->spec.value("accept",std::string("Confirm")),layout.accept.x+16*scale,layout.accept.y+8*scale,13,layout.accept.width-32*scale,foreground);
+        label(canvas,"Cancel",layout.cancel.x+16*scale,layout.cancel.y+8*scale,13);
         return;
     }
     if (prompt == Prompt::policy_input && dialog) {
@@ -2053,29 +2046,17 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         }
         canvas->restore(); return;
     }
-    if (prompt == Prompt::replace_confirm || prompt == Prompt::rename_confirm) {
+    if (prompt == Prompt::replace_confirm) {
         const auto x = (width - 600 * scale) / 2;
-        const bool rename = prompt == Prompt::rename_confirm;
-        const auto extra = rename ? 220 * scale : 0;
-        rectangle(canvas, x, 90 * scale, 600 * scale, 175 * scale + extra, panel_background);
+        rectangle(canvas, x, 90 * scale, 600 * scale, 175 * scale, panel_background);
         rectangle(canvas, x, 90 * scale, 600 * scale, 2 * scale, accent);
-        label(canvas, rename ? "Apply symbol rename?" : "Replace " + std::to_string(search_results.size()) + " workspace matches?", x + 24 * scale, 108 * scale, 17);
-        label(canvas, rename ? std::to_string(rename_plan.at("documents").size()) + " file(s) will become edited buffers" : "Find: " + search_query, x + 24 * scale, 146 * scale, 13, muted);
-        label(canvas, rename ? "Review files below. Save afterward to persist changes." : "Replace with: " + replacement_text, x + 24 * scale, 172 * scale, 13, muted);
+        label(canvas, "Replace " + std::to_string(search_results.size()) + " workspace matches?", x + 24 * scale, 108 * scale, 17);
+        label(canvas, "Find: " + search_query, x + 24 * scale, 146 * scale, 13, muted);
+        label(canvas, "Replace with: " + replacement_text, x + 24 * scale, 172 * scale, 13, muted);
         rectangle(canvas, x + 24 * scale, 211 * scale, 236 * scale, 34 * scale, accent);
         rectangle(canvas, x + 340 * scale, 211 * scale, 236 * scale, 34 * scale, border_color);
-        label(canvas, rename ? "Apply rename" : "Replace matches", x + 85 * scale, 218 * scale, 13);
+        label(canvas, "Replace matches", x + 85 * scale, 218 * scale, 13);
         label(canvas, "Cancel", x + 432 * scale, 218 * scale, 13);
-        if (rename) {
-            const auto& files = rename_plan.at("documents");
-            const auto first = std::min(prompt_choice, files.size() - 1);
-            canvas->save(); canvas->clipRect(SkRect::MakeLTRB(x + 20 * scale, 260 * scale, x + 580 * scale, 475 * scale));
-            for (std::size_t i = first; i < std::min(first + 7, files.size()); ++i) {
-                label(canvas, files[i].at("path").get<std::string>() + "  (" + std::to_string(files[i].at("editCount").get<std::size_t>()) + " edits)",
-                      x + 24 * scale, (265 + static_cast<float>(i - first) * 28) * scale, 13);
-            }
-            canvas->restore();
-        }
         return;
     }
     const auto x = (width - 600 * scale) / 2;
@@ -2099,7 +2080,6 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
     else if (prompt == Prompt::workspace_replace_query) { hint = "REPLACE ACROSS WORKSPACE — FIND TEXT"; }
     else if (prompt == Prompt::completion) { hint = "COMPLETION — TYPE TO FILTER · ENTER TO INSERT"; }
     else if (prompt == Prompt::locations) { hint = "LANGUAGE LOCATIONS — ENTER TO OPEN"; }
-    else if (prompt == Prompt::rename) { hint = "RENAME SYMBOL — NEW NAME"; }
     else if (prompt == Prompt::recovery) { hint = "RECOVERY — SELECT A SESSION TO REVIEW · ESC TO KEEP EDITING"; }
     label(canvas, prompt == Prompt::policy_input && dialog ? dialog->spec.at("title").get<std::string>() : hint, x + 16 * scale, 73 * scale, 10, muted);
     rectangle(canvas, x + 12 * scale, 94 * scale, 576 * scale, 30 * scale, background);
