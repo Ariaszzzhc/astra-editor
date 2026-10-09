@@ -111,6 +111,8 @@ struct Runtime::Impl {
             check(api.get());
             define(api.get(), "request", rpc_request, 3);
             define(api.get(), "registerCommand", register_command, 2);
+            define(api.get(), "_invokeCommand", invoke_command, 2);
+            define(api.get(), "_commandNames", command_names, 0);
             define(api.get(), "configure", configure, 1);
             define(api.get(), "settings", current_settings, 0);
             define(api.get(), "bind", bind, 2);
@@ -580,6 +582,28 @@ struct Runtime::Impl {
                 entry->second = JS_DupValue(context, argv[1]);
             }
             return JS_UNDEFINED;
+        });
+    }
+
+    static JSValue invoke_command(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+        return guarded(context, [&](Impl& host) {
+            if(argc<1 || argc>2 || !JS_IsString(argv[0]))return JS_ThrowTypeError(context,"Command invocation requires a name and optional parameters");
+            const auto name=text(context,argv[0]);
+            const auto found=host.callbacks.find(name);
+            if(found==host.callbacks.end())return JS_ThrowReferenceError(context,"Unknown command: %s",name.c_str());
+            // Keep the callback alive if it replaces its own registration.
+            Value callback(context,JS_DupValue(context,found->second));
+            Value parameters(context,argc==2 ? JS_DupValue(context,argv[1]) : JS_NewObject(context));
+            host.check(parameters.get());auto argument=parameters.get();
+            return JS_Call(context,callback.get(),JS_UNDEFINED,1,&argument);
+        });
+    }
+
+    static JSValue command_names(JSContext* context, JSValueConst, int, JSValueConst*) {
+        return guarded(context, [](Impl& host) {
+            auto names=Json::array();
+            for(const auto& [name,callback]:host.callbacks){static_cast<void>(callback);names.push_back(name);}
+            return host.from_json(names);
         });
     }
 

@@ -15,9 +15,18 @@ export const ui = {
     },
     showText: (spec, options) => dialog('text', spec, options),
     async execute(id, parameters = {}) {
-        const handler = commands.get(id);
-        if (!handler) throw new Error(`Unknown UI command: ${id}`);
-        return await handler(parameters);
+        return await astra._invokeCommand(id, parameters);
+    },
+    async commands() {
+        const state = await ui.read();
+        const service = new Set(state.serviceCommands || []);
+        const client = new Set(astra._commandNames());
+        const specs = astra.settings().workbench?.commands || {};
+        return [...new Set([...client, ...service])].sort().map(id => ({
+            id, title:specs[id]?.title || id, shortcut:specs[id]?.shortcut || '',
+            palette:specs[id]?.palette ?? !id.startsWith('workbench.'),
+            source:service.has(id) && id.startsWith('ui.') ? 'service' : client.has(id) ? 'client' : 'service'
+        }));
     },
     // Native actions handle text layout, focus, clipboard and modal input.
     // Product workflows call services directly and publish retained view state.
@@ -26,7 +35,6 @@ export const ui = {
     registerCommand(spec, handler) {
         if (!spec?.id || !spec?.title || typeof handler !== 'function') throw new TypeError('Invalid UI command');
         astra.configure({workbench:{commands:{[spec.id]:spec}}});
-        commands.set(spec.id, handler);
         astra.registerCommand(spec.id, handler);
         if (spec.shortcut) astra.bind(spec.shortcut, spec.id);
     },
@@ -59,7 +67,6 @@ export const ui = {
     cancel(id) { generations.get(id)?.abort(); }
 };
 const providers = new Map();
-const commands = new Map();
 const generations = new Map();
 let dialogId = 0;
 let actionId = 0;

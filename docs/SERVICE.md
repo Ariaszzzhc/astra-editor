@@ -192,7 +192,13 @@ if (astra.context === 'client') {
 
 Client document calls use the same in-process/TCP protocol as other clients.
 `astra.ui.execute(id, parameters)` awaits a registered UI command, including user
-overrides. Built-in `editor.*` wrappers forward their parameters and await actual
+overrides, including replacements made directly with `astra.registerCommand`.
+`astra.ui.commands()` asynchronously returns the merged client/retained service
+catalog with `id`, `title`, `shortcut`, `source` and `palette` fields. Command
+metadata accepts `palette:false` to hide an internal/parameterized action; built-in
+`workbench.*` primitives default to hidden. The JS command palette uses the native
+indexed picker, preserves the original chosen identity and awaits execution.
+Built-in `editor.*` wrappers forward their parameters and await actual
 service completion, including deferred script operations. Their result is the
 service result, and rejection preserves RPC `code` and `data`. Advanced callers
 use `astra.ui.native('editor.undo', {id, baseRevision}, {signal, timeoutMs})` for

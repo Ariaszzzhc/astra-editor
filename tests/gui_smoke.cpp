@@ -211,6 +211,15 @@ int main(int argc, char* argv[]) {
         window.execute_ui_command("ui.commandPalette");
         window.request_screenshot("build/graphics/gui-palette.png"); settle(window);
         key(window, SDLK_ESCAPE);
+        window.execute_ui_command("ui.commandPalette");settle(window);
+        text(window,"User sidebar policy");key(window,SDLK_RETURN);
+        require(window.status_text()=="User sidebar policy","JS command palette bypassed the current user command");
+        key(window,SDLK_B,SDL_KMOD_CTRL);
+        key(window,SDLK_END,SDL_KMOD_CTRL);
+        window.execute_ui_command("ui.commandPalette");settle(window);
+        text(window,"Move to document start");key(window,SDLK_RETURN);
+        require(read_document(host,window.active_document_id()).at("selections").front().at("head")==0,
+            "JS command palette did not await and publish a service editing command");
         window.open_path("long.txt"); settle(window);
         key(window, SDLK_END, SDL_KMOD_CTRL); text(window, "!"); key(window, SDLK_S, SDL_KMOD_CTRL);
         require(astra::io::read_file(workspace / "long.txt").text == long_line + "!", "Long-line continuation or caret clipped text beyond 64 KiB");

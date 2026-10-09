@@ -52,7 +52,6 @@ std::string normalized_binding(std::string_view binding) {
 
 struct SdlStringDeleter { void operator()(char* value) const noexcept { SDL_free(value); } };
 
-struct MenuCommand { std::string id; std::string label; std::string shortcut; };
 } // namespace
 
 struct EditorWindow::Impl {
@@ -110,7 +109,7 @@ struct EditorWindow::Impl {
     struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; std::shared_ptr<PendingEdit> edit; };
     struct FindState { std::string id; std::string revision; std::string query; std::string replacement; std::string text; std::size_t cursor{}; std::size_t size{}; bool replace{}; };
     struct ViewState { std::string id; std::string revision; std::size_t first{}; std::size_t limit{}; std::map<std::size_t, Line> lines; };
-    enum class Prompt { none, policy_input, policy_confirm, policy_pick, policy_text, palette, save_as, close, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, git_diff, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed };
+    enum class Prompt { none, policy_input, policy_confirm, policy_pick, policy_text, save_as, close, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, git_diff, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed };
     struct Dialog {
         std::string id; Json spec; std::promise<Json> completion;
         TextLineIndex detail_lines; std::map<std::size_t,TextLayout> detail_layout; float detail_width{},detail_scale{};
@@ -134,8 +133,7 @@ struct EditorWindow::Impl {
     std::map<std::string,std::shared_ptr<PendingEdit>> pending_edits;
     std::uint64_t next_request{1};
     std::map<std::string, std::string> keybindings;
-    std::vector<MenuCommand> script_commands;
-    std::vector<MenuCommand> menu_commands;
+    Json service_commands=Json::array();
     std::unique_ptr<Workbench> workbench;
     std::set<std::string> service_ui_commands;
     Json busy_views = Json::object();
@@ -271,10 +269,6 @@ struct EditorWindow::Impl {
             catch (...) { completed.set_exception(std::current_exception()); }
             return completed.get_future();
         }, modules, options.user_script);
-        const auto policy = workbench->settings().at("workbench").at("commands");
-        for (const auto& [id, spec] : policy.items()) {
-            menu_commands.push_back({id, spec.at("title").get<std::string>(), spec.value("shortcut", std::string{})});
-        }
         scale = renderer.dpi_scale();
         SDL_Rect usable{};
         if (SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(renderer.window()), &usable)) {
@@ -342,19 +336,10 @@ struct EditorWindow::Impl {
                     keybindings[normalized_binding(binding.at("key").get<std::string>())] = binding.at("command").get<std::string>();
                 }
             }
-            for (const auto& command : result.value("commands", Json::array())) {
+            service_commands=result.value("commands",Json::array());
+            for (const auto& command : service_commands) {
                 const auto name = command.get<std::string>();
                 if (name.starts_with("ui.")) { service_ui_commands.insert(name); }
-                if (std::ranges::none_of(menu_commands, [&](const auto& item) { return item.id == name; })) {
-                    script_commands.push_back({name, name, "JavaScript"});
-                }
-            }
-            const auto client_settings = workbench->settings().value("workbench", Json::object());
-            const auto client_commands = client_settings.value("commands", Json::object());
-            for (const auto& [name, spec] : client_commands.items()) {
-                if (std::ranges::none_of(menu_commands, [&](const auto& item) { return item.id == name; })) {
-                    script_commands.push_back({name, spec.at("title").get<std::string>(), spec.value("shortcut", std::string{})});
-                }
             }
             for (const auto& [key, name] : workbench->keybindings()) { keybindings[normalized_binding(key)] = name; }
         }, {}});
@@ -493,7 +478,6 @@ struct EditorWindow::Impl {
     void elided_label(SkCanvas* canvas,std::string_view text,float x,float y,float size,float available,SkColor color);
     void rectangle(SkCanvas* canvas, float x, float y, float width, float height, SkColor color);
     void reveal_caret();
-    std::vector<const MenuCommand*> filtered_commands() const;
     void accept_prompt();
 };
 
@@ -1039,6 +1023,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
     }
     if (method == "_ui.read") {
         Json result{{"sidebarVisible", show_sidebar}, {"sidebar",git_view ? "git" : (search_view ? "search" : "explorer")}, {"outlineVisible", show_outline}, {"tabs", tabs}, {"gitPath", prompt == Prompt::git_diff ? git_path : std::string{}}, {"gitStaged",git_staged},{"gitPreview",git_preview}};
+        result["serviceCommands"]=service_commands;
         const auto requested=params.value("id",active_id);
         const auto found=documents.find(requested);
         if (const auto* document = found==documents.end() ? nullptr : &found->second) {
@@ -1149,7 +1134,6 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     if (name.starts_with("editor.")) {
         editor_command(std::string(name));
     }
-    else if (name == "ui.commandPalette") { prompt = Prompt::palette; prompt_text.clear(); prompt_choice = 0; }
     else if (name == "ui.save") { save_document(active_id); }
     else if (name == "ui.saveAs") { save_document(active_id, true); }
     else if (name == "ui.dismissWorkspaceNotice") {
@@ -1259,18 +1243,6 @@ std::string EditorWindow::Impl::newline() const {
     return "\n";
 }
 
-std::vector<const MenuCommand*> EditorWindow::Impl::filtered_commands() const {
-    std::vector<const MenuCommand*> result;
-    const auto query = lower_ascii(prompt_text);
-    for (const auto& item : menu_commands) {
-        if (query.empty() || lower_ascii(item.label).find(query) != std::string::npos) { result.push_back(&item); }
-    }
-    for (const auto& item : script_commands) {
-        if (query.empty() || lower_ascii(item.label).find(query) != std::string::npos) { result.push_back(&item); }
-    }
-    return result;
-}
-
 void EditorWindow::Impl::accept_prompt() {
     if (prompt == Prompt::policy_input) { finish_dialog(prompt_text); }
     else if (prompt == Prompt::policy_confirm) { finish_dialog(true); }
@@ -1287,12 +1259,7 @@ void EditorWindow::Impl::accept_prompt() {
     } else if (prompt == Prompt::recovery_confirm) { command("ui.confirmRecovery"); }
     else if (prompt == Prompt::recovery_exit_failed) { command("ui.retryExit"); }
     else if (prompt == Prompt::git_diff) { prompt = Prompt::none; }
-    else if (prompt == Prompt::palette) {
-        const auto matches = filtered_commands();
-        if (matches.empty()) { return; }
-        const auto id = std::string(matches[std::min(prompt_choice, matches.size() - 1)]->id);
-        prompt = Prompt::none; command(id);
-    } else if (prompt == Prompt::save_as) {
+    else if (prompt == Prompt::save_as) {
         if (prompt_text.empty()) { return; }
         const auto id = prompt_document;
         const auto path = prompt_text;
@@ -1689,7 +1656,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             }
             break;
         }
-        if (prompt == Prompt::palette || prompt == Prompt::recovery) {
+        if (prompt == Prompt::recovery) {
             const auto bx = (width - 600 * scale) / 2;
             if (mouse_x > bx && mouse_x < bx + 600 * scale && mouse_y >= 130 * scale) {
                 const auto first = prompt_choice >= 12 ? prompt_choice - 11 : 0;
@@ -2107,18 +2074,15 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         return;
     }
     const auto x = (width - 600 * scale) / 2;
-    const auto matches = filtered_commands();
     const auto recovery_matches = filtered_recovery_sessions();
-    const auto total = prompt == Prompt::palette ? matches.size() :
-        (prompt == Prompt::recovery ? recovery_matches.size() : std::size_t{0});
+    const auto total = prompt == Prompt::recovery ? recovery_matches.size() : std::size_t{0};
     if (total != 0) { prompt_choice = std::min(prompt_choice, total - 1); }
     const auto first = prompt_choice >= 12 ? prompt_choice - 11 : 0;
     const auto count = std::min(total, std::size_t{12});
     rectangle(canvas, x, 64 * scale, 600 * scale, (76 + static_cast<float>(count) * 34 + (search_prompt() ? 32 : 0)) * scale, panel_background);
     rectangle(canvas, x, 64 * scale, 600 * scale, 2 * scale, accent);
     const char* hint = "SAVE AS — WORKSPACE RELATIVE PATH";
-    if (prompt == Prompt::palette) { hint = "COMMAND PALETTE"; }
-    else if (prompt == Prompt::find) { hint = "FIND NEXT IN DOCUMENT — LITERAL TEXT"; }
+    if (prompt == Prompt::find) { hint = "FIND NEXT IN DOCUMENT — LITERAL TEXT"; }
     else if (prompt == Prompt::replace_query) { hint = "REPLACE ALL IN DOCUMENT — FIND TEXT"; }
     else if (prompt == Prompt::replace_value || prompt == Prompt::workspace_replace_value) { hint = "REPLACEMENT TEXT — ENTER TO CONTINUE"; }
     else if (prompt == Prompt::search) { hint = "SEARCH WORKSPACE AND UNSAVED BUFFERS"; }
@@ -2127,8 +2091,8 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
     label(canvas, prompt == Prompt::policy_input && dialog ? dialog->spec.at("title").get<std::string>() : hint, x + 16 * scale, 73 * scale, 10, muted);
     rectangle(canvas, x + 12 * scale, 94 * scale, 576 * scale, 30 * scale, background);
     if (prompt_select_all && !prompt_text.empty()) { rectangle(canvas, x + 20 * scale, 97 * scale, 560 * scale, 25 * scale, selection_color); }
-    const auto placeholder = prompt == Prompt::palette ? "Type a command..." : (prompt == Prompt::recovery ?
-        (recovery_list_loading ? "Looking for sessions..." : (total == 0 ? "No abandoned sessions found" : "Filter by session or file path")) : "Type text, then press Enter");
+    const auto placeholder = prompt == Prompt::recovery ?
+        (recovery_list_loading ? "Looking for sessions..." : (total == 0 ? "No abandoned sessions found" : "Filter by session or file path")) : "Type text, then press Enter";
     label(canvas, prompt_text.empty() ? placeholder : prompt_text,
           x + 22 * scale, 100 * scale, 14, prompt_text.empty() ? muted : foreground);
     if (search_prompt()) {
@@ -2162,9 +2126,6 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
             const auto& session = recovery_sessions[recovery_matches[first + i]];
             label(canvas, session.at("id").get<std::string>() + " — " + std::to_string(session.value("buffers", Json::array()).size()) + " unsaved buffers",
                   x + 20 * scale, y + 7 * scale, 13);
-        } else {
-            label(canvas, matches[first + i]->label, x + 20 * scale, y + 7 * scale, 13);
-            label(canvas, matches[first + i]->shortcut, x + 442 * scale, y + 7 * scale, 11, muted);
         }
         canvas->restore();
     }

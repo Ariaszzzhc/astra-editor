@@ -2,6 +2,7 @@
 #include <astra/io/file_store.hpp>
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <deque>
 #include <filesystem>
 #include <utility>
@@ -277,6 +278,52 @@ TEST_CASE("workbench composed commands honor user replacements through awaited e
     workbench.execute("composed",Json::object(),[&](const auto& value){outcome=value;});
     for(int tick=0;tick<4;++tick)workbench.poll();
     REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==42);CHECK(channel->requests.empty());
+}
+
+TEST_CASE("workbench composed commands honor raw runtime replacements") {
+    auto channel=std::make_shared<Channel>();
+    astra::ui::Workbench workbench(channel,[](std::string_view,const Json&){return ready(nullptr);},modules(),
+        "astra.registerCommand('ui.saveAs',async p=>{await astra.sleep(0);return p.value+1;});astra.registerCommand('composed',()=>astra.ui.execute('ui.saveAs',{value:41}));");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("composed",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<5;++tick)workbench.poll();
+    REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==42);CHECK(channel->requests.empty());
+}
+
+TEST_CASE("workbench command palette merges registries and awaits selected client or service commands") {
+    auto channel=std::make_shared<Channel>();std::optional<std::promise<Json>> selection;Json items;Json published;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.read")return ready({{"serviceCommands",Json::array({"editor.undo","remote.action"})},
+            {"document",{{"id","captured"},{"revision","9"}}}});
+        if(method=="_ui.dialog") { CHECK(params.at("kind")=="pick");items=params.at("items");selection.emplace();return selection->get_future(); }
+        if(method=="_ui.update")published=params;
+        else REQUIRE(method=="_ui.dialog.cancel");
+        return ready(nullptr);
+    },modules(),"astra.ui.registerCommand({id:'client.action',title:'Choose 中🙂',shortcut:'F9'},()=>astra.request('deferred.client')); astra.ui.registerCommand({id:'workbench.hidden',title:'Hidden internal command'},()=>0);");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    const auto choose=[&](std::string_view label) {
+        const auto found=std::ranges::find_if(items,[&](const Json& item){return item.get<std::string>().starts_with(label);});
+        REQUIRE(found!=items.end());selection->set_value(static_cast<std::size_t>(found-items.begin()));
+        for(int tick=0;tick<6;++tick)workbench.poll();
+    };
+    workbench.execute("ui.commandPalette",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<5;++tick)workbench.poll();
+    REQUIRE(selection);CHECK(workbench.awaiting_input());CHECK_FALSE(outcome);CHECK(channel->requests.empty());
+    CHECK(std::ranges::count(items,Json("Undo    Ctrl+Z"))==1);
+    CHECK(std::ranges::none_of(items,[](const Json& item){return item.get<std::string>().starts_with("Hidden internal");}));
+    choose("Choose 中🙂");REQUIRE(channel->requests.size()==1);CHECK_FALSE(outcome);
+    CHECK(channel->requests.front().body.at("method")=="deferred.client");channel->reply(42);
+    for(int tick=0;tick<5;++tick)workbench.poll();REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==42);
+    outcome.reset();workbench.execute("ui.commandPalette",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<5;++tick)workbench.poll();choose("remote.action");REQUIRE(channel->requests.size()==1);
+    CHECK(channel->requests.front().body.at("method")=="script.command");
+    CHECK(channel->requests.front().body.at("params")==Json{{"name","remote.action"},{"params",{{"id","captured"},{"baseRevision","9"}}}});
+    channel->reply({{"id","captured"},{"revision","10"}});
+    for(int tick=0;tick<6;++tick)workbench.poll();REQUIRE(outcome);CHECK_FALSE(outcome->error);
+    CHECK(published.at("document").at("revision")=="10");CHECK(workbench.idle());
+    outcome.reset();workbench.execute("ui.commandPalette",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<5;++tick)workbench.poll();selection->set_value(nullptr);
+    for(int tick=0;tick<5;++tick)workbench.poll();REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(channel->requests.empty());CHECK(workbench.idle());
 }
 
 TEST_CASE("workbench Git discard awaits confirmation and retains its exact preview") {

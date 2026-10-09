@@ -267,6 +267,25 @@ after adding that batch assertion. `gui-presentation-smoke` also passed. The fin
 idle-frame Skia warning remains; full current Debug/Release and package acceptance
 still remain outstanding.
 
+Command-palette workflow now lives in JS and uses the same retained indexed
+picker as language choices. It merges client and retained service registrations,
+deduplicates identities, uses readable default editing labels, hides internal
+parameterized primitives, and awaits the selected client or service command.
+Composition resolves the current runtime registration, including direct
+`astra.registerCommand` replacements; the old native palette state and rendering
+branches were removed.
+
+Windows Debug `build -y astra-tests gui-smoke gui-presentation-smoke` passed.
+`--test-case=workbench*,QuickJS*,JavaScript*` passed **40 cases / 317 assertions**.
+New cases cover callback self-replacement lifetime, raw command overrides,
+catalog deduplication, hidden internal commands, delayed client results, captured
+service parameters and cancellation. Local and TCP GUI runs passed real filtering
+and selection of both a user client command and a service caret command. The
+presentation smoke passed after replacing the old palette implementation; local
+and TCP checks were rerun after refining labels. The regenerated native
+`build/graphics/gui-palette.png` was visually inspected. The idle-frame Skia
+warning remains in these runs.
+
 Remaining work includes the rest of the public UI/provider contract,
 native component extraction, indexed diagnostic/display views, incremental
 syntax indexes, full Debug/Release and native GUI acceptance, and packaging the

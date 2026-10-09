@@ -34,6 +34,16 @@ TEST_CASE("JavaScript commands register override and retain closure state") {
     CHECK_THROWS_AS((void)runtime.execute_command("missing"), ScriptError);
 }
 
+TEST_CASE("QuickJS command composition retains callbacks that replace themselves") {
+    Runtime runtime(echo);
+    static_cast<void>(runtime.evaluate("astra.registerCommand('replace',p=>{astra.registerCommand('replace',()=>9);return p.value;});"));
+    CHECK(runtime.evaluate("astra._invokeCommand('replace',{value:42})")==42);
+    CHECK(runtime.evaluate("astra._invokeCommand('replace')")==9);
+    CHECK(runtime.evaluate("astra._commandNames()")==Json::array({"replace"}));
+    CHECK_THROWS_AS(static_cast<void>(runtime.evaluate("astra._invokeCommand('missing')")),ScriptError);
+    CHECK(runtime.evaluate("6*7")==42);
+}
+
 TEST_CASE("JavaScript custom command edits the production document service") {
     astra::service::EditorService service;
     std::size_t id{};
