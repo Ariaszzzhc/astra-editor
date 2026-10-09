@@ -28,10 +28,10 @@ export function registerFiles() {
         await ui.update({sidebar:'explorer', sidebarVisible:true});
     });
     ui.registerCommand({id:'ui.toggleSidebar', title:'Toggle sidebar', shortcut:'Ctrl+B'}, async () => {
-        const state = await ui.read(); await ui.update({sidebarVisible:!state.sidebarVisible});
+        const state = await ui.read({immediate:true}); await ui.update({sidebarVisible:!state.sidebarVisible});
     });
     ui.registerCommand({id:'ui.toggleOutline', title:'Toggle outline'}, async () => {
-        const state = await ui.read(); await ui.update({outlineVisible:!state.outlineVisible});
+        const state = await ui.read({immediate:true}); await ui.update({outlineVisible:!state.outlineVisible});
     });
     ui.registerCommand({id:'ui.new', title:'New file', shortcut:'Ctrl+N'}, async () => {
         const document = await request('document.create', {text:''});
@@ -44,7 +44,7 @@ export function registerFiles() {
     ui.registerCommand({id:'ui.save', title:'Save file', shortcut:'Ctrl+S'}, () => save(false));
     for (const [id, delta] of [['ui.nextTab',1],['ui.previousTab',-1]]) {
         ui.registerCommand({id, title:delta > 0 ? 'Next tab' : 'Previous tab'}, async () => {
-            const state = await ui.read(), tabs = state.tabs;
+            const state = await ui.read({immediate:true}), tabs = state.tabs;
             if (!tabs.length) return;
             const index = tabs.indexOf(state.document?.id);
             await ui.update({activate:tabs[(index + delta + tabs.length) % tabs.length]});

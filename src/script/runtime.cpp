@@ -113,6 +113,7 @@ struct Runtime::Impl {
             define(api.get(), "registerCommand", register_command, 2);
             define(api.get(), "_invokeCommand", invoke_command, 2);
             define(api.get(), "_commandNames", command_names, 0);
+            define(api.get(), "utf8ByteLength", utf8_byte_length, 1);
             define(api.get(), "configure", configure, 1);
             define(api.get(), "settings", current_settings, 0);
             define(api.get(), "bind", bind, 2);
@@ -290,6 +291,18 @@ struct Runtime::Impl {
         try { return function(*static_cast<Impl*>(JS_GetContextOpaque(context))); }
         catch (const std::exception& error) { return JS_ThrowInternalError(context, "%s", error.what()); }
         catch (...) { return JS_ThrowInternalError(context, "Native script callback failed"); }
+    }
+
+    static JSValue utf8_byte_length(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+        return guarded(context,[&](Impl&) {
+            if(argc!=1 || !JS_IsString(argv[0]))return JS_ThrowTypeError(context,"utf8ByteLength requires a string");
+            std::size_t size{};
+            const auto* bytes=JS_ToCStringLen(context,&size,argv[0]);
+            if(!bytes)return JS_EXCEPTION;
+            JS_FreeCString(context,bytes);
+            if(size>9'007'199'254'740'991ULL)return JS_ThrowRangeError(context,"UTF-8 length exceeds a safe JavaScript integer");
+            return JS_NewFloat64(context,static_cast<double>(size));
+        });
     }
 
     static JSValue rpc_request(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {

@@ -84,15 +84,16 @@ int main(int argc, char* argv[]) {
         { std::ofstream file(workspace / "rename.txt", std::ios::binary); file << "needle and needle\n"; }
         const auto long_line = std::string(70'000, 'a') + "\t中文🙂";
         { std::ofstream file(workspace / "long.txt", std::ios::binary); file << long_line; }
-        { std::ofstream file(workspace / ".editorconfig", std::ios::binary); file << "root = true\n[*]\nindent_style = space\nindent_size = 4\nend_of_line = lf\n"; }
+        { std::ofstream file(workspace / ".editorconfig", std::ios::binary); file << "root = true\n[*]\nindent_style = space\nindent_size = 4\nend_of_line = lf\n[README.md]\nend_of_line = crlf\n"; }
         { std::ofstream file(workspace / ".clangd", std::ios::binary); file << "CompileFlags:\n  Add: [-nostdinc, -nostdinc++]\n"; }
         astra::service::ServiceHostOptions service_options;
         service_options.workspace = workspace;
         service_options.recovery_directory = workspace.parent_path() / (name + "-recovery");
         service_options.resource_directory = std::filesystem::current_path();
         service_options.defaults_script = astra::io::read_file("data/defaults.js", 1024 * 1024).text;
-        service_options.user_script=R"js(let releaseInput;
-        astra.registerCommand('acceptance.inputState',()=>({waiting:!!releaseInput}));
+        service_options.user_script=R"js(let releaseInput,observedRead=null;
+        astra.registerCommand('acceptance.inputState',()=>({waiting:!!releaseInput,observedRead}));
+        astra.registerCommand('acceptance.observeRead',parameters=>{observedRead=parameters;return true;});
         astra.registerCommand('acceptance.releaseInput',()=>{releaseInput();releaseInput=undefined;return true;});
         astra.registerCommand('editor.insert_text',async parameters=>{
             if(parameters.text==='A')await new Promise(resolve=>{releaseInput=resolve;});
@@ -105,8 +106,20 @@ int main(int argc, char* argv[]) {
         options.title = "Astra — GUI acceptance"; options.workspace_name = "GUI ACCEPTANCE";
         options.open_paths = {"src/main.cpp"}; options.width = 1400; options.height = 860;
         options.user_script = R"js(if(astra.context==='client') {
+            astra.registerCommand('acceptance.readInput',async()=>{
+                const state=await astra.ui.read();
+                await astra.request('script.command',{name:'acceptance.observeRead',params:state});
+            });
+            astra.registerCommand('acceptance.cancelRead',async()=>{
+                const control=new AbortController();
+                const pending=astra.ui.read({}, {signal:control.signal});
+                const observed=pending.then(()=>false,error=>error.name==='AbortError');
+                await astra.sleep(0);control.abort();
+                if(!await observed)throw new Error('Read cancellation did not reject');
+                await astra.ui.update({status:'Read fence cancelled'});
+            });
             astra.ui.registerCommand({id:'ui.toggleSidebar',title:'User sidebar policy'},async()=>{
-                const state=await astra.ui.read();await astra.ui.update({sidebarVisible:!state.sidebarVisible,status:'User sidebar policy'});
+                const state=await astra.ui.read({immediate:true});await astra.ui.update({sidebarVisible:!state.sidebarVisible,status:'User sidebar policy'});
             });
             astra.ui.registerCommand({id:'acceptance.awaitEdits',title:'Await actual editing'},async()=>{
                 const {document}=await astra.ui.read();
@@ -153,6 +166,11 @@ int main(int argc, char* argv[]) {
         }
         pump_until(window,[&]{return call(host,"script.command",{{"name","acceptance.inputState"}}).at("waiting").get<bool>();},
             "The user editing policy did not reach its asynchronous gate");
+        window.execute_ui_command("acceptance.readInput");
+        window.execute_ui_command("acceptance.cancelRead");
+        pump_until(window,[&]{return window.status_text()=="Read fence cancelled";},"Cancelling a read remained blocked behind editing");
+        require(call(host,"script.command",{{"name","acceptance.inputState"}}).at("observedRead").is_null(),
+            "A document read bypassed preceding suspended input");
         window.open_path("README.md");
         pump_until(window,[&]{return !window.active_document_id().empty() && window.active_document_id()!=id;},
             "A suspended editing policy blocked opening another document");
@@ -167,6 +185,10 @@ int main(int argc, char* argv[]) {
         require(call(host,"script.command",{{"name","acceptance.releaseInput"}})==true,"Cannot release the editing policy gate");
         settle(window);
         require(read_document(host,id).at("text")=="A中🙂","Deferred user editing commands lost order or reused a stale revision");
+        const auto observed=call(host,"script.command",{{"name","acceptance.inputState"}}).at("observedRead");
+        require(observed.at("document").at("id")==id && observed.at("document").at("revision")==read_document(host,id).at("revision"),
+            "An awaited document read lost its captured identity or revision");
+        require(observed.at("newline")=="\n","An awaited document read used another document's line ending");
         require(window.active_document_id()==independent_id,"Completed input changed the active document across await");
         key(window,SDLK_Z,SDL_KMOD_CTRL);
         require(read_document(host,independent_id).at("text")=="# Astra GUI acceptance\n","Independent input did not preserve its own history");
@@ -175,6 +197,26 @@ int main(int argc, char* argv[]) {
         key(window,SDLK_Z,SDL_KMOD_CTRL);require(read_document(host,id).at("text")=="A","Deferred editing did not preserve one transaction per input");
         key(window,SDLK_Z,SDL_KMOD_CTRL);
         require(read_document(host,id).at("text")=="// GUI acceptance\nint main() { return 0; }\n","Deferred editing history lost the original source");
+        key(window,SDLK_A,SDL_KMOD_CTRL);
+        SDL_Event saved_input{};saved_input.type=SDL_EVENT_TEXT_INPUT;saved_input.text.text="Saved batch 中🙂";
+        saved_input.text.windowID=SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&saved_input),"Cannot enqueue same-batch save input");
+        SDL_Event saved_key{};saved_key.type=SDL_EVENT_KEY_DOWN;saved_key.key.key=SDLK_S;saved_key.key.mod=SDL_KMOD_CTRL;
+        saved_key.key.down=true;saved_key.key.windowID=SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&saved_key),"Cannot enqueue same-batch save shortcut");
+        settle(window);
+        require(astra::io::read_file(workspace/"src/main.cpp").text=="Saved batch 中🙂","Save captured a revision before preceding input committed");
+        require(!read_document(host,id).at("dirty").get<bool>(),"Same-batch save did not persist its captured input");
+        SDL_Event copy_input{};copy_input.type=SDL_EVENT_TEXT_INPUT;copy_input.text.text=" Copy";
+        copy_input.text.windowID=SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&copy_input),"Cannot enqueue same-batch line copy input");
+        SDL_Event copy_key{};copy_key.type=SDL_EVENT_KEY_DOWN;copy_key.key.key=SDLK_C;copy_key.key.mod=SDL_KMOD_CTRL;
+        copy_key.key.down=true;copy_key.key.windowID=SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&copy_key),"Cannot enqueue same-batch line copy shortcut");
+        settle(window);
+        char* copied=SDL_GetClipboardText();require(copied!=nullptr,"Cannot read copied line");
+        const std::string copied_line(copied);SDL_free(copied);
+        require(copied_line=="Saved batch 中🙂 Copy","Line copy read an old selection or relied on the stale native viewport");
         key(window, SDLK_A, SDL_KMOD_CTRL);
         text(window, "alpha\nbeta");
         key(window, SDLK_HOME, SDL_KMOD_CTRL);

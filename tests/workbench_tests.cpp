@@ -110,6 +110,40 @@ TEST_CASE("workbench editing cancellation drains the deferred native future") {
     CHECK(cancelled);REQUIRE(outcome);REQUIRE(outcome->error);CHECK(outcome->error->at("name")=="AbortError");CHECK(workbench.idle());
 }
 
+TEST_CASE("workbench document reads await a native fence while immediate presentation reads proceed") {
+    auto channel=std::make_shared<Channel>();std::promise<Json> completion;Json captured;unsigned immediate{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        REQUIRE(method=="_ui.read");
+        if(params.value("immediate",false)){++immediate;return ready({{"sidebarVisible",true}});}
+        captured=params;return completion.get_future();
+    },modules(),"astra.registerCommand('ordered',()=>astra.ui.read({id:'captured'}));astra.registerCommand('instant',()=>astra.ui.read({immediate:true}));");
+    std::optional<astra::script::Runtime::Outcome> ordered,instant;
+    workbench.execute("ordered",Json::object(),[&](const auto& value){ordered=value;});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(captured.at("id")=="captured");CHECK(captured.at("readId").is_string());CHECK_FALSE(ordered);CHECK_FALSE(workbench.awaiting_input());
+    workbench.execute("instant",Json::object(),[&](const auto& value){instant=value;});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(instant);CHECK_FALSE(instant->error);CHECK(immediate==1);CHECK_FALSE(ordered);
+    completion.set_value({{"document",{{"id","captured"},{"revision","9"}}}});
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    REQUIRE(ordered);CHECK_FALSE(ordered->error);CHECK(ordered->value.at("document").at("revision")=="9");CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench cancelling a document read drains its native fence") {
+    auto channel=std::make_shared<Channel>();std::promise<Json> completion;Json captured;unsigned cancellations{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
+        if(method=="_ui.read"){captured=params;return completion.get_future();}
+        REQUIRE(method=="_ui.read.cancel");CHECK(params.at("readId")==captured.at("readId"));++cancellations;
+        completion.set_value(nullptr);return ready(nullptr);
+    },modules(),"let control=new AbortController();astra.registerCommand('ordered',()=>astra.ui.read({id:'captured'},{signal:control.signal}));astra.registerCommand('abort',()=>control.abort());");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ordered",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<4;++tick)workbench.poll();CHECK_FALSE(outcome);
+    workbench.execute("abort",Json::object(),{});
+    for(int tick=0;tick<8;++tick)workbench.poll();
+    REQUIRE(outcome);REQUIRE(outcome->error);CHECK(outcome->error->at("name")=="AbortError");CHECK(cancellations==1);CHECK(workbench.idle());
+}
+
 TEST_CASE("workbench provider generation prevents older results replacing newer views") {
     auto channel = std::make_shared<Channel>();
     std::vector<Json> models;
@@ -182,6 +216,42 @@ TEST_CASE("workbench stale clipboard read never writes or cuts") {
     for(int tick=0;tick<4;++tick)workbench.poll();
     REQUIRE(outcome);REQUIRE(outcome->error);CHECK_FALSE(wrote);CHECK(channel->requests.empty());
     CHECK(outcome->error->at("message").get<std::string>().find("changed while copying")!=std::string::npos);
+}
+
+TEST_CASE("workbench copy obtains revision checked line bounds when the native viewport is old") {
+    auto channel=std::make_shared<Channel>();std::string clipboard;
+    const auto prefix=std::string(65534,'x');const auto suffix=std::string("🙂\r\n");
+    const auto end=prefix.size()+suffix.size();
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params){
+        if(method=="_ui.read")return ready({{"document",{{"id","source"},{"revision","7"},
+            {"selections",Json::array({{{"anchor",0},{"head",0}},{{"anchor",1000},{"head",1000}}})},
+            {"selectionPositions",Json::array({{{"line",0}},{{"line",0}}})}}},{"selectionLines",Json::array({nullptr,nullptr})}});
+        if(method=="_ui.clipboard.write")clipboard=params.at("text").get<std::string>();
+        return ready(nullptr);
+    },modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.copy",Json::object(),[&](const auto& result){outcome=result;});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="document.lines");
+    CHECK(channel->requests.front().body.at("params")==Json{{"id","source"},{"firstLine",0},{"count",1}});
+    SUBCASE("partial viewport rows still copy the entire logical line once") {
+        channel->reply({{"revision","7"},{"lines",Json::array({{{"line",0},{"begin",0},{"end",prefix.size()},
+            {"nextBegin",end},{"complete",false}}})}});
+        for(int tick=0;tick<4;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="document.get");
+        CHECK(channel->requests.front().body.at("params").at("end")==end);
+        channel->reply({{"revision","7"},{"range",{{"end",prefix.size()}}},{"text",prefix}});
+        for(int tick=0;tick<4;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("params").at("begin")==prefix.size());
+        channel->reply({{"revision","7"},{"range",{{"end",end}}},{"text",suffix}});
+        for(int tick=0;tick<6;++tick)workbench.poll();
+        REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(clipboard==prefix+suffix);CHECK(workbench.idle());
+    }
+    SUBCASE("a changed line revision prevents clipboard publication") {
+        channel->reply({{"revision","8"},{"lines",Json::array()}});
+        for(int tick=0;tick<6;++tick)workbench.poll();
+        REQUIRE(outcome);REQUIRE(outcome->error);CHECK(clipboard.empty());CHECK(channel->requests.empty());CHECK(workbench.idle());
+    }
 }
 
 TEST_CASE("workbench paste captures document identity and normalizes CRLF") {

@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -94,6 +95,7 @@ struct EditorWindow::Impl {
         bool settled{}, cancelled{};
         std::string operation;
     };
+    struct PendingRead { std::promise<Json> completion; bool settled{}; };
     struct Request {
         std::string method;
         Json params;
@@ -103,6 +105,7 @@ struct EditorWindow::Impl {
         std::function<Json()> build_params;
         std::function<void()> failure{};
         std::shared_ptr<PendingEdit> edit{};
+        std::shared_ptr<PendingRead> read{};
     };
     struct ActiveRequest { Request request; std::string id; std::future<std::optional<std::string>> future; };
     struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; std::shared_ptr<PendingEdit> edit; std::string document; };
@@ -131,6 +134,8 @@ struct EditorWindow::Impl {
     std::vector<std::shared_ptr<Operation>> operations;
     std::map<std::string,std::shared_ptr<Operation>> ordered_inputs;
     std::map<std::string,std::shared_ptr<PendingEdit>> pending_edits;
+    std::map<std::string,std::shared_ptr<PendingRead>> pending_reads;
+    std::uint64_t next_read{1};
     std::uint64_t next_request{1};
     std::map<std::string, std::string> keybindings;
     Json service_commands=Json::array();
@@ -263,6 +268,7 @@ struct EditorWindow::Impl {
         }
         workbench = std::make_unique<Workbench>(channel, [this](std::string_view method, const Json& params) {
             if (method == "_ui.dialog") { return begin_dialog(params); }
+            if (method == "_ui.read") { return begin_read(params); }
             if (method == "_ui.action" && params.at("command").get<std::string>().starts_with("editor.")) { return begin_edit(params); }
             std::promise<Json> completed;
             try { completed.set_value(native_ui_request(method, params)); }
@@ -452,6 +458,8 @@ struct EditorWindow::Impl {
     void fetch_git_diff(std::string path, bool staged = false);
     void editor_command(std::string command, Json extra = Json::object(), std::shared_ptr<PendingEdit> edit = {});
     std::future<Json> begin_edit(const Json& params);
+    std::future<Json> begin_read(Json params);
+    void settle_read(const std::shared_ptr<PendingRead>& read,const Json& value,std::exception_ptr failure = {});
     void settle_edit(const std::shared_ptr<PendingEdit>& edit, const Json& result, std::exception_ptr failure = {});
     void cancel_edit(const std::shared_ptr<PendingEdit>& edit);
     void set_selections(Json selections, std::string revision = {});
@@ -472,7 +480,7 @@ struct EditorWindow::Impl {
     void find_document(bool replace);
     void search_workspace(bool replace);
     void open_search_result(const Json& match);
-    [[nodiscard]] std::string newline() const;
+    [[nodiscard]] std::string newline(const Document* document) const;
     void event(const SDL_Event& event);
     void key(const SDL_KeyboardEvent& key);
     void point(float x, float y, bool extend, bool add);
@@ -598,6 +606,13 @@ void EditorWindow::Impl::service_responses() {
         });
         if(next==requests.end())break;
         auto request=std::move(*next);requests.erase(next);
+        if(request.read) {
+            if(!request.read->settled) {
+                try { settle_read(request.read,native_ui_request("_ui.read",request.params)); }
+                catch (...) { settle_read(request.read,nullptr,std::current_exception()); }
+            }
+            continue;
+        }
         if (request.edit && request.edit->cancelled) { continue; }
         if (!request.document.empty() && !documents.contains(request.document)) {
             settle_edit(request.edit,nullptr,std::make_exception_ptr(protocol::RpcError(-32001,"Document closed before the edit was dispatched"))); continue;
@@ -780,6 +795,34 @@ void EditorWindow::Impl::cancel_edit(const std::shared_ptr<PendingEdit>& edit) {
     // Resolve the drain value, as for dismissed native dialogs.
     settle_edit(edit,nullptr);
     if(!edit->operation.empty())enqueue({"operation.cancel",{{"id",edit->operation}},{},false,{}, {}});
+}
+
+void EditorWindow::Impl::settle_read(const std::shared_ptr<PendingRead>& read,const Json& value,std::exception_ptr failure) {
+    if(read->settled)return;
+    read->settled=true;
+    if(failure)read->completion.set_exception(std::move(failure));
+    else read->completion.set_value(value);
+    std::erase_if(pending_reads,[&](const auto& entry){return entry.second==read;});
+    std::erase_if(requests,[&](const Request& request){return request.read==read;});
+}
+
+std::future<Json> EditorWindow::Impl::begin_read(Json params) {
+    const auto id=params.value("id",active_id);
+    params["id"]=id;
+    auto read=std::make_shared<PendingRead>();auto future=read->completion.get_future();
+    if(params.value("immediate",false) || id.empty() || (!queued_for(id) && !ordered_inputs.contains(id))) {
+        try { settle_read(read,native_ui_request("_ui.read",params)); }
+        catch (...) { settle_read(read,nullptr,std::current_exception()); }
+        return future;
+    }
+    if(!params.contains("readId") && next_read==std::numeric_limits<std::uint64_t>::max())throw protocol::RpcError(-32004,"UI read identity capacity exceeded");
+    const auto token=params.contains("readId") ? params.at("readId").get<std::string>() : "native-read-"+std::to_string(next_read++);
+    if(token.empty() || token.size()>128 || pending_reads.contains(token))throw protocol::RpcError(-32602,"Invalid UI read identity");
+    if(pending_reads.size()>=256)throw protocol::RpcError(-32004,"UI read queue is full");
+    pending_reads.emplace(token,read);
+    try { enqueue({"_ui.read",std::move(params),id,false,{}, {},{}, {},read}); }
+    catch (...) { settle_read(read,nullptr,std::current_exception()); }
+    return future;
 }
 
 std::future<Json> EditorWindow::Impl::begin_edit(const Json& params) {
@@ -1015,6 +1058,11 @@ void EditorWindow::Impl::finish_dialog(Json value) {
 }
 
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
+    if(method=="_ui.read.cancel") {
+        const auto found=pending_reads.find(params.at("readId").get<std::string>());
+        if(found!=pending_reads.end()){const auto read=found->second;settle_read(read,nullptr);}
+        return nullptr;
+    }
     if (method == "_ui.dialog.cancel") {
         if (dialog && dialog->id == params.at("id").get<std::string>()) { finish_dialog(nullptr); }
         return nullptr;
@@ -1044,7 +1092,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         const auto found=documents.find(requested);
         if (const auto* document = found==documents.end() ? nullptr : &found->second) {
             result["document"] = document->metadata; result["document"]["path"] = document->path;
-            result["newline"] = newline(); result["selectionLines"] = Json::array();
+            result["newline"] = newline(document); result["selectionLines"] = Json::array();
             for (const auto& position : document->metadata.value("selectionPositions", Json::array())) {
                 const auto line = document->lines.find(position.value("line", std::size_t{0}));
                 if (line == document->lines.end() || document->view_revision != document->metadata.at("revision").get<std::string>()) { result["selectionLines"].push_back(nullptr); }
@@ -1241,8 +1289,7 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     } else { throw std::invalid_argument("Unknown UI command: " + std::string(name)); }
 }
 
-std::string EditorWindow::Impl::newline() const {
-    const auto* document = current();
+std::string EditorWindow::Impl::newline(const Document* document) const {
     if (!document) { return "\n"; }
     if (document->editor_config.contains("end_of_line")) {
         const auto configured = document->editor_config.at("end_of_line").get<std::string>();
@@ -2490,6 +2537,7 @@ bool EditorWindow::pump() {
         if (!impl_->stopping_workbench) {
             impl_->finish_dialog(nullptr);
             while(!impl_->pending_edits.empty()){const auto edit=impl_->pending_edits.begin()->second;impl_->cancel_edit(edit);}
+            while(!impl_->pending_reads.empty()){const auto read=impl_->pending_reads.begin()->second;impl_->settle_read(read,nullptr);}
             impl_->stopping_workbench = true;
             impl_->workbench_shutdown_deadline = Clock::now() + std::chrono::seconds(5);
             impl_->workbench->shutdown();

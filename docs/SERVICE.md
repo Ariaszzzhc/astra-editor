@@ -191,6 +191,20 @@ if (astra.context === 'client') {
 ```
 
 Client document calls use the same in-process/TCP protocol as other clients.
+`astra.ui.read(parameters, options)` captures the requested `id` (or active
+document) when invoked and asynchronously waits behind that document's preceding
+native input intents before returning retained metadata. Switching tabs during
+the wait does not change its document or newline policy. A read is a boundary
+for prior native input, not a lock against future edits or another client.
+`{immediate:true}` reads current retained presentation state without that wait;
+sidebar/tab controls and the command catalog use it. Reads accept `signal` and
+`timeoutMs`; cancellation drains/removes the read fence without cancelling edits.
+At most 256 read futures may wait. Shutdown settles them before runtime teardown.
+Clipboard policy falls back to revision-checked `document.lines` when retained
+line metadata is old; `nextBegin` bounds the entire logical line even when the
+text page is partial. Service byte ranges count copied bytes. The pure local
+`astra.utf8ByteLength(string)` primitive measures JS strings, including embedded
+NUL and supplementary scalars, without a JS character loop.
 `astra.ui.execute(id, parameters)` awaits a registered UI command, including user
 overrides, including replacements made directly with `astra.registerCommand`.
 `astra.ui.commands()` asynchronously returns the merged client/retained service

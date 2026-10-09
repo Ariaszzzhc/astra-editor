@@ -1,6 +1,6 @@
 const request = (method, params = {}, options) => astra.request(method, params, options);
 export const ui = {
-    read: (parameters = {}) => request('_ui.read', parameters),
+    read: (parameters = {}, options) => read(parameters, options),
     update: model => request('_ui.update', model),
     clipboard: {
         read: () => request('_ui.clipboard.read'),
@@ -18,7 +18,7 @@ export const ui = {
         return await astra._invokeCommand(id, parameters);
     },
     async commands() {
-        const state = await ui.read();
+        const state = await ui.read({immediate:true});
         const service = new Set(state.serviceCommands || []);
         const client = new Set(astra._commandNames());
         const specs = astra.settings().workbench?.commands || {};
@@ -70,6 +70,17 @@ const providers = new Map();
 const generations = new Map();
 let dialogId = 0;
 let actionId = 0;
+let readId = 0;
+async function read(parameters, options = {}) {
+    if(parameters.immediate)return await request('_ui.read',parameters,options);
+    const id=`read-${++readId}`, signal=options.signal;
+    let cancellation;
+    const cancel=()=>{cancellation=request('_ui.read.cancel',{readId:id});};
+    signal?.addEventListener('abort',cancel);
+    try { return await request('_ui.read',{...parameters,readId:id},options); }
+    catch(error) { await (cancellation || request('_ui.read.cancel',{readId:id}));throw error; }
+    finally { signal?.removeEventListener('abort',cancel);if(cancellation)await cancellation; }
+}
 async function edit(command, parameters, options = {}) {
     const id = `edit-${++actionId}`;
     const signal = options.signal;

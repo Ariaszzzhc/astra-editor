@@ -23,6 +23,15 @@ TEST_CASE("QuickJS evaluates real JavaScript and serializes Unicode JSON") {
     CHECK(runtime.evaluate("astra.request('echo', {value: 42})")["params"]["value"] == 42);
 }
 
+TEST_CASE("QuickJS measures UTF-8 bytes independently of UTF-16 string length") {
+    Runtime runtime(echo);
+    CHECK(runtime.evaluate("['', 'ASCII', '中文🙂', 'e\\u0301', 'a\\0b'].map(text=>astra.utf8ByteLength(text))")==Json::array({0,5,10,3,3}));
+    CHECK(runtime.evaluate("astra.utf8ByteLength('x'.repeat(65534)+'🙂')")==65538);
+    CHECK_THROWS_AS(static_cast<void>(runtime.evaluate("astra.utf8ByteLength({toString(){throw new Error('coercion')}})")),ScriptError);
+    CHECK_THROWS_AS(static_cast<void>(runtime.evaluate("astra.utf8ByteLength()")),ScriptError);
+    CHECK(runtime.evaluate("astra.utf8ByteLength('🙂')")==4);
+}
+
 TEST_CASE("JavaScript commands register override and retain closure state") {
     Runtime runtime(echo);
     (void)runtime.evaluate("let count=0; astra.registerCommand('increment', p => count += p.by)");

@@ -355,6 +355,31 @@ document cannot bypass the gate. It also verifies captured identity, separate
 undo histories and one transaction per input. No fixed-delay timing assertion
 is used for document independence.
 
+JS document reads now await preceding native input intents for their captured
+document; presentation controls can read immediately. Cancellation removes the
+waiting fence and does not cancel editing, and shutdown settles pending reads.
+Line-copy policy obtains revision-checked service line bounds when native text
+is old, including long partial rows. Copied byte counts come from UTF-8 service
+ranges; the native `astra.utf8ByteLength` primitive handles JS string measurement.
+
+Windows Debug `build -y astra-tests gui-smoke gui-presentation-smoke
+gui-workspace-smoke` passed; the affected
+`--test-case=workbench*,QuickJS*,JavaScript*` run passed **44 cases / 368
+assertions**. All four actual GUI checks passed: local/TCP `gui-smoke`,
+`gui-presentation-smoke` and `gui-workspace-smoke`. Added regressions prove a
+read remains attached to the original document and LF policy after switching
+to a CRLF-configured document, read cancellation finishes while the editing
+gate is still suspended, and same-batch input followed by save or line-copy
+observes the committed input. Two collapsed cursors on one long logical line
+copy it once across Unicode pages; stale line revisions prevent publication.
+
+The first long-line unit run failed with `InternalError: interrupted` in the
+old JS byte-count loop at the workbench's 8 ms budget. Replacing that loop with
+service byte ranges/native string measurement fixed the failure; the budget
+was not increased. All final focused and GUI checks above pass. These add four
+cases to the suite (464 total); full current Debug/Release and package acceptance
+remain outstanding.
+
 Remaining work includes the rest of the public UI/provider contract,
 native component extraction, incremental display layout, incremental
 Markdown syntax indexes, final acceptance and packaging of the
