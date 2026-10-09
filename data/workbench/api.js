@@ -2,6 +2,10 @@ const request = (method, params = {}, options) => astra.request(method, params, 
 export const ui = {
     read: () => request('_ui.read'),
     update: model => request('_ui.update', model),
+    clipboard: {
+        read: () => request('_ui.clipboard.read'),
+        write: text => request('_ui.clipboard.write', {text})
+    },
     // Native actions handle text layout, focus, clipboard and modal input.
     // Product workflows call services directly and publish retained view state.
     native: (command, parameters = {}) => request('_ui.action', {command, parameters}),

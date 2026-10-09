@@ -29,7 +29,7 @@ std::map<std::string, std::string> modules() {
     std::map<std::string, std::string> result;
     for (const auto& [name, file] : std::map<std::string, std::string>{
         {"astra/ui", "api.js"}, {"astra/files", "files.js"}, {"astra/git", "git.js"},
-        {"astra/search", "search.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
+        {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
         result[name] = astra::io::read_file(std::filesystem::path("data/workbench") / file).text;
     }
     return result;
@@ -95,4 +95,83 @@ TEST_CASE("workbench provider generation prevents older results replacing newer 
     for (int tick = 0; tick < 8; ++tick) { workbench.poll(); }
     REQUIRE(models.size() == 1); CHECK(models[0]["entries"] == Json::array({"new"}));
     CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench clipboard pages Unicode bytes and cuts one captured transaction") {
+    auto channel = std::make_shared<Channel>();
+    std::string clipboard;
+    const Json document{{"id","original"},{"revision","7"},{"selections",Json::array({
+        {{"anchor",7},{"head",0}},{{"anchor",10},{"head",13}},{{"anchor",0},{"head",7}}})}};
+    astra::ui::Workbench workbench(channel, [&](std::string_view method,const Json& params) {
+        if (method == "_ui.read") return ready({{"document",document},{"selectionLines",Json::array()}});
+        if (method == "_ui.clipboard.write") clipboard=params.at("text").get<std::string>();
+        return ready(nullptr);
+    },modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.cut",Json::object(),[&](const auto& result){outcome=result;});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);
+    CHECK(channel->requests.front().body.at("params").at("begin")==0);
+    channel->reply({{"revision","7"},{"range",{{"end",3}}},{"text","中"}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);
+    CHECK(channel->requests.front().body.at("params").at("begin")==3);
+    channel->reply({{"revision","7"},{"range",{{"end",7}}},{"text","🙂"}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);
+    CHECK(channel->requests.front().body.at("params").at("begin")==10);
+    channel->reply({{"revision","7"},{"range",{{"end",13}}},{"text","e\xCC\x81"}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    CHECK(clipboard=="中🙂\ne\xCC\x81");
+    REQUIRE(channel->requests.size()==1);
+    const auto& edit=channel->requests.front().body;
+    CHECK(edit.at("method")=="document.edit");
+    CHECK(edit.at("params").at("id")=="original");
+    CHECK(edit.at("params").at("baseRevision")=="7");
+    CHECK(edit.at("params").at("edits")==Json::array({{{"begin",0},{"end",7},{"text",""}},{{"begin",10},{"end",13},{"text",""}}}));
+    channel->reply({{"id","original"},{"revision","8"}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench stale clipboard read never writes or cuts") {
+    auto channel=std::make_shared<Channel>();
+    bool wrote{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json&){
+        if(method=="_ui.read")return ready({{"document",{{"id","1"},{"revision","2"},{"selections",Json::array({{{"anchor",0},{"head",4}}})}}}});
+        if(method=="_ui.clipboard.write")wrote=true;
+        return ready(nullptr);
+    },modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.cut",Json::object(),[&](const auto& result){outcome=result;});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    channel->reply({{"revision","3"},{"range",{{"end",4}}},{"text","text"}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(outcome);REQUIRE(outcome->error);CHECK_FALSE(wrote);CHECK(channel->requests.empty());
+    CHECK(outcome->error->at("message").get<std::string>().find("changed while copying")!=std::string::npos);
+}
+
+TEST_CASE("workbench paste captures document identity and normalizes CRLF") {
+    auto channel=std::make_shared<Channel>();
+    std::promise<Json> clipboard;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json&){
+        if(method=="_ui.read")return ready({{"document",{{"id","captured"},{"revision","9"}}},{"newline","\r\n"}});
+        if(method=="_ui.clipboard.read")return clipboard.get_future();
+        return ready(nullptr);
+    },modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.paste",Json::object(),[&](const auto& result){outcome=result;});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    CHECK_FALSE(outcome);CHECK(channel->requests.empty());
+    clipboard.set_value("中\r\n🙂\re\xCC\x81\n");
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);
+    const auto& request=channel->requests.front().body;
+    CHECK(request.at("method")=="script.command");
+    CHECK(request.at("params").at("params").at("id")=="captured");
+    CHECK(request.at("params").at("params").at("baseRevision")=="9");
+    CHECK(request.at("params").at("params").at("text")=="中\r\n🙂\r\ne\xCC\x81\r\n");
+    channel->reply({{"id","captured"},{"revision","10"}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(workbench.idle());
 }

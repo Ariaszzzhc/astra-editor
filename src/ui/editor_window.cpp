@@ -99,15 +99,6 @@ struct EditorWindow::Impl {
     };
     struct ActiveRequest { Request request; std::string id; std::future<std::optional<std::string>> future; };
     struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; };
-    struct CopyState {
-        std::string id;
-        std::string revision;
-        std::vector<std::pair<std::size_t, std::size_t>> ranges;
-        std::size_t range{};
-        std::size_t offset{};
-        std::string text;
-        bool cut{};
-    };
     struct FindState { std::string id; std::string revision; std::string query; std::string replacement; std::string text; std::size_t cursor{}; std::size_t size{}; bool replace{}; };
     struct ViewState { std::string id; std::string revision; std::size_t first{}; std::size_t limit{}; std::map<std::size_t, Line> lines; };
     enum class Prompt { none, palette, open, save_as, close, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, completion, locations, hover, rename, rename_confirm, git_diff, git_discard, git_commit, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed, reload_confirm };
@@ -254,7 +245,7 @@ struct EditorWindow::Impl {
         std::map<std::string, std::string> modules;
         for (const auto& [name, file] : std::map<std::string, std::string>{
             {"astra/ui", "api.js"}, {"astra/files", "files.js"}, {"astra/git", "git.js"},
-            {"astra/search", "search.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
+            {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
             modules.emplace(name, io::read_file(options.resource_directory / "data" / "workbench" / file, 1024 * 1024).text);
         }
         workbench = std::make_unique<Workbench>(channel, [this](std::string_view method, const Json& params) {
@@ -475,13 +466,10 @@ struct EditorWindow::Impl {
     void execute_policy(std::string_view name, const Json& params = Json::object());
     void native_command(std::string_view name);
     Json native_ui_request(std::string_view method, const Json& params);
-    void clipboard(bool cut);
-    void copy_next(std::shared_ptr<CopyState> state);
     void find_next(std::shared_ptr<FindState> state);
     void find_document(bool replace);
     void search_workspace(bool replace);
     void open_search_result(const Json& match);
-    void paste();
     [[nodiscard]] std::string newline() const;
     void event(const SDL_Event& event);
     void key(const SDL_KeyboardEvent& key);
@@ -988,14 +976,37 @@ std::vector<std::size_t> EditorWindow::Impl::filtered_recovery_sessions() const 
 }
 
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
+    if (method == "_ui.clipboard.read") {
+        const std::unique_ptr<char, SdlStringDeleter> text(SDL_GetClipboardText());
+        if (!text) { throw std::runtime_error(std::string("Clipboard read failed: ") + SDL_GetError()); }
+        const std::string_view value(text.get());
+        if (value.size() > 8 * 1024 * 1024) { throw std::runtime_error("Clipboard exceeds the 8 MiB scripted clipboard limit"); }
+        return value;
+    }
+    if (method == "_ui.clipboard.write") {
+        const auto text = params.at("text").get<std::string>();
+        if (text.size() > 8 * 1024 * 1024 || text.find('\0') != std::string::npos) { throw std::runtime_error("Clipboard text exceeds its limit or contains NUL"); }
+        if (!SDL_SetClipboardText(text.c_str())) { throw std::runtime_error(std::string("Clipboard write failed: ") + SDL_GetError()); }
+        return nullptr;
+    }
     if (method == "_ui.read") {
         Json result{{"sidebarVisible", show_sidebar}, {"outlineVisible", show_outline}, {"tabs", tabs}, {"gitPath", prompt == Prompt::git_diff ? git_path : std::string{}}};
-        if (const auto* document = current()) { result["document"] = document->metadata; result["document"]["path"] = document->path; }
+        if (const auto* document = current()) {
+            result["document"] = document->metadata; result["document"]["path"] = document->path;
+            result["newline"] = newline(); result["selectionLines"] = Json::array();
+            for (const auto& position : document->metadata.value("selectionPositions", Json::array())) {
+                const auto line = document->lines.find(position.value("line", std::size_t{0}));
+                if (line == document->lines.end() || document->view_revision != document->metadata.at("revision").get<std::string>()) { result["selectionLines"].push_back(nullptr); }
+                else { result["selectionLines"].push_back({{"begin", line->second.begin}, {"next", line->second.next}}); }
+            }
+        }
         return result;
     }
     if (method == "_ui.action") { native_command(params.at("command").get<std::string>()); return nullptr; }
     if (method != "_ui.update") { throw protocol::RpcError(-32601, "Unknown native UI primitive"); }
     if (!params.is_object()) { throw protocol::RpcError(-32602, "UI updates require an object"); }
+    // Establish document state before activation regardless of JSON key order.
+    if (params.contains("document")) { accept_metadata(params.at("document")); }
     for (const auto& [name, value] : params.items()) {
         if (name == "status") { status = value.get<std::string>(); }
         else if (name == "sidebarVisible") { show_sidebar = value.get<bool>(); }
@@ -1004,8 +1015,9 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             const auto view = value.get<std::string>();
             if (view != "explorer" && view != "search" && view != "git") { throw protocol::RpcError(-32602, "Unknown sidebar view"); }
             search_view = view == "search"; git_view = view == "git"; tree_scroll = 0;
-        } else if (name == "document") { accept_metadata(value); }
+        } else if (name == "document") { /* Applied before activation above. */ }
         else if (name == "activate") { activate(value.get<std::string>()); }
+        else if (name == "revealCaret") { if (value.get<bool>()) { reveal_caret(); } }
         else if (name == "dismissPrompt") { if (value.get<bool>()) { prompt = Prompt::none; } }
         else if (name == "busy") { busy_views.merge_patch(value); }
         else if (name != "view" && name != "model") { throw protocol::RpcError(-32602, "Unknown UI update field: " + name); }
@@ -1104,9 +1116,6 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     else if (name == "ui.exitWithoutCheckpoint") {
         if (prompt == Prompt::recovery_exit_failed) { ++recovery_close_generation; running = false; }
     }
-    else if (name == "ui.copy") { clipboard(false); }
-    else if (name == "ui.cut") { clipboard(true); }
-    else if (name == "ui.paste") { paste(); }
     else if (name == "ui.toggleSidebar") { show_sidebar = !show_sidebar; if (auto* doc = current()) { doc->needs_lines = true; } }
     else if (name == "ui.explorer") { show_sidebar = true; search_view = false; git_view = false; tree_scroll = 0; }
     else if (name == "ui.toggleOutline") { show_outline = !show_outline; }
@@ -1208,84 +1217,6 @@ void EditorWindow::Impl::native_command(std::string_view name) {
         enqueue({"script.command", {{"name", name}, {"params", Json::object()}}, active_id, !active_id.empty(),
             [this](const Json& result) { if (result.is_object() && result.contains("id") && result.contains("revision")) { accept_metadata(result); reveal_caret(); } }, {}});
     } else { throw std::invalid_argument("Unknown UI command: " + std::string(name)); }
-}
-
-void EditorWindow::Impl::clipboard(bool cut) {
-    const auto* document = current();
-    if (!document) { return; }
-    auto state = std::make_shared<CopyState>();
-    state->id = active_id; state->revision = document->metadata.at("revision").get<std::string>(); state->cut = cut;
-    const auto& selections = document->metadata.at("selections");
-    const auto& positions = document->metadata.contains("selectionPositions") ? document->metadata["selectionPositions"] : selections;
-    for (std::size_t i = 0; i < selections.size(); ++i) {
-        const auto anchor = selections[i].at("anchor").get<std::size_t>();
-        const auto head = selections[i].at("head").get<std::size_t>();
-        auto begin = std::min(anchor, head);
-        auto end = std::max(anchor, head);
-        if (begin == end) {
-            const auto number = positions[i].value("line", std::size_t{0});
-            const auto line = document->lines.find(number);
-            if (line == document->lines.end() || document->view_revision != state->revision) {
-                throw std::runtime_error("Wait for the current line to load before copying it");
-            }
-            begin = line->second.begin; end = line->second.next;
-        }
-        if (begin != end) { state->ranges.emplace_back(begin, end); }
-    }
-    std::ranges::sort(state->ranges);
-    state->ranges.erase(std::unique(state->ranges.begin(), state->ranges.end()), state->ranges.end());
-    if (state->ranges.empty()) { return; }
-    state->offset = state->ranges.front().first;
-    copy_next(std::move(state));
-}
-
-void EditorWindow::Impl::copy_next(std::shared_ptr<CopyState> state) {
-    if (state->range == state->ranges.size()) {
-        if (!SDL_SetClipboardText(state->text.c_str())) { throw std::runtime_error(std::string("Clipboard write failed: ") + SDL_GetError()); }
-        status = "Copied " + std::to_string(state->ranges.size()) + " selection(s)";
-        if (state->cut) {
-            auto edits = Json::array();
-            for (const auto& [begin, end] : state->ranges) { edits.push_back({{"begin", begin}, {"end", end}, {"text", ""}}); }
-            enqueue({"document.edit", {{"id", state->id}, {"baseRevision", state->revision}, {"edits", std::move(edits)}}, {}, false,
-                [this](const Json& result) { accept_metadata(result); reveal_caret(); }, {}});
-        }
-        return;
-    }
-    enqueue({"document.get", {{"id", state->id}, {"begin", state->offset}, {"end", state->ranges[state->range].second}}, {}, false,
-        [this, state](const Json& result) {
-            if (result.at("revision") != state->revision) { throw std::runtime_error("Document changed while copying; copy again"); }
-            const auto chunk = result.at("text").get<std::string>();
-            constexpr std::size_t max_clipboard = 64 * 1024 * 1024;
-            if (chunk.size() > max_clipboard - state->text.size()) { throw std::runtime_error("Selection exceeds the 64 MiB clipboard limit"); }
-            state->text += chunk;
-            const auto next = result.at("range").at("end").get<std::size_t>();
-            if (next <= state->offset) { throw std::runtime_error("Document copy made no progress"); }
-            state->offset = next;
-            if (next == state->ranges[state->range].second) {
-                ++state->range;
-                if (state->range < state->ranges.size()) {
-                    if (!state->text.ends_with('\n')) { state->text += '\n'; }
-                    state->offset = state->ranges[state->range].first;
-                }
-            }
-            copy_next(state);
-        }, {}});
-}
-
-void EditorWindow::Impl::paste() {
-    const std::unique_ptr<char, SdlStringDeleter> text(SDL_GetClipboardText());
-    if (!text) { throw std::runtime_error(std::string("Clipboard read failed: ") + SDL_GetError()); }
-    if (!*text) { return; }
-    const std::string_view input(text.get());
-    std::string normalized;
-    const auto ending = newline();
-    for (std::size_t i = 0; i < input.size(); ++i) {
-        if (input[i] == '\r' || input[i] == '\n') {
-            if (input[i] == '\r' && i + 1 < input.size() && input[i + 1] == '\n') { ++i; }
-            normalized += ending;
-        } else { normalized += input[i]; }
-    }
-    editor_command("editor.insert_text", {{"text", std::move(normalized)}});
 }
 
 std::string EditorWindow::Impl::newline() const {

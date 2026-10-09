@@ -7,7 +7,6 @@ export function registerNativeCommands() {
         ['ui.commandPalette','Command palette','Ctrl+Shift+P'],
         ['ui.saveAs','Save file as...','Ctrl+Shift+S'], ['ui.closeTab','Close active tab','Ctrl+W'],
         ['editor.undo','Undo','Ctrl+Z'], ['editor.redo','Redo','Ctrl+Y'],
-        ['ui.copy','Copy','Ctrl+C'], ['ui.cut','Cut','Ctrl+X'], ['ui.paste','Paste','Ctrl+V'],
         ['editor.select_all','Select all','Ctrl+A'], ['editor.toggle_line_comment','Toggle line comment','Ctrl+/'],
         ['editor.duplicate_line','Duplicate line','Shift+Alt+Down'],
         ['editor.add_cursor_above','Add cursor above','Ctrl+Alt+Up'], ['editor.add_cursor_below','Add cursor below','Ctrl+Alt+Down'],

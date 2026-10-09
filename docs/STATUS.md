@@ -46,7 +46,7 @@ foundation only; the active workbench revision remains in progress.
 The client workbench now loads ES modules for command/menu registration, files,
 search and Git. Open/new/save, sidebar/tab changes, file traversal, search paging
 and Git status/stage policy execute in the client runtime over the same local/TCP
-dispatcher. Native clipboard/modal/language/recovery workflow migration remains
+dispatcher. Native modal/language/recovery workflow migration remains
 unfinished. Providers cancel superseded generations before publishing a model.
 User client commands can replace `ui.*` actions; the native GUI smoke exercises
 that override through real SDL keys. Client shutdown drains late transport
@@ -94,6 +94,20 @@ automated scale/layout checks, not physical monitor DPI transitions or installed
 IME candidate interaction. The final idle-frame Skia warning noted above remains.
 Intermediate build failures (float narrowing, missing summary equality and an
 incorrect test-only file-save argument order) were corrected before these runs.
+
+Clipboard policy now lives in `data/workbench/clipboard.js`; C++ exposes only
+SDL clipboard read/write and retained line-boundary metadata. JS reads selections
+in revision-checked UTF-8 pages, preserves captured document identity across
+await, normalizes pasted line endings and submits one atomic cut/paste transaction.
+Scripted clipboard text is bounded to 8 MiB; errors do not silently truncate it.
+Windows Debug `build -y astra-tests gui-smoke gui-workspace-smoke` passed;
+`astra-tests.exe --no-version '--test-case=workbench*,QuickJS*,JavaScript*'`
+passed **25 cases / 162 assertions**. The three clipboard regressions cover
+Unicode byte paging, duplicate/multiple ranges, stale reads without write/cut,
+delayed clipboard delivery, captured paste identity and CRLF normalization.
+Real SDL `gui-smoke.exe`, `gui-smoke.exe --tcp` and `gui-workspace-smoke.exe`
+all passed after migration. A string/JSON comparison rejected by MSVC was
+corrected to compare explicit strings before the passing build.
 
 Remaining work includes the rest of the public UI/provider contract,
 native component extraction, indexed diagnostic/display views, incremental
