@@ -16,6 +16,7 @@ astra.configure({
         type: "#4EC9B0", function: "#DCDCAA"
     },
     files: {encoding: "utf8", autoSave: false},
+    git: {inheritGlobalConfig: true},
     languageServers: {
         c: {command: "clangd", arguments: ["--background-index"]},
         cpp: {command: "clangd", arguments: ["--background-index"]},
@@ -28,14 +29,12 @@ astra.configure({
 for (const command of [
     "move_left", "move_right", "move_word_left", "move_word_right", "move_up", "move_down",
     "move_home", "move_end", "move_document_start", "move_document_end", "select_all",
-    "select_word", "backspace", "delete_forward", "delete_word_backward", "delete_word_forward",
+    "select_word", "select_next_occurrence", "backspace", "delete_forward", "delete_word_backward", "delete_word_forward",
     "newline", "indent", "outdent", "toggle_line_comment", "duplicate_line", "add_cursor_above",
     "add_cursor_below", "insert_text"
 ]) {
     astra.registerCommand(`editor.${command}`, (parameters) => {
-        const editor = astra.settings().editor;
         return astra.request("document.command", {
-            tabSize: editor.tabSize, insertSpaces: editor.insertSpaces,
             ...parameters, command
         });
     });
@@ -53,6 +52,7 @@ const bindings = {
     "Ctrl+Backspace": "editor.delete_word_backward", "Ctrl+Delete": "editor.delete_word_forward",
     "Enter": "editor.newline", "Tab": "editor.indent", "Shift+Tab": "editor.outdent",
     "Ctrl+A": "editor.select_all", "Ctrl+Z": "editor.undo", "Ctrl+Y": "editor.redo",
+    "Ctrl+D": "editor.select_next_occurrence",
     "Ctrl+Shift+Z": "editor.redo", "Ctrl+/": "editor.toggle_line_comment",
     "Ctrl+Alt+Up": "editor.add_cursor_above", "Ctrl+Alt+Down": "editor.add_cursor_below",
     "Alt+Shift+Down": "editor.duplicate_line", "Ctrl+N": "ui.new", "Ctrl+S": "ui.save",
@@ -60,6 +60,7 @@ const bindings = {
     "Ctrl+Shift+P": "ui.commandPalette", "F1": "ui.commandPalette",
     "Ctrl+C": "ui.copy", "Ctrl+X": "ui.cut", "Ctrl+V": "ui.paste",
     "Ctrl+F": "ui.find", "Ctrl+H": "ui.replace", "Ctrl+Shift+F": "ui.search",
+    "Ctrl+Shift+H": "ui.workspaceReplace",
     "Ctrl+Tab": "ui.nextTab", "Ctrl+Shift+Tab": "ui.previousTab"
 };
 for (const [key, command] of Object.entries(bindings)) astra.bind(key, command);

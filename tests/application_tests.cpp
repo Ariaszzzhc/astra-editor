@@ -1,5 +1,7 @@
 #include <astra/service/application_service.hpp>
 #include <astra/transport/tcp_server.hpp>
+#include <astra/process/process.hpp>
+#include "support/temporary_directory.hpp"
 
 #include <doctest/doctest.h>
 
@@ -34,13 +36,10 @@ public:
         throw std::runtime_error("Cannot create application test directory");
     }
     ~AppFiles() {
-        std::error_code error;
-        const auto resolved = fs::weakly_canonical(root_, error);
-        if (error || resolved != root_ || resolved.parent_path() != build_) {
-            std::fputs("Unsafe application test cleanup refused\n", stderr); return;
+        const auto retry_budget = git_used_ ? std::chrono::milliseconds(1000) : std::chrono::milliseconds::zero();
+        for (const auto& issue : astra::test::cleanup_owned_directory(root_, build_, "app-test-", retry_budget)) {
+            CHECK_MESSAGE(false, issue.path.string(), ": ", issue.message);
         }
-        fs::remove_all(resolved, error);
-        if (error) { std::fputs("Application test cleanup failed\n", stderr); }
     }
     AppFiles(const AppFiles&) = delete;
     AppFiles& operator=(const AppFiles&) = delete;
@@ -52,9 +51,26 @@ public:
         stream.write(text.data(), static_cast<std::streamsize>(text.size()));
     }
     std::string read(const fs::path& relative) const { return astra::io::read_file(root_ / relative).text; }
+    void initialize_git() {
+        git_used_ = true;
+        astra::process::ProcessOptions options;
+        options.argv = {"git", "init", "--initial-branch=main"};
+        const auto bytes = root_.generic_u8string();
+        options.cwd = std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        options.env = astra::process::current_environment();
+        std::erase_if(*options.env, [](const auto& entry) { return entry.starts_with("GIT_"); });
+        options.env->insert(options.env->end(), {"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=NUL", "GIT_CONFIG_SYSTEM=NUL", "GIT_TERMINAL_PROMPT=0"});
+        astra::process::Process child(std::move(options));
+        child.start().get();
+        child.close();
+        const auto completion = child.completion();
+        REQUIRE(completion.wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+        REQUIRE(completion.get().exit_status == 0);
+    }
 private:
     fs::path root_;
     fs::path build_;
+    bool git_used_{};
 };
 
 Json envelope(std::string method, Json params) {
@@ -78,7 +94,7 @@ public:
                 [this, root, defaults = std::move(defaults), user = std::move(user)] {
                     app_ = std::make_unique<ApplicationService>(root,
                         [this](auto worker, auto complete) { return server_->queue_work(std::move(worker), std::move(complete)); },
-                        defaults, user);
+                        defaults + "\nastra.configure({git:{inheritGlobalConfig:false}});", user);
                 }, [this] { app_.reset(); }});
         server_->start();
     }
@@ -359,4 +375,140 @@ TEST_CASE("bundled JavaScript defaults execute editing and respect incremental c
     CHECK(app.call("document.get", {{"id", doc["id"]}})["text"] == "  ");
     result = app.call("script.command", {{"name", "editor.undo"}, {"params", {{"id", doc["id"]}, {"baseRevision", result["revision"]}}}});
     CHECK(app.call("document.get", {{"id", doc["id"]}})["text"] == "");
+}
+
+TEST_CASE("application syntax powers real highlight outline and textobject commands") {
+    AppFiles files;
+    const std::string source = "int answer(int value) { return value + 42; }\n";
+    files.write("answer.cpp", source);
+    LiveApp app(files.root());
+    const auto document = app.done("workspace.open", {{"path", "answer.cpp"}});
+    const auto id = document["id"];
+    auto syntax = app.call("document.syntax", {{"id", id}, {"baseRevision", "0"}});
+    CHECK(syntax["state"] == "pending");
+    CHECK(app.wait(syntax)["state"] == "completed");
+    syntax = app.call("document.syntax", {{"id", id}, {"baseRevision", "0"}});
+    REQUIRE(syntax["state"] == "ready");
+    CHECK_FALSE(syntax["incremental"].get<bool>());
+    REQUIRE_FALSE(syntax["outline"].empty());
+    CHECK(syntax["outline"][0]["name"] == "answer");
+    CHECK(std::any_of(syntax["highlights"].begin(), syntax["highlights"].end(), [](const auto& span) { return span["kind"] == "number"; }));
+    static_cast<void>(app.call("document.setSelections", {{"id", id}, {"baseRevision", "0"},
+        {"selections", Json::array({{{"anchor", source.find("return")}, {"head", source.find("return")}}})}}));
+    const auto selected = app.call("document.selectObject", {{"id", id}, {"baseRevision", "0"}, {"kind", "function"}});
+    CHECK(selected["selections"][0]["anchor"] == 0);
+    CHECK(selected["selections"][0]["head"] == source.size() - 1);
+    const auto offset = source.find("42");
+    static_cast<void>(app.call("document.edit", {{"id", id}, {"baseRevision", "0"},
+        {"edits", Json::array({{{"begin", offset}, {"end", offset + 2}, {"text", "99"}}})}}));
+    CHECK(app.response("document.selectObject", {{"id", id}, {"baseRevision", "1"}, {"kind", "function"}})["error"]["code"] == -32014);
+    syntax = app.call("document.syntax", {{"id", id}, {"baseRevision", "1"}});
+    CHECK(app.wait(syntax)["state"] == "completed");
+    syntax = app.call("document.syntax", {{"id", id}, {"baseRevision", "1"}, {"begin", offset}, {"end", offset + 2}});
+    REQUIRE(syntax["state"] == "ready");
+    CHECK(syntax["incremental"].get<bool>());
+    CHECK(syntax["highlights"].size() == 1);
+    CHECK(syntax["highlights"][0]["kind"] == "number");
+}
+
+TEST_CASE("application editing policy is shared by direct and scripted commands") {
+    AppFiles files;
+    files.write(".editorconfig", "root=true\n[*.py]\nindent_style=space\nindent_size=2\nend_of_line=crlf\n");
+    files.write("main.py", "pass\r\n");
+    const auto defaults = astra::io::read_file(fs::current_path() / "data" / "defaults.js").text;
+    LiveApp app(files.root(), defaults, "astra.configure({editor:{tabSize:8,insertSpaces:false}});");
+    const auto doc = app.done("workspace.open", {{"path", "main.py"}});
+    const auto id = doc["id"];
+    auto result = app.call("document.command", {{"id", id}, {"baseRevision", "0"}, {"command", "indent"}});
+    CHECK(app.call("document.get", {{"id", id}})["text"] == "  pass\r\n");
+    result = app.call("script.command", {{"name", "editor.indent"}, {"params", {{"id", id}, {"baseRevision", result["revision"]}}}});
+    CHECK(app.call("document.get", {{"id", id}})["text"] == "    pass\r\n");
+    result = app.call("document.command", {{"id", id}, {"baseRevision", result["revision"]},
+        {"command", "toggle_line_comment"}});
+    CHECK(app.call("document.get", {{"id", id}})["text"] == "    # pass\r\n");
+    result = app.call("document.command", {{"id", id}, {"baseRevision", result["revision"]},
+        {"command", "indent"}, {"insertSpaces", false}});
+    CHECK(app.call("document.get", {{"id", id}})["text"] == "\t    # pass\r\n");
+    const auto plain = app.call("document.create", {{"text", "\xE4\xB8\xAD\n"}});
+    static_cast<void>(app.call("document.command", {{"id", plain["id"]}, {"baseRevision", "0"}, {"command", "indent"}}));
+    CHECK(app.call("document.get", {{"id", plain["id"]}})["text"] == "\t\xE4\xB8\xAD\n");
+}
+
+TEST_CASE("application newline follows file policy and invalid settings cannot mutate text") {
+    AppFiles files;
+    files.write(".editorconfig", "root=true\n[*.txt]\nend_of_line=crlf\n");
+    files.write("new.txt", "text");
+    LiveApp app(files.root());
+    const auto doc = app.done("workspace.open", {{"path", "new.txt"}});
+    static_cast<void>(app.call("document.command", {{"id", doc["id"]}, {"baseRevision", "0"}, {"command", "newline"}}));
+    CHECK(app.call("document.get", {{"id", doc["id"]}})["text"] == "\r\ntext");
+    LiveApp invalid(files.root(), "astra.configure({editor:{tabSize:-1}});");
+    const auto fresh = invalid.call("document.create");
+    CHECK(invalid.response("document.command", {{"id", fresh["id"]}, {"baseRevision", "0"}, {"command", "indent"}})["error"]["code"] == -32020);
+    CHECK(invalid.call("document.get", {{"id", fresh["id"]}})["text"] == "");
+}
+
+TEST_CASE("application syntax discards stale worker results and coalesces identical requests") {
+    AppFiles files;
+    PausedWork app(files.root());
+    const auto document = app.call("document.create", {{"text", "{\"number\": 1}"}});
+    const Json params{{"id", document["id"]}, {"baseRevision", "0"}, {"language", "json"}};
+    const auto syntax = app.call("document.syntax", params);
+    CHECK(app.call("document.syntax", params)["operationId"] == syntax["operationId"]);
+    app.run_worker();
+    static_cast<void>(app.call("document.insert", {{"id", document["id"]}, {"baseRevision", "0"}, {"text", " "}}));
+    app.complete();
+    const auto completed = app.call("operation.get", {{"id", syntax["operationId"]}});
+    CHECK(completed["result"]["state"] == "obsolete");
+    const auto new_syntax = app.call("document.syntax", {{"id", document["id"]}, {"baseRevision", "1"}, {"language", "json"}});
+    CHECK(new_syntax["operationId"] != syntax["operationId"]);
+    app.run_worker(); app.complete();
+    CHECK(app.call("document.syntax", {{"id", document["id"]}, {"baseRevision", "1"}, {"language", "json"}})["state"] == "ready");
+}
+
+TEST_CASE("application Git stages commits and guards discarded previews against external writes") {
+    AppFiles files;
+    files.initialize_git();
+    files.write("main.cpp", "int answer = 42;\n");
+    LiveApp app(files.root(), {}, "astra.configure({git:{authorName:'Astra Tests',authorEmail:'tests@astra.invalid'}});");
+    auto status = app.done("git.status");
+    CHECK(status["unborn"].get<bool>());
+    static_cast<void>(app.done("git.stage", {{"paths", Json::array({"main.cpp"})}}));
+    status = app.done("git.commit", {{"message", "initial fixture"}});
+    CHECK_FALSE(status["unborn"].get<bool>());
+    CHECK(status["entries"].empty());
+    CHECK(app.done("git.log")["commits"][0]["subject"] == "initial fixture");
+    const auto document = app.done("workspace.open", {{"path", "main.cpp"}});
+    files.write("main.cpp", "int answer = 99;\n");
+    auto preview = app.done("git.diff", {{"path", "main.cpp"}});
+    REQUIRE(preview.contains("previewId"));
+    CHECK_FALSE(preview["gutter"].empty());
+    files.write("main.cpp", "int answer = 100;\n");
+    const auto failed = app.wait(app.call("git.discard", {{"previewId", preview["previewId"]}}));
+    CHECK(failed["state"] == "failed");
+    CHECK(files.read("main.cpp") == "int answer = 100;\n");
+    preview = app.done("git.diff", {{"path", "main.cpp"}});
+    static_cast<void>(app.done("git.discard", {{"previewId", preview["previewId"]}}));
+    CHECK(files.read("main.cpp") == "int answer = 42;\n");
+    CHECK_FALSE(app.call("document.get", {{"id", document["id"]}})["dirty"].get<bool>());
+    CHECK(app.response("git.discard", {{"previewId", "expired"}})["error"]["code"] == -32002);
+}
+
+TEST_CASE("application Git branch switching and staging preserve unsaved documents") {
+    AppFiles files;
+    files.initialize_git();
+    files.write("main.txt", "baseline\n");
+    LiveApp app(files.root(), {}, "astra.configure({git:{authorName:'Astra Tests',authorEmail:'tests@astra.invalid'}});");
+    static_cast<void>(app.done("git.stage", {{"paths", Json::array({"main.txt"})}}));
+    static_cast<void>(app.done("git.commit", {{"message", "baseline"}}));
+    static_cast<void>(app.done("git.createBranch", {{"name", "feature"}}));
+    const auto doc = app.done("workspace.open", {{"path", "main.txt"}});
+    static_cast<void>(app.call("document.insert", {{"id", doc["id"]}, {"baseRevision", "0"}, {"text", "unsaved "}}));
+    CHECK(app.response("git.switchBranch", {{"name", "feature"}})["error"]["code"] == -32013);
+    CHECK(app.response("git.stage", {{"paths", Json::array({"main.txt"})}})["error"]["code"] == -32013);
+    CHECK(app.call("document.get", {{"id", doc["id"]}})["text"] == "unsaved baseline\n");
+    CHECK(files.read("main.txt") == "baseline\n");
+    static_cast<void>(app.call("document.undo", {{"id", doc["id"]}, {"baseRevision", "1"}}));
+    CHECK(app.done("git.switchBranch", {{"name", "feature"}})["branch"] == "feature");
+    CHECK_FALSE(app.call("document.get", {{"id", doc["id"]}})["dirty"].get<bool>());
 }

@@ -25,6 +25,7 @@ struct TcpServerOptions {
     std::size_t max_pending_work = 64;
     std::size_t max_local_notifications = 1024;
     std::size_t max_local_notification_bytes = 8 * 1024 * 1024;
+    std::uint64_t notification_interval_ms = 100;
 };
 
 struct TcpServerHooks {
@@ -45,6 +46,8 @@ struct TcpServerStats {
     std::size_t pending_tasks{};
     std::size_t pending_work{};
     std::uint64_t local_notification_overflows{};
+    std::uint64_t notification_polls{};
+    std::uint64_t notification_poll_errors{};
 };
 
 class TransportError : public std::runtime_error {
@@ -60,7 +63,8 @@ public:
 // Owns a libuv loop and one worker thread. Both callbacks execute only on that
 // thread; captured services must not be accessed concurrently elsewhere. Requests
 // and notifications use Content-Length framing. Responses go only to their
-// origin; notifications are broadcast after each completed request.
+// origin; notifications are broadcast after completed requests/work and by an
+// owner-loop timer while idle. The timer exists only when a provider is supplied.
 //
 // Lifecycle calls must be serialized by the owner. start() synchronously binds
 // before launching the worker; stop() cancels clients/writes and joins after all

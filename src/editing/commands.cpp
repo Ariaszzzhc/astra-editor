@@ -163,6 +163,53 @@ bool set_selections(Document& document, std::vector<Selection> selections) {
     return before != document.selections();
 }
 
+bool next_occurrence(Document& document, Lines& lines) {
+    const auto& selections = document.selections();
+    const auto& last = selections.back();
+    const auto& rope = document.text();
+    const auto length = last.end().value - last.begin().value;
+    if (length == 0 || length == rope.size_bytes()) { return false; }
+    // A match search streams bounded Rope windows. KMP carries matches across
+    // both Rope chunk and window boundaries without materializing the buffer.
+    const auto needle = rope.slice(last.begin().value, last.end().value);
+    std::vector<std::size_t> failure(needle.size());
+    for (std::size_t i = 1, prefix = 0; i < needle.size(); ++i) {
+        while (prefix != 0 && needle[i] != needle[prefix]) { prefix = failure[prefix - 1]; }
+        if (needle[i] == needle[prefix]) { ++prefix; }
+        failure[i] = prefix;
+    }
+    const auto find = [&](std::size_t begin, std::size_t end) -> std::optional<Selection> {
+        std::size_t matched = 0;
+        for (auto offset = begin; offset < end;) {
+            auto limit = offset + std::min<std::size_t>(65536, end - offset);
+            while (!rope.is_boundary(limit)) { --limit; }
+            const auto window = rope.slice(offset, limit);
+            for (std::size_t i = 0; i < window.size(); ++i) {
+                while (matched != 0 && window[i] != needle[matched]) { matched = failure[matched - 1]; }
+                if (window[i] == needle[matched]) { ++matched; }
+                if (matched != needle.size()) { continue; }
+                const auto finish = offset + i + 1;
+                const auto start = finish - needle.size();
+                matched = failure[matched - 1];
+                const auto overlap = std::lower_bound(selections.begin(), selections.end(), start,
+                    [](const Selection& value, std::size_t at) { return value.end().value <= at; });
+                if (overlap != selections.end() && overlap->begin().value < finish) { continue; }
+                if (lines.floor(start) != start || lines.floor(finish) != finish) { continue; }
+                return Selection{ByteOffset{start}, ByteOffset{finish}};
+            }
+            offset = limit;
+        }
+        return std::nullopt;
+    };
+    auto found = find(last.end().value, rope.size_bytes());
+    if (!found) { found = find(0, last.begin().value); }
+    if (!found) { return false; }
+    if (selections.size() >= 4096) { throw std::length_error("selection limit reached"); }
+    auto next = selections;
+    next.push_back(*found);
+    return set_selections(document, std::move(next));
+}
+
 bool apply(Document& document, Transaction transaction) {
     const auto before = document.selections();
     const bool changed = document.apply(std::move(transaction));
@@ -340,6 +387,11 @@ bool execute(Document& document, Command command, const Options& options) {
         return move(document, command, options, lines);
     case Command::select_all:
         return set_selections(document, {{ByteOffset{0}, ByteOffset{document.text().size_bytes()}}});
+    case Command::select_next_occurrence:
+        if (std::any_of(document.selections().begin(), document.selections().end(), [](const auto& value) { return value.empty(); })) {
+            return execute(document, Command::select_word, options);
+        }
+        return next_occurrence(document, lines);
     case Command::select_word: {
         std::vector<Selection> selections;
         for (const auto& selection : document.selections()) {

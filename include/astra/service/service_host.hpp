@@ -16,6 +16,9 @@ struct ServiceHostOptions {
     std::uint16_t port{};
     std::string defaults_script;
     std::string user_script;
+    std::filesystem::path resource_directory;
+    std::filesystem::path recovery_directory;
+    bool watch_files{true};
 };
 
 // Local GUI, TCP clients, scripts, and external automation all enter one loop.
@@ -30,6 +33,9 @@ public:
     [[nodiscard]] std::vector<std::string> take_notifications() override;
     [[nodiscard]] std::uint16_t port() const noexcept;
     [[nodiscard]] transport::TcpServerStats stats() const noexcept;
+    // Stops accepting input, drains workers and checkpoints the final dirty state.
+    // An explicit shutdown reports a checkpoint failure to the caller.
+    void shutdown();
 
 private:
     struct Impl;

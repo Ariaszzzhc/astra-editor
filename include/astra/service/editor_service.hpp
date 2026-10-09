@@ -1,11 +1,13 @@
 #pragma once
 
 #include <astra/core/document.hpp>
+#include <astra/editing/commands.hpp>
 #include <astra/protocol/rpc.hpp>
 
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -64,6 +66,7 @@ private:
     protocol::Dispatcher dispatcher_;
     std::map<std::uint64_t, Document> documents_;
     std::deque<Json> notifications_;
+    std::function<editing::Options(const Document&)> command_defaults_;
     std::uint64_t next_id_{1};
 };
 

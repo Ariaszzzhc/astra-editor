@@ -810,10 +810,15 @@ TEST_CASE("libuv worker errors reach completion and its future without killing t
 
 TEST_CASE("libuv shutdown waits for active workers and calls stop hook after completion") {
     std::vector<std::string> order;
+    bool completed = false;
+    std::size_t notification_polls_after_completion = 0;
     astra::transport::TcpServerHooks hooks;
     hooks.on_start = [&] { order.push_back("start"); };
     hooks.on_stop = [&] { order.push_back("stop"); };
-    TcpServer server(echo_handler(), {}, {}, hooks);
+    TcpServer server(echo_handler(), [&] {
+        if (completed) { ++notification_polls_after_completion; }
+        return std::vector<std::string>{};
+    }, {}, hooks);
     server.start();
     std::promise<void> entered;
     auto entered_future = entered.get_future();
@@ -825,6 +830,7 @@ TEST_CASE("libuv shutdown waits for active workers and calls stop hook after com
                 std::rethrow_exception(error);
             }
             order.push_back("complete");
+            completed = true;
         });
     await_future(std::move(entered_future));
     std::atomic<bool> stopped{};
@@ -837,6 +843,7 @@ TEST_CASE("libuv shutdown waits for active workers and calls stop hook after com
     CHECK(waited);
     await_future(std::move(work));
     CHECK(order == std::vector<std::string>{"start", "complete", "stop"});
+    CHECK(notification_polls_after_completion == 0);
     check_shutdown(server);
 }
 
@@ -907,6 +914,74 @@ TEST_CASE("libuv work admission is bounded and startup failure still releases th
     CHECK(startup_thread == shutdown_thread);
     CHECK(startup_thread != std::this_thread::get_id());
     check_shutdown(failed);
+}
+
+TEST_CASE("libuv idle notification timer delivers to TCP and local consumers without requests") {
+    std::atomic<bool> publish{};
+    std::thread::id owner;
+    std::thread::id provider_thread;
+    const std::string event = R"({"jsonrpc":"2.0","method":"idle.ready","params":{"value":7}})";
+    TcpServerOptions options;
+    options.notification_interval_ms = 10;
+    astra::transport::TcpServerHooks hooks;
+    hooks.on_start = [&] { owner = std::this_thread::get_id(); };
+    TcpServer server(echo_handler(), [&] {
+        provider_thread = std::this_thread::get_id();
+        return publish.exchange(false) ? std::vector<std::string>{event} : std::vector<std::string>{};
+    }, options, hooks);
+    server.start();
+    SocketClient client(server.port());
+    REQUIRE(wait_until([&] { return server.stats().active_connections == 1; }));
+    publish.store(true);
+    CHECK(client.receive(1).front() == event);
+    std::vector<std::string> local;
+    REQUIRE(wait_until([&] { local = server.take_local_notifications(); return !local.empty(); }));
+    CHECK(local == std::vector<std::string>{event});
+    const auto stopped = Clock::now();
+    server.stop();
+    CHECK(Clock::now() - stopped < 1s);
+    CHECK(provider_thread == owner);
+    CHECK(server.stats().notification_polls > 0);
+    CHECK(server.stats().notification_poll_errors == 0);
+    check_shutdown(server);
+}
+
+TEST_CASE("libuv notification timer records provider failures and keeps servicing idle clients") {
+    std::atomic<bool> armed{};
+    int attempts{};
+    TcpServerOptions options;
+    options.notification_interval_ms = 10;
+    TcpServer server(echo_handler(), [&]() -> std::vector<std::string> {
+        if (!armed.load()) { return {}; }
+        ++attempts;
+        if (attempts == 1) { throw std::runtime_error("intentional idle provider failure"); }
+        return attempts == 2 ? std::vector<std::string>{"recovered"} : std::vector<std::string>{};
+    }, options);
+    server.start();
+    SocketClient client(server.port());
+    REQUIRE(wait_until([&] { return server.stats().active_connections == 1; }));
+    armed.store(true);
+    CHECK(client.receive(1).front() == "recovered");
+    CHECK(server.stats().notification_poll_errors == 1);
+    CHECK(server.stats().handler_errors == 1);
+    client.send_bytes(astra::protocol::encode_frame("request remains live"));
+    CHECK(client.receive(1).front() == "request remains live");
+    server.stop();
+    check_shutdown(server);
+}
+
+TEST_CASE("libuv long notification timer closes promptly and restarts without leaked handles") {
+    TcpServerOptions options;
+    options.notification_interval_ms = 60000;
+    TcpServer server(echo_handler(), [] { return std::vector<std::string>{}; }, options);
+    for (int iteration = 0; iteration < 2; ++iteration) {
+        server.start();
+        const auto stopped = Clock::now();
+        server.stop();
+        CHECK(Clock::now() - stopped < 1s);
+        check_shutdown(server);
+    }
+    CHECK(server.stats().notification_polls == 0);
 }
 
 #endif // defined(_WIN32): native Windows acceptance only in this environment.

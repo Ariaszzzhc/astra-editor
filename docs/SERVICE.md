@@ -76,7 +76,7 @@ checks canonical containment, including junctions; this is not an operating
 system sandbox against simultaneous external namespace changes.
 
 `workspace.open`, `workspace.save`, `workspace.tree`, `workspace.search`, and
-`workspace.replace` return `{operationId}` immediately. Query
+`workspace.replace` and `workspace.reload` return `{operationId}` immediately. Query
 `operation.get {id}` or react to `operation.completed`; result states are
 `pending`, `completed`, `failed`, and `cancelled`. Failed results include an
 error. Tree/search results support `offset` and `limit` pagination with
@@ -95,13 +95,33 @@ error. Tree/search results support `offset` and `limit` pagination with
   remains dirty and is never overwritten by the completion callback.
 - `workspace.tree {includeIgnored?,maxEntries?}` returns file/directory entries
   and explicit traversal issues/limit flags.
-- `workspace.search {query,wholeWord?,includeIgnored?,maxMatches?}` currently
-  searches literal, case-sensitive **on-disk** content. Results explicitly say
-  `scope:"disk"`; unsaved-buffer, regex, and case-insensitive search remain work.
+- `workspace.search {query,wholeWord?,caseSensitive?,regex?,scope?,includeIgnored?,maxMatches?}`
+  defaults to literal, case-sensitive workspace search. Dirty open files replace
+  their disk content in the search; untitled buffers are included. `scope:"disk"`
+  explicitly searches disk only. Results identify `source:"disk"` or
+  `source:"buffer"`; buffer matches carry `documentId` and `revision` so clients
+  can reject stale navigation. Byte ranges always refer to the searched text.
+  Regex uses bounded RE2 syntax with Unicode case folding and word boundaries;
+  captures support `$0` through `$99`, `${name}` and `$$` in replacements.
+  Invalid patterns/references fail explicitly. Backslashes in replacement text
+  are literal. Search cancellation, limits and unreadable files are reported.
 - `workspace.replace {searchId,replacement}` preflights exact file versions,
-  rejects dirty matching buffers and incomplete searches, and reports applied
-  and pending paths. Each file is atomic; multiple files are not one filesystem
-  transaction. Clean open buffers reconcile after successful writes.
+  rejects stale buffer revisions and incomplete searches. Disk-only searches
+  reject matching dirty buffers. `applied`/`pending` describe disk paths;
+  `modifiedBuffers` contains metadata for unsaved, undoable buffer edits and
+  `pendingBuffers` identifies concurrent edits that were preserved. Each file
+  is atomic; multiple files are not one filesystem transaction. Clean open
+  buffers reconcile after successful writes. Inspect issues and pending results
+  before searching again; do not blindly retry an expired replacement plan.
+- `workspace.watchStatus {}` reports monitor readiness, limits and errors.
+  External changes reload clean buffers asynchronously. Dirty, deleted or
+  unreadable files retain their text and invalidate the old saved baseline.
+  `workspace.fileChanged` carries `status` (`reloaded`, `conflict`, `deleted`,
+  `error`), document ID, path and revision; `workspace.watchError` requests
+  attention to a monitor failure. Explicit reload remains available.
+- `workspace.reload {id,baseRevision,discardChanges?}` requires `discardChanges:true`
+  to replace dirty content. Completion refuses intervening edits or selection
+  changes; it never silently overwrites a newer buffer.
 - `operation.cancel {id}` requests cooperative cancellation. A durable save
   that has already started can still complete successfully.
 

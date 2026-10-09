@@ -45,13 +45,18 @@ target("astra-core")
 
 target("astra-tests")
     set_kind("binary")
+    set_rundir(os.projectdir())
     set_default(true)
-    add_deps("astra-core", "astra-protocol", "astra-io", "astra-service", "astra-config", "astra-script", "astra-transport", "astra-workspace", "astra-editing", "astra-syntax")
+    add_deps("astra-core", "astra-protocol", "astra-io", "astra-service", "astra-config", "astra-script", "astra-transport", "astra-workspace", "astra-editing", "astra-syntax", "astra-process", "astra-lsp", "astra-git")
+    add_deps("astra-recovery", "astra-watch")
+    add_deps("astra-process-fixture", "lsp-fixture", "astra-recovery-fixture", {inherit = false})
     add_packages("doctest")
     add_files("tests/main.cpp", "tests/sum_tree_tests.cpp", "tests/rope_tests.cpp", "tests/document_tests.cpp",
               "tests/framing_tests.cpp", "tests/file_store_tests.cpp", "tests/rpc_tests.cpp", "tests/service_tests.cpp",
               "tests/editor_config_tests.cpp", "tests/script_tests.cpp", "tests/tcp_tests.cpp", "tests/workspace_tests.cpp", "tests/editing_tests.cpp",
-              "tests/application_tests.cpp", "tests/tcp_client_tests.cpp", "tests/syntax_tests.cpp")
+              "tests/application_tests.cpp", "tests/application_language_tests.cpp", "tests/application_recovery_tests.cpp", "tests/tcp_client_tests.cpp", "tests/syntax_tests.cpp",
+              "tests/process_tests.cpp", "tests/lsp_tests.cpp", "tests/git_tests.cpp", "tests/recovery_tests.cpp",
+              "tests/file_monitor_tests.cpp", "tests/application_watch_tests.cpp", "tests/application_search_tests.cpp")
     set_exceptions("cxx")
     add_tests("unit", {runargs = {"--no-version", "--duration=true"}})
 
@@ -82,9 +87,11 @@ target("astra-io")
 
 target("astra-service")
     set_kind("static")
-    add_deps("astra-core", "astra-protocol", "astra-editing", "astra-workspace", "astra-script", "astra-transport")
+    add_deps("astra-core", "astra-protocol", "astra-editing", "astra-workspace", "astra-script", "astra-transport", "astra-syntax", "astra-git", "astra-lsp")
     add_includedirs("include", {public = true})
     add_packages("nlohmann_json", {public = true})
+    add_packages("utf8proc")
+    add_deps("astra-recovery", "astra-watch")
     add_headerfiles("include/(astra/service/*.hpp)")
     add_files("src/service/*.cpp")
     set_exceptions("cxx")
@@ -112,7 +119,7 @@ target("astra-transport")
     add_includedirs("include", {public = true})
     add_packages("libuv", {public = true})
     add_headerfiles("include/(astra/transport/*.hpp)")
-    add_files("src/transport/tcp_server.cpp", "src/transport/tcp_client.cpp")
+    add_files("src/transport/tcp_server.cpp", "src/transport/tcp_client.cpp", "src/transport/editor_channel.cpp")
     set_exceptions("cxx")
 
 target("astra-workspace")

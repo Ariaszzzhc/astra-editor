@@ -120,7 +120,8 @@ std::vector<Edit> formatting_edit(const Rope& before, const std::string& after) 
 } // namespace
 
 ApplicationService::ApplicationService(const fs::path& root, Scheduler scheduler,
-                                       std::string_view defaults_script, std::string_view user_script)
+                                       std::string_view defaults_script, std::string_view user_script,
+                                       const fs::path& resource_directory, const fs::path& recovery_directory, bool watch_files)
     : workspace_(std::make_shared<workspace::Workspace>(root)), scheduler_(std::move(scheduler)) {
     if (!scheduler_) { throw std::invalid_argument("ApplicationService requires a worker scheduler"); }
     auto& rpc = editor_.dispatcher();
@@ -144,9 +145,12 @@ ApplicationService::ApplicationService(const fs::path& root, Scheduler scheduler
     });
     rpc.register_method("operation.get", [this](const Json& p) { return operation_get(p); });
     rpc.register_method("operation.cancel", [this](const Json& p) { return operation_cancel(p); });
+    rpc.register_method("document.syntax", [this](const Json& p) { return syntax_view(p); });
+    rpc.register_method("document.selectObject", [this](const Json& p) { return select_object(p); });
     script_ = std::make_unique<script::Runtime>([this](std::string_view method, const Json& p) {
         return script_request(method, p);
     });
+    editor_.command_defaults_ = [this](const Document& document) { return command_defaults(document); };
     rpc.register_method("script.command", [this](const Json& p) {
         fields(p, {"name", "params"});
         try { return script_->execute_command(string_field(p, "name"), p.value("params", Json::object())); }
@@ -158,9 +162,59 @@ ApplicationService::ApplicationService(const fs::path& root, Scheduler scheduler
     });
     if (!defaults_script.empty()) { static_cast<void>(script_->evaluate(defaults_script, "astra-defaults.js")); }
     if (!user_script.empty()) { static_cast<void>(script_->evaluate(user_script, "astra-user.js")); }
+    register_language_methods(resource_directory);
+    register_git_methods(resource_directory);
+    register_recovery_methods(recovery_directory);
+    register_watch_methods(watch_files);
 }
 
 ApplicationService::~ApplicationService() = default;
+
+editing::Options ApplicationService::command_defaults(const Document& document) const {
+    editing::Options options;
+    const auto settings = script_->settings();
+    if (settings.contains("editor")) {
+        const auto& editor = settings.at("editor");
+        if (!editor.is_object()) { throw RpcError(-32020, "editor settings must be an object"); }
+        if (editor.contains("tabSize")) {
+            const auto& size = editor.at("tabSize");
+            if (!size.is_number_integer() || (!size.is_number_unsigned() && size.get<std::int64_t>() <= 0) ||
+                size.get<std::uint64_t>() == 0 || size.get<std::uint64_t>() > 256) {
+                throw RpcError(-32020, "editor.tabSize must be 1 to 256");
+            }
+            options.tab_size = size.get<std::size_t>();
+        }
+        if (editor.contains("insertSpaces")) {
+            if (!editor.at("insertSpaces").is_boolean()) { throw RpcError(-32020, "editor.insertSpaces must be boolean"); }
+            options.insert_spaces = editor.at("insertSpaces").get<bool>();
+        }
+    }
+    const auto& text = document.text();
+    if (text.line_count() > 1) {
+        const auto next = text.line_start(1);
+        if (next >= 2 && text.is_boundary(next - 2) && text.slice(next - 2, next) == "\r\n") { options.newline = "\r\n"; }
+    }
+    if (const auto found = files_.find(document.id().value); found != files_.end()) {
+        const auto& policy = found->second.config.settings;
+        if (policy.indent_style) { options.insert_spaces = *policy.indent_style == config::IndentStyle::spaces; }
+        const auto width = options.insert_spaces ? policy.indent_size.value_or(policy.tab_width.value_or(0)) :
+                                                 policy.tab_width.value_or(policy.indent_size.value_or(0));
+        if (width != 0) { options.tab_size = width; }
+        if (policy.end_of_line) {
+            switch (*policy.end_of_line) {
+            case config::LineEnding::lf: options.newline = "\n"; break;
+            case config::LineEnding::crlf: options.newline = "\r\n"; break;
+            case config::LineEnding::cr: options.newline = "\n"; break;
+            }
+        }
+        const auto extension = path_text(found->second.path.extension());
+        if (extension == ".py" || extension == ".pyi" || extension == ".sh" || extension == ".ps1" ||
+            extension == ".yaml" || extension == ".yml" || extension == ".toml" || extension == ".rb") {
+            options.comment_prefix = "#";
+        } else if (extension == ".lua" || extension == ".sql") { options.comment_prefix = "--"; }
+    }
+    return options;
+}
 
 Json ApplicationService::script_request(std::string_view method, const Json& params) {
     if (method.starts_with("script.")) { throw RpcError(-32020, "Recursive script entry is not allowed"); }
@@ -176,15 +230,24 @@ Json ApplicationService::script_request(std::string_view method, const Json& par
 
 std::optional<std::string> ApplicationService::dispatch_text(std::string_view body) {
     poll_operations();
-    return editor_.dispatch_text(body);
+    poll_language();
+    auto result = editor_.dispatch_text(body);
+    poll_language();
+    return result;
 }
 std::optional<Json> ApplicationService::dispatch(const Json& request) {
     poll_operations();
-    return editor_.dispatch(request);
+    poll_language();
+    auto result = editor_.dispatch(request);
+    poll_language();
+    return result;
 }
 
 std::vector<std::string> ApplicationService::take_notifications() {
     poll_operations();
+    poll_language();
+    poll_watch();
+    poll_recovery();
     auto events = editor_.take_notifications();
     std::vector<std::string> result;
     result.reserve(events.size() + notifications_.size());
@@ -196,7 +259,16 @@ std::vector<std::string> ApplicationService::take_notifications() {
             if (const auto found = files_.find(parsed); found != files_.end()) {
                 event["params"]["path"] = path_text(found->second.path);
             }
-            if (event["method"] == "document.closed") { files_.erase(parsed); }
+            if (event["method"] == "document.closed") {
+                files_.erase(parsed);
+                syntax_.erase(parsed);
+                if (const auto job = syntax_jobs_.find(parsed); job != syntax_jobs_.end()) {
+                    if (const auto op = operations_.find(job->second.operation); op != operations_.end()) {
+                        op->second->cancellation.request_stop();
+                    }
+                    syntax_jobs_.erase(job);
+                }
+            }
         }
         result.push_back(event.dump());
     }
@@ -216,7 +288,8 @@ Json ApplicationService::describe(const Document& document) const {
 
 Json ApplicationService::start_operation(std::string kind,
     std::function<void(const std::shared_ptr<Operation>&)> worker,
-    std::function<Json(const std::shared_ptr<Operation>&)> complete) {
+    std::function<Json(const std::shared_ptr<Operation>&)> complete,
+    bool git_mutation) {
     poll_operations();
     std::size_t active = 0;
     for (const auto& [id, op] : operations_) { static_cast<void>(id); active += op->state == "pending" ? 1U : 0U; }
@@ -232,8 +305,10 @@ Json ApplicationService::start_operation(std::string kind,
     auto operation = std::make_shared<Operation>();
     operation->id = std::to_string(next_operation_++);
     operation->kind = std::move(kind);
+    operation->workspace_mutation = operation->kind == "replace" || git_mutation;
     operations_.emplace(operation->id, operation);
     try {
+        if (git_mutation) { git_mutation_ = operation->id; }
         operation->future.emplace(scheduler_(
             [operation, worker = std::move(worker)] { worker(operation); },
             [this, operation, complete = std::move(complete)](std::exception_ptr error) {
@@ -250,12 +325,24 @@ Json ApplicationService::start_operation(std::string kind,
 
 void ApplicationService::finish_operation(const std::shared_ptr<Operation>& operation, std::exception_ptr error) {
     if (operation->state != "pending") { return; }
+    finish_recovery_operation(operation, error);
     operation->state = error ? (operation->cancellation.stop_requested() ? "cancelled" : "failed") : "completed";
     if (error) { operation->error = exception_json(error); }
     for (auto i = saving_.begin(); i != saving_.end();) {
         if (i->second == operation->id) { i = saving_.erase(i); } else { ++i; }
     }
-    if (operation->kind == "replace") { replacing_ = false; }
+    if (operation->workspace_mutation) {
+        // Reads started before a mutation were allowed onto workers. They may
+        // still hold the old bytes even after the busy flag is cleared. Mark
+        // them before publishing completion so neither callback order can
+        // create a clean buffer from a superseded disk snapshot.
+        for (const auto& [id, pending] : operations_) {
+            static_cast<void>(id);
+            if (pending->kind == "open" && pending->state == "pending") { pending->open_invalidated = true; }
+        }
+        if (operation->kind == "replace") { replacing_ = false; }
+    }
+    if (git_mutation_ && *git_mutation_ == operation->id) { git_mutation_.reset(); }
     // Results remain queryable after bounded notification overflow.
     if (notifications_.size() >= 1024) {
         notifications_.clear();
@@ -315,12 +402,15 @@ Json ApplicationService::operation_cancel(const Json& params) {
 Json ApplicationService::open_file(const Json& params) {
     fields(params, {"path"});
     const auto path = parse_path(string_field(params, "path"));
-    if (replacing_) { throw RpcError(-32013, "Wait for workspace replacement to finish before opening files"); }
+    if (replacing_ || git_mutation_) { throw RpcError(-32013, "Wait for workspace mutation to finish before opening files"); }
     auto loaded = std::make_shared<std::optional<workspace::LoadedFile>>();
     return start_operation("open", [workspace = workspace_, path, loaded](const auto& operation) {
         if (operation->cancellation.stop_requested()) { throw std::runtime_error("Open cancelled before reading"); }
         *loaded = workspace->load(path);
-    }, [this, loaded](const auto&) {
+    }, [this, loaded](const auto& operation) {
+        if (replacing_ || git_mutation_ || operation->open_invalidated) {
+            throw RpcError(-32013, "Workspace mutation crossed this file read; open the file again");
+        }
         auto& file = loaded->value();
         for (const auto& [id, binding] : files_) {
             if (same_path(binding.version.path, file.snapshot.version.path)) {
@@ -365,7 +455,7 @@ Json ApplicationService::save_file(const Json& params) {
     fields(params, {"id", "baseRevision", "path"});
     auto& document = editor_.find_document(params);
     EditorService::require_revision(document, params);
-    if (replacing_ || saving_.contains(document.id().value)) { throw RpcError(-32013, "A save or replacement is already running"); }
+    if (replacing_ || git_mutation_ || saving_.contains(document.id().value)) { throw RpcError(-32013, "A save or workspace mutation is already running"); }
     const auto binding = files_.find(document.id().value);
     const auto path = params.contains("path") ? parse_path(string_field(params, "path")) :
                       binding != files_.end() ? binding->second.path : fs::path{};
@@ -376,7 +466,7 @@ Json ApplicationService::save_file(const Json& params) {
         }
     }
     const auto snapshot = document.snapshot();
-    const auto expected = binding != files_.end() && same_path(binding->second.path, path) ?
+    const auto expected = binding != files_.end() && binding->second.version.raw_content && same_path(binding->second.path, path) ?
         std::optional<io::FileVersion>(binding->second.version) : std::nullopt;
     const auto encoding = binding != files_.end() ? binding->second.encoding : io::TextEncoding::utf8;
     auto saved = std::make_shared<std::optional<workspace::SavedFile>>();
@@ -414,11 +504,13 @@ Json ApplicationService::tree(const Json& params) {
     }, [result](const auto&) { return std::move(*result); });
 }
 
-Json ApplicationService::search(const Json& params) {
-    fields(params, {"query", "wholeWord", "includeIgnored", "maxMatches"});
+Json ApplicationService::search_disk(const Json& params) {
+    fields(params, {"query", "wholeWord", "includeIgnored", "maxMatches", "caseSensitive", "regex"});
     workspace::SearchOptions options;
     options.query = string_field(params, "query");
     options.whole_word = flag(params, "wholeWord");
+    options.case_sensitive = flag(params, "caseSensitive", true);
+    options.regex = flag(params, "regex");
     options.tree.include_ignored = flag(params, "includeIgnored");
     options.max_matches = number(params, "maxMatches", 10000, 100000);
     return start_operation("search", [workspace = workspace_, options](const auto& operation) {
@@ -436,9 +528,9 @@ Json ApplicationService::search(const Json& params) {
     });
 }
 
-Json ApplicationService::replace(const Json& params) {
+Json ApplicationService::replace_disk(const Json& params) {
     fields(params, {"searchId", "replacement"});
-    if (replacing_ || !saving_.empty()) { throw RpcError(-32013, "Wait for active saves or replacement to finish"); }
+    if (replacing_ || git_mutation_ || !saving_.empty()) { throw RpcError(-32013, "Wait for active file mutations to finish"); }
     const auto found = operations_.find(string_field(params, "searchId"));
     if (found == operations_.end() || found->second->state != "completed" || !found->second->search) {
         throw RpcError(-32002, "A completed search operation is required");
@@ -450,7 +542,8 @@ Json ApplicationService::replace(const Json& params) {
     for (const auto& match : search_result->matches) {
         for (const auto& [id, binding] : files_) {
             const auto document = editor_.documents_.find(id);
-            if (document != editor_.documents_.end() && same_path(binding.path, match.relative_path)) {
+            if (document != editor_.documents_.end() &&
+                (same_path(binding.path, match.relative_path) || same_path(binding.version.path, match.version.path))) {
                 if (document->second.dirty()) { throw RpcError(-32013, "Save modified matching documents before disk replacement"); }
                 snapshots.try_emplace(id, document->second.snapshot());
             }
@@ -466,7 +559,8 @@ Json ApplicationService::replace(const Json& params) {
             paths.push_back(path_text(file.relative_path));
             for (const auto& [id, snapshot] : snapshots) {
                 const auto binding = files_.find(id);
-                if (binding != files_.end() && same_path(binding->second.path, file.relative_path)) {
+                if (binding != files_.end() &&
+                    (same_path(binding->second.path, file.relative_path) || same_path(binding->second.version.path, file.version.path))) {
                     reconcile_saved(BufferId{id}, snapshot, file);
                 }
             }

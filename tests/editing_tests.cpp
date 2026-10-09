@@ -54,6 +54,54 @@ TEST_CASE("editing arrow movement respects combining emoji ZWJ RI and CRLF graph
     CHECK_FALSE(document.can_undo());
 }
 
+TEST_CASE("editing next occurrence selects words wraps and edits all matches in one undo step") {
+    astra::Document document(astra::BufferId{1}, "one two one one");
+    document.set_selections({selection(9, 9)});
+    REQUIRE(execute(document, Command::select_next_occurrence));
+    CHECK(document.selections() == std::vector{selection(8, 11)});
+    REQUIRE(execute(document, Command::select_next_occurrence));
+    REQUIRE(execute(document, Command::select_next_occurrence));
+    CHECK(document.selections() == std::vector{selection(0, 3), selection(8, 11), selection(12, 15)});
+    CHECK_FALSE(execute(document, Command::select_next_occurrence));
+    CHECK_FALSE(document.can_undo());
+    CHECK(document.revision() == astra::Revision{0});
+    REQUIRE(document.replace_selections("X"));
+    CHECK(document.text().str() == "X two X X");
+    REQUIRE(document.undo());
+    CHECK(document.text().str() == "one two one one");
+    CHECK(document.selections().size() == 3);
+}
+
+TEST_CASE("editing occurrence search crosses windows and never selects part of a grapheme") {
+    const std::string cluster = "e\xcc\x81";
+    astra::Document document(astra::BufferId{2}, cluster + " " + std::string(65533, '.') + cluster + " end");
+    document.set_selections({selection(0, 3)});
+    REQUIRE(execute(document, Command::select_next_occurrence));
+    CHECK(document.selections().back() == selection(65537, 65540));
+    astra::Document combining(astra::BufferId{3}, "e e\xcc\x81 e");
+    combining.set_selections({selection(0, 1)});
+    REQUIRE(execute(combining, Command::select_next_occurrence));
+    CHECK(combining.selections().back() == selection(6, 7));
+    astra::Document overlapping(astra::BufferId{4}, "banana ana");
+    overlapping.set_selections({selection(1, 4)});
+    REQUIRE(execute(overlapping, Command::select_next_occurrence));
+    CHECK(overlapping.selections().back() == selection(7, 10));
+}
+
+TEST_CASE("editing occurrence limit rejects without changing current selections") {
+    std::string text;
+    std::vector<astra::Selection> selections;
+    for (std::size_t i = 0; i < 4097; ++i) {
+        text += "x ";
+        if (i < 4096) { selections.push_back(selection(i * 2, i * 2 + 1)); }
+    }
+    astra::Document document(astra::BufferId{5}, text);
+    document.set_selections(selections);
+    CHECK_THROWS_AS(static_cast<void>(execute(document, Command::select_next_occurrence)), std::length_error);
+    CHECK(document.selections() == selections);
+    CHECK_FALSE(document.dirty());
+}
+
 TEST_CASE("editing grapheme deletion preserves the complete unit and selection history") {
     for (const auto& cluster : clusters) {
         CAPTURE(cluster.size());

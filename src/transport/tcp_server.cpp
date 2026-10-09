@@ -35,6 +35,7 @@ public:
             options_.max_header_bytes < 4 || options_.max_pending_tasks == 0 ||
             options_.max_queued_task_bytes == 0 || options_.max_pending_work == 0 ||
             options_.max_local_notifications == 0 || options_.max_local_notification_bytes < 256 ||
+            options_.notification_interval_ms == 0 || options_.notification_interval_ms > 60000 ||
             options_.max_body_bytes > std::numeric_limits<unsigned int>::max() - 128U) {
             throw std::invalid_argument("Invalid TCP server handler or resource limits");
         }
@@ -54,6 +55,7 @@ public:
         loop_ = {};
         listener_ = {};
         control_ = {};
+        notification_timer_ = {};
         uv_check(uv_loop_init(&loop_), "Initialize TCP event loop");
         loop_initialized_ = true;
         try {
@@ -63,6 +65,11 @@ public:
             uv_check(uv_async_init(&loop_, &control_, control_callback), "Initialize TCP shutdown signal");
             control_initialized_ = true;
             control_.data = this;
+            if (notifications_) {
+                uv_check(uv_timer_init(&loop_, &notification_timer_), "Initialize notification timer");
+                notification_timer_initialized_ = true;
+                notification_timer_.data = this;
+            }
             if (address == "::1") {
                 sockaddr_in6 endpoint{};
                 uv_check(uv_ip6_addr("::1", port, &endpoint), "Parse IPv6 loopback address");
@@ -91,6 +98,10 @@ public:
                 try {
                     if (hooks_.on_start) {
                         hooks_.on_start();
+                    }
+                    if (notification_timer_initialized_) {
+                        uv_check(uv_timer_start(&notification_timer_, notification_timer_callback,
+                            options_.notification_interval_ms, options_.notification_interval_ms), "Start notification timer");
                     }
                     startup->set_value();
                 } catch (...) {
@@ -152,7 +163,7 @@ public:
         return {accepted_.load(), rejected_.load(), protocol_errors_.load(), handler_errors_.load(),
                 write_limits_.load(), active_.load(), queued_bytes_.load(), pending_writes_.load(),
                 loop_close_error_.load(), pending_tasks_.load(), pending_work_.load(),
-                local_overflows_.load()};
+                local_overflows_.load(), notification_polls_.load(), notification_poll_errors_.load()};
     }
 
     std::future<std::optional<std::string>> submit(std::string body) {
@@ -369,6 +380,10 @@ private:
     }
 
     void close_initialization() noexcept {
+        if (notification_timer_initialized_) {
+            uv_close(reinterpret_cast<uv_handle_t*>(&notification_timer_), nullptr);
+            notification_timer_initialized_ = false;
+        }
         if (listener_initialized_) {
             uv_close(reinterpret_cast<uv_handle_t*>(&listener_), nullptr);
         }
@@ -390,6 +405,11 @@ private:
             return;
         }
         shutting_down_ = true;
+        if (notification_timer_initialized_) {
+            (void)uv_timer_stop(&notification_timer_);
+            uv_close(reinterpret_cast<uv_handle_t*>(&notification_timer_), nullptr);
+            notification_timer_initialized_ = false;
+        }
         if (listener_initialized_ &&
             !uv_is_closing(reinterpret_cast<uv_handle_t*>(&listener_))) {
             uv_close(reinterpret_cast<uv_handle_t*>(&listener_), nullptr);
@@ -514,14 +534,16 @@ private:
     }
 
     void broadcast_notifications() {
-        if (!notifications_) {
+        // Providers may schedule background work. Once shutdown begins, drain
+        // already accepted workers without starting another recovery/watch cycle.
+        if (!notifications_ || shutting_down_ || stop_requested_.load()) {
             return;
         }
         const auto notifications = notifications_();
         for (const auto& body : notifications) {
-            record_local_notification(body);
             auto frame = std::make_shared<const std::string>(
                 protocol::encode_frame(body, options_.max_body_bytes));
+            record_local_notification(body);
             for (const auto& [address, connection] : connections_) {
                 (void)address;
                 write_frame(connection, frame);
@@ -589,6 +611,14 @@ private:
         } else {
             self.process_tasks();
         }
+    }
+
+    static void notification_timer_callback(uv_timer_t* handle) noexcept {
+        auto& self = *static_cast<Impl*>(handle->data);
+        if (self.stop_requested_.load()) { self.begin_shutdown(); return; }
+        ++self.notification_polls_;
+        try { self.broadcast_notifications(); }
+        catch (...) { ++self.handler_errors_; ++self.notification_poll_errors_; }
     }
 
     static void work_callback(uv_work_t* request) noexcept {
@@ -703,9 +733,11 @@ private:
     uv_loop_t loop_{};
     uv_tcp_t listener_{};
     uv_async_t control_{};
+    uv_timer_t notification_timer_{};
     bool loop_initialized_{};
     bool listener_initialized_{};
     bool control_initialized_{};
+    bool notification_timer_initialized_{};
     bool shutting_down_{};
     std::mutex control_mutex_;
     std::jthread worker_;
@@ -733,6 +765,8 @@ private:
     std::atomic<std::size_t> pending_tasks_{};
     std::atomic<std::size_t> pending_work_{};
     std::atomic<std::uint64_t> local_overflows_{};
+    std::atomic<std::uint64_t> notification_polls_{};
+    std::atomic<std::uint64_t> notification_poll_errors_{};
 };
 
 TcpServer::TcpServer(Handler handler, Notifications notifications, TcpServerOptions options,

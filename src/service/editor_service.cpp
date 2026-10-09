@@ -335,6 +335,7 @@ Json EditorService::command(const Json& params) {
         {"move_home", Command::move_home}, {"move_end", Command::move_end},
         {"move_document_start", Command::move_document_start}, {"move_document_end", Command::move_document_end},
         {"select_all", Command::select_all}, {"select_word", Command::select_word},
+        {"select_next_occurrence", Command::select_next_occurrence},
         {"backspace", Command::backspace}, {"delete_forward", Command::delete_forward},
         {"delete_word_backward", Command::delete_word_backward}, {"delete_word_forward", Command::delete_word_forward},
         {"newline", Command::newline}, {"indent", Command::indent}, {"outdent", Command::outdent},
@@ -343,14 +344,14 @@ Json EditorService::command(const Json& params) {
         {"insert_text", Command::insert_text}};
     const auto found = commands.find(name);
     if (found == commands.end()) { invalid_params("Unknown editing command"); }
-    editing::Options options;
+    auto options = command_defaults_ ? command_defaults_(document) : editing::Options{};
     for (const auto field : {"extend", "insertSpaces"}) {
         if (params.contains(field) && !params[field].is_boolean()) {
             invalid_params("Command flags must be boolean");
         }
     }
     options.extend = params.value("extend", false);
-    options.insert_spaces = params.value("insertSpaces", true);
+    options.insert_spaces = params.value("insertSpaces", options.insert_spaces);
     if (params.contains("tabSize")) { options.tab_size = byte_offset(params["tabSize"]); }
     if (params.contains("commentPrefix")) { options.comment_prefix = string_value(params["commentPrefix"]); }
     if (params.contains("newline")) { options.newline = string_value(params["newline"]); }
