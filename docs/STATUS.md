@@ -8,7 +8,7 @@ No GUI, release, or non-Windows platform is currently verified.
 | --- | --- | --- | --- |
 | M0 | xmake, test runner, development rules, reproducible dependencies | Complete | Pinned xmake and recipe archives verified; two repository skills passed official validator |
 | M1 | Persistent SumTree, UTF-8 Rope, positions, transactions, multicursor undo/redo | Complete | Windows Debug and Release: 35 cases, 185,791 assertions each |
-| M2 | Workspace, safe file I/O, recovery, EditorConfig, search/replace | In progress | File storage implementation awaiting integration tests |
+| M2 | Workspace, safe file I/O, recovery, EditorConfig, search/replace | In progress | 15 real file-storage cases and 17 EditorConfig cases pass on Windows Debug; workspace/recovery/search integration remains |
 | M3 | libuv service, request/response/notifications, local/TCP clients, Agent API | In progress | Framing/dispatcher/service implementation awaiting integration tests |
 | M4 | QuickJS-NG scripting, default commands and VS Code keymap | Pending | API, exceptions, limits, command dispatch tests required |
 | M5 | Tree-sitter syntax/textobjects/outline and LSP | Pending | Real grammars and language server integration required |
