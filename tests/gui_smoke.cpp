@@ -82,6 +82,7 @@ int main(int argc, char* argv[]) {
         astra::ui::EditorWindowOptions options;
         options.title = "Astra — GUI acceptance"; options.workspace_name = "GUI ACCEPTANCE";
         options.open_paths = {"src/main.cpp"}; options.width = 1400; options.height = 860;
+        options.user_script = "if(astra.context==='client'){astra.ui.registerCommand({id:'ui.toggleSidebar',title:'User sidebar policy'},async()=>{const state=await astra.ui.read();await astra.ui.update({sidebarVisible:!state.sidebarVisible,status:'User sidebar policy'});});}";
         std::shared_ptr<astra::ui::EditorChannel> channel = host;
         if (remote) { channel = std::make_shared<astra::transport::TcpEditorChannel>("127.0.0.1", host->port()); }
         astra::ui::EditorWindow window(channel, std::move(options));
@@ -90,6 +91,9 @@ int main(int argc, char* argv[]) {
         const auto id = window.active_document_id();
         require(!id.empty(), "Workspace file did not open in the editor");
         require(read_document(host, id).at("text") == "// GUI acceptance\nint main() { return 0; }\n", "Opened wrong file");
+        key(window, SDLK_B, SDL_KMOD_CTRL);
+        require(window.status_text() == "User sidebar policy", "Native UI command bypassed the user JS override");
+        key(window, SDLK_B, SDL_KMOD_CTRL);
 
         key(window, SDLK_A, SDL_KMOD_CTRL);
         text(window, "alpha\nbeta");

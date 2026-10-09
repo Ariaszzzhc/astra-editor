@@ -1,6 +1,8 @@
 #include "astra/ui/editor_window.hpp"
 #include "astra/ui/renderer.hpp"
 #include "astra/ui/text_layout.hpp"
+#include "astra/ui/workbench.hpp"
+#include "astra/io/file_store.hpp"
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
@@ -47,39 +49,6 @@ std::string normalized_binding(std::string_view binding) {
 struct SdlStringDeleter { void operator()(char* value) const noexcept { SDL_free(value); } };
 
 struct MenuCommand { std::string id; std::string label; std::string shortcut; };
-const MenuCommand menu_commands[]{
-    {"ui.new", "New file", "Ctrl+N"}, {"ui.quickOpen", "Open file by path", "Ctrl+P"},
-    {"ui.save", "Save file", "Ctrl+S"}, {"ui.saveAs", "Save file as...", "Ctrl+Shift+S"},
-    {"ui.closeTab", "Close active tab", "Ctrl+W"}, {"editor.undo", "Undo", "Ctrl+Z"},
-    {"editor.redo", "Redo", "Ctrl+Y"}, {"ui.copy", "Copy", "Ctrl+C"},
-    {"ui.cut", "Cut", "Ctrl+X"}, {"ui.paste", "Paste", "Ctrl+V"},
-    {"editor.select_all", "Select all", "Ctrl+A"},
-    {"editor.toggle_line_comment", "Toggle line comment", "Ctrl+/"},
-    {"editor.duplicate_line", "Duplicate line", "Shift+Alt+Down"},
-    {"editor.add_cursor_above", "Add cursor above", "Ctrl+Alt+Up"},
-    {"editor.add_cursor_below", "Add cursor below", "Ctrl+Alt+Down"},
-    {"ui.toggleSidebar", "Toggle explorer", "Ctrl+B"}, {"ui.toggleOutline", "Toggle outline", ""},
-    {"ui.explorer", "Show file explorer", "Ctrl+Shift+E"},
-    {"ui.refreshTree", "Refresh workspace files", ""}, {"ui.closeWindow", "Close window", "Alt+F4"},
-    {"ui.find", "Find in document", "Ctrl+F"}, {"ui.replace", "Replace in document", "Ctrl+H"},
-    {"ui.search", "Search workspace and unsaved buffers", "Ctrl+Shift+F"}, {"ui.workspaceReplace", "Replace across workspace...", "Ctrl+Shift+H"},
-    {"ui.reload", "Reload active file from disk...", ""},
-    {"ui.dismissWorkspaceNotice", "Dismiss visible workspace notice", ""},
-    {"ui.toggleSearchCase", "Search: toggle case sensitivity", "Alt+C"},
-    {"ui.toggleSearchRegex", "Search: toggle regular expression", "Alt+R"},
-    {"ui.toggleSearchWholeWord", "Search: toggle whole word", "Alt+W"},
-    {"ui.selectFunction", "Select enclosing function", ""}, {"ui.selectClass", "Select enclosing class", ""},
-    {"ui.selectBlock", "Select enclosing block", ""}, {"ui.selectString", "Select string content", ""},
-    {"ui.completion", "Trigger completion", "Ctrl+Space"}, {"ui.hover", "Show hover information", "Ctrl+K"},
-    {"ui.diagnostics", "Show document diagnostics", "Ctrl+Shift+M"},
-    {"ui.definition", "Go to definition", "F12"}, {"ui.references", "Find all references", "Shift+F12"},
-    {"ui.rename", "Rename symbol", "F2"}, {"ui.format", "Format document", "Shift+Alt+F"},
-    {"ui.gitStatus", "Source control: refresh changes", "Ctrl+Shift+G"}, {"ui.gitDiff", "Source control: show file diff", ""},
-    {"ui.gitStage", "Source control: stage file", ""}, {"ui.gitUnstage", "Source control: unstage file", ""},
-    {"ui.gitCommit", "Source control: commit staged changes", ""},
-    {"ui.recovery", "Recovery: review unsaved sessions", ""},
-    {"ui.checkpoint", "Recovery: write checkpoint now", ""}
-};
 } // namespace
 
 struct EditorWindow::Impl {
@@ -154,6 +123,10 @@ struct EditorWindow::Impl {
     std::uint64_t next_request{1};
     std::map<std::string, std::string> keybindings;
     std::vector<MenuCommand> script_commands;
+    std::vector<MenuCommand> menu_commands;
+    std::unique_ptr<Workbench> workbench;
+    std::set<std::string> service_ui_commands;
+    Json busy_views = Json::object();
     Json settings = Json::object();
     Json editor_settings = Json::object();
     SkColor background{0xFF191D27};
@@ -213,6 +186,8 @@ struct EditorWindow::Impl {
     bool show_sidebar{true};
     bool show_outline{true};
     bool running{true};
+    bool stopping_workbench{};
+    Clock::time_point workbench_shutdown_deadline{};
     bool closing_window{};
     bool recovery_enabled{true};
     bool recovery_ready{};
@@ -247,6 +222,27 @@ struct EditorWindow::Impl {
     Impl(std::shared_ptr<EditorChannel> input, EditorWindowOptions configuration)
         : channel(std::move(input)), options(std::move(configuration)), renderer(options.title, options.width, options.height) {
         if (!channel) { throw std::invalid_argument("EditorWindow requires a document channel"); }
+        if (options.resource_directory.empty()) {
+            const auto* base = SDL_GetBasePath();
+            if (!base) { throw std::runtime_error(std::string("Locate workbench resources: ") + SDL_GetError()); }
+            options.resource_directory = std::filesystem::path(base);
+        }
+        std::map<std::string, std::string> modules;
+        for (const auto& [name, file] : std::map<std::string, std::string>{
+            {"astra/ui", "api.js"}, {"astra/files", "files.js"}, {"astra/git", "git.js"},
+            {"astra/search", "search.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
+            modules.emplace(name, io::read_file(options.resource_directory / "data" / "workbench" / file, 1024 * 1024).text);
+        }
+        workbench = std::make_unique<Workbench>(channel, [this](std::string_view method, const Json& params) {
+            std::promise<Json> completed;
+            try { completed.set_value(native_ui_request(method, params)); }
+            catch (...) { completed.set_exception(std::current_exception()); }
+            return completed.get_future();
+        }, modules, options.user_script);
+        const auto policy = workbench->settings().at("workbench").at("commands");
+        for (const auto& [id, spec] : policy.items()) {
+            menu_commands.push_back({id, spec.at("title").get<std::string>(), spec.value("shortcut", std::string{})});
+        }
         scale = renderer.dpi_scale();
         SDL_Rect usable{};
         if (SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(renderer.window()), &usable)) {
@@ -305,10 +301,19 @@ struct EditorWindow::Impl {
             }
             for (const auto& command : result.value("commands", Json::array())) {
                 const auto name = command.get<std::string>();
+                if (name.starts_with("ui.")) { service_ui_commands.insert(name); }
                 if (std::ranges::none_of(menu_commands, [&](const auto& item) { return item.id == name; })) {
                     script_commands.push_back({name, name, "JavaScript"});
                 }
             }
+            const auto client_settings = workbench->settings().value("workbench", Json::object());
+            const auto client_commands = client_settings.value("commands", Json::object());
+            for (const auto& [name, spec] : client_commands.items()) {
+                if (std::ranges::none_of(menu_commands, [&](const auto& item) { return item.id == name; })) {
+                    script_commands.push_back({name, spec.at("title").get<std::string>(), spec.value("shortcut", std::string{})});
+                }
+            }
+            for (const auto& [key, name] : workbench->keybindings()) { keybindings[normalized_binding(key)] = name; }
         }, {}});
         enqueue({"workspace.documents", Json::object(), {}, false, [this](const Json& result) {
             for (const auto& metadata : result) { accept_metadata(metadata); }
@@ -387,15 +392,11 @@ struct EditorWindow::Impl {
     void open_path(std::string path) {
         if (path.empty()) { return; }
         status = "Opening " + path;
-        start_operation("workspace.open", {{"path", path}}, [this](const Json& result) {
-            accept_metadata(result); activate(result.at("id").get<std::string>()); status = "File opened";
-        });
+        execute_policy("workbench.open", {{"path", path}});
     }
     void refresh_tree(bool announce = true) {
-        start_operation("workspace.tree", Json::object(), [this, announce](const Json& result) {
-            tree_entries = result.at("entries");
-            if (announce) { status = result.value("truncated", false) ? "File tree reached its configured limit" : "Workspace ready"; }
-        });
+        static_cast<void>(announce);
+        command("ui.refreshTree");
     }
     std::string workspace_notice() const {
         if (!watch_error.empty()) { return watch_error; }
@@ -434,6 +435,9 @@ struct EditorWindow::Impl {
     void flush_recovery(bool close);
     std::vector<std::size_t> filtered_recovery_sessions() const;
     void command(std::string_view name);
+    void execute_policy(std::string_view name, const Json& params = Json::object());
+    void native_command(std::string_view name);
+    Json native_ui_request(std::string_view method, const Json& params);
     void clipboard(bool cut);
     void copy_next(std::shared_ptr<CopyState> state);
     void find_next(std::shared_ptr<FindState> state);
@@ -460,6 +464,7 @@ void EditorWindow::Impl::service_responses() {
     for (const auto& body : channel->take_notifications()) {
         const auto notification = Json::parse(body);
         const auto method = notification.value("method", std::string{});
+        workbench->emit(method, notification.value("params", Json::object()));
         if (method == "document.changed" || method == "document.created") { accept_metadata(notification.at("params")); }
         else if (method == "document.closed") { remove_document(notification.at("params").at("id").get<std::string>()); }
         else if (method == "recovery.available") { recovery_available = true; refresh_recovery(false); }
@@ -501,7 +506,13 @@ void EditorWindow::Impl::service_responses() {
                 const auto response = Json::parse(*body);
                 if (!response.contains("id") || response["id"] != completed.id) { throw std::runtime_error("The service response ID does not match its request"); }
                 if (response.contains("error")) { throw std::runtime_error(response["error"].value("message", std::string("Service request failed"))); }
-                if (completed.request.complete) { completed.request.complete(response.at("result")); }
+                if (completed.request.method == "script.command" && response.at("result").is_object() && response.at("result").contains("operationId")) {
+                    auto operation = std::make_shared<Operation>();
+                    operation->id = response.at("result").at("operationId").get<std::string>();
+                    operation->complete = completed.request.complete;
+                    operation->failure = completed.request.failure;
+                    operations.push_back(std::move(operation));
+                } else if (completed.request.complete) { completed.request.complete(response.at("result")); }
                 if (completed.request.method == "script.command" || completed.request.method == "document.edit") { error.clear(); }
             } catch (const std::exception& failure) {
                 error = failure.what(); status = "Action failed";
@@ -572,7 +583,7 @@ void EditorWindow::Impl::service_responses() {
                         if (!operation->accumulated.empty()) { value = operation->accumulated; }
                     }
                     std::erase(operations, operation);
-                    operation->complete(value);
+                    if (operation->complete) { operation->complete(value); }
                 } else if (state == "failed" || state == "cancelled") {
                     if (operation->failure) { operation->failure(); }
                     std::erase(operations, operation);
@@ -936,7 +947,67 @@ std::vector<std::size_t> EditorWindow::Impl::filtered_recovery_sessions() const 
     return result;
 }
 
+Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
+    if (method == "_ui.read") {
+        Json result{{"sidebarVisible", show_sidebar}, {"outlineVisible", show_outline}, {"tabs", tabs}, {"gitPath", prompt == Prompt::git_diff ? git_path : std::string{}}};
+        if (const auto* document = current()) { result["document"] = document->metadata; result["document"]["path"] = document->path; }
+        return result;
+    }
+    if (method == "_ui.action") { native_command(params.at("command").get<std::string>()); return nullptr; }
+    if (method != "_ui.update") { throw protocol::RpcError(-32601, "Unknown native UI primitive"); }
+    if (!params.is_object()) { throw protocol::RpcError(-32602, "UI updates require an object"); }
+    for (const auto& [name, value] : params.items()) {
+        if (name == "status") { status = value.get<std::string>(); }
+        else if (name == "sidebarVisible") { show_sidebar = value.get<bool>(); }
+        else if (name == "outlineVisible") { show_outline = value.get<bool>(); }
+        else if (name == "sidebar") {
+            const auto view = value.get<std::string>();
+            if (view != "explorer" && view != "search" && view != "git") { throw protocol::RpcError(-32602, "Unknown sidebar view"); }
+            search_view = view == "search"; git_view = view == "git"; tree_scroll = 0;
+        } else if (name == "document") { accept_metadata(value); }
+        else if (name == "activate") { activate(value.get<std::string>()); }
+        else if (name == "dismissPrompt") { if (value.get<bool>()) { prompt = Prompt::none; } }
+        else if (name == "busy") { busy_views.merge_patch(value); }
+        else if (name != "view" && name != "model") { throw protocol::RpcError(-32602, "Unknown UI update field: " + name); }
+    }
+    if (params.contains("view")) {
+        const auto view = params.at("view").get<std::string>();
+        const auto& model = params.at("model");
+        if (view == "explorer") {
+            tree_entries = model.at("entries");
+            status = model.value("truncated", false) ? "File tree reached its configured limit" : "Workspace ready";
+        } else if (view == "git") { git_status = model; }
+        else if (view == "search") {
+            search_results = model.at("matches"); search_operation = model.at("operationId").get<std::string>();
+            status = std::to_string(search_results.size()) + " workspace match(es)";
+            if (model.value("truncated", false)) { error = "Search reached its limit; refine the query before replacing"; }
+            else if (!model.value("issues", Json::array()).empty()) { error = "Search could not read some files; refine the scope before replacing"; }
+            else if (replacing_workspace && !search_results.empty()) { prompt = Prompt::replace_confirm; }
+        } else { throw protocol::RpcError(-32602, "Unknown view model"); }
+    }
+    if (auto* document = current(); document && (params.contains("sidebarVisible") || params.contains("outlineVisible"))) { document->needs_lines = true; }
+    return nullptr;
+}
+
+void EditorWindow::Impl::execute_policy(std::string_view name, const Json& params) {
+    workbench->execute(name, params, [this](const script::Runtime::Outcome& outcome) {
+        if (outcome.error) {
+            if (outcome.error->value("name", std::string{}) != "AbortError") { error = outcome.error->value("message", std::string("Workbench action failed")); status = "Action failed"; }
+        } else if (outcome.value.is_object() && outcome.value.contains("id") && outcome.value.contains("revision")) { accept_metadata(outcome.value); reveal_caret(); }
+    });
+}
+
 void EditorWindow::Impl::command(std::string_view name) {
+    prompt_select_all = false;
+    if (recovery_flushing && prompt == Prompt::recovery_flushing && name != "ui.cancel") { return; }
+    if (service_ui_commands.contains(std::string(name))) {
+        enqueue({"script.command", {{"name", name}, {"params", Json::object()}}, active_id, !active_id.empty(),
+            [this](const Json& result) { if (result.is_object() && result.contains("id") && result.contains("revision")) { accept_metadata(result); reveal_caret(); } }, {}});
+    } else if (workbench->contains(name)) { execute_policy(name); }
+    else { native_command(name); }
+}
+
+void EditorWindow::Impl::native_command(std::string_view name) {
     prompt_select_all = false;
     if (recovery_flushing && prompt == Prompt::recovery_flushing && name != "ui.cancel") { return; }
     if (name.starts_with("editor.")) {
@@ -1340,16 +1411,9 @@ void EditorWindow::Impl::search_workspace(bool replace) {
     search_view = true; git_view = false; show_sidebar = true; tree_scroll = 0; replacing_workspace = replace;
     status = "Searching workspace and unsaved buffers...";
     search_results.clear(); search_operation.clear();
-    const auto generation = ++search_generation;
-    start_operation("workspace.search", {{"query", search_query}, {"caseSensitive", search_case_sensitive},
-        {"regex", search_regex}, {"wholeWord", search_whole_word}}, [this, replace, generation](const Json& result) {
-        if (generation != search_generation) { return; }
-        search_results = result.at("matches");
-        status = std::to_string(search_results.size()) + " workspace match(es)";
-        if (result.value("truncated", false)) { error = "Search reached its limit; refine the query before replacing"; }
-        else if (result.value("cancelled", false)) { error = "Search was cancelled; search again before replacing"; }
-        else if (replace && !search_results.empty()) { prompt = Prompt::replace_confirm; }
-    });
+    ++search_generation;
+    execute_policy("workbench.search", {{"query", search_query}, {"caseSensitive", search_case_sensitive},
+        {"regex", search_regex}, {"wholeWord", search_whole_word}});
 }
 
 void EditorWindow::Impl::open_search_result(const Json& match) {
@@ -2278,19 +2342,32 @@ std::string EditorWindow::active_document_id() const { return impl_->active_id; 
 bool EditorWindow::idle() const noexcept {
     const auto* document = impl_->current();
     return impl_->requests.empty() && !impl_->active_request && impl_->operations.empty() &&
+        impl_->workbench->idle() &&
         (!document || (!document->needs_lines && !document->loading && !document->needs_syntax && !document->syntax_loading));
 }
 std::string EditorWindow::last_error() const { return impl_->error; }
 std::string EditorWindow::status_text() const { return impl_->status; }
 std::string EditorWindow::workspace_notice() const { return impl_->workspace_notice(); }
 bool EditorWindow::pump() {
-    if (!impl_->running) { return false; }
+    if (!impl_->running) {
+        if (!impl_->stopping_workbench) {
+            impl_->stopping_workbench = true;
+            impl_->workbench_shutdown_deadline = Clock::now() + std::chrono::seconds(5);
+            impl_->workbench->shutdown();
+        }
+        impl_->workbench->poll();
+        if (impl_->workbench->idle()) { return false; }
+        if (Clock::now() >= impl_->workbench_shutdown_deadline) { throw std::runtime_error("Workbench transport did not drain on shutdown"); }
+        return true;
+    }
     try {
         impl_->renderer.poll_events([this](const SDL_Event& event) {
             try { impl_->event(event); }
             catch (const std::exception& error) { impl_->error = error.what(); }
         });
         impl_->service_responses();
+        impl_->workbench->poll();
+        for (const auto& error : impl_->workbench->take_errors()) { impl_->error = error.value("message", std::string("Workbench event failed")); }
         if (impl_->dragging && (impl_->mouse_y < impl_->content_top || impl_->mouse_y > impl_->content_bottom) && Clock::now() >= impl_->drag_scroll_after) {
             impl_->drag_scroll_after = Clock::now() + std::chrono::milliseconds(50);
             if (auto* document = impl_->current(); document && !document->loading) {
@@ -2306,7 +2383,7 @@ bool EditorWindow::pump() {
         // A renderer failure cannot be presented as a functional blank editor.
         throw;
     }
-    return impl_->running;
+    return true;
 }
 int EditorWindow::run() {
     while (pump()) { SDL_Delay(4); }

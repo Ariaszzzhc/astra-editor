@@ -167,6 +167,34 @@ support cancellation, and `astra.on(event, callback)` / `astra.off(event, token)
 subscribe to service notifications. Cancellation stops queued work and requests
 worker cancellation; it cannot roll back an operation that already committed.
 
+For bounded batches, use `for await (const page of astra.operationPages(method,
+params, {signal, limit:256}))`. An early iterator exit requests cancellation;
+the owner loop drains that request. `{raw:true}` returns the initial operation
+identity for explicit paging or replacement plans.
+
+The GUI has a separate client policy runtime using registered `astra/ui`,
+`astra/files`, `astra/search` and `astra/git` ES modules. `astra.context` is
+`'client'` there and `'service'` in the document service. Shared `--config`
+scripts guard client customization:
+
+```js
+if (astra.context === 'client') {
+    astra.ui.registerCommand({id: 'ui.save', title: 'My save'}, async () => {
+        const {document} = await astra.ui.read();
+        if (!document?.path) return astra.ui.native('ui.saveAs');
+        const saved = await astra.request('workspace.save', {
+            id: document.id, baseRevision: document.revision
+        });
+        await astra.ui.update({document: saved, status: 'Saved'});
+    });
+}
+```
+
+Client document calls use the same in-process/TCP protocol as other clients.
+`astra.ui.registerView(spec, provider)` supplies an async model provider;
+`refresh(id, parameters)` cancels older refreshes and only the current generation
+can publish. Current native sidebar model kinds are `explorer`, `search`, `git`.
+
 ```javascript
 astra.registerCommand("custom.save", async ({id, baseRevision}) => {
     const saved = await astra.request("workspace.save", {id, baseRevision}, {timeoutMs: 10000});

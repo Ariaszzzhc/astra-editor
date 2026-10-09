@@ -173,6 +173,7 @@ int run(const std::vector<std::string>& arguments) {
     std::shared_ptr<astra::service::ServiceHost> host;
 #ifdef ASTRA_WITH_GUI
     const auto workspace_name = utf8_path_text(fs::absolute(options.workspace).lexically_normal().filename());
+    const auto configured_workspace = options.workspace;
 #endif
     if (!remote.empty()) {
         const auto [address, port] = endpoint(remote);
@@ -212,6 +213,17 @@ int run(const std::vector<std::string>& arguments) {
     }
 #ifdef ASTRA_WITH_GUI
     astra::ui::EditorWindowOptions window_options;
+    window_options.resource_directory = executable_directory();
+    if (!user_config.empty()) {
+        const auto root = fs::canonical(configured_workspace);
+        const auto relative = utf8_path(user_config);
+        if (relative.is_absolute() || relative.has_root_name()) { throw std::invalid_argument("--config must be workspace-relative"); }
+        const auto path = fs::canonical(root / relative);
+        const auto checked = path.lexically_relative(root);
+        if (checked.empty() || checked.is_absolute()) { throw std::invalid_argument("Config is outside the workspace"); }
+        for (const auto& part : checked) { if (part == "..") { throw std::invalid_argument("Config is outside the workspace"); } }
+        window_options.user_script = astra::io::read_file(path, 1024 * 1024).text;
+    }
     window_options.open_paths = std::move(paths);
     window_options.workspace_name = remote.empty() ? workspace_name : remote;
     astra::ui::EditorWindow window(channel, std::move(window_options));

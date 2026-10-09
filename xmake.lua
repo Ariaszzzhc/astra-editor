@@ -18,6 +18,9 @@ if is_plat("windows") then
     set_runtimes("MT")
     add_defines("NOMINMAX", "WIN32_LEAN_AND_MEAN", "_ITERATOR_DEBUG_LEVEL=0")
     add_cxxflags("/permissive-", {tools = {"cl", "clang_cl"}})
+    -- Incremental links left unusable images after failed linker runs in this
+    -- Windows environment. Always produce a complete executable image.
+    add_ldflags("/INCREMENTAL:NO", {tools = {"link"}, force = true})
     if is_mode("debug") then
         -- Embed CodeView records in objects; avoid a shared compiler PDB server.
         set_symbols("debug", "embed")
@@ -47,7 +50,7 @@ target("astra-tests")
     set_rundir(os.projectdir())
     set_default(true)
     add_deps("astra-core", "astra-protocol", "astra-io", "astra-service", "astra-config", "astra-script", "astra-transport", "astra-workspace", "astra-editing", "astra-syntax", "astra-process", "astra-lsp", "astra-git")
-    add_deps("astra-recovery", "astra-watch")
+    add_deps("astra-recovery", "astra-watch", "astra-workbench")
     add_deps("astra-process-fixture", "lsp-fixture", "astra-recovery-fixture", {inherit = false})
     add_packages("doctest")
     add_files("tests/main.cpp", "tests/sum_tree_tests.cpp", "tests/rope_tests.cpp", "tests/document_tests.cpp",
@@ -55,7 +58,7 @@ target("astra-tests")
               "tests/editor_config_tests.cpp", "tests/script_tests.cpp", "tests/tcp_tests.cpp", "tests/workspace_tests.cpp", "tests/editing_tests.cpp",
               "tests/application_tests.cpp", "tests/application_language_tests.cpp", "tests/application_recovery_tests.cpp", "tests/tcp_client_tests.cpp", "tests/syntax_tests.cpp",
               "tests/process_tests.cpp", "tests/lsp_tests.cpp", "tests/git_tests.cpp", "tests/recovery_tests.cpp",
-              "tests/file_monitor_tests.cpp", "tests/application_watch_tests.cpp", "tests/application_search_tests.cpp")
+              "tests/file_monitor_tests.cpp", "tests/application_watch_tests.cpp", "tests/application_search_tests.cpp", "tests/workbench_tests.cpp")
     set_exceptions("cxx")
     add_tests("unit", {runargs = {"--no-version", "--duration=true"}})
 
@@ -251,9 +254,16 @@ target("astra-ui")
     set_kind("static")
     set_default(false)
     add_includedirs("include", {public = true})
-    add_deps("astra-renderer")
+    add_deps("astra-renderer", "astra-workbench", "astra-io")
     add_packages("nlohmann_json", {public = true})
     add_files("src/ui/editor_window.cpp")
+    set_exceptions("cxx")
+
+target("astra-workbench")
+    set_kind("static")
+    add_includedirs("include", {public = true})
+    add_deps("astra-script")
+    add_files("src/ui/workbench.cpp")
     set_exceptions("cxx")
 
 target("astra")

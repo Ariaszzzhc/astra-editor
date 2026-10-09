@@ -138,6 +138,7 @@ struct Runtime::Impl {
                 }
                 globalThis.AbortController = AbortController;
                 globalThis.AbortSignal = AbortSignal;
+                astra.context = 'service';
                 astra.sleep = (milliseconds, options) => astra.request('_runtime.sleep', {milliseconds}, options);
                 astra.operationPages = async function* (method, parameters = {}, options = {}) {
                     const {limit = 256, ...requestOptions} = options;

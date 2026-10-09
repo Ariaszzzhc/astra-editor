@@ -20,6 +20,8 @@ struct EditorWindowOptions {
     int width{1440};
     int height{900};
     float font_size{16};
+    std::filesystem::path resource_directory;
+    std::string user_script;
 };
 
 // Main-thread editor front end. Every document change goes through EditorChannel.

@@ -43,7 +43,25 @@ request cancellation after a synchronous throw, shutdown, and bounded streaming
 pages with early-consumer cancellation. These checks establish the async
 foundation only; the active workbench revision remains in progress.
 
-Remaining work includes the client JS workbench and public UI providers,
+The client workbench now loads ES modules for command/menu registration, files,
+search and Git. Open/new/save, sidebar/tab changes, file traversal, search paging
+and Git status/stage policy execute in the client runtime over the same local/TCP
+dispatcher. Native clipboard/modal/language/recovery workflow migration remains
+unfinished. Providers cancel superseded generations before publishing a model.
+User client commands can replace `ui.*` actions; the native GUI smoke exercises
+that override through real SDL keys. Client shutdown drains late transport
+responses and forwards cancellation before closing the channel.
+
+Windows Debug: `./scripts/xmake.ps1 build -y astra-tests gui-smoke gui-workspace-smoke`
+passed. `astra-tests.exe --no-version '--test-case=workbench*,QuickJS*,JavaScript*'`
+passed **22 cases / 126 assertions**. `gui-smoke.exe` and `gui-smoke.exe --tcp`
+passed real editing, Unicode/IME event, clipboard, multicursor history, search,
+confirmed replacement, save/close/reopen and JS policy checks. The renderer
+logged `Submit called with no active command buffer` during its final idle frame;
+the workflow assertions passed. `/INCREMENTAL:NO` now avoids reusing failed
+Windows linker images; the affected target rebuilds completed normally.
+
+Remaining work includes the rest of the public UI/provider contract,
 component/layout/theme/icon migration, virtualized indexed views, incremental
 syntax indexes, full Debug/Release and native GUI acceptance, and packaging the
 new revision. Historical M0-M8 states below are not completion claims for this
