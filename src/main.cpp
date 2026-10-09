@@ -1,6 +1,7 @@
 #include <astra/io/file_store.hpp>
 #include <astra/service/service_host.hpp>
 #include <astra/transport/tcp_client.hpp>
+#include <astra/transport/editor_channel.hpp>
 
 #ifdef ASTRA_WITH_GUI
 #include <astra/ui/editor_window.hpp>
@@ -12,6 +13,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <sstream>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -45,6 +47,37 @@ fs::path executable_directory() {
     return utf8_path(std::string_view(buffer.data(), size)).parent_path();
 }
 
+fs::path default_recovery_directory(const fs::path& workspace) {
+    std::vector<char> home(32768);
+    auto size = home.size();
+#ifdef _WIN32
+    auto status = uv_os_getenv("LOCALAPPDATA", home.data(), &size);
+#else
+    auto status = uv_os_getenv("XDG_STATE_HOME", home.data(), &size);
+#endif
+    fs::path state;
+    if (status == 0) { state = utf8_path(std::string_view(home.data(), size)); }
+    else {
+        size = home.size();
+        status = uv_os_homedir(home.data(), &size);
+        if (status != 0) { throw std::runtime_error("Cannot locate recovery directory; pass --state-directory"); }
+        state = utf8_path(std::string_view(home.data(), size));
+#ifdef __APPLE__
+        state /= "Library/Application Support";
+#else
+        state /= ".local/state";
+#endif
+    }
+    // Stable per-workspace namespace. Every recovered source path is still
+    // independently validated against the active workspace before restoration.
+    const auto key = fs::canonical(workspace).generic_u8string();
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (const auto byte : key) { hash = (hash ^ static_cast<unsigned char>(byte)) * 1099511628211ULL; }
+    std::ostringstream name;
+    name << std::hex << hash;
+    return state / "Astra" / "recovery" / name.str();
+}
+
 std::uint16_t port_number(std::string_view text, bool allow_zero) {
     unsigned value{};
     const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
@@ -62,18 +95,6 @@ std::pair<std::string, std::uint16_t> endpoint(std::string_view text) {
     if (host.empty()) { throw std::invalid_argument("Endpoint host is empty"); }
     return {std::string(host), port_number(text.substr(split + 1), false)};
 }
-
-class RemoteChannel final : public astra::ui::EditorChannel {
-public:
-    RemoteChannel(std::string host, std::uint16_t port) {
-        auto connection = client_.connect(std::move(host), port);
-        connection.get(); // Bounded connection phase before creating the window.
-    }
-    std::future<std::optional<std::string>> submit(std::string body) override { return client_.submit(std::move(body)); }
-    std::vector<std::string> take_notifications() override { return client_.take_notifications(); }
-private:
-    astra::transport::TcpClient client_;
-};
 
 class ServerSignals {
 public:
@@ -129,6 +150,7 @@ int run(const std::vector<std::string>& arguments) {
                          "  astra --server [--workspace DIR] [--host 127.0.0.1|::1] [--port PORT]\n"
                          "  astra --connect HOST:PORT\n"
                          "  astra-server --connect HOST:PORT --request JSON_RPC_OBJECT\n"
+                         "  --state-directory DIR overrides the local recovery storage directory.\n"
                          "Remote connections use a loopback endpoint through an authenticated SSH tunnel.\n"
                          "Ctrl+C stops server mode after outstanding workers finish.\n";
             return 0;
@@ -141,6 +163,7 @@ int run(const std::vector<std::string>& arguments) {
         else if (arg == "--connect") { remote = value(); }
         else if (arg == "--request") { request = value(); }
         else if (arg == "--config") { user_config = value(); }
+        else if (arg == "--state-directory") { options.recovery_directory = utf8_path(value()); }
         else if (arg == "--open") { paths.push_back(value()); }
         else if (arg.starts_with('-')) { throw std::invalid_argument("Unknown option: " + arg); }
         else { paths.push_back(arg); }
@@ -153,9 +176,11 @@ int run(const std::vector<std::string>& arguments) {
 #endif
     if (!remote.empty()) {
         const auto [address, port] = endpoint(remote);
-        channel = std::make_shared<RemoteChannel>(address, port);
+        channel = std::make_shared<astra::transport::TcpEditorChannel>(address, port);
     } else {
-        options.defaults_script = astra::io::read_file(executable_directory() / "data" / "defaults.js", 1024 * 1024).text;
+        options.resource_directory = executable_directory();
+        if (options.recovery_directory.empty()) { options.recovery_directory = default_recovery_directory(options.workspace); }
+        options.defaults_script = astra::io::read_file(options.resource_directory / "data" / "defaults.js", 1024 * 1024).text;
         if (!user_config.empty()) {
             const auto relative = utf8_path(user_config);
             if (relative.is_absolute() || relative.has_root_name()) { throw std::invalid_argument("--config must be workspace-relative"); }
@@ -174,6 +199,7 @@ int run(const std::vector<std::string>& arguments) {
     if (!request.empty()) {
         const auto response = channel->submit(std::move(request)).get();
         if (response) { std::cout << *response << '\n'; }
+        if (host) { host->shutdown(); }
         return 0;
     }
     if (server_mode) {
@@ -181,6 +207,7 @@ int run(const std::vector<std::string>& arguments) {
         ServerSignals signals;
         std::cout << "{\"application\":\"Astra\",\"port\":" << host->port() << "}" << std::endl;
         signals.wait();
+        host->shutdown();
         return 0;
     }
 #ifdef ASTRA_WITH_GUI
@@ -188,7 +215,9 @@ int run(const std::vector<std::string>& arguments) {
     window_options.open_paths = std::move(paths);
     window_options.workspace_name = remote.empty() ? workspace_name : remote;
     astra::ui::EditorWindow window(channel, std::move(window_options));
-    return window.run();
+    const auto result = window.run();
+    if (host) { host->shutdown(); }
+    return result;
 #else
     throw std::invalid_argument("This binary contains the headless service; use astra for the GUI");
 #endif

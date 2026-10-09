@@ -15,6 +15,12 @@ namespace astra::ui {
 enum class TextDirection { automatic, left_to_right, right_to_left };
 enum class CaretAffinity { upstream, downstream };
 
+struct TextColorSpan {
+    std::size_t begin{};
+    std::size_t end{};
+    std::uint32_t color{};
+};
+
 struct TextLayoutOptions {
     float font_size{16.0F};
     float dpi_scale{1.0F};
@@ -24,6 +30,8 @@ struct TextLayoutOptions {
     // containing tabs is rejected; unwrapped RTL and wrapped LTR tabs are supported.
     float wrap_width{};
     std::uint32_t color{0xFFE2E5EC};
+    // Original UTF-8 ranges. Partial graphemes receive one color; later spans win.
+    std::vector<TextColorSpan> color_spans;
     TextDirection direction{TextDirection::left_to_right};
     std::vector<std::string> font_families;
     std::string locale{"en"};
@@ -67,6 +75,8 @@ public:
     [[nodiscard]] std::size_t line_count() const;
     [[nodiscard]] std::span<const std::size_t> grapheme_boundaries() const noexcept;
     [[nodiscard]] TextHit hit_test(float x, float y) const;
+    // LSP UTF-16 columns; an interior surrogate offset snaps to its scalar start.
+    [[nodiscard]] std::size_t byte_offset_from_utf16(std::size_t column) const;
     // An interior byte offset is snapped back to the start of its grapheme.
     [[nodiscard]] TextCaret caret(std::size_t byte_offset,
                                   CaretAffinity affinity = CaretAffinity::downstream) const;

@@ -3,7 +3,7 @@
 astra.configure({
     editor: {
         fontSize: 16, fontFamilies: ["Cascadia Code", "Consolas", "monospace"],
-        tabSize: 4, insertSpaces: true, lineNumbers: true, wordWrap: false,
+        tabSize: 4, insertSpaces: true,
         lineHeight: 1.4, cursorBlink: true
     },
     theme: {
@@ -15,7 +15,6 @@ astra.configure({
         string: "#CE9178", comment: "#6A9955", number: "#B5CEA8",
         type: "#4EC9B0", function: "#DCDCAA"
     },
-    files: {encoding: "utf8", autoSave: false},
     git: {inheritGlobalConfig: true},
     languageServers: {
         c: {command: "clangd", arguments: ["--background-index"]},

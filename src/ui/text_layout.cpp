@@ -298,18 +298,37 @@ TextLayout TextLayoutEngine::layout(std::string text, const TextLayoutOptions& o
 
     const float layout_width = options.wrap_width > 0 ? options.wrap_width : std::numeric_limits<float>::infinity();
     sk_sp<SkUnicode> layout_unicode = tab_widths.empty() ? impl_->unicode : sk_make_sp<TabUnicode>(impl_->unicode, result->text);
+    std::vector<TextColorSpan> colors;
+    std::vector<std::size_t> color_boundaries{0, result->text.size()};
+    for (const auto& span : options.color_spans) {
+        if (span.begin > span.end || span.end > result->text.size()) { throw std::invalid_argument("Text color range exceeds the line"); }
+        if (span.begin == span.end) { continue; }
+        const auto begin = result->floor_boundary(span.begin);
+        const auto range_end = result->ceil_boundary(span.end);
+        colors.push_back({begin, range_end, span.color});
+        color_boundaries.push_back(begin); color_boundaries.push_back(range_end);
+    }
+    std::ranges::sort(color_boundaries);
+    color_boundaries.erase(std::unique(color_boundaries.begin(), color_boundaries.end()), color_boundaries.end());
     const auto build_paragraph = [&] {
         auto builder = paragraph::ParagraphBuilder::make(style, impl_->fonts, layout_unicode);
-        std::size_t begin{};
         std::size_t tab{};
-        for (std::size_t i = 0; i < result->text.size(); ++i) {
-            if (result->text[i] != '\t') { continue; }
-            builder->addText(result->text.data() + begin, i - begin);
-            builder->addPlaceholder({tab_widths[tab++], space->getHeight(), paragraph::PlaceholderAlignment::kBaseline,
-                                     paragraph::TextBaseline::kAlphabetic, space->getAlphabeticBaseline()});
-            begin = i + 1;
+        for (std::size_t range = 1; range < color_boundaries.size(); ++range) {
+            auto begin = color_boundaries[range - 1];
+            const auto end = color_boundaries[range];
+            auto run_style = text_style;
+            for (const auto& span : colors) { if (span.begin <= begin && span.end > begin) { run_style.setColor(span.color); } }
+            builder->pushStyle(run_style);
+            for (std::size_t i = begin; i < end; ++i) {
+                if (result->text[i] != '\t') { continue; }
+                builder->addText(result->text.data() + begin, i - begin);
+                builder->addPlaceholder({tab_widths[tab++], space->getHeight(), paragraph::PlaceholderAlignment::kBaseline,
+                                         paragraph::TextBaseline::kAlphabetic, space->getAlphabeticBaseline()});
+                begin = i + 1;
+            }
+            builder->addText(result->text.data() + begin, end - begin);
+            builder->pop();
         }
-        builder->addText(result->text.data() + begin, result->text.size() - begin);
         result->shaped = builder->Build();
         result->shaped->layout(layout_width);
     };
@@ -363,6 +382,9 @@ TextLayout& TextLayout::operator=(TextLayout&&) noexcept = default;
 std::string_view TextLayout::text() const noexcept { return impl_->text; }
 float TextLayout::width() const { return impl_->measured_width; }
 float TextLayout::height() const { return impl_->shaped->getHeight(); }
+std::size_t TextLayout::byte_offset_from_utf16(std::size_t column) const {
+    return impl_->utf16_to_byte[std::min(column, impl_->utf16_to_byte.size() - 1)];
+}
 float TextLayout::baseline() const { return impl_->shaped->getAlphabeticBaseline(); }
 float TextLayout::tab_stop_width() const noexcept { return impl_->tab_stop; }
 std::size_t TextLayout::line_count() const { return impl_->shaped->lineNumber(); }

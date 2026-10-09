@@ -121,6 +121,26 @@ int main() {
         near(scaled.width(), ascii.width() * 2, "DPI scaling did not scale shaped width", 1.0F);
         require(scaled.height() > ascii.height() * 1.8F, "DPI scaling did not scale line metrics");
 
+        const std::string colored_text = "const\t中文 e\xCC\x81 אבג = 42;";
+        auto uncolored = engine.layout(colored_text);
+        TextLayoutOptions colored_options;
+        colored_options.color_spans = {{0, 5, 0xFFC586C0}, {6, 12, 0xFF4EC9B0}, {13, 15, 0xFFCE9178}, {16, colored_text.size(), 0xFFDCDCAA}};
+        auto colored = engine.layout(colored_text, colored_options);
+        const auto columns = engine.layout("A🙂中文");
+        require(columns.byte_offset_from_utf16(0) == 0 && columns.byte_offset_from_utf16(1) == 1 &&
+                columns.byte_offset_from_utf16(2) == 1 && columns.byte_offset_from_utf16(3) == 5 &&
+                columns.byte_offset_from_utf16(4) == 8 && columns.byte_offset_from_utf16(100) == 11,
+                "LSP UTF-16 columns were confused with UTF-8 byte offsets");
+        near(colored.width(), uncolored.width(), "Syntax colors changed shaping width");
+        for (const auto offset : uncolored.grapheme_boundaries()) {
+            near(colored.caret(offset).x, uncolored.caret(offset).x, "Syntax colors changed caret geometry");
+            near(colored.caret(offset).y, uncolored.caret(offset).y, "Syntax colors changed line geometry");
+        }
+        for (float x = 0; x < colored.width(); x += 2.5F) {
+            require(colored.hit_test(x, colored.height() / 2).byte_offset == uncolored.hit_test(x, uncolored.height() / 2).byte_offset,
+                    "Syntax colors changed bidi/grapheme hit testing");
+        }
+
         TextLayoutOptions wrapped_options;
         wrapped_options.wrap_width = 110;
         auto wrapped = engine.layout("one two three four five six", wrapped_options);
@@ -181,6 +201,7 @@ int main() {
             examples.push_back(engine.layout(text, options));
         }
         float y = 24;
+        colored.draw(canvas, 430, 30);
         for (const auto& line : examples) {
             SkPaint selection;
             selection.setColor(SkColorSetARGB(120, 60, 95, 160));
