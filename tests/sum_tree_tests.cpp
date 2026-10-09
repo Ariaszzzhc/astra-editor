@@ -126,6 +126,25 @@ TEST_CASE("SumTree empty identity and checked ranges") {
     CHECK_THROWS_AS((void)(tree.for_each_range(0, 1, [](const Entry&) {})), std::out_of_range);
 }
 
+TEST_CASE("SumTree summary pruning retains original ordinals and skips empty interiors") {
+    std::vector<Entry> entries(8192,Entry{1,0});entries[9].weight=1;entries[8000].weight=2;
+    const Tree tree(entries);std::vector<std::size_t> ordinals;std::size_t nodes{};
+    tree.for_each_pruned([&](const EntrySummary& summary){++nodes;return summary.weight!=0;},
+        [&](std::size_t ordinal,const Entry& value){CHECK(value==entries.at(ordinal));ordinals.push_back(ordinal);});
+    CHECK(ordinals==std::vector<std::size_t>{9,8000});CHECK(nodes<100);
+    const auto retained=tree;const auto changed=tree.erase(9,10);ordinals.clear();
+    changed.for_each_pruned([](const EntrySummary& summary){return summary.weight!=0;},
+        [&](std::size_t ordinal,const Entry&){ordinals.push_back(ordinal);});
+    CHECK(ordinals==std::vector<std::size_t>{7999});CHECK(retained.size()==8192);CHECK(retained.at(9).weight==1);
+    auto publishing=tree;ordinals.clear();
+    publishing.for_each_pruned([](const EntrySummary& summary){return summary.weight!=0;},
+        [&](std::size_t ordinal,const Entry&){ordinals.push_back(ordinal);publishing=Tree{};});
+    CHECK(ordinals==std::vector<std::size_t>{9,8000});CHECK(publishing.empty());
+    CHECK_THROWS_AS(tree.for_each_pruned([](const EntrySummary&)->bool{throw std::runtime_error("predicate failure");},
+        [](std::size_t,const Entry&){}),std::runtime_error);
+    CHECK(tree.validate());
+}
+
 TEST_CASE("SumTree composition preserves ordering and zero-width leaves") {
     const std::vector<Entry> entries{{7, 0}, {3, 2}, {9, 0}, {4, 3}, {2, 0}};
     const Tree tree(entries);

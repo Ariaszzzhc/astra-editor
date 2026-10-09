@@ -95,10 +95,15 @@ void run(const fs::path& workspace) {
         require(window.layout().outline_rows.height>0,"Outline header did not expand its native region");
         const auto before_outline=window.view_state();
         require(before_outline.outline_total==81 && before_outline.visible_outline_rows<20,"Outline did not request a bounded visible symbol page");
-        mouse(window,SDL_EVENT_MOUSE_MOTION,window.layout().outline_rows.x+40*original.layout.scale,window.layout().outline_rows.y+12*original.layout.scale);
+        // A wheel carries its own pointer location, independent of the last motion.
+        mouse(window,SDL_EVENT_MOUSE_MOTION,window.layout().editor.x+40*original.layout.scale,window.layout().editor.y+12*original.layout.scale);
+        int wheel_width{},wheel_height{},wheel_pixels_x{},wheel_pixels_y{};
+        require(SDL_GetWindowSize(window.window(),&wheel_width,&wheel_height) && SDL_GetWindowSizeInPixels(window.window(),&wheel_pixels_x,&wheel_pixels_y),"Cannot read wheel coordinate conversion");
         SDL_Event wheel{};wheel.type=SDL_EVENT_MOUSE_WHEEL;wheel.wheel.windowID=SDL_GetWindowID(window.window());wheel.wheel.y=-20;
+        wheel.wheel.mouse_x=(window.layout().outline_rows.x+40*original.layout.scale)*static_cast<float>(wheel_width)/static_cast<float>(wheel_pixels_x);
+        wheel.wheel.mouse_y=(window.layout().outline_rows.y+12*original.layout.scale)*static_cast<float>(wheel_height)/static_cast<float>(wheel_pixels_y);
         require(SDL_PushEvent(&wheel),"Cannot enqueue Outline scrolling");settle(window);
-        require(window.view_state().outline_first==60,"Outline wheel did not seek its independent symbol index");
+        require(window.view_state().outline_first==60,"Outline wheel did not seek its independent symbol index: "+std::to_string(window.view_state().outline_first));
         require(window.view_state().file_first==before_outline.file_first,"Outline scrolling moved the Explorer viewport");
         window.request_screenshot("build/graphics/gui-workbench-outline.png");settle(window);
         click(window,window.layout().outline_rows.x+70*original.layout.scale,window.layout().outline_rows.y+12*original.layout.scale);

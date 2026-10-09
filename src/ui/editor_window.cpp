@@ -6,6 +6,7 @@
 #include "astra/ui/icons.hpp"
 #include "astra/ui/text_line_index.hpp"
 #include "astra/ui/picker_index.hpp"
+#include "astra/ui/decoration_indexes.hpp"
 #include "astra/io/file_store.hpp"
 
 #include "include/core/SkCanvas.h"
@@ -77,14 +78,12 @@ struct EditorWindow::Impl {
         bool loading{};
         std::string syntax_revision;
         std::string syntax_state{"pending"};
-        Json highlights = Json::array();
+        DecorationIndexes decorations;
         Json outline = Json::array();
         std::size_t outline_scroll{},outline_begin{},outline_total{};
         bool needs_syntax{true};
         bool syntax_loading{};
         bool reveal_horizontal{};
-        Json diagnostics = Json::array();
-        Json git_gutter = Json::array();
         bool diagnostics_loading{};
         bool language_active{};
         Clock::time_point diagnostics_after{};
@@ -379,9 +378,9 @@ struct EditorWindow::Impl {
         }
         if (metadata.contains("editorConfig")) { document.editor_config = metadata["editorConfig"]; }
         if (metadata.contains("encoding")) { document.encoding = metadata.at("encoding").get<std::string>(); }
-        if (document.view_revision != revision) { document.needs_lines = true; document.needs_syntax = true; document.diagnostics.clear(); }
+        if (document.view_revision != revision) { document.needs_lines = true; document.needs_syntax = true; document.decorations.diagnostics.clear(); }
         document.metadata = metadata;
-        if (metadata.value("dirty", false)) { document.git_gutter.clear(); }
+        if (metadata.value("dirty", false)) { document.decorations.gutter.clear(); }
         const auto line_count = metadata.value("lineCount", std::size_t{1});
         document.first_line = std::min(document.first_line, line_count - 1);
     }
@@ -737,7 +736,7 @@ void EditorWindow::Impl::fetch_syntax() {
                 return;
             }
             document.syntax_revision = revision; document.needs_syntax = false;
-            document.highlights = result.value("highlights", Json::array());
+            document.decorations.set_highlights(result.value("highlights", Json::array()));
             document.outline = result.value("outline", Json::array());
             const auto page=result.value("outlinePage",Json::object());
             document.outline_begin=page.value("offset",std::size_t{0});document.outline_total=page.value("total",document.outline.size());
@@ -829,7 +828,7 @@ void EditorWindow::Impl::fetch_diagnostics(const std::string& id) {
         document.diagnostics_after = generation == document.diagnostics_generation
             ? Clock::now() + std::chrono::milliseconds(750) : Clock::time_point{};
         document.language_active = result.value("available", true);
-        if (result.at("revision") == document.metadata.at("revision")) { document.diagnostics = result.value("diagnostics", Json::array()); }
+        if (result.at("revision") == document.metadata.at("revision")) { document.decorations.set_diagnostics(result.value("diagnostics", Json::array())); }
     }, {}});
 }
 
@@ -1075,7 +1074,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             git_diff_lines=std::move(lines);git_diff_layouts.clear();git_diff_layout_scale=0;
             for(auto& [id,document]:documents){
                 static_cast<void>(id);
-                if(document.path==git_path&&!git_staged&&!document.metadata.value("dirty",false))document.git_gutter=marks;
+                if(document.path==git_path&&!git_staged&&!document.metadata.value("dirty",false))document.decorations.set_gutter(marks);
             }
             prompt=Prompt::git_diff;prompt_choice=0;
         }
@@ -1768,6 +1767,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         if (input.button.button == SDL_BUTTON_LEFT) { dragging=false; dragging_scroll=false; dragging_sidebar=false; dragging_tab.clear(); }
         break;
     case SDL_EVENT_MOUSE_WHEEL: {
+        mouse_x=input.wheel.mouse_x*ratio_x;mouse_y=input.wheel.mouse_y*ratio_y;
         const auto direction = input.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0F : 1.0F;
         if (prompt != Prompt::none) {
             if(prompt==Prompt::policy_text && dialog && (SDL_GetModState()&SDL_KMOD_SHIFT)!=0){dialog->horizontal=std::clamp(dialog->horizontal-input.wheel.y*direction*40*scale,0.0F,64*1024*1024*scale);break;}
@@ -2278,15 +2278,13 @@ void EditorWindow::Impl::draw() {
                 if (document->editor_config.contains("tab_width")) { style.tab_size = static_cast<unsigned>(std::stoul(document->editor_config.at("tab_width").get<std::string>())); }
                 if (editor_settings.contains("fontFamilies")) { style.font_families = editor_settings.at("fontFamilies").get<std::vector<std::string>>(); }
                 if (document->syntax_revision == document->view_revision) {
-                    for (const auto& highlight : document->highlights) {
-                        const auto begin = std::max(line.begin, highlight.at("begin").get<std::size_t>());
-                        const auto end = std::min(line.end, highlight.at("end").get<std::size_t>());
-                        if (begin >= end) { continue; }
-                        const auto kind = highlight.at("kind").get<std::string>();
-                        const auto found = syntax_colors.find(kind);
+                    document->decorations.highlights.intersect(line.begin,line.end,[&](const auto& highlight) {
+                        const auto begin = std::max(line.begin, highlight.begin);
+                        const auto end = std::min(line.end, highlight.end);
+                        const auto found = syntax_colors.find(highlight.value);
                         const auto color = found == syntax_colors.end() ? foreground : found->second;
                         style.color_spans.push_back({begin - line.begin, end - line.begin, color});
-                    }
+                    });
                 }
                 line.layout.emplace(fonts.layout(line.text, style));
             }
@@ -2301,15 +2299,11 @@ void EditorWindow::Impl::draw() {
                 }
             }
             if (number == active_line) { rectangle(canvas, left, y, right - left, row_height, current_line_color); }
-            for (const auto& change : document->git_gutter) {
-                const auto begin = change.at("line").get<std::size_t>();
-                const auto count = std::max(std::size_t{1}, change.at("count").get<std::size_t>());
-                if (number >= begin && number - begin < count) {
-                    const auto kind = change.at("kind").get<std::string>();
-                    rectangle(canvas, left + 3 * scale, y, 3 * scale, kind == "deleted" ? 4 * scale : row_height,
-                              kind == "added" ? added_color : (kind == "deleted" ? error_color : changed_color));
-                }
-            }
+            document->decorations.gutter.intersect(number,number+1,[&](const auto& change) {
+                const auto& kind=change.value;
+                rectangle(canvas,left+3*scale,y,3*scale,kind=="deleted" ? 4*scale : row_height,
+                    kind=="added" ? added_color : (kind=="deleted" ? error_color : changed_color));
+            });
             label(canvas, std::to_string(number + 1), left + 15 * scale, y + 3 * scale, 12, number == active_line ? foreground : muted);
             const auto text_x = left + gutter - document->horizontal;
             canvas->save(); canvas->clipRect(SkRect::MakeLTRB(left + gutter - 5 * scale, y, right, y + row_height));
@@ -2328,18 +2322,14 @@ void EditorWindow::Impl::draw() {
                 }
             }
             line.layout->draw(canvas, text_x, y);
-            for (const auto& diagnostic : document->diagnostics) {
-                const auto& range = diagnostic.at("range");
-                const auto first = range.at("start").at("line").get<std::size_t>();
-                const auto last = range.at("end").at("line").get<std::size_t>();
-                if (number < first || number > last) { continue; }
-                const auto begin = number == first ? line.layout->byte_offset_from_utf16(range.at("start").at("character").get<std::size_t>()) : 0;
-                const auto end = number == last ? line.layout->byte_offset_from_utf16(range.at("end").at("character").get<std::size_t>()) : line.text.size();
-                const auto color = diagnostic.value("severity", 1) == 1 ? error_color : warning_color;
+            document->decorations.diagnostics.intersect(number,number+1,[&](const auto& diagnostic) {
+                const auto begin = number == diagnostic.begin ? line.layout->byte_offset_from_utf16(diagnostic.value.start_utf16) : 0;
+                const auto end = number == diagnostic.end-1 ? line.layout->byte_offset_from_utf16(diagnostic.value.end_utf16) : line.text.size();
+                const auto color = diagnostic.value.severity == 1 ? error_color : warning_color;
                 for (const auto& box : line.layout->selection_rects(begin, end)) {
                     rectangle(canvas, text_x + box.x, y + box.y + box.height - 2 * scale, std::max(scale, box.width), scale, color);
                 }
-            }
+            });
             for (std::size_t index = 0; index < selections.size(); ++index) {
                 const auto head = selections[index].at("head").get<std::size_t>();
                 if (head < line.begin || head > line.end) { continue; }

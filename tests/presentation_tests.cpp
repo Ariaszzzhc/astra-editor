@@ -2,9 +2,11 @@
 #include <astra/ui/picker_index.hpp>
 #include <astra/ui/workbench_layout.hpp>
 #include <astra/ui/text_line_index.hpp>
+#include <astra/ui/decoration_indexes.hpp>
 #include <doctest/doctest.h>
 
 #include <random>
+#include <limits>
 #include <set>
 #include <string>
 
@@ -25,6 +27,59 @@ TEST_CASE("presentation text panels index mixed line endings and preserve snapsh
     CHECK_THROWS_AS(lines.reset(std::string(8*1024*1024+1,'x')),std::length_error);
     CHECK(lines.size()==20001);
     lines.reset("");CHECK(lines.size()==1);CHECK(lines.bytes()==0);CHECK(lines.at(0).empty());
+}
+
+TEST_CASE("presentation range queries prune overlaps and retain shared snapshots") {
+    using Index=astra::ui::RangeIndex<std::size_t,astra::ui::Utf8ByteUnit>;
+    std::vector<Index::Entry> entries;
+    for(std::size_t i=0;i<99999;++i)entries.push_back({i*10,i*10+2,i});
+    entries.push_back({0,1000000,100000});Index index;index.reset(entries);
+    const auto retained=index;std::vector<std::size_t> found;
+    const auto statistics=index.intersect(999000,999003,[&](const auto& entry){found.push_back(entry.value);});
+    CHECK(found==std::vector<std::size_t>{100000,99900});CHECK(statistics.matches==2);CHECK(statistics.nodes<150);
+    CHECK(index.intersect(500,500,[](const auto&){}).nodes==0);CHECK(index.validate());
+    entries[50000].value=200000;index.reset(entries);
+    CHECK(index.shared_prefix_items(retained)==50001);CHECK(index.shared_suffix_items(retained)==49998);
+    found.clear();retained.intersect(500000,500001,[&](const auto& entry){found.push_back(entry.value);});
+    CHECK(found==std::vector<std::size_t>{100000,50000});
+    const auto unchanged=index;CHECK_THROWS_AS(index.reset({{2,2,0}}),std::invalid_argument);
+    CHECK(index.shared_prefix_items(unchanged)==100000);
+    CHECK_THROWS_AS(index.intersect(3,2,[](const auto&){}),std::invalid_argument);
+    index.clear();CHECK(index.size()==0);CHECK(retained.size()==100000);
+}
+
+TEST_CASE("presentation overlapping ranges match a flat reference after random replacements") {
+    using Index=astra::ui::RangeIndex<std::size_t,astra::ui::DocumentLineUnit>;
+    std::mt19937 random(0xA57A1D);Index index;
+    for(unsigned round=0;round<150;++round) {
+        const auto retained=index;std::vector<Index::Entry> entries;
+        for(std::size_t item=0;item<500;++item){const auto first=static_cast<std::size_t>(random()%5000);entries.push_back({first,first+1+random()%200,item});}
+        index.reset(entries);std::stable_sort(entries.begin(),entries.end(),[](const auto& left,const auto& right){return left.begin<right.begin;});
+        CHECK(index.validate());CHECK(retained.validate());
+        for(unsigned query=0;query<20;++query) {
+            const auto begin=static_cast<std::size_t>(random()%5200);const auto end=begin+random()%20;
+            std::vector<Index::Entry> expected,actual;
+            if(begin!=end)for(const auto& entry:entries)if(entry.begin<end && entry.end>begin)expected.push_back(entry);
+            index.intersect(begin,end,[&](const auto& entry){actual.push_back(entry);});CHECK(actual==expected);
+        }
+        const auto old=index;index.reset(entries);CHECK(index.shared_prefix_items(old)==entries.size());
+    }
+}
+
+TEST_CASE("presentation decoration adapters distinguish bytes lines and UTF16 columns") {
+    using Json=astra::protocol::Json;astra::ui::DecorationIndexes indexes;
+    indexes.set_highlights(Json::array({{{"begin",3},{"end",7},{"kind","string"}}}));
+    indexes.set_diagnostics(Json::array({{{"range",{{"start",{{"line",2},{"character",4}}},{"end",{{"line",4},{"character",6}}}}},{"severity",2}}}));
+    indexes.set_gutter(Json::array({{{"line",4},{"count",0},{"kind","deleted"}},{{"line",8},{"count",3},{"kind","added"}}}));
+    std::size_t matches{};indexes.highlights.intersect(4,5,[&](const auto& entry){++matches;CHECK(entry.begin==3);CHECK(entry.end==7);CHECK(entry.value=="string");});CHECK(matches==1);
+    matches=0;indexes.diagnostics.intersect(3,4,[&](const auto& entry){++matches;CHECK(entry.begin==2);CHECK(entry.end==5);CHECK(entry.value.start_utf16==4);CHECK(entry.value.end_utf16==6);CHECK(entry.value.severity==2);});CHECK(matches==1);
+    CHECK(indexes.diagnostics.intersect(5,6,[](const auto&){}).matches==0);
+    CHECK(indexes.gutter.intersect(4,5,[](const auto&){}).matches==1);CHECK(indexes.gutter.intersect(11,12,[](const auto&){}).matches==0);
+    const auto retained=indexes;
+    CHECK_THROWS_AS(indexes.set_highlights(Json::array({{{"begin",-1},{"end",3},{"kind","type"}}})),std::invalid_argument);
+    CHECK_THROWS_AS(indexes.set_gutter(Json::array({{{"line",std::numeric_limits<std::size_t>::max()},{"count",1},{"kind","added"}}})),std::length_error);
+    CHECK(indexes.highlights.shared_prefix_items(retained.highlights)==1);CHECK(indexes.gutter.shared_prefix_items(retained.gutter)==2);
+    indexes.set_diagnostics(Json::array());CHECK(indexes.diagnostics.size()==0);CHECK(retained.diagnostics.size()==1);
 }
 
 TEST_CASE("presentation confirmation layout shares bounded review and button regions") {

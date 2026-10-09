@@ -214,11 +214,28 @@ public:
         visit_range(root_, begin, end, function);
     }
 
+    // Predicate examines a subtree's cached summary. False must prove that no
+    // item in that subtree is wanted; true descends in source order. The visitor
+    // receives the original item ordinal, including skipped subtrees.
+    template <typename Predicate, typename Function>
+    void for_each_pruned(Predicate&& predicate, Function&& function) const {
+        const auto snapshot = root_;
+        visit_pruned(snapshot, 0, predicate, function);
+    }
+
     // Intended for tests and diagnostics; deliberately O(n).
     [[nodiscard]] bool validate() const { return validate_node(root_).valid; }
 
 private:
     NodePtr root_;
+
+    template <typename Predicate, typename Function>
+    static void visit_pruned(const NodePtr& node, std::size_t ordinal, Predicate& predicate, Function& function) {
+        if (!node || !std::invoke(predicate, node->summary)) { return; }
+        if (node->is_leaf()) { std::invoke(function, ordinal, *node->item); return; }
+        visit_pruned(node->left, ordinal, predicate, function);
+        visit_pruned(node->right, ordinal + node->left->count, predicate, function);
+    }
 
     [[nodiscard]] Summary shared_edge(const SumTree& other, bool reverse) const {
         Summary result{};

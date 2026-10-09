@@ -315,8 +315,37 @@ language/workspace/recovery GUI and CLI checks were rerun serially and passed.
 No platform outside Windows was tested. This checkpoint does not establish a
 new package or completion of the remaining architecture work.
 
+Native highlight, diagnostic and Git-gutter drawing now queries persistent
+measured range indexes instead of scanning JSON arrays for each visible line.
+Byte, document-line and UTF-16-column units stay explicit. Whole-list publication
+still validates/compares all items and may sort unordered input; unchanged edges
+share their prior subtrees. This does not claim every update is logarithmic.
+
+Windows Debug `build -y astra-tests gui-services-smoke gui-smoke
+gui-presentation-smoke` passed. The affected core/presentation run
+`--source-file=*sum_tree_tests.cpp,*presentation_tests.cpp,*document_tests.cpp,*rope_tests.cpp`
+passed **57 cases / 401,026 assertions**. It covers 150 random overlapping-range
+replacements (seed `0xA57A1D`), retained snapshots, exact shared edges, coordinate
+failures and a 100,000-record query visiting fewer than 150 tree nodes, including
+a range spanning the entire source, and root retention while a callback publishes
+a new tree. All three real GUI executables passed after
+integration, including actual clangd/Git rendering and TCP editing.
+
+An initial test build failed on MSVC's unreachable-code warning in a throwing
+predicate fixture; an explicit return type removed the dead return. A native
+presentation run then failed its Outline scroll assertion. Wheel routing relied
+on the previous motion position; it now uses SDL3's wheel-event coordinates.
+The regression deliberately sends a preceding motion in the editor and a wheel
+in Outline, retaining the same expected symbol offset and unchanged Explorer
+viewport assertions. The failed fixture remains under
+`build/graphics/gui-presentation-216199756990900`. Final presentation, language
+service/Git and TCP GUI checks all pass without empty-submit warnings. Regenerated
+completion and Git-diff GPU screenshots were visually inspected. These
+focused checks extend the preceding 456-case checkpoint; the complete current
+460-case Debug/Release suites and new package have not yet been run.
+
 Remaining work includes the rest of the public UI/provider contract,
-native component extraction, indexed diagnostic/display views, incremental
+native component extraction, incremental display layout, incremental
 Markdown syntax indexes, final acceptance and packaging of the
 new revision. Historical M0-M8 states below are not completion claims for this
 active revision.
@@ -377,7 +406,7 @@ retained rather than presented as current full-suite totals.
 | Production TCP GUI channel, `gui-smoke --tcp` | PASS | PASS |
 | Independent-process `tests/cli_smoke.ps1` | PASS | PASS |
 | `astra-core-benchmark`: 1/8/64 MiB | Not run; Release benchmark | PASS; see [PERFORMANCE.md](PERFORMANCE.md) |
-| Final ZIP in a freshly extracted directory | Not applicable | 6,527-file inventory, archive SHA-256, clean-source identity and isolated runtime smoke PASS after final file-I/O fix |
+| Earlier ZIP at `afcfbac` in a freshly extracted directory | Not applicable | 6,527-file inventory, archive SHA-256, clean-source identity and isolated runtime smoke PASS after final file-I/O fix |
 
 The earlier 408-case suite logs are `build/debug-integrated-results.txt` and
 `build/release-integrated-results.txt`. The corresponding configured binaries

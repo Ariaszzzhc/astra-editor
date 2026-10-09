@@ -47,3 +47,18 @@ materialize once on demand. `ParseOptions::incremental_analysis=false` preserves
 independent full-traversal oracle for differential tests. Error recovery reparses
 from scratch to preserve canonical Tree-sitter results. Markdown block/inline
 analysis has not yet migrated to these persistent semantic partitions.
+
+Native decorations use separate measured range indexes for UTF-8 highlight bytes
+and document-line diagnostic/Git ranges. Diagnostic columns remain UTF-16 until
+the shaped line converts them for drawing. Range summaries compose minimum begin,
+maximum end and count; half-open intersection predicates prune entire subtrees,
+including indexes containing long overlapping ranges. `SumTree::for_each_pruned`
+visits accepted leaves with their original ordinals; false predicates must prove
+that the entire subtree can be skipped.
+
+Publishing a range list validates it before mutation, preserves old snapshots,
+and shares equal prefix/suffix ranges. Publication compares the list in O(n) and
+sorts unordered input when needed; it is not a logarithmic whole-list update.
+Rendering queries cached summaries instead of scanning every JSON record for
+each visible row. Indexes reject negative/reversed coordinates, extent overflow
+and lists above 100,000 records without replacing the retained model.
