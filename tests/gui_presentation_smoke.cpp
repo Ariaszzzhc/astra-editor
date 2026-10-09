@@ -4,6 +4,7 @@
 #include "support/temporary_directory.hpp"
 
 #include <SDL3/SDL.h>
+#include <nlohmann/json.hpp>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -52,6 +53,7 @@ void run(const fs::path& workspace) {
     for(int i=0;i<files;++i) { std::ofstream output(workspace/"generated"/("item"+std::to_string(i)+".txt"));output<<"indexed row\n"; }
     for(const auto* name:{"one.cpp","two_with_a_long_name.cpp","three.cpp"}) {
         std::ofstream output(workspace/name);output<<"// Astra workspace\nint answer(int input) { return input + 42; }\n";
+        if(std::string_view(name)=="one.cpp")for(int i=0;i<80;++i)output<<"int outline"<<i<<"() { return "<<i<<"; }\n";
     }
     {std::ofstream output(workspace/".clangd");output<<"CompileFlags:\n  Add: [-nostdinc, -nostdinc++]\n";}
     astra::service::ServiceHostOptions service;
@@ -91,6 +93,20 @@ void run(const fs::path& workspace) {
         require(window.layout().sidebar.width>original.layout.sidebar.width+70*original.layout.scale,"Sidebar splitter did not resize the native layout");
         click(window,window.layout().outline_header.x+60*original.layout.scale,window.layout().outline_header.y+10*original.layout.scale);
         require(window.layout().outline_rows.height>0,"Outline header did not expand its native region");
+        const auto before_outline=window.view_state();
+        require(before_outline.outline_total==81 && before_outline.visible_outline_rows<20,"Outline did not request a bounded visible symbol page");
+        mouse(window,SDL_EVENT_MOUSE_MOTION,window.layout().outline_rows.x+40*original.layout.scale,window.layout().outline_rows.y+12*original.layout.scale);
+        SDL_Event wheel{};wheel.type=SDL_EVENT_MOUSE_WHEEL;wheel.wheel.windowID=SDL_GetWindowID(window.window());wheel.wheel.y=-20;
+        require(SDL_PushEvent(&wheel),"Cannot enqueue Outline scrolling");settle(window);
+        require(window.view_state().outline_first==60,"Outline wheel did not seek its independent symbol index");
+        require(window.view_state().file_first==before_outline.file_first,"Outline scrolling moved the Explorer viewport");
+        window.request_screenshot("build/graphics/gui-workbench-outline.png");settle(window);
+        click(window,window.layout().outline_rows.x+70*original.layout.scale,window.layout().outline_rows.y+12*original.layout.scale);
+        auto verify=host->submit(nlohmann::json{{"jsonrpc","2.0"},{"id","outline-acceptance"},{"method","document.get"},{"params",{{"id",one}}}}.dump());
+        require(verify.wait_for(std::chrono::seconds(5))==std::future_status::ready,"Outline verification timed out");
+        const auto response=verify.get();require(response.has_value(),"Outline verification has no reply");
+        const auto metadata=nlohmann::json::parse(*response).at("result");
+        require(metadata.at("selections").front().at("anchor")==astra::io::read_file(workspace/"one.cpp").text.find("outline59"),"Scrolled Outline pointer selected a different symbol");
         window.open_path("two_with_a_long_name.cpp");settle(window);const auto two=window.active_document_id();
         window.open_path("three.cpp");settle(window);const auto three=window.active_document_id();
         auto state=window.view_state();
@@ -166,6 +182,6 @@ int main() {
         const auto issues=astra::test::cleanup_owned_directory(workspace,parent,"gui-presentation-");
         for(const auto& issue:issues) std::cerr<<issue.path<<": "<<issue.message<<'\n';
         require(issues.empty(),"Presentation fixture cleanup failed");
-        std::cout<<"Windows native workbench: 1505 indexed files, folder collapse, splitter, outline, shaped tabs, drag reorder, overflow, resize, same-frame open/save focus, async dialog cancellation and shutdown: PASS\n";return 0;
+        std::cout<<"Windows native workbench: 1505 indexed files, folder collapse, splitter, paged Outline scrolling/selection, shaped tabs, drag reorder, overflow, resize, same-frame open/save focus, async picker/text/review cancellation and shutdown: PASS\n";return 0;
     } catch(const std::exception& error) {std::cerr<<"GUI presentation failed: "<<error.what()<<"\nPreserved fixture: "<<workspace<<'\n';return 1;}
 }

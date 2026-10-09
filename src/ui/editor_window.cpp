@@ -80,6 +80,7 @@ struct EditorWindow::Impl {
         std::string syntax_state{"pending"};
         Json highlights = Json::array();
         Json outline = Json::array();
+        std::size_t outline_scroll{},outline_begin{},outline_total{};
         bool needs_syntax{true};
         bool syntax_loading{};
         bool reveal_horizontal{};
@@ -683,10 +684,13 @@ void EditorWindow::Impl::fetch_syntax() {
         !requests.empty() || active_request || document->lines.empty()) { return; }
     const auto id = active_id;
     const auto revision = document->view_revision;
+    const auto outline_begin=document->outline_scroll;
+    const auto outline_limit=static_cast<std::size_t>(std::ceil(geometry.outline_rows.height/geometry.sidebar_row_height))+1;
+    const auto include_outline=show_outline && geometry.outline_rows.height>0;
     document->syntax_loading = true;
     enqueue({"document.syntax", {{"id", id}, {"baseRevision", revision}, {"begin", document->lines.begin()->second.begin},
-                                {"end", document->lines.rbegin()->second.end}}, id, false,
-        [this, id, revision](const Json& result) {
+                                {"end", document->lines.rbegin()->second.end},{"outlineBegin",outline_begin},{"outlineLimit",outline_limit},{"includeOutline",include_outline}}, id, false,
+        [this, id, revision,outline_limit,include_outline](const Json& result) {
             if (!documents.contains(id)) { return; }
             auto& document = documents.at(id);
             document.syntax_loading = false;
@@ -709,6 +713,12 @@ void EditorWindow::Impl::fetch_syntax() {
             document.syntax_revision = revision; document.needs_syntax = false;
             document.highlights = result.value("highlights", Json::array());
             document.outline = result.value("outline", Json::array());
+            const auto page=result.value("outlinePage",Json::object());
+            document.outline_begin=page.value("offset",std::size_t{0});document.outline_total=page.value("total",document.outline.size());
+            if(document.outline_scroll>=document.outline_total)document.outline_scroll=document.outline_total>outline_limit ? document.outline_total-outline_limit : 0;
+            const auto current_limit=static_cast<std::size_t>(std::ceil(geometry.outline_rows.height/geometry.sidebar_row_height))+1;
+            const auto want_outline=show_outline && geometry.outline_rows.height>0;
+            document.needs_syntax=want_outline!=include_outline || (want_outline && (document.outline_scroll!=document.outline_begin || current_limit>outline_limit));
             for (auto& [number, line] : document.lines) { static_cast<void>(number); line.layout.reset(); }
         }, {}});
 }
@@ -1638,7 +1648,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             break;
         }
         if (geometry.outline_rows.contains(mouse_x,mouse_y)) {
-            if (const auto* document=current();document && document->syntax_revision==document->view_revision) {
+            if (const auto* document=current();document && document->syntax_revision==document->view_revision && document->outline_begin==document->outline_scroll) {
                 const auto index=static_cast<std::size_t>((mouse_y-geometry.outline_rows.y)/geometry.sidebar_row_height);
                 if (index<document->outline.size()) {
                     const auto& symbol=document->outline[index];
@@ -1704,6 +1714,14 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         if (geometry.tabs.contains(mouse_x,mouse_y)) {
             const auto direction_step=input.wheel.y*direction<0 ? 1 : -1;
             first_tab=static_cast<std::size_t>(std::clamp(static_cast<long long>(first_tab)+direction_step,0LL,static_cast<long long>(tabs.empty() ? 0 : tabs.size()-1))); reveal_tab=false;
+        } else if (geometry.outline_rows.contains(mouse_x,mouse_y)) {
+            if(auto* document=current()){
+                const auto shift=static_cast<long long>(std::round(input.wheel.y*direction*3));
+                const auto count=static_cast<std::size_t>(std::ceil(geometry.outline_rows.height/geometry.sidebar_row_height));
+                const auto maximum=document->outline_total>count ? document->outline_total-count : 0;
+                const auto next=static_cast<std::size_t>(std::clamp(static_cast<long long>(document->outline_scroll)-shift,0LL,static_cast<long long>(maximum)));
+                if(next!=document->outline_scroll){document->outline_scroll=next;document->needs_syntax=true;}
+            }
         } else if (geometry.sidebar.contains(mouse_x,mouse_y)) {
             const auto shift = static_cast<long long>(std::round(input.wheel.y * direction * 3));
             tree_scroll = static_cast<std::size_t>(std::max(0LL, static_cast<long long>(tree_scroll) - shift));
@@ -2313,7 +2331,7 @@ void EditorWindow::Impl::draw() {
         if (const auto* document = current()) {
             const auto ox=geometry.outline_rows.x+16*scale, oy=geometry.outline_rows.y;
             canvas->save(); canvas->clipRect(SkRect::MakeXYWH(geometry.outline_rows.x,oy,geometry.outline_rows.width,geometry.outline_rows.height));
-            if (document->syntax_revision != document->view_revision || document->syntax_state == "pending") {
+            if (document->syntax_revision != document->view_revision || document->syntax_state == "pending" || document->outline_begin!=document->outline_scroll) {
                 label(canvas, "Parsing document...", ox, oy+6*scale, 12, muted);
             } else if (document->outline.empty()) {
                 label(canvas, document->syntax_state == "unsupported" ? "No parser for this file type" : "No symbols", ox, oy+6*scale, 12, muted);
@@ -2396,7 +2414,12 @@ std::string EditorWindow::last_error() const { return impl_->error; }
 std::string EditorWindow::status_text() const { return impl_->status; }
 std::string EditorWindow::workspace_notice() const { return impl_->workspace_notice(); }
 WorkbenchLayout EditorWindow::layout() const { return impl_->geometry; }
-WorkbenchViewState EditorWindow::view_state() const { return {impl_->geometry,impl_->tab_strip,impl_->tabs,impl_->file_tree.size()}; }
+WorkbenchViewState EditorWindow::view_state() const {
+    WorkbenchViewState result{impl_->geometry,impl_->tab_strip,impl_->tabs,impl_->file_tree.size()};
+    result.file_first=impl_->tree_scroll;
+    if(const auto* document=impl_->current()){result.outline_first=document->outline_begin;result.outline_total=document->outline_total;result.visible_outline_rows=document->outline.size();}
+    return result;
+}
 bool EditorWindow::pump() {
     if (!impl_->running) {
         if (!impl_->stopping_workbench) {

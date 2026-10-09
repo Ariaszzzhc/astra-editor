@@ -213,6 +213,14 @@ source to 8 MiB and 100,000 lines; diff shaping caches only a bounded visible-ro
 working set. The clipboard adapter reads/writes at most 8 MiB and rejects
 oversized/NUL text rather than silently truncating it.
 
+`document.syntax` accepts UTF-8 highlight `begin`/`end` bounds plus
+`outlineBegin` (nonnegative, default 0), `outlineLimit` (0..1000, default 1000)
+and `includeOutline` (boolean, default true). Ready responses include
+`outlinePage: {offset, total, nextOffset}`; an offset beyond the end clips to the
+total, and `nextOffset` is null at the end. Omitting outline rows still returns
+their total. Native Outline requests its viewport range through the measured
+semantic index and rejects obsolete pages for pointer selection.
+
 `astra.ui.registerView(spec, provider)` supplies an async model provider;
 `refresh(id, parameters)` cancels older refreshes and only the current generation
 can publish. Current native sidebar model kinds are `explorer`, `search`, `git`.

@@ -30,6 +30,8 @@ struct WorkbenchViewState {
     TabStrip tab_strip;
     std::vector<std::string> tabs;
     std::size_t visible_file_rows{};
+    std::size_t outline_first{},outline_total{},visible_outline_rows{};
+    std::size_t file_first{};
 };
 
 // Main-thread editor front end. Every document change goes through EditorChannel.

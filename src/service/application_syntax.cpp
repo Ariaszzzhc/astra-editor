@@ -43,12 +43,15 @@ std::size_t offset_field(const Json& params, const char* key, std::size_t fallba
 } // namespace
 
 Json ApplicationService::syntax_view(const Json& params) {
-    allowed_fields(params, {"id", "baseRevision", "begin", "end", "language"});
+    allowed_fields(params, {"id", "baseRevision", "begin", "end", "language", "outlineBegin", "outlineLimit", "includeOutline"});
     const auto& document = editor_.find_document(params);
     EditorService::require_revision(document, params);
     const auto snapshot = document.snapshot();
     const auto begin = offset_field(params, "begin", 0);
     const auto end = offset_field(params, "end", snapshot.text.size_bytes());
+    const auto outline_begin=offset_field(params,"outlineBegin",0),outline_limit=offset_field(params,"outlineLimit",1000);
+    if(outline_limit>1000 || (params.contains("includeOutline") && !params.at("includeOutline").is_boolean()))throw RpcError(-32602,"Invalid syntax outline page");
+    const auto include_outline=params.value("includeOutline",true);
     if (begin > end || end > snapshot.text.size_bytes() || !snapshot.text.is_boundary(begin) || !snapshot.text.is_boundary(end)) {
         throw RpcError(-32602, "Invalid syntax viewport");
     }
@@ -81,8 +84,10 @@ Json ApplicationService::syntax_view(const Json& params) {
             highlights.push_back({{"begin", span.range.begin.value}, {"end", span.range.end.value}, {"kind", highlight_name(span.kind)}});
         }
         auto outline = Json::array();
-        if(syntax.outline_size()>1000)result["outlineTruncated"]=true;
-        for (const auto& item : syntax.outline_range(0,std::min(syntax.outline_size(),std::size_t{1000}))) {
+        const auto total=syntax.outline_size(),first=std::min(outline_begin,total),last=first+std::min(include_outline ? outline_limit : 0,total-first);
+        result["outlinePage"]={{"offset",first},{"total",total},{"nextOffset",last<total ? Json(last) : Json(nullptr)}};
+        if(last-first<total)result["outlineTruncated"]=true;
+        for (const auto& item : syntax.outline_range(first,last)) {
             outline.push_back({{"name", item.name}, {"kind", outline_name(item.kind)}, {"begin", item.range.begin.value},
                                {"end", item.range.end.value}, {"selectionBegin", item.selection.begin.value},
                                {"selectionEnd", item.selection.end.value}, {"depth", item.depth}});

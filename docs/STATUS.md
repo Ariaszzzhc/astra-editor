@@ -235,6 +235,20 @@ recovery uses a fresh tree and honestly reports `incremental=false`. These faili
 runs preceded the passing suites. A warning-as-error for a shadowed local name was
 also fixed before rebuilding. The final idle-frame Skia warning remains.
 
+Outline now requests only its visible range and scrolls independently of the
+Explorer. `document.syntax` exposes bounded outline paging and an option to omit
+outline rows while retaining the total count. A stale page cannot select a symbol.
+
+Windows Debug `build -y astra-tests gui-presentation-smoke gui-services-smoke
+gui-workspace-smoke` passed. `--test-case=application syntax*` passed **3 cases /
+180 assertions**, including 1,105 declarations, offsets beyond the first 1,000,
+empty/hidden pages and invalid parameters. All three native GUI checks passed;
+the presentation check was rerun after strengthening its independent-scroll
+assertion to compare Explorer viewport offsets. Actual pointer selection after
+scrolling selects the intended symbol. `build/graphics/gui-workbench-outline.png`
+was visually inspected. An initial build failed on a missing explicit JSON test
+header, corrected before these checks. The final idle-frame Skia warning remains.
+
 Remaining work includes the rest of the public UI/provider contract,
 native component extraction, indexed diagnostic/display views, incremental
 syntax indexes, full Debug/Release and native GUI acceptance, and packaging the

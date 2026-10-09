@@ -475,6 +475,28 @@ TEST_CASE("application syntax powers real highlight outline and textobject comma
     CHECK(syntax["highlights"][0]["kind"] == "number");
 }
 
+TEST_CASE("application syntax pages indexed outlines beyond the default result limit") {
+    AppFiles files;std::string source;
+    for(int i=0;i<1105;++i)source+="int function"+std::to_string(i)+"() { return "+std::to_string(i)+"; }\n";
+    files.write("large.cpp",source);LiveApp app(files.root());
+    const auto document=app.done("workspace.open",{{"path","large.cpp"}});const auto id=document.at("id");
+    const auto started=app.call("document.syntax",{{"id",id},{"baseRevision","0"},{"begin",0},{"end",0}});
+    CHECK(app.wait(started).at("state")=="completed");
+    const auto initial=app.call("document.syntax",{{"id",id},{"baseRevision","0"},{"begin",0},{"end",0}});
+    REQUIRE(initial.at("state")=="ready");CHECK(initial.at("outline").size()==1000);CHECK(initial.at("outlinePage").at("total")==1105);
+    const auto page=app.call("document.syntax",{{"id",id},{"baseRevision","0"},{"begin",0},{"end",0},{"outlineBegin",1099},{"outlineLimit",6}});
+    REQUIRE(page.at("outline").size()==6);CHECK(page.at("outlinePage").at("offset")==1099);CHECK(page.at("outlinePage").at("nextOffset").is_null());
+    CHECK(page.at("outline").front().at("name")=="function1099");CHECK(page.at("outline").back().at("name")=="function1104");
+    CHECK(page.at("highlights").empty());
+    const auto hidden=app.call("document.syntax",{{"id",id},{"baseRevision","0"},{"includeOutline",false},{"begin",0},{"end",0}});
+    CHECK(hidden.at("outline").empty());CHECK(hidden.at("outlinePage").at("total")==1105);
+    const auto end=app.call("document.syntax",{{"id",id},{"baseRevision","0"},{"outlineBegin",2000},{"outlineLimit",10},{"begin",0},{"end",0}});
+    CHECK(end.at("outline").empty());CHECK(end.at("outlinePage").at("offset")==1105);
+    CHECK(app.response("document.syntax",{{"id",id},{"baseRevision","0"},{"outlineLimit",1001}}).at("error").at("code")==-32602);
+    CHECK(app.response("document.syntax",{{"id",id},{"baseRevision","0"},{"outlineBegin",-1}}).at("error").at("code")==-32602);
+    CHECK(app.response("document.syntax",{{"id",id},{"baseRevision","0"},{"includeOutline","no"}}).at("error").at("code")==-32602);
+}
+
 TEST_CASE("application editing policy is shared by direct and scripted commands") {
     AppFiles files;
     files.write(".editorconfig", "root=true\n[*.py]\nindent_style=space\nindent_size=2\nend_of_line=crlf\n");
