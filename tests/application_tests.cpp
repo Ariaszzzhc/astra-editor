@@ -348,6 +348,51 @@ TEST_CASE("application user scripts override defaults through the production dis
     CHECK(app.call("document.get", {{"id", doc["id"]}})["text"] == "user");
 }
 
+TEST_CASE("application async scripts await real open edit and durable save") {
+    AppFiles files;
+    files.write("async.txt", "before");
+    LiveApp app(files.root(), {},
+        "astra.registerCommand('workflow',async()=>{"
+        "const doc=await astra.request('workspace.open',{path:'async.txt'});"
+        "const edit=await astra.request('document.insert',{id:doc.id,baseRevision:doc.revision,text:'after '});"
+        "await astra.request('workspace.save',{id:edit.id,baseRevision:edit.revision});"
+        "return await astra.request('document.get',{id:doc.id});});");
+    const auto result = app.done("script.command", {{"name", "workflow"}});
+    CHECK(result.at("text") == "after before");
+    CHECK_FALSE(result.at("dirty").get<bool>());
+    CHECK(files.read("async.txt") == "after before");
+}
+
+TEST_CASE("application pending scripts do not block input and cancellation stops later edits") {
+    AppFiles files;
+    LiveApp app(files.root(), {},
+        "astra.registerCommand('later',async p=>{await astra.sleep(200);"
+        "return await astra.request('document.insert',{id:p.id,baseRevision:p.revision,text:'late'});});");
+    const auto document = app.call("document.create", {{"text", "original"}});
+    const auto pending = app.call("script.command", {{"name", "later"}, {"params", document}});
+    REQUIRE(pending.contains("operationId"));
+    const auto changed = app.call("document.insert", {{"id", document.at("id")}, {"baseRevision", "0"}, {"text", "now "}});
+    CHECK(changed.at("revision") == "1");
+    CHECK(app.call("operation.cancel", {{"id", pending.at("operationId")}}).at("cancelRequested").get<bool>());
+    CHECK(app.wait(pending).at("state") == "cancelled");
+    std::this_thread::sleep_for(std::chrono::milliseconds(220));
+    CHECK(app.call("document.get", {{"id", document.at("id")}}).at("text") == "now original");
+}
+
+TEST_CASE("application async edits reject revisions made stale while awaiting") {
+    AppFiles files;
+    LiveApp app(files.root(), {},
+        "astra.registerCommand('stale',async p=>{await astra.sleep(40);"
+        "return await astra.request('document.insert',{id:p.id,baseRevision:p.revision,text:'stale'});});");
+    const auto document = app.call("document.create", {{"text", "original"}});
+    const auto pending = app.call("script.command", {{"name", "stale"}, {"params", document}});
+    static_cast<void>(app.call("document.insert", {{"id", document.at("id")}, {"baseRevision", "0"}, {"text", "current "}}));
+    const auto failed = app.wait(pending);
+    REQUIRE(failed.at("state") == "failed");
+    CHECK(failed.at("error").at("name") == "ServiceError");
+    CHECK(app.call("document.get", {{"id", document.at("id")}}).at("text") == "current original");
+}
+
 TEST_CASE("application rejected scheduler surfaces failed operations without an eternal pending state") {
     AppFiles files;
     ApplicationService app(files.root(), [](auto, auto) {
@@ -375,6 +420,13 @@ TEST_CASE("bundled JavaScript defaults execute editing and respect incremental c
     CHECK(app.call("document.get", {{"id", doc["id"]}})["text"] == "  ");
     result = app.call("script.command", {{"name", "editor.undo"}, {"params", {{"id", doc["id"]}, {"baseRevision", result["revision"]}}}});
     CHECK(app.call("document.get", {{"id", doc["id"]}})["text"] == "");
+}
+
+TEST_CASE("application asynchronous script results preserve scalar and array values") {
+    AppFiles files;
+    LiveApp app(files.root(), {}, "astra.registerCommand('scalar',async()=>{await astra.sleep(30);return 42}); astra.registerCommand('array',async()=>{await astra.sleep(30);return [1,2,3]});");
+    CHECK(app.done("script.command", {{"name", "scalar"}}) == 42);
+    CHECK(app.done("script.command", {{"name", "array"}}) == Json::array({1,2,3}));
 }
 
 TEST_CASE("application syntax powers real highlight outline and textobject commands") {

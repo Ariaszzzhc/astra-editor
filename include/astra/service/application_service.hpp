@@ -93,6 +93,8 @@ private:
     void register_git_methods(const std::filesystem::path& resource_directory);
     [[nodiscard]] Json git_request(std::string_view method, const Json& params);
     [[nodiscard]] Json script_request(std::string_view method, const Json& params);
+    [[nodiscard]] Json script_command(const Json& params);
+    void poll_scripts();
     [[nodiscard]] editing::Options command_defaults(const Document& document) const;
     void register_recovery_methods(const std::filesystem::path& directory);
     void poll_recovery();
@@ -116,6 +118,8 @@ private:
     std::shared_ptr<workspace::Workspace> workspace_;
     Scheduler scheduler_;
     std::unique_ptr<script::Runtime> script_;
+    std::map<std::string, script::Runtime::TaskId> script_tasks_;
+    bool polling_scripts_{};
     std::map<std::uint64_t, FileBinding> files_;
     std::map<std::string, std::shared_ptr<Operation>> operations_;
     std::vector<Json> notifications_;

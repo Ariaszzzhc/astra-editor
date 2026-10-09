@@ -153,7 +153,7 @@ ApplicationService::ApplicationService(const fs::path& root, Scheduler scheduler
     editor_.command_defaults_ = [this](const Document& document) { return command_defaults(document); };
     rpc.register_method("script.command", [this](const Json& p) {
         fields(p, {"name", "params"});
-        try { return script_->execute_command(string_field(p, "name"), p.value("params", Json::object())); }
+        try { return script_command(p); }
         catch (const script::ScriptError& error) { throw RpcError(-32020, error.what()); }
     });
     rpc.register_method("script.settings", [this](const Json& p) {
@@ -228,8 +228,72 @@ Json ApplicationService::script_request(std::string_view method, const Json& par
     return (*response)["result"];
 }
 
+Json ApplicationService::script_command(const Json& params) {
+    // Fast commands may settle in the same dispatch without waiting. A command
+    // awaiting a worker becomes a regular, cancellable service operation.
+    while (operations_.size() >= 32) {
+        const auto completed = std::find_if(operations_.begin(), operations_.end(), [](const auto& entry) {
+            return entry.second->state != "pending";
+        });
+        if (completed == operations_.end()) { break; }
+        operations_.erase(completed);
+    }
+    if (script_tasks_.size() >= 8 || operations_.size() >= 32) {
+        throw RpcError(-32004, "Script operation capacity exceeded");
+    }
+    const auto task = script_->start_command(string_field(params, "name"), params.value("params", Json::object()));
+    for (int tick = 0; tick < 4; ++tick) {
+        script_->poll();
+        for (const auto& error : script_->take_errors()) {
+            notifications_.push_back(protocol::make_notification("script.error", error));
+        }
+        if (auto outcome = script_->take_result(task)) {
+            if (outcome->error) {
+                throw RpcError(outcome->error->value("code", -32020),
+                               outcome->error->value("message", std::string("Script failed")), *outcome->error);
+            }
+            return std::move(outcome->value);
+        }
+    }
+    if (next_operation_ == std::numeric_limits<std::uint64_t>::max()) {
+        script_->cancel(task); static_cast<void>(script_->take_result(task));
+        throw RpcError(-32004, "Operation ID capacity exceeded");
+    }
+    auto operation = std::make_shared<Operation>();
+    operation->id = std::to_string(next_operation_++); operation->kind = "script";
+    operations_.emplace(operation->id, operation);
+    script_tasks_.emplace(operation->id, task);
+    return {{"operationId", operation->id}};
+}
+
+void ApplicationService::poll_scripts() {
+    if (polling_scripts_ || !script_) { return; }
+    polling_scripts_ = true;
+    try {
+        script_->poll();
+        for (const auto& error : script_->take_errors()) {
+            notifications_.push_back(protocol::make_notification("script.error", error));
+        }
+        for (auto i = script_tasks_.begin(); i != script_tasks_.end();) {
+            auto outcome = script_->take_result(i->second);
+            if (!outcome) { ++i; continue; }
+            auto operation = operations_.at(i->first);
+            i = script_tasks_.erase(i);
+            operation->result = std::move(outcome->value);
+            if (outcome->error) {
+                if (outcome->error->value("name", std::string{}) == "AbortError") { operation->cancellation.request_stop(); }
+                finish_operation(operation, std::make_exception_ptr(script::ScriptError(
+                    outcome->error->value("message", std::string("Script failed")))));
+                operation->error = std::move(*outcome->error);
+            } else { finish_operation(operation, nullptr); }
+        }
+    } catch (...) { polling_scripts_ = false; throw; }
+    polling_scripts_ = false;
+}
+
 std::optional<std::string> ApplicationService::dispatch_text(std::string_view body) {
     poll_operations();
+    poll_scripts();
     poll_language();
     auto result = editor_.dispatch_text(body);
     poll_language();
@@ -237,6 +301,7 @@ std::optional<std::string> ApplicationService::dispatch_text(std::string_view bo
 }
 std::optional<Json> ApplicationService::dispatch(const Json& request) {
     poll_operations();
+    poll_scripts();
     poll_language();
     auto result = editor_.dispatch(request);
     poll_language();
@@ -245,6 +310,7 @@ std::optional<Json> ApplicationService::dispatch(const Json& request) {
 
 std::vector<std::string> ApplicationService::take_notifications() {
     poll_operations();
+    poll_scripts();
     poll_language();
     poll_watch();
     poll_recovery();
@@ -270,10 +336,20 @@ std::vector<std::string> ApplicationService::take_notifications() {
                 }
             }
         }
+        try { script_->emit(event.at("method").get<std::string>(), event.at("params")); }
+        catch (const script::ScriptError& error) {
+            notifications_.push_back(protocol::make_notification("script.error", {{"message", error.what()}}));
+        }
         result.push_back(event.dump());
     }
-    for (const auto& event : notifications_) { result.push_back(event.dump()); }
-    notifications_.clear();
+    auto additional = std::exchange(notifications_, {});
+    for (const auto& event : additional) {
+        try { script_->emit(event.at("method").get<std::string>(), event.at("params")); }
+        catch (const script::ScriptError& error) {
+            result.push_back(protocol::make_notification("script.error", {{"message", error.what()}}).dump());
+        }
+        result.push_back(event.dump());
+    }
     return result;
 }
 
@@ -374,6 +450,7 @@ Json ApplicationService::operation_get(const Json& params) {
     const auto offset = number(params, "offset", 0, std::numeric_limits<std::size_t>::max());
     const auto limit = number(params, "limit", 256, 1024);
     if (!limit) { invalid("Page limit must be positive"); }
+    if (!operation.result.is_object()) { result["result"] = operation.result; return result; }
     result["result"] = Json::object();
     for (auto field = operation.result.begin(); field != operation.result.end(); ++field) {
         if (field.key() != "entries" && field.key() != "matches") { result["result"][field.key()] = field.value(); }
@@ -396,6 +473,7 @@ Json ApplicationService::operation_cancel(const Json& params) {
     const auto found = operations_.find(string_field(params, "id"));
     if (found == operations_.end()) { throw RpcError(-32002, "Operation expired or does not exist"); }
     found->second->cancellation.request_stop();
+    if (const auto task = script_tasks_.find(found->first); task != script_tasks_.end()) { script_->cancel(task->second); }
     return {{"id", found->first}, {"state", found->second->state}, {"cancelRequested", true}};
 }
 

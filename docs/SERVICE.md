@@ -157,3 +157,27 @@ the effective configuration and command names to clients, and `script.command`
 executes a registered command. QuickJS memory, stack, execution time, JSON size,
 and pending jobs are bounded. A poisoned Promise queue requires runtime reload;
 script failure does not replace or corrupt a document.
+
+`astra.request(method, parameters, {signal, timeoutMs, raw})` always returns a Promise.
+Dispatch is deferred to an owner-loop tick; it never waits for a transport or
+worker future. Service operations are awaited automatically, including paged
+results, up to the JSON byte budget. Service errors reject with `code`, `message`
+and optional `data`. `AbortController` and `astra.sleep(milliseconds, options)`
+support cancellation, and `astra.on(event, callback)` / `astra.off(event, token)`
+subscribe to service notifications. Cancellation stops queued work and requests
+worker cancellation; it cannot roll back an operation that already committed.
+
+```javascript
+astra.registerCommand("custom.save", async ({id, baseRevision}) => {
+    const saved = await astra.request("workspace.save", {id, baseRevision}, {timeoutMs: 10000});
+    return saved;
+});
+```
+
+A `script.command` awaiting work returns a normal `operationId`; clients use the
+same completion notifications and `operation.get` / `operation.cancel` semantics
+as for native operations. Fast commands may return their result directly.
+Runtime embedders use `start_command`, `poll`, and `take_result`; the synchronous
+evaluation helpers are only for immediately settling setup/test scripts.
+Registered ES modules cannot load arbitrary filesystem paths. Module setup is
+synchronous; I/O belongs in async commands and event handlers.

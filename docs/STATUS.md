@@ -2,6 +2,53 @@
 
 Product contract: `EditorDoc.md`. Product name: Astra (confirmed by the user).
 
+## Active architecture and workbench revision (2026-10-09)
+
+The previous Windows acceptance below covers the earlier implementation. It does
+not establish acceptance of the requested JS-owned workbench, asynchronous user
+API, cohesive UI, or indexed incremental presentation model. That revision is
+**in progress**, and is not a completed product or milestone.
+
+Implemented so far: Promise-based script requests, owner-loop polling of real
+service operations, paged result collection with byte limits, cancellation,
+timeouts, async command operations, event subscriptions and registered ES modules.
+Native document edits still validate their base revision at commit time.
+
+Windows Debug commands:
+
+```powershell
+./scripts/xmake.ps1 f -m debug -y
+./scripts/xmake.ps1 build -y astra-tests
+./build/windows/x64/debug/astra-tests.exe --no-version '--test-case=QuickJS*,JavaScript*,application async*,application pending*,application user scripts*,application bundled*,application editing policy*'
+```
+
+The focused run passed 23 cases / 526 assertions. New cases use delayed real
+futures and the real libuv/document/filesystem service: independent requests,
+cancelled late responses, cancelled edits, stale edits across await, and durable
+open/edit/save workflows. An earlier focused run failed two error-recovery cases
+because unserializable results remained in the task table; they now settle as
+serialization errors and both regressions pass. The first build reported an
+empty linker failure; an immediate verbose retry succeeded, followed by another
+successful rebuild. Neither failure is hidden by the final passing result.
+
+The expanded affected Windows Debug run (`--test-case=QuickJS*,JavaScript*,application*`)
+passed **81 cases / 3,875 assertions** after a full rebuild. The first sandboxed
+run failed four real clangd/TCP cases (including a denied loopback connection);
+all four passed with loopback permission, as did the expanded suite. A later
+empty incremental-link failure produced an executable that crashed before test
+enumeration (exit `0x80000003`). `./scripts/xmake.ps1 build -r -v -y astra-tests`
+rebuilt it successfully; the full log is `build/async-rebuild-debug.log`.
+Additional regressions cover scalar/array async results, async event errors,
+request cancellation after a synchronous throw, shutdown, and bounded streaming
+pages with early-consumer cancellation. These checks establish the async
+foundation only; the active workbench revision remains in progress.
+
+Remaining work includes the client JS workbench and public UI providers,
+component/layout/theme/icon migration, virtualized indexed views, incremental
+syntax indexes, full Debug/Release and native GUI acceptance, and packaging the
+new revision. Historical M0-M8 states below are not completion claims for this
+active revision.
+
 The final Windows integrated suites pass in both configurations: **408 cases /
 211,698 assertions in Debug** and **408 cases / 211,712 assertions in Release**.
 The native renderer, text layout, four editor GUI workflows and production TCP

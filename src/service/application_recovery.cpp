@@ -162,10 +162,22 @@ std::vector<RecoveryRecord> ApplicationService::capture_recovery() const {
 }
 
 void ApplicationService::checkpoint_for_shutdown() {
-    if (!recovery_) { return; }
+    std::exception_ptr script_failure;
+    try {
+        script_->shutdown();
+        // The in-process dispatcher returns ready futures; workers have already
+        // drained before this final hook. No transport wait is needed here.
+        for (int tick = 0; tick < 256 && !script_->idle(); ++tick) { script_->poll(); }
+        if (!script_->idle()) { throw script::ScriptError("Script shutdown did not drain within its job budget"); }
+    } catch (...) { script_failure = std::current_exception(); }
+    if (!recovery_) {
+        if (script_failure) { std::rethrow_exception(script_failure); }
+        return;
+    }
     if (recovery_->next_epoch == std::numeric_limits<std::uint64_t>::max()) { throw RpcError(-32040, "Recovery sequence exhausted"); }
     static_cast<void>(recovery_->checkpoint(capture_recovery(), recovery_->next_epoch++, recovery_->transfers));
     recovery_->transfers.clear();
+    if (script_failure) { std::rethrow_exception(script_failure); }
 }
 
 void ApplicationService::register_recovery_methods(const fs::path& directory) {
