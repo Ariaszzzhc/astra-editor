@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "packages": [
+    {"name":"nlohmann_json","version":"3.12.0","archive":"https://github.com/nlohmann/json/archive/refs/tags/v3.12.0.tar.gz","sha256":"4b92eb0c06d10683f7447ce9406cb97cd4b453be18d7279320f7b2f025c10187","cacheName":"nlohmann_json-v3.12.0.tar.gz","prefix":"json-3.12.0/","files":["LICENSE.MIT"]},
+    {"name":"libuv","version":"1.52.1","archive":"https://github.com/libuv/libuv/archive/refs/tags/v1.52.1.zip","sha256":"d56767702c5b383a78ee9124dd7bdf684f14c681f725117c3f865637a7152cba","cacheName":"libuv-v1.52.1.zip","prefix":"libuv-1.52.1/","files":["LICENSE","LICENSE-extra"]},
+    {"name":"quickjs-ng","version":"0.15.1","archive":"https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.15.1.tar.gz","sha256":"c4e813951b7c46845096a948e978c620b11ab4cf5fd622ca09c727ec31f42623","cacheName":"quickjs-ng-v0.15.1.tar.gz","prefix":"quickjs-0.15.1/","files":["LICENSE"]},
+    {"name":"tree-sitter","version":"0.26.13","archive":"https://github.com/tree-sitter/tree-sitter/archive/refs/tags/v0.26.13.zip","sha256":"e13f5d33116cd9d131d451423a47f33fd8c510ac94831a9873c63def87e66e3b","cacheName":"tree-sitter-v0.26.13.zip","prefix":"tree-sitter-0.26.13/","files":["LICENSE","lib/LICENSE","lib/src/unicode/LICENSE"]},
+    {"name":"utf8proc","version":"2.11.3","archive":"https://github.com/JuliaStrings/utf8proc/archive/refs/tags/v2.11.3.tar.gz","sha256":"abfed50b6d4da51345713661370290f4f4747263ee73dc90356299dfc7990c78","cacheName":"utf8proc-v2.11.3.tar.gz","prefix":"utf8proc-2.11.3/","files":["LICENSE.md"]},
+    {"name":"SDL3","version":"3.4.12","archive":"https://github.com/libsdl-org/SDL/releases/download/release-3.4.12/SDL3-3.4.12.zip","sha256":"3d4de8967a49c0451e775a0c1e9022092c19fdef41ba38a83fcf031c5a6496e2","cacheName":"astra-sdl3-3.4.12.zip","prefix":"SDL3-3.4.12/","files":["LICENSE.txt"]},
+    {"name":"DXC","version":"1.9.2609","archive":"https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2609/dxc_2026_09_29.zip","sha256":"ad31b1fc8443175d204f77a611fdb3ef2ec42759bdc2f1167368de24a4a7e7f1","cacheName":"dxc_2026_09_29.zip","prefix":"","files":["LICENSE-LLVM.txt","LICENSE-MS.txt"]},
+    {"name":"re2","version":"2025.11.05","archive":"https://github.com/google/re2/archive/refs/tags/2025-11-05.tar.gz","sha256":"87f6029d2f6de8aa023654240a03ada90e876ce9a4676e258dd01ea4c26ffd67","cacheName":"re2-2025.11.05.tar.gz","prefix":"re2-2025-11-05/","files":["LICENSE"]},
+    {"name":"abseil","version":"20260107.0","archive":"https://github.com/abseil/abseil-cpp/archive/refs/tags/20260107.0.tar.gz","sha256":"4c124408da902be896a2f368042729655709db5e3004ec99f57e3e14439bc1b2","cacheName":"abseil-20260107.0.tar.gz","prefix":"abseil-cpp-20260107.0/","files":["LICENSE"]}
+  ]
+}

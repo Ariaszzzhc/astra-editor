@@ -175,6 +175,7 @@ struct Renderer::Impl {
         if (!metal_view) { sdl_failure("Create Metal window view"); }
         wgpu::SurfaceSourceMetalLayer source;
         source.layer = SDL_Metal_GetLayer(metal_view.get());
+        if (!source.layer) { throw std::runtime_error("SDL Metal view has no CAMetalLayer"); }
         descriptor.nextInChain = &source;
         surface = wgpu::Instance(instance->Get()).CreateSurface(&descriptor);
 #elif defined(__linux__)

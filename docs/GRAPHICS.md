@@ -1,9 +1,10 @@
-# Windows graphics build
+# Native graphics build
 
 Astra's renderer uses SDL3 for windows and input, Skia Graphite for drawing, and
-Dawn D3D12 for presentation. A raster backend, SDL renderer, Ganesh, or a mock
-renderer does not satisfy this contract. This document describes the native
-Windows x64 build only; Linux and macOS have not been tested here.
+Dawn's native graphics backend for presentation. Windows x64 uses D3D12 and has
+been built and tested. The macOS Metal and Linux Vulkan paths and build recipes
+are prepared in source only; neither platform has been compiled or tested here.
+A raster backend, SDL renderer, Ganesh, or a mock renderer does not satisfy this contract.
 
 ## Source and tool lock
 
@@ -157,26 +158,158 @@ Validated on Windows x64 on 2026-10-09:
   malformed UTF-8 rejection, and randomized mixed Unicode/tab positions. It also
   paints text/selection/carets through the real renderer into
   `build/graphics/text-layout-smoke.png` for visual inspection.
+- Color spans are built as SkParagraph text styles over original UTF-8 ranges.
+  Partial graphemes receive a single style. Native-font tests compare caret,
+  hit-test, and layout geometry before and after syntax coloring, including tabs,
+  combining marks, CJK and bidi text. UTF-16-to-UTF-8 conversion is tested with
+  surrogate pairs. The pinned SkParagraph `updateForegroundPaint` only supports
+  whole-paragraph updates and is deliberately not used for syntax ranges.
+- `tests/gui_smoke.cpp` is an independent real SDL/Graphite window plus
+  `ServiceHost`. Native SDL events exercise Unicode and IME preedit/commit,
+  multicursor input and one-step undo/redo, system clipboard, document find and
+  replacement, workspace replacement with explicit confirmation, syntax object
+  selection, dirty-close cancellation, save/reopen, and editing beyond a 64 KiB
+  line-page boundary. Debug: **PASS**. GPU screenshots are
+  `gui-editor.png`, `gui-palette.png`, `gui-dirty-close.png`, and
+  `gui-replace-confirm.png` under `build/graphics`.
+- `tests/gui_services_smoke.cpp` uses the actual fixed clangd binary and a fresh
+  Git repository under `build/graphics`. Debug: **PASS** for completion with
+  atomic undo, hover, definition, references, rename preview/confirmation,
+  formatting, diff/gutter, stage/unstage, commit, and guarded discard including
+  refresh of the open clean buffer. Git test configuration is isolated from
+  global/system configuration. Clangd fixtures disable system header searches.
+  Screenshots include `gui-completion.png`, `gui-hover.png`,
+  `gui-references.png`, `gui-rename-confirm.png`, `gui-git-diff.png`, and
+  `gui-git-discard.png`. The Windows process host executable must be deployed
+  beside these test executables, as it is beside the application.
+
+The editor front end consumes the same JSON-RPC service as remote and script
+clients. Requests are queued and futures are only polled with a zero timeout;
+revision-dependent edits are serialized. Viewport requests follow all line-page
+continuations and discard obsolete results. Syntax and language responses are
+version checked before use, while shaping supplies both painting and hit testing.
+The UI exposes the file tree, tabs, outline, command palette, search, Git changes,
+and language actions. User JavaScript commands and bindings merge with defaults;
+EditorConfig controls each document's indentation and line endings.
+
+The recovery interface uses `recovery.status`, `recovery.list`,
+`recovery.restore`, and `recovery.flush` through this same channel. Startup
+discovery produces a persistent review banner; a session preview requires an
+explicit Restore action. Restored buffers open as dirty tabs and are saved only
+by the normal Save command. Exit waits asynchronously for a durable checkpoint;
+on failure it keeps the window open and offers Retry, Keep open, or an explicit
+Exit anyway confirmation. A canceled exit cannot be completed by a stale flush
+response. Background recovery errors remain visible in the editor.
+
+`tests/gui_recovery_smoke.cpp` is an independent Windows acceptance executable
+using the real RecoveryStore, ServiceHost, native renderer and input path. It
+covers startup notification, explicit Unicode/selection recovery, unchanged disk
+before Save, dirty-state preservation, and durable exit. Its failure-path channel
+injects one checkpoint RPC error and can withhold a real completion to check that
+the window waits. This is fault injection around the actual service, not a
+replacement persistence implementation. At source integration time it has passed
+strict MSVC compilation only; execution results belong in `docs/STATUS.md` after
+the rebuilt service and all dependent binaries share the updated ABI.
 
 Logs, independent MSVC response files, executables, and PNGs are under `build/graphics/`.
 The standalone smoke sources are checked in under `tests/` and have their own
 `main`; do not add them to the doctest executable. MSVC's
 PDB service was inaccessible in the restricted execution sandbox (C1902); the
 normal authorized Windows build outside that sandbox passed. No SDK files were
-modified. These results verify the native renderer and dependency path. Editor
-layout and command acceptance remain separate.
+modified. These results verify the native renderer, text layout, and editor
+command path on Windows. Final Debug/Release application checks are coordinated
+through the repository's xmake targets.
 
 Acceptance still requires:
 
 - A physical monitor DPI transition and real GPU device loss. The renderer queries
   pixel dimensions/display scale, handles DPI events, and rebuilds lost devices;
   those two external events have not been induced by this validation.
-- Rendered text, selection, caret, scrolling, and IME behavior through the actual
-  editor command path, with error callbacks free of unexpected validation errors.
+- Physical keyboard/IME candidate interaction on actual input methods. Automated
+  acceptance injects SDL preedit/commit events and verifies the native text-input
+  lifecycle and candidate-area updates; it does not simulate an installed IME UI.
 - Final application packaging and its runtime dependency inspection.
 
 Record actual commands and outcomes in `docs/STATUS.md`. Do not enable or run
 Linux/macOS validation from this Windows environment.
+
+## Native macOS and Linux preparation — unverified
+
+`scripts/build-graphics.py` is a separate native bootstrap. It rejects Windows
+and any target architecture different from the current host. No Linux/macOS
+compiler, executable, emulator, cross build, or CI job was invoked during this
+Windows development session. Only Python source parsing and review against the
+pinned sources were performed. These instructions require acceptance on actual
+native hosts before those platforms can be called supported and verified.
+
+On a native Linux or macOS machine, prerequisites are Python 3.12+, Git, Clang
+(Apple Clang on macOS), the platform C++23 standard library and SDK, and `ar`.
+The native GN bootstrap requires checkout and compiler paths without whitespace
+or shell metacharacters. Linux uses the default libstdc++ ABI and macOS uses
+libc++; the application and all C++ dependencies must match. Neither native
+configuration enables Skia's trivial-ABI attribute. The system toolchain is a
+prerequisite, not a downloaded binary, and its version is recorded in the manifest.
+
+Linux also needs Fontconfig, X11 and Wayland development packages and pkg-config.
+SDL 3.4.12's Wayland window backend requires `wayland-client >= 1.18`,
+`wayland-egl`, `wayland-cursor`, `egl`, `xkbcommon >= 0.5.0`, and
+`wayland-scanner` even when its separate rendering APIs are disabled. X11 needs
+Xext and the enabled X11 extension development packages. IBus/D-Bus development
+packages are needed for desktop input-method integration; native IME behavior
+still needs physical acceptance. A Vulkan loader and a functioning Vulkan GPU
+driver are runtime prerequisites. CJK/emoji fallback on Linux requires installed
+fonts such as Noto Sans CJK and Noto Color Emoji. They are not synthesized by the
+renderer or bundled under an unreviewed font license.
+
+Run these commands only on the corresponding native host:
+
+```sh
+python3 scripts/build-graphics.py --stage Bootstrap
+python3 scripts/build-graphics.py --configuration Release --jobs 8
+python3 scripts/build-graphics.py --configuration Debug --jobs 8
+```
+
+Skia and all 48 DEPS checkouts use the same pinned identities as Windows. GN is
+built from its exact pinned source; CMake 3.31.8 and Ninja 1.13.1 use the official
+native archives with fixed SHA-256 values in the script. CMake hashes came from
+its [official checksum file](https://github.com/Kitware/CMake/releases/download/v3.31.8/cmake-3.31.8-SHA-256.txt),
+and Ninja hashes from the [official release asset metadata](https://api.github.com/repos/ninja-build/ninja/releases/tags/v1.13.1).
+The GN commit position `2175 (b2afae122eeb)` matches the pinned official Windows
+binary; the shallow native source bootstrap writes that version header without
+fetching moving tags. Generated Ninja regeneration paths are adjusted in build
+output only. Pinned source files are left unchanged.
+
+The script uses Skia's genuine GN-to-Dawn-CMake integration, embeds ICU data in
+the native archive, builds the native font manager (CoreText or
+Fontconfig/FreeType), and installs checked archives and public/generated headers.
+Ninja's nested Dawn build is bounded by the same `--jobs` limit. Build environments
+exclude unrelated ambient credentials because upstream Dawn prints its environment.
+Tools and caches remain under `.tools/graphics/native/<platform>-<arch>/`, source
+under `.tools/graphics/src/`, outputs under `build/graphics/<platform>/<arch>/`,
+and installed packages under `.tools/graphics/install/<platform>/<arch>/<mode>/`.
+Expect several GB of source and approximately 10–20 GB of build/install space for
+both modes; actual size and build time depend on the native host.
+
+The xmake package validates platform, architecture, configuration, source identity,
+standard-library ABI and artifact hashes before publishing include/link settings.
+Linux static archives use a GNU linker group; macOS receives the native Metal,
+CoreText and Cocoa frameworks. The SDL recipe explicitly requires Cocoa/Metal on
+macOS or both X11/Wayland on Linux and verifies the generated SDL configuration
+before installation. Missing window backends fail instead of producing an
+offscreen-only package. SDL shared libraries are copied next to built/installed
+executables, with `$ORIGIN` or `@executable_path` runtime search paths on native
+Unix platforms. Windows likewise copies SDL3.dll alongside ICU and DXC runtime
+files; it must launch without xmake adding a package directory to PATH.
+
+The renderer obtains X11/Wayland handles from SDL window properties, and macOS
+owns an `SDL_MetalView` until after the Dawn surface is released. It passes the
+view's checked `CAMetalLayer` to `wgpu::SurfaceSourceMetalLayer`. The pinned Dawn
+`SwapChainMTL.mm` sets the Metal device and drawable pixel dimensions when the
+surface is configured, so resize uses the same pixel-size reconfiguration path
+as Windows. Native font and surface APIs were source-reviewed; that is not
+evidence of native runtime behavior. Independent native acceptance must include
+window startup, resize, DPI, minimize/restore, Unicode/IME/clipboard, actual GPU
+readback, device loss, shared-library loading and shutdown on each window system.
 
 ## Upstream references
 
@@ -189,6 +322,11 @@ Linux/macOS validation from this Windows environment.
 - [Graphite/Dawn window context](https://raw.githubusercontent.com/google/skia/525f94ac3418fd0b0dae42caa220422a94b18b49/tools/window/GraphiteDawnWindowContext.cpp)
 - [Windows surface creation](https://raw.githubusercontent.com/google/skia/525f94ac3418fd0b0dae42caa220422a94b18b49/tools/window/win/GraphiteDawnWindowContext_win.cpp)
 - [SDL window properties](https://wiki.libsdl.org/SDL3/SDL_GetWindowProperties)
+- [SDL Metal view](https://wiki.libsdl.org/SDL3/SDL_Metal_CreateView)
+- [SDL Metal layer](https://wiki.libsdl.org/SDL3/SDL_Metal_GetLayer)
+- [Pinned Dawn Metal swapchain](https://github.com/google/dawn/blob/ab3c12305e776fa707503f7ecfab07364e9c7697/src/dawn/native/metal/SwapChainMTL.mm)
+- [Pinned SDL native backend dependencies](https://github.com/libsdl-org/SDL/blob/release-3.4.12/cmake/sdlchecks.cmake)
+- [Pinned GN bootstrap](https://gn.googlesource.com/gn/+/b2afae122eeb6ce09c52d63f67dc53fc517dbdc8/build/gen.py)
 - [SDL pixel dimensions](https://wiki.libsdl.org/SDL3/SDL_GetWindowSizeInPixels)
 - [SDL text input](https://wiki.libsdl.org/SDL3/SDL_StartTextInput)
 - [SDL IME location](https://wiki.libsdl.org/SDL3/SDL_SetTextInputArea)

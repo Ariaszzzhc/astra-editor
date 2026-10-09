@@ -15,7 +15,26 @@ package("astra-sdl3")
             "-DSDL_RENDER=OFF", "-DSDL_GPU=OFF", "-DSDL_OPENGL=OFF",
             "-DSDL_OPENGLES=OFF", "-DSDL_VULKAN=OFF"
         }
-        import("package.tools.cmake").install(package, configs)
+        if package:is_plat("macosx") then
+            table.insert(configs, "-DSDL_METAL=ON")
+            table.insert(configs, "-DCMAKE_MACOSX_RPATH=ON")
+            table.insert(configs, "-DCMAKE_INSTALL_NAME_DIR=@rpath")
+        elseif package:is_plat("linux") then
+            table.insert(configs, "-DSDL_X11=ON")
+            table.insert(configs, "-DSDL_WAYLAND=ON")
+        end
+        local cmake = import("package.tools.cmake")
+        if package:is_plat("linux", "macosx") then
+            cmake.configure(package, configs)
+            local configuration = io.readfile(path.join(package:builddir(), "CMakeFiles", "SDL_build_config.h.intermediate"))
+            local capabilities = package:is_plat("macosx") and {"SDL_VIDEO_DRIVER_COCOA", "SDL_VIDEO_METAL"}
+                or {"SDL_VIDEO_DRIVER_X11", "SDL_VIDEO_DRIVER_WAYLAND"}
+            for _, capability in ipairs(capabilities) do
+                assert(configuration and configuration:find("#define " .. capability .. " 1", 1, true),
+                    "SDL3 is missing required native capability " .. capability .. "; install its development dependencies")
+            end
+        end
+        cmake.install(package, configs)
     end)
     on_test(function(package)
         assert(package:check_cxxsnippets({test = [[
