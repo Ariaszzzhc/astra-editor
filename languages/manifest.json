@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "clangd": {
+    "version": "21.1.8",
+    "archive": "https://github.com/clangd/clangd/releases/download/21.1.8/clangd-windows-21.1.8.zip",
+    "sha256": "aeb5a68414c4d10b0867a479c9f21593043cc6d122e39de61b3801c89ebd57fc",
+    "directory": "clangd_21.1.8",
+    "licenseFiles": {"LICENSE.TXT": "a9ed3eae930adbc631b83300b78ab5d228c9b1e4560d64ec4b4ea2bcf69f4569"}
+  },
+  "node": {
+    "version": "24.21.0",
+    "platform": "win-x64",
+    "archive": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip",
+    "sha256": "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541",
+    "checksumSource": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt",
+    "directory": "node-v24.21.0-win-x64",
+    "licenseFile": "LICENSE",
+    "licenseFiles": {"LICENSE": "ed34dd8e3f0a78dbaf00d0444ce8e285b015b765379c2e17880455f70370f8e9"}
+  },
+  "packages": [
+    {
+      "name": "typescript",
+      "version": "6.0.3",
+      "license": "Apache-2.0",
+      "licenseFile": "LICENSE.txt",
+      "licenseFiles": {
+        "LICENSE.txt": "a7d00bfd54525bc694b6e32f64c7ebcf5e6b7ae3657be5cc12767bce74654a47",
+        "ThirdPartyNoticeText.txt": "1af3c68039c57e539422da82a4faada506ce6d0ea6f90e0b699d02dbcdb7a90c"
+      },
+      "archive": "https://registry.npmjs.org/typescript/-/typescript-6.0.3.tgz",
+      "sha256": "33cd0ee1beaa8c9e9d15a9da836c62ddea4c34a42d7c2d349dbc80d94165d22a",
+      "integrity": "sha512-y2TvuxSZPDyQakkFRPZHKFm+KKVqIisdg9/CZwm9ftvKXLP8NRWj38/ODjNbr43SsoXqNuAisEf1GdCxqWcdBw=="
+    },
+    {
+      "name": "typescript-language-server",
+      "version": "6.0.1",
+      "license": "Apache-2.0",
+      "licenseFile": "LICENSE",
+      "licenseFiles": {"LICENSE": "899d21038f87dd6243dd33b7ee82a078e639d4325a427c01e64d8116315b9680"},
+      "archive": "https://registry.npmjs.org/typescript-language-server/-/typescript-language-server-6.0.1.tgz",
+      "sha256": "85eabb9251d85d3798b247b2bc0895ca111d866bfbf59533f64b2461b0d8649f",
+      "integrity": "sha512-c5hEHM/7rdFRbQWoHXuddyJ53oF0M2dKeXQOYdwUek556oarltKeumKJGLp/ZMcGV7gW30mGn1MR3V5GDiLiKg=="
+    },
+    {
+      "name": "basedpyright",
+      "version": "1.40.2",
+      "license": "MIT",
+      "licenseFile": "LICENSE.txt",
+      "licenseFiles": {
+        "LICENSE.txt": "f7c936bc43f132b08497ac952e9376cbc102e5eedb4bf6ec902ea8442bd9c68d",
+        "dist/typeshed-fallback/LICENSE": "295f8538c94ae5c3043301cf7cff1c852dab6a786a8ddee471e061b40d5ecabe"
+      },
+      "archive": "https://registry.npmjs.org/basedpyright/-/basedpyright-1.40.2.tgz",
+      "sha256": "5d1073a0e61a1adc6b40b2bed4489017aa5c1336aa8e6fdcb7157b9bf26f3fab",
+      "integrity": "sha512-9uld8+5tZC2Gxf8nIynyunK0N4xn01W1ApzLMXDAcuA8uJq2QSfldYn9gSbxn9MWR8wmHDo7GaEHLhlnLFHaJA=="
+    }
+  ]
+}
