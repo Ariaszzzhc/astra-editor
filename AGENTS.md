@@ -9,6 +9,8 @@
 - Validate on Windows only in this environment. Do not run Linux/macOS builds, emulators,
   cross-platform test jobs, or claim those platforms are verified.
 - Track implementation and concrete acceptance evidence in `docs/STATUS.md`.
+- With parallel agents, one coordinator owns xmake configure/build/test invocations in
+  the shared checkout. Other agents submit tests and receive results from that coordinator.
 - Commit coherent, tested increments. Use conventional commit subjects shorter than 50
   characters and no body. Push to `https://github.com/Ariaszzzhc/astra-editor` without
   force-pushing or overwriting remote history.
