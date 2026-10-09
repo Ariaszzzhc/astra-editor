@@ -306,6 +306,56 @@ private:
     bool owned_{};
 };
 
+class ReplacementBackup {
+public:
+    explicit ReplacementBackup(const fs::path& parent) {
+        for (int attempt = 0; attempt < 32; ++attempt) {
+            directory_ = parent / unique_component();
+            path_ = directory_ / "original";
+            native_directory_ = native_path(directory_);
+            native_path_ = native_path(path_);
+            // Reserve the namespace atomically, but leave the backup file absent.
+            // ReplaceFileW cannot overwrite an open backup placeholder, even
+            // when all of its readers grant FILE_SHARE_DELETE (error 1175).
+            if (CreateDirectoryW(native_directory_.c_str(), nullptr)) { owned_ = true; return; }
+            const auto error = GetLastError();
+            if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS) {
+                fail("reserve replacement backup directory", directory_, error);
+            }
+        }
+        throw std::runtime_error("unable to reserve a replacement backup directory");
+    }
+    ReplacementBackup(const ReplacementBackup&) = delete;
+    ReplacementBackup& operator=(const ReplacementBackup&) = delete;
+    ~ReplacementBackup() {
+        if (!owned_) { return; }
+        if (!DeleteFileW(native_path_.c_str())) {
+            const auto error = GetLastError();
+            if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+                report_cleanup_failure("DeleteFileW replacement backup failed");
+                return; // Preserve its directory when the original is still present.
+            }
+        }
+        if (!RemoveDirectoryW(native_directory_.c_str())) {
+            const auto error = GetLastError();
+            if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) {
+                report_cleanup_failure("RemoveDirectoryW replacement backup failed");
+            }
+        }
+    }
+    [[nodiscard]] const fs::path& path() const noexcept { return path_; }
+    void release() noexcept { owned_ = false; }
+    // A successful restoration moved original back out; clean the empty reserve.
+    void reclaim_empty() noexcept { owned_ = true; }
+
+private:
+    fs::path directory_;
+    fs::path path_;
+    std::wstring native_directory_;
+    std::wstring native_path_;
+    bool owned_{};
+};
+
 #else
 
 [[noreturn]] void fail(const char* operation, const fs::path& path, int error = errno) {
@@ -463,9 +513,8 @@ void install_file(const fs::path& path, TemporaryFile& temporary,
         temporary.release();
         return;
     }
+    ReplacementBackup backup(path.parent_path());
     auto guard = verify_expected(path, *expected);
-    TemporaryFile backup(path.parent_path());
-    backup.close();
     if (!ReplaceFileW(native_path(path).c_str(), native_path(temporary.path()).c_str(),
         native_path(backup.path()).c_str(), 0, nullptr, nullptr)) {
         const auto error = GetLastError();
@@ -476,6 +525,7 @@ void install_file(const fs::path& path, TemporaryFile& temporary,
             if (!MoveFileExW(native_path(backup.path()).c_str(), native_path(path).c_str(), MOVEFILE_WRITE_THROUGH)) {
                 throw FileRecoveryRequired(path, backup.path());
             }
+            backup.reclaim_empty();
         }
         fail("replace file", path, error);
     }

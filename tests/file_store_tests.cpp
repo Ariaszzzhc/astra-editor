@@ -362,16 +362,28 @@ private:
     DWORD attributes_{};
 };
 
-class ExclusiveReadGuard {
+class ReadHandleGuard {
 public:
-    explicit ExclusiveReadGuard(const fs::path& path)
-        : handle_(CreateFileW(path.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)) {
+    explicit ReadHandleGuard(const fs::path& path, DWORD sharing = 0)
+        : handle_(CreateFileW(path.c_str(), GENERIC_READ, sharing, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)) {
         if (handle_ == INVALID_HANDLE_VALUE) { throw std::runtime_error("cannot lock test file"); }
     }
-    ExclusiveReadGuard(const ExclusiveReadGuard&) = delete;
-    ExclusiveReadGuard& operator=(const ExclusiveReadGuard&) = delete;
-    ~ExclusiveReadGuard() {
+    ReadHandleGuard(const ReadHandleGuard&) = delete;
+    ReadHandleGuard& operator=(const ReadHandleGuard&) = delete;
+    ~ReadHandleGuard() {
         if (!CloseHandle(handle_)) { std::fputs("failed to close test handle\n", stderr); }
+    }
+    [[nodiscard]] std::string read() const {
+        std::string result;
+        std::array<char, 4096> buffer{};
+        for (;;) {
+            DWORD count{};
+            if (!ReadFile(handle_, buffer.data(), static_cast<DWORD>(buffer.size()), &count, nullptr)) {
+                throw std::runtime_error("cannot read held file snapshot");
+            }
+            if (count == 0) { return result; }
+            result.append(buffer.data(), count);
+        }
     }
 private:
     HANDLE handle_{INVALID_HANDLE_VALUE};
@@ -397,7 +409,7 @@ TEST_CASE("Windows file store reports sharing failures and cleans owned temporar
     const auto path = directory.file();
     const auto version = save_file(path, "protected");
     {
-        const ExclusiveReadGuard lock(path);
+        const ReadHandleGuard lock(path);
         CHECK_THROWS_AS((void)save_file(path, "attempt", TextEncoding::utf8, version), fs::filesystem_error);
         CHECK_THROWS_AS((void)read_file(path), fs::filesystem_error);
         CHECK(directory.file_count() == 1);
@@ -405,5 +417,48 @@ TEST_CASE("Windows file store reports sharing failures and cleans owned temporar
     CHECK(raw_file(path) == "protected");
     REQUIRE_NOTHROW((void)save_file(path, "recovered", TextEncoding::utf8, version));
     CHECK(read_file(path).text == "recovered");
+}
+
+TEST_CASE("Windows file store replaces beside shared readers without invalidating old handles") {
+    TestDirectory directory;
+    const auto path = directory.file();
+    const auto original = save_file(path, "old snapshot");
+    const ReadHandleGuard first(path, FILE_SHARE_READ | FILE_SHARE_DELETE);
+    const ReadHandleGuard second(path, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+    const auto saved = save_file(path, "new snapshot", TextEncoding::utf8, original);
+    CHECK(read_file(path).text == "new snapshot");
+    CHECK(first.read() == "old snapshot");
+    CHECK(second.read() == "old snapshot");
+    CHECK(directory.file_count() == 1);
+    CHECK_THROWS_AS((void)save_file(path, "stale overwrite", TextEncoding::utf8, original), FileConflict);
+    CHECK(read_file(path).text == "new snapshot");
+    REQUIRE_NOTHROW((void)save_file(path, "latest", TextEncoding::utf8, saved));
+    CHECK(read_file(path).text == "latest");
+    CHECK(directory.file_count() == 1);
+}
+
+TEST_CASE("Windows replacement rejects an open backup placeholder even with delete sharing") {
+    TestDirectory directory;
+    const auto path = directory.file();
+    const auto replacement = directory.file("replacement.tmp");
+    const auto placeholder = directory.file("placeholder.tmp");
+    const auto original = save_file(path, "original");
+    write_raw(replacement, "replacement");
+    write_raw(placeholder, "");
+    {
+        const ReadHandleGuard held(placeholder, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+        const auto replaced = ReplaceFileW(path.c_str(), replacement.c_str(), placeholder.c_str(), 0, nullptr, nullptr);
+        const auto error = GetLastError();
+        CHECK_FALSE(replaced);
+        CHECK(error == ERROR_UNABLE_TO_REMOVE_REPLACED);
+        CHECK(read_file(path).text == "original");
+        CHECK(raw_file(replacement) == "replacement");
+        CHECK(held.read().empty());
+    }
+    REQUIRE(fs::remove(replacement));
+    REQUIRE(fs::remove(placeholder));
+    REQUIRE_NOTHROW((void)save_file(path, "replacement", TextEncoding::utf8, original));
+    CHECK(read_file(path).text == "replacement");
+    CHECK(directory.file_count() == 1);
 }
 #endif
