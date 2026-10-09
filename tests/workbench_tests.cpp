@@ -175,3 +175,74 @@ TEST_CASE("workbench paste captures document identity and normalizes CRLF") {
     for(int tick=0;tick<4;++tick)workbench.poll();
     REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(workbench.idle());
 }
+
+TEST_CASE("workbench modal input awaits the user without hiding unrelated work") {
+    auto channel=std::make_shared<Channel>();
+    std::promise<Json> input;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json&){
+        if(method=="_ui.dialog")return input.get_future();
+        return ready(nullptr);
+    },modules(),"astra.registerCommand('background',()=>astra.request('other')); astra.registerCommand('prompt',()=>astra.ui.input({title:'Value'}));");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("prompt",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    CHECK_FALSE(workbench.idle());CHECK(workbench.awaiting_input());CHECK_FALSE(outcome);
+    workbench.execute("background",Json::object(),{});
+    workbench.poll();CHECK_FALSE(workbench.awaiting_input());
+    channel->reply(nullptr);
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    CHECK(workbench.awaiting_input());
+    input.set_value("chosen");
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value=="chosen");CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench input cancellation dismisses its native dialog and drains the late future") {
+    auto channel=std::make_shared<Channel>();
+    std::promise<Json> input;
+    unsigned cancelled{};
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json&){
+        if(method=="_ui.dialog")return input.get_future();
+        if(method=="_ui.dialog.cancel"){++cancelled;input.set_value(nullptr);}
+        return ready(nullptr);
+    },modules(),"let control=new AbortController(); astra.registerCommand('prompt',()=>astra.ui.input({title:'Value'},{signal:control.signal})); astra.registerCommand('abort',()=>control.abort());");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("prompt",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(workbench.awaiting_input());
+    workbench.execute("abort",Json::object(),{});
+    for(int tick=0;tick<8;++tick)workbench.poll();
+    REQUIRE(outcome);REQUIRE(outcome->error);CHECK(outcome->error->at("name")=="AbortError");
+    CHECK(cancelled==1);CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench reload confirmation captures a revision before awaiting input") {
+    auto channel=std::make_shared<Channel>();
+    std::promise<Json> confirmation;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json&){
+        if(method=="_ui.read")return ready({{"document",{{"id","capture"},{"revision","42"},{"dirty",true},{"path","source.cpp"}}}});
+        if(method=="_ui.dialog")return confirmation.get_future();
+        return ready(nullptr);
+    },modules());
+    workbench.execute("ui.reload",Json::object(),{});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    CHECK(channel->requests.empty());CHECK(workbench.awaiting_input());
+    confirmation.set_value(true);
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);
+    CHECK(channel->requests.front().body.at("method")=="workspace.reload");
+    CHECK(channel->requests.front().body.at("params")==Json{{"id","capture"},{"baseRevision","42"},{"discardChanges",true}});
+    channel->reply({{"id","capture"},{"revision","43"}});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench composed commands honor user replacements through awaited execution") {
+    auto channel=std::make_shared<Channel>();
+    astra::ui::Workbench workbench(channel,[](std::string_view,const Json&){return ready(nullptr);},modules(),
+        "astra.ui.registerCommand({id:'ui.saveAs',title:'User save'},async p=>{await astra.sleep(0);return p.value+1;});astra.ui.registerCommand({id:'composed',title:'Composed'},()=>astra.ui.execute('ui.saveAs',{value:41}));");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("composed",Json::object(),[&](const auto& value){outcome=value;});
+    for(int tick=0;tick<4;++tick)workbench.poll();
+    REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==42);CHECK(channel->requests.empty());
+}

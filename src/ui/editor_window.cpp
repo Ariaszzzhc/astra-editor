@@ -101,7 +101,12 @@ struct EditorWindow::Impl {
     struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; };
     struct FindState { std::string id; std::string revision; std::string query; std::string replacement; std::string text; std::size_t cursor{}; std::size_t size{}; bool replace{}; };
     struct ViewState { std::string id; std::string revision; std::size_t first{}; std::size_t limit{}; std::map<std::size_t, Line> lines; };
-    enum class Prompt { none, palette, open, save_as, close, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, completion, locations, hover, rename, rename_confirm, git_diff, git_discard, git_commit, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed, reload_confirm };
+    enum class Prompt { none, policy_input, policy_confirm, palette, open, save_as, close, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, completion, locations, hover, rename, rename_confirm, git_diff, git_discard, git_commit, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed, reload_confirm };
+    struct Dialog {
+        std::string id; Json spec; std::promise<Json> completion;
+        std::optional<TextLayout> detail_layout; float detail_width{};
+        std::optional<TextLayout> input_layout; std::string input_text; float input_scale{};
+    };
 
     std::shared_ptr<EditorChannel> channel;
     EditorWindowOptions options;
@@ -223,6 +228,7 @@ struct EditorWindow::Impl {
     float mouse_x{};
     float mouse_y{};
     Prompt prompt{Prompt::none};
+    std::optional<Dialog> dialog;
     std::string prompt_text;
     std::string prompt_document;
     std::string prompt_revision;
@@ -249,6 +255,7 @@ struct EditorWindow::Impl {
             modules.emplace(name, io::read_file(options.resource_directory / "data" / "workbench" / file, 1024 * 1024).text);
         }
         workbench = std::make_unique<Workbench>(channel, [this](std::string_view method, const Json& params) {
+            if (method == "_ui.dialog") { return begin_dialog(params); }
             std::promise<Json> completed;
             try { completed.set_value(native_ui_request(method, params)); }
             catch (...) { completed.set_exception(std::current_exception()); }
@@ -435,14 +442,6 @@ struct EditorWindow::Impl {
     bool search_prompt() const {
         return prompt == Prompt::search || prompt == Prompt::workspace_replace_query || prompt == Prompt::workspace_replace_value;
     }
-    void reload_document(const std::string& id, const std::string& revision, bool discard) {
-        start_operation("workspace.reload", {{"id", id}, {"baseRevision", revision}, {"discardChanges", discard}},
-            [this, id](const Json& result) {
-                accept_metadata(result);
-                workspace_notices[id] = "Reloaded from disk: " + documents.at(id).path;
-                status = "Reloaded file from disk";
-            });
-    }
 
     void service_responses();
     void fetch_lines();
@@ -466,6 +465,8 @@ struct EditorWindow::Impl {
     void execute_policy(std::string_view name, const Json& params = Json::object());
     void native_command(std::string_view name);
     Json native_ui_request(std::string_view method, const Json& params);
+    std::future<Json> begin_dialog(const Json& spec);
+    void finish_dialog(Json value);
     void find_next(std::shared_ptr<FindState> state);
     void find_document(bool replace);
     void search_workspace(bool replace);
@@ -975,7 +976,37 @@ std::vector<std::size_t> EditorWindow::Impl::filtered_recovery_sessions() const 
     return result;
 }
 
+std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
+    if (dialog || prompt != Prompt::none) { throw protocol::RpcError(-32004, "Another modal input is active"); }
+    const auto id = spec.at("id").get<std::string>();
+    const auto kind = spec.at("kind").get<std::string>();
+    if (kind != "input" && kind != "confirm") { throw protocol::RpcError(-32602, "Unknown dialog kind"); }
+    const auto title = spec.at("title").get<std::string>();
+    const auto value = spec.value("value", std::string{});
+    const auto detail = spec.value("detail", std::string{});
+    const auto accept = spec.value("accept", std::string("Confirm"));
+    const auto placeholder = spec.value("placeholder", std::string{});
+    if (id.empty() || id.size()>128 || title.empty() || title.size() > 4096 || value.size() > 16384 || detail.size() > 65536 || accept.size()>4096 || placeholder.size()>4096) { throw protocol::RpcError(-32602, "Dialog content exceeds its bounds"); }
+    Dialog pending{id,spec,{},{},0,{}, {},0};
+    auto result = pending.completion.get_future();
+    dialog.emplace(std::move(pending));
+    prompt = kind == "input" ? Prompt::policy_input : Prompt::policy_confirm;
+    prompt_text = value; prompt_choice = 0; prompt_select_all = false; preedit.clear();
+    return result;
+}
+
+void EditorWindow::Impl::finish_dialog(Json value) {
+    if (!dialog) { return; }
+    auto pending = std::move(*dialog); dialog.reset();
+    prompt = Prompt::none; prompt_text.clear(); prompt_select_all = false; preedit.clear();
+    pending.completion.set_value(std::move(value));
+}
+
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
+    if (method == "_ui.dialog.cancel") {
+        if (dialog && dialog->id == params.at("id").get<std::string>()) { finish_dialog(nullptr); }
+        return nullptr;
+    }
     if (method == "_ui.clipboard.read") {
         const std::unique_ptr<char, SdlStringDeleter> text(SDL_GetClipboardText());
         if (!text) { throw std::runtime_error(std::string("Clipboard read failed: ") + SDL_GetError()); }
@@ -1018,6 +1049,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         } else if (name == "document") { /* Applied before activation above. */ }
         else if (name == "activate") { activate(value.get<std::string>()); }
         else if (name == "revealCaret") { if (value.get<bool>()) { reveal_caret(); } }
+        else if (name == "workspaceNotice") { workspace_notices[value.at("id").get<std::string>()] = value.at("text").get<std::string>(); }
         else if (name == "dismissPrompt") { if (value.get<bool>()) { prompt = Prompt::none; } }
         else if (name == "busy") { busy_views.merge_patch(value); }
         else if (name != "view" && name != "model") { throw protocol::RpcError(-32602, "Unknown UI update field: " + name); }
@@ -1063,28 +1095,15 @@ void EditorWindow::Impl::command(std::string_view name) {
 }
 
 void EditorWindow::Impl::native_command(std::string_view name) {
+    if (dialog && name != "ui.cancel" && name != "ui.closeWindow") { throw protocol::RpcError(-32004, "Dismiss the active dialog before changing its focus"); }
     prompt_select_all = false;
     if (recovery_flushing && prompt == Prompt::recovery_flushing && name != "ui.cancel") { return; }
     if (name.starts_with("editor.")) {
         editor_command(std::string(name));
     } else if (name == "ui.new") { new_document(); }
-    else if (name == "ui.quickOpen") { prompt = Prompt::open; prompt_text.clear(); prompt_choice = 0; }
     else if (name == "ui.commandPalette") { prompt = Prompt::palette; prompt_text.clear(); prompt_choice = 0; }
     else if (name == "ui.save") { save_document(active_id); }
     else if (name == "ui.saveAs") { save_document(active_id, true); }
-    else if (name == "ui.reload") {
-        const auto* document = current();
-        if (!document || document->path.empty()) { status = "Save this buffer before reloading from disk"; return; }
-        const auto revision = document->metadata.at("revision").get<std::string>();
-        if (document->metadata.value("dirty", false)) {
-            prompt = Prompt::reload_confirm; prompt_document = active_id; prompt_revision = revision;
-        } else { reload_document(active_id, revision, false); }
-    }
-    else if (name == "ui.confirmReload") {
-        if (prompt != Prompt::reload_confirm) { return; }
-        const auto id = prompt_document; const auto revision = prompt_revision;
-        prompt = Prompt::none; reload_document(id, revision, true);
-    }
     else if (name == "ui.dismissWorkspaceNotice") {
         if (!watch_error.empty()) { watch_error.clear(); }
         else if (workspace_notices.contains(active_id)) { workspace_notices.erase(active_id); }
@@ -1095,7 +1114,7 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     else if (name == "ui.toggleSearchRegex") { search_regex = !search_regex; }
     else if (name == "ui.toggleSearchWholeWord") { search_whole_word = !search_whole_word; }
     else if (name == "ui.closeTab") { close_document(active_id); }
-    else if (name == "ui.closeWindow") { closing_window = true; continue_close_window(); }
+    else if (name == "ui.closeWindow") { finish_dialog(nullptr); closing_window = true; continue_close_window(); }
     else if (name == "ui.recovery") { refresh_recovery(true); }
     else if (name == "ui.checkpoint") { flush_recovery(false); }
     else if (name == "ui.confirmRecovery") {
@@ -1207,6 +1226,7 @@ void EditorWindow::Impl::native_command(std::string_view name) {
         const auto index = position == tabs.end() ? 0 : static_cast<std::size_t>(position - tabs.begin());
         activate(tabs[(index + tabs.size() - 1) % tabs.size()]);
     } else if (name == "ui.cancel") {
+        finish_dialog(nullptr);
         prompt = Prompt::none; closing_window = false; ++recovery_close_generation;
         close_after_save.clear(); preedit.clear(); error.clear();
     } else if (name == "ui.discard") {
@@ -1250,7 +1270,9 @@ std::vector<const MenuCommand*> EditorWindow::Impl::filtered_commands() const {
 }
 
 void EditorWindow::Impl::accept_prompt() {
-    if (prompt == Prompt::recovery) {
+    if (prompt == Prompt::policy_input) { finish_dialog(prompt_text); }
+    else if (prompt == Prompt::policy_confirm) { finish_dialog(true); }
+    else if (prompt == Prompt::recovery) {
         const auto matches = filtered_recovery_sessions();
         if (matches.empty()) { return; }
         recovery_selected = recovery_sessions[matches[std::min(prompt_choice, matches.size() - 1)]];
@@ -1448,6 +1470,10 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
     if (input.key == SDLK_ESCAPE) { command("ui.cancel"); return; }
     if (!preedit.empty()) { return; }
     if (prompt != Prompt::none) {
+        if (prompt == Prompt::policy_confirm) {
+            if (input.key == SDLK_RETURN || input.key == SDLK_KP_ENTER) { finish_dialog(true); }
+            return;
+        }
         if (search_prompt() && alt) {
             if (input.key == SDLK_C) { command("ui.toggleSearchCase"); return; }
             if (input.key == SDLK_R) { command("ui.toggleSearchRegex"); return; }
@@ -1489,7 +1515,12 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
         else if (input.key == SDLK_DOWN) { ++prompt_choice; }
         else if (control && input.key == SDLK_V) {
             const std::unique_ptr<char, SdlStringDeleter> text(SDL_GetClipboardText());
-            if (text) { if (prompt_select_all) { prompt_text.clear(); prompt_select_all = false; } prompt_text += text.get(); }
+            if (!text) { throw std::runtime_error(std::string("Clipboard read failed: ") + SDL_GetError()); }
+            const std::string_view pasted(text.get());
+            const auto existing=prompt_select_all ? std::size_t{0} : prompt_text.size();
+            if (existing>16384 || pasted.size()>16384-existing) { error="Input exceeds its 16 KiB limit"; return; }
+            if (prompt_select_all) { prompt_text.clear(); prompt_select_all = false; }
+            prompt_text += pasted;
         }
         return;
     }
@@ -1613,8 +1644,9 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         if (!input.text.text) { break; }
         if (prompt != Prompt::none && prompt != Prompt::close && prompt != Prompt::replace_confirm && prompt != Prompt::rename_confirm && prompt != Prompt::reload_confirm &&
             prompt != Prompt::hover && prompt != Prompt::git_diff && prompt != Prompt::git_discard &&
-            prompt != Prompt::recovery_confirm && prompt != Prompt::recovery_flushing && prompt != Prompt::recovery_exit_failed) {
+            prompt != Prompt::recovery_confirm && prompt != Prompt::recovery_flushing && prompt != Prompt::recovery_exit_failed && prompt != Prompt::policy_confirm) {
             if (prompt_select_all) { prompt_text.clear(); prompt_select_all = false; }
+            if (prompt_text.size() + std::string_view(input.text.text).size() > 16384) { error = "Input exceeds its 16 KiB limit"; break; }
             prompt_text += input.text.text; prompt_choice = 0;
         } else if (prompt == Prompt::none) { editor_command("editor.insert_text", {{"text", input.text.text}}); }
         break;
@@ -1639,6 +1671,15 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         if (input.button.button != SDL_BUTTON_LEFT) { break; }
         mouse_x = input.button.x * ratio_x; mouse_y = input.button.y * ratio_y;
         const auto width = static_cast<float>(pixels.width);
+        if (prompt == Prompt::policy_confirm) {
+            const auto bx = (width - std::min(600 * scale,width - 24 * scale)) / 2;
+            const auto button_width = (std::min(600 * scale,width - 24 * scale) - 72 * scale) / 2;
+            if (mouse_y >= 211 * scale && mouse_y < 245 * scale) {
+                if (mouse_x >= bx + 24 * scale && mouse_x < bx + 24 * scale + button_width) { finish_dialog(true); }
+                else if (mouse_x >= bx + 48 * scale + button_width && mouse_x < width - bx - 24 * scale) { finish_dialog(nullptr); }
+            }
+            break;
+        }
         if (prompt == Prompt::recovery_flushing) { command("ui.cancel"); break; }
         if (prompt == Prompt::recovery_exit_failed) {
             const auto bx = (width - 640 * scale) / 2;
@@ -1883,6 +1924,51 @@ void EditorWindow::Impl::measure_layout() {
 void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height) {
     if (prompt == Prompt::none) { return; }
     rectangle(canvas, 0, 0, width, height, SkColorSetA(background, 160));
+    if (prompt == Prompt::policy_confirm && dialog) {
+        const auto panel_width = std::min(600 * scale,width - 24 * scale);
+        const auto x = (width-panel_width)/2;
+        rectangle(canvas,x,90*scale,panel_width,175*scale,panel_background);
+        rectangle(canvas,x,90*scale,panel_width,2*scale,accent);
+        elided_label(canvas,dialog->spec.at("title").get<std::string>(),x+24*scale,108*scale,16,panel_width-48*scale,foreground);
+        TextLayoutOptions style; style.font_size=13; style.dpi_scale=scale; style.color=muted; style.wrap_width=panel_width-48*scale;
+        if(!dialog->detail_layout || dialog->detail_width!=style.wrap_width){
+            dialog->detail_layout=fonts.layout(dialog->spec.value("detail",std::string{}),style);dialog->detail_width=style.wrap_width;
+        }
+        canvas->save(); canvas->clipRect(SkRect::MakeXYWH(x+24*scale,145*scale,panel_width-48*scale,58*scale));
+        dialog->detail_layout->draw(canvas,x+24*scale,145*scale);canvas->restore();
+        const auto button_width=(panel_width-72*scale)/2;
+        rectangle(canvas,x+24*scale,211*scale,button_width,34*scale,accent);
+        rectangle(canvas,x+48*scale+button_width,211*scale,button_width,34*scale,border_color);
+        elided_label(canvas,dialog->spec.value("accept",std::string("Confirm")),x+40*scale,219*scale,13,button_width-32*scale,foreground);
+        label(canvas,"Cancel",x+64*scale+button_width,219*scale,13);
+        return;
+    }
+    if (prompt == Prompt::policy_input && dialog) {
+        const auto panel_width=std::min(600*scale,width-24*scale),x=(width-panel_width)/2;
+        rectangle(canvas,x,64*scale,panel_width,76*scale,panel_background);
+        rectangle(canvas,x,64*scale,panel_width,2*scale,accent);
+        elided_label(canvas,dialog->spec.at("title").get<std::string>(),x+16*scale,73*scale,10,panel_width-32*scale,muted);
+        rectangle(canvas,x+12*scale,94*scale,panel_width-24*scale,30*scale,input_color);
+        if(prompt_select_all&&!prompt_text.empty())rectangle(canvas,x+20*scale,97*scale,panel_width-40*scale,25*scale,selection_color);
+        TextLayoutOptions style;style.font_size=14;style.dpi_scale=scale;style.color=foreground;
+        if(!dialog->input_layout || dialog->input_text!=prompt_text || dialog->input_scale!=scale){
+            dialog->input_layout=fonts.layout(prompt_text,style);dialog->input_text=prompt_text;dialog->input_scale=scale;
+        }
+        const auto& input=*dialog->input_layout;
+        const auto horizontal=std::max(0.0F,input.width()-(panel_width-64*scale));
+        const auto input_x=x+22*scale+input.width()-horizontal;
+        canvas->save();canvas->clipRect(SkRect::MakeXYWH(x+20*scale,97*scale,panel_width-40*scale,27*scale));
+        if(prompt_text.empty())label(canvas,dialog->spec.value("placeholder",std::string("Type text, then press Enter")),x+22*scale,100*scale,14,muted);
+        else input.draw(canvas,x+22*scale-horizontal,100*scale);
+        if(!preedit.empty()){const auto composition=fonts.layout(preedit,style);composition.draw(canvas,input_x,100*scale);rectangle(canvas,input_x,120*scale,composition.width(),scale,accent);}
+        else rectangle(canvas,input_x,100*scale,scale,20*scale,cursor_color);
+        canvas->restore();
+        int logical_width{},logical_height{};
+        if(SDL_GetWindowSize(renderer.window(),&logical_width,&logical_height)&&logical_width>0&&logical_height>0){
+            renderer.set_text_input_area({static_cast<int>(input_x*static_cast<float>(logical_width)/width),static_cast<int>(98*scale*static_cast<float>(logical_height)/height),2,static_cast<int>(26*scale*static_cast<float>(logical_height)/height)},0);
+        }
+        return;
+    }
     if (prompt == Prompt::recovery_flushing) {
         const auto x = (width - 520 * scale) / 2;
         rectangle(canvas, x, 90 * scale, 520 * scale, 130 * scale, panel_background);
@@ -2030,7 +2116,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
     else if (prompt == Prompt::rename) { hint = "RENAME SYMBOL — NEW NAME"; }
     else if (prompt == Prompt::git_commit) { hint = "COMMIT STAGED CHANGES — COMMIT MESSAGE"; }
     else if (prompt == Prompt::recovery) { hint = "RECOVERY — SELECT A SESSION TO REVIEW · ESC TO KEEP EDITING"; }
-    label(canvas, hint, x + 16 * scale, 73 * scale, 10, muted);
+    label(canvas, prompt == Prompt::policy_input && dialog ? dialog->spec.at("title").get<std::string>() : hint, x + 16 * scale, 73 * scale, 10, muted);
     rectangle(canvas, x + 12 * scale, 94 * scale, 576 * scale, 30 * scale, background);
     if (prompt_select_all && !prompt_text.empty()) { rectangle(canvas, x + 20 * scale, 97 * scale, 560 * scale, 25 * scale, selection_color); }
     const auto placeholder = prompt == Prompt::palette ? "Type a command..." : (prompt == Prompt::recovery ?
@@ -2415,7 +2501,7 @@ std::string EditorWindow::active_document_id() const { return impl_->active_id; 
 bool EditorWindow::idle() const noexcept {
     const auto* document = impl_->current();
     return impl_->requests.empty() && !impl_->active_request && impl_->operations.empty() &&
-        impl_->workbench->idle() &&
+        (impl_->workbench->idle() || (impl_->dialog && impl_->workbench->awaiting_input())) &&
         (!document || (!document->needs_lines && !document->loading && !document->needs_syntax && !document->syntax_loading));
 }
 std::string EditorWindow::last_error() const { return impl_->error; }
@@ -2426,6 +2512,7 @@ WorkbenchViewState EditorWindow::view_state() const { return {impl_->geometry,im
 bool EditorWindow::pump() {
     if (!impl_->running) {
         if (!impl_->stopping_workbench) {
+            impl_->finish_dialog(nullptr);
             impl_->stopping_workbench = true;
             impl_->workbench_shutdown_deadline = Clock::now() + std::chrono::seconds(5);
             impl_->workbench->shutdown();

@@ -29,6 +29,7 @@ public:
     void poll();
     void emit(std::string_view event, const Json& params);
     [[nodiscard]] bool idle() const;
+    [[nodiscard]] bool awaiting_input() const;
     [[nodiscard]] Json settings() const;
     [[nodiscard]] std::map<std::string, std::string> keybindings() const;
     [[nodiscard]] std::vector<Json> take_errors();

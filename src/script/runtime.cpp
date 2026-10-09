@@ -90,7 +90,7 @@ struct Runtime::Impl {
     Impl(AsyncRequest incoming, Limits budget) : request(std::move(incoming)), limits(budget) {
         if (!request || limits.memory_bytes < 1024 * 1024 || limits.stack_bytes < 64 * 1024 ||
             limits.execution_time.count() <= 0 || limits.max_pending_jobs == 0 ||
-            limits.max_pending_requests == 0 || limits.max_tasks == 0 || limits.request_timeout.count() <= 0) {
+            limits.max_pending_requests == 0 || limits.max_tasks == 0 || limits.request_timeout.count() <= 0 || limits.task_timeout.count() <= 0) {
             throw std::invalid_argument("Invalid script runtime configuration");
         }
         runtime = JS_NewRuntime();
@@ -549,7 +549,7 @@ struct Runtime::Impl {
     TaskId retain(JSValueConst value, TaskId id) {
         if (tasks.size() >= limits.max_tasks) { throw ScriptError("Script task capacity exceeded"); }
         tasks.emplace(id, Task{std::make_unique<Value>(context, JS_DupValue(context, value)), std::nullopt,
-                              Clock::now() + limits.request_timeout, false, false});
+                              Clock::now() + limits.task_timeout, false, false});
         return id;
     }
 
@@ -695,6 +695,14 @@ void Runtime::cancel(TaskId id) {
 bool Runtime::idle() const {
     impl_->require_owner();
     return impl_->pending.empty() && impl_->tasks.empty() && impl_->cancellations.empty() && impl_->abandoned.empty();
+}
+bool Runtime::waiting_only(std::string_view method) const {
+    impl_->require_owner();
+    if (impl_->pending.empty() || !impl_->cancellations.empty() || !impl_->abandoned.empty() || JS_IsJobPending(impl_->runtime)) { return false; }
+    if (!std::ranges::all_of(impl_->pending,[method](const auto& entry){return entry.second->method==method && entry.second->future.has_value();})) { return false; }
+    return std::ranges::all_of(impl_->tasks,[this](const auto& entry){
+        return !entry.second.cancelled && !entry.second.outcome && std::ranges::any_of(impl_->pending,[id=entry.first](const auto& request){return request.second->owner==id;});
+    });
 }
 
 void Runtime::shutdown() {

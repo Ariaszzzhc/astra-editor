@@ -102,6 +102,16 @@ void run(const fs::path& workspace) {
         SDL_Event enter{};enter.type=SDL_EVENT_KEY_DOWN;enter.key.windowID=SDL_GetWindowID(window.window());enter.key.key=SDLK_RETURN;enter.key.down=true;
         require(SDL_PushEvent(&mode)&&SDL_PushEvent(&text)&&SDL_PushEvent(&enter),"Cannot enqueue quick-open event batch");settle(window);
         require(window.active_document_id()==three,"Quick open did not settle focus before same-frame typing");
+        window.execute_ui_command("ui.saveAs");settle(window);
+        window.request_screenshot("build/graphics/gui-workbench-input.png");settle(window);
+        key(window,SDLK_ESCAPE);
+        require(!fs::exists(workspace/"renamed-three.cpp"),"Cancelled async save dialog wrote a file");
+        mode.key.key=SDLK_S;mode.key.mod=SDL_KMOD_CTRL|SDL_KMOD_SHIFT;
+        SDL_Event select=mode;select.key.key=SDLK_A;select.key.mod=SDL_KMOD_CTRL;
+        text.text.text="renamed-three.cpp";
+        require(SDL_PushEvent(&mode)&&SDL_PushEvent(&select)&&SDL_PushEvent(&text)&&SDL_PushEvent(&enter),"Cannot enqueue async save-as event batch");settle(window);
+        require(astra::io::read_file(workspace/"renamed-three.cpp").text==astra::io::read_file(workspace/"three.cpp").text,
+            "Async save dialog lost same-batch text/focus or changed document content");
         window.execute_ui_command("ui.closeWindow");
         const auto deadline=Clock::now()+std::chrono::seconds(20);
         while(window.pump()) {require(Clock::now()<deadline,"Workbench shutdown timed out");SDL_Delay(1);}
@@ -118,6 +128,6 @@ int main() {
         const auto issues=astra::test::cleanup_owned_directory(workspace,parent,"gui-presentation-");
         for(const auto& issue:issues) std::cerr<<issue.path<<": "<<issue.message<<'\n';
         require(issues.empty(),"Presentation fixture cleanup failed");
-        std::cout<<"Windows native workbench: 1505 indexed files, folder collapse, splitter, outline, shaped tabs, drag reorder, overflow, resize, same-frame focus and shutdown: PASS\n";return 0;
+        std::cout<<"Windows native workbench: 1505 indexed files, folder collapse, splitter, outline, shaped tabs, drag reorder, overflow, resize, same-frame open/save focus, async dialog cancellation and shutdown: PASS\n";return 0;
     } catch(const std::exception& error) {std::cerr<<"GUI presentation failed: "<<error.what()<<"\nPreserved fixture: "<<workspace<<'\n';return 1;}
 }

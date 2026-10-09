@@ -109,6 +109,36 @@ Real SDL `gui-smoke.exe`, `gui-smoke.exe --tcp` and `gui-workspace-smoke.exe`
 all passed after migration. A string/JSON comparison rejected by MSVC was
 corrected to compare explicit strings before the passing build.
 
+Client JS now owns quick-open, save/Save As and guarded reload using genuine
+Promise-returning native input/confirmation components. Native modal primitives
+validate/bound content, retain focus, cache shaped text, support cancellation,
+and return values without issuing document/file service calls. JS submits the
+captured document revision after confirmation. The runtime has a separate bounded
+task deadline; dialogs default to five minutes, and cancelled/timed-out dialog
+requests dismiss/drain their native future. Awaited UI command composition honors
+user replacements registered with `astra.ui.registerCommand`.
+
+Windows Debug build: `./scripts/xmake.ps1 build -y astra-tests gui-smoke
+gui-workspace-smoke gui-presentation-smoke`. Focused
+`--test-case=workbench*,QuickJS*,JavaScript*`: **29 cases / 189 assertions PASS**;
+expanded `--test-case=workbench*,QuickJS*,JavaScript*,application*`:
+**92 cases / 4,054 assertions PASS** with real clangd/TCP permissions. New tests
+exercise delayed input, cancellation/draining, unrelated background requests,
+captured reload revision and composed user commands. Real GUI checks additionally
+exercise same-batch quick-open and Save As, cancel without save, pending-input
+screenshots, stale-confirmation rejection and one-step reload undo.
+
+An initial GUI run timed out while a modal awaited input: automation's stable
+UI boundary had incorrectly required every JS command to be finished. The fix
+allows only a presented dialog with all remaining tasks awaiting that exact
+native method; unrelated transport/timer work still prevents settling. Screenshot
+review then found reversed font-size/available-width arguments hiding the dialog
+title/accept label. Those arguments were corrected and screenshots regenerated;
+the prior interaction-only pass was not counted as appearance acceptance. Final
+`gui-presentation-smoke.exe`, `gui-workspace-smoke.exe` and `gui-smoke.exe --tcp`
+all passed after the correction. Regenerated input and reload-confirmation GPU
+screenshots were visually inspected and show the title and action labels.
+
 Remaining work includes the rest of the public UI/provider contract,
 native component extraction, indexed diagnostic/display views, incremental
 syntax indexes, full Debug/Release and native GUI acceptance, and packaging the

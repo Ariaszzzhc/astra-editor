@@ -181,7 +181,7 @@ scripts guard client customization:
 if (astra.context === 'client') {
     astra.ui.registerCommand({id: 'ui.save', title: 'My save'}, async () => {
         const {document} = await astra.ui.read();
-        if (!document?.path) return astra.ui.native('ui.saveAs');
+        if (!document?.path) return astra.ui.execute('ui.saveAs');
         const saved = await astra.request('workspace.save', {
             id: document.id, baseRevision: document.revision
         });
@@ -191,6 +191,18 @@ if (astra.context === 'client') {
 ```
 
 Client document calls use the same in-process/TCP protocol as other clients.
+`astra.ui.execute(id, parameters)` awaits a registered UI command, including user
+overrides. `astra.ui.input({title, value, placeholder}, {signal, timeoutMs})`
+returns entered text or `null` on dismissal. `astra.ui.confirm({title, detail,
+accept}, options)` returns `true` or `null`. These are native retained modal
+components with Promise completion; input/focus/drawing stays in C++ and the
+following service workflow stays in JS. Abort dismisses the matching dialog and
+drains its native future. Dialogs default to five minutes, with a separate bounded
+client task deadline. UI automation distinguishes waiting for user input from
+unfinished background operations. Input is bounded to 16 KiB; confirmation
+details to 64 KiB. The clipboard adapter reads/writes at most 8 MiB and rejects
+oversized/NUL text rather than silently truncating it.
+
 `astra.ui.registerView(spec, provider)` supplies an async model provider;
 `refresh(id, parameters)` cancels older refreshes and only the current generation
 can publish. Current native sidebar model kinds are `explorer`, `search`, `git`.

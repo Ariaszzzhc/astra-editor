@@ -44,6 +44,7 @@ public:
         std::size_t max_pending_requests = 256;
         std::size_t max_tasks = 256;
         std::chrono::milliseconds request_timeout{30000};
+        std::chrono::milliseconds task_timeout{30000};
     };
 
     explicit Runtime(Request request);
@@ -70,6 +71,8 @@ public:
     void shutdown();
     [[nodiscard]] std::vector<Json> take_errors();
     [[nodiscard]] bool idle() const;
+    // True only when every outstanding task/request awaits this host method.
+    [[nodiscard]] bool waiting_only(std::string_view method) const;
     void emit(std::string_view event, const Json& payload);
     void define_module(std::string name, std::string source);
     [[nodiscard]] Json evaluate_module(std::string_view source, std::string_view filename);
