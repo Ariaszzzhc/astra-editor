@@ -48,12 +48,26 @@ void text(astra::ui::EditorWindow& window, const std::string& input) {
     settle(window);
 }
 
-Json read_document(const std::shared_ptr<astra::service::ServiceHost>& host, const std::string& id) {
-    const auto response = host->submit(Json{{"jsonrpc", "2.0"}, {"id", "acceptance"}, {"method", "document.get"}, {"params", {{"id", id}}}}.dump()).get();
+Json call(const std::shared_ptr<astra::service::ServiceHost>& host, const std::string& method, const Json& params) {
+    const auto response = host->submit(Json{{"jsonrpc", "2.0"}, {"id", "acceptance"}, {"method", method}, {"params", params}}.dump()).get();
     require(response.has_value(), "Document verification returned no response");
     const auto parsed = Json::parse(*response);
     require(!parsed.contains("error"), "Document verification returned an error");
     return parsed.at("result");
+}
+Json read_document(const std::shared_ptr<astra::service::ServiceHost>& host, const std::string& id) {
+    return call(host,"document.get",{{"id",id}});
+}
+template<class Predicate>
+void pump_until(astra::ui::EditorWindow& window, Predicate ready, const std::string& failure) {
+    const auto deadline=Clock::now()+std::chrono::seconds(15);
+    do {
+        require(window.pump(),"Window closed during deferred editing acceptance");
+        require(window.last_error().empty(),"GUI action failed: "+window.last_error());
+        if(ready())return;
+        SDL_Delay(1);
+    } while(Clock::now()<deadline);
+    throw std::runtime_error(failure);
 }
 } // namespace
 
@@ -77,6 +91,14 @@ int main(int argc, char* argv[]) {
         service_options.recovery_directory = workspace.parent_path() / (name + "-recovery");
         service_options.resource_directory = std::filesystem::current_path();
         service_options.defaults_script = astra::io::read_file("data/defaults.js", 1024 * 1024).text;
+        service_options.user_script=R"js(let releaseInput;
+        astra.registerCommand('acceptance.inputState',()=>({waiting:!!releaseInput}));
+        astra.registerCommand('acceptance.releaseInput',()=>{releaseInput();releaseInput=undefined;return true;});
+        astra.registerCommand('editor.insert_text',async parameters=>{
+            if(parameters.text==='A')await new Promise(resolve=>{releaseInput=resolve;});
+            await astra.sleep(80);
+            return await astra.request('document.command',{...parameters,command:'insert_text'});
+        });)js";
         auto host = std::make_shared<astra::service::ServiceHost>(std::move(service_options));
         std::cerr << "GUI acceptance: creating window\n";
         astra::ui::EditorWindowOptions options;
@@ -124,6 +146,35 @@ int main(int argc, char* argv[]) {
         require(window.status_text() == "User sidebar policy", "Native UI command bypassed the user JS override");
         key(window, SDLK_B, SDL_KMOD_CTRL);
 
+        key(window,SDLK_A,SDL_KMOD_CTRL);
+        for(const auto* input:{"A","中🙂"}) {
+            SDL_Event event{};event.type=SDL_EVENT_TEXT_INPUT;event.text.text=input;event.text.windowID=SDL_GetWindowID(window.window());
+            require(SDL_PushEvent(&event),"Cannot enqueue delayed script editing intents");
+        }
+        pump_until(window,[&]{return call(host,"script.command",{{"name","acceptance.inputState"}}).at("waiting").get<bool>();},
+            "The user editing policy did not reach its asynchronous gate");
+        window.open_path("README.md");
+        pump_until(window,[&]{return !window.active_document_id().empty() && window.active_document_id()!=id;},
+            "A suspended editing policy blocked opening another document");
+        const auto independent_id=window.active_document_id();
+        SDL_Event independent{};independent.type=SDL_EVENT_TEXT_INPUT;independent.text.text="Independent";
+        independent.text.windowID=SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&independent),"Cannot enqueue independent document input");
+        pump_until(window,[&]{return read_document(host,independent_id).at("text").get<std::string>().find("Independent")!=std::string::npos;},
+            "A suspended editing policy blocked input in another document");
+        require(read_document(host,id).at("text")=="// GUI acceptance\nint main() { return 0; }\n",
+            "A later input bypassed the suspended command for the same document");
+        require(call(host,"script.command",{{"name","acceptance.releaseInput"}})==true,"Cannot release the editing policy gate");
+        settle(window);
+        require(read_document(host,id).at("text")=="A中🙂","Deferred user editing commands lost order or reused a stale revision");
+        require(window.active_document_id()==independent_id,"Completed input changed the active document across await");
+        key(window,SDLK_Z,SDL_KMOD_CTRL);
+        require(read_document(host,independent_id).at("text")=="# Astra GUI acceptance\n","Independent input did not preserve its own history");
+        window.execute_ui_command("ui.closeTab");settle(window);
+        require(window.active_document_id()==id,"Closing the independent clean tab did not restore the original tab");
+        key(window,SDLK_Z,SDL_KMOD_CTRL);require(read_document(host,id).at("text")=="A","Deferred editing did not preserve one transaction per input");
+        key(window,SDLK_Z,SDL_KMOD_CTRL);
+        require(read_document(host,id).at("text")=="// GUI acceptance\nint main() { return 0; }\n","Deferred editing history lost the original source");
         key(window, SDLK_A, SDL_KMOD_CTRL);
         text(window, "alpha\nbeta");
         key(window, SDLK_HOME, SDL_KMOD_CTRL);

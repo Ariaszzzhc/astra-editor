@@ -105,7 +105,7 @@ struct EditorWindow::Impl {
         std::shared_ptr<PendingEdit> edit{};
     };
     struct ActiveRequest { Request request; std::string id; std::future<std::optional<std::string>> future; };
-    struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; std::shared_ptr<PendingEdit> edit; };
+    struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; std::shared_ptr<PendingEdit> edit; std::string document; };
     struct FindState { std::string id; std::string revision; std::string query; std::string replacement; std::string text; std::size_t cursor{}; std::size_t size{}; bool replace{}; };
     struct ViewState { std::string id; std::string revision; std::size_t first{}; std::size_t limit{}; std::map<std::size_t, Line> lines; };
     enum class Prompt { none, policy_input, policy_confirm, policy_pick, policy_text, save_as, close, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, git_diff, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed };
@@ -129,6 +129,7 @@ struct EditorWindow::Impl {
     std::deque<Request> requests;
     std::optional<ActiveRequest> active_request;
     std::vector<std::shared_ptr<Operation>> operations;
+    std::map<std::string,std::shared_ptr<Operation>> ordered_inputs;
     std::map<std::string,std::shared_ptr<PendingEdit>> pending_edits;
     std::uint64_t next_request{1};
     std::map<std::string, std::string> keybindings;
@@ -436,6 +437,14 @@ struct EditorWindow::Impl {
     }
 
     void service_responses();
+    void retire_input(const std::shared_ptr<Operation>& operation) {
+        const auto found=ordered_inputs.find(operation->document);
+        if(found!=ordered_inputs.end() && found->second==operation)ordered_inputs.erase(found);
+    }
+    bool queued_for(const std::string& id) const {
+        return (active_request && active_request->request.document==id) ||
+            std::ranges::any_of(requests,[&](const Request& request){return request.document==id;});
+    }
     void fetch_lines();
     void fetch_lines_page(std::shared_ptr<ViewState> view, std::size_t first, std::optional<std::size_t> begin = {});
     void fetch_syntax();
@@ -536,6 +545,8 @@ void EditorWindow::Impl::service_responses() {
                     operation->complete = completed.request.complete;
                     operation->failure = completed.request.failure;
                     operation->edit=completed.request.edit;
+                    operation->document=completed.request.document;
+                    if(!operation->document.empty())ordered_inputs[operation->document]=operation;
                     operations.push_back(operation);
                     if(operation->edit){
                         operation->edit->operation=operation->id;
@@ -553,6 +564,7 @@ void EditorWindow::Impl::service_responses() {
                 if (completed.request.method == "operation.get") {
                     const auto id = completed.request.params.value("id", std::string{});
                     for (const auto& operation : operations) { if (operation->id == id) {
+                        retire_input(operation);
                         script_handles_failure=script_handles_failure || static_cast<bool>(operation->edit);
                         settle_edit(operation->edit,nullptr,std::current_exception());
                         if(operation->failure)operation->failure();
@@ -580,8 +592,12 @@ void EditorWindow::Impl::service_responses() {
             }
         }
         if (requests.empty()) { break; }
-        auto request = std::move(requests.front());
-        requests.pop_front();
+        const auto next=std::find_if(requests.begin(),requests.end(),[this](const Request& request){
+            return request.document.empty() || !ordered_inputs.contains(request.document) ||
+                request.method=="document.lines" || request.method=="document.syntax" || request.method=="language.diagnostics";
+        });
+        if(next==requests.end())break;
+        auto request=std::move(*next);requests.erase(next);
         if (request.edit && request.edit->cancelled) { continue; }
         if (!request.document.empty() && !documents.contains(request.document)) {
             settle_edit(request.edit,nullptr,std::make_exception_ptr(protocol::RpcError(-32001,"Document closed before the edit was dispatched"))); continue;
@@ -631,6 +647,7 @@ void EditorWindow::Impl::service_responses() {
                     }
                     if (operation->complete) { operation->complete(value); }
                     settle_edit(operation->edit,value);
+                    retire_input(operation);
                     std::erase(operations, operation);
                 } else if (state == "failed" || state == "cancelled") {
                     const auto failure=result.value("error",Json::object());
@@ -654,7 +671,7 @@ void EditorWindow::Impl::service_responses() {
 
 void EditorWindow::Impl::fetch_lines() {
     auto* document = current();
-    if (!document || !document->needs_lines || document->loading || !requests.empty() || active_request) { return; }
+    if (!document || !document->needs_lines || document->loading || queued_for(active_id)) { return; }
     const auto id = active_id;
     const auto first = document->first_line > 2 ? document->first_line - 2 : 0;
     const auto visible = static_cast<std::size_t>(std::max(1.0F, (content_bottom - content_top) / row_height)) + 8;
@@ -706,7 +723,7 @@ void EditorWindow::Impl::fetch_lines_page(std::shared_ptr<ViewState> view, std::
 void EditorWindow::Impl::fetch_syntax() {
     auto* document = current();
     if (!document || document->loading || document->needs_lines || !document->needs_syntax || document->syntax_loading ||
-        !requests.empty() || active_request || document->lines.empty()) { return; }
+        queued_for(active_id) || document->lines.empty()) { return; }
     const auto id = active_id;
     const auto revision = document->view_revision;
     const auto outline_begin=document->outline_scroll;

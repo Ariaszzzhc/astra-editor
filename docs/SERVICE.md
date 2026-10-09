@@ -205,8 +205,12 @@ use `astra.ui.native('editor.undo', {id, baseRevision}, {signal, timeoutMs})` fo
 cancellation/deadlines. Explicit revisions stay fixed; absent revisions are filled
 when the captured document's intent leaves the serial queue. Cancellation skips
 queued work and forwards cancellation to deferred operations; committed edits
-cannot be rolled back. At most 256 native edit futures may be pending. Remaining
-non-edit native workflow bridges still await their respective migration.
+cannot be rolled back. At most 256 native edit futures may be pending.
+Input ordering is per document and continues until a deferred script operation
+actually completes, fails or is cancelled. Later mutations for that document
+wait; unrelated documents and viewport queries remain eligible. Saving does not
+hold this input gate while asynchronous filesystem work owns its snapshot.
+Remaining non-edit native workflow bridges still await their respective migration.
 `astra.ui.input({title, value, placeholder}, {signal, timeoutMs})`
 returns entered text or `null` on dismissal. `astra.ui.confirm({title, detail,
 accept, items}, options)` returns `true` or `null`. Optional `items` are a

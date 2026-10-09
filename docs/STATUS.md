@@ -344,6 +344,17 @@ completion and Git-diff GPU screenshots were visually inspected. These
 focused checks extend the preceding 456-case checkpoint; the complete current
 460-case Debug/Release suites and new package have not yet been run.
 
+Native editing intents now retain per-document ordering through deferred service
+script completion, failure and cancellation. Other documents and viewport
+queries remain eligible; asynchronous saves do not hold this editing gate.
+Windows Debug `build -y gui-smoke gui-presentation-smoke` passed, followed by
+real local/TCP `gui-smoke` and `gui-presentation-smoke`, all PASS. The user-script
+regression suspends the first input on an explicitly released Promise, opens and
+edits another document before releasing it, and proves later input in the original
+document cannot bypass the gate. It also verifies captured identity, separate
+undo histories and one transaction per input. No fixed-delay timing assertion
+is used for document independence.
+
 Remaining work includes the rest of the public UI/provider contract,
 native component extraction, incremental display layout, incremental
 Markdown syntax indexes, final acceptance and packaging of the
