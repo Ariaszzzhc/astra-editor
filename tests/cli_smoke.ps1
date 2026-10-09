@@ -62,6 +62,11 @@ try {
     $found = Wait-TestOperation $finding
     if ($found.match.begin -ne 8 -or $found.match.end -ne 14 -or -not $found.wrapped -or
         $found.match.line -ne 0 -or $found.match.utf16Column -ne 8) { throw 'CLI find lost UTF-8 positions or wrap semantics' }
+    $previous = Wait-TestOperation (Invoke-TestRpc 'document.find' @{id=$created.id; baseRevision=$created.revision; query='中文'; direction='backward'; select=$true})
+    if ($previous.match.begin -ne 8 -or $previous.match.end -ne 14 -or -not $previous.wrapped -or
+        $previous.document.revision -ne $created.revision -or $previous.document.canUndo) { throw 'CLI previous search lost selection-start wrap or history semantics' }
+    $noPrevious = Wait-TestOperation (Invoke-TestRpc 'document.find' @{id=$created.id; baseRevision=$created.revision; query='中文'; direction='backward'; wrap=$false})
+    if ($null -ne $noPrevious.match -or $noPrevious.wrapped) { throw 'CLI previous search ignored no-wrap at the first match' }
     $replacing = Invoke-TestRpc 'document.replaceAll' @{id=$created.id; baseRevision=$created.revision; query='(emoji)'; regex=$true; replacement='[$1]'}
     $replaced = Wait-TestOperation $replacing
     $afterReplace = Invoke-TestRpc 'document.get' @{id=$created.id}

@@ -7,6 +7,7 @@
 #include "astra/ui/text_line_index.hpp"
 #include "astra/ui/picker_index.hpp"
 #include "astra/ui/decoration_indexes.hpp"
+#include "astra/ui/inline_form.hpp"
 #include "astra/io/file_store.hpp"
 
 #include "include/core/SkCanvas.h"
@@ -241,6 +242,12 @@ struct EditorWindow::Impl {
     std::string status{"Starting workspace..."};
     std::optional<std::filesystem::path> screenshot;
     std::optional<float> vertical_column;
+    std::optional<InlineForm> inline_form;
+    std::optional<std::size_t> dragging_form_field;
+    std::deque<std::pair<std::string,Json>> form_events;
+    struct FieldLayout { std::string text; float scale{}; std::optional<TextLayout> layout; float horizontal{}; };
+    std::map<std::string,FieldLayout> form_fields;
+    std::uint64_t form_sequence{};
 
     Impl(std::shared_ptr<EditorChannel> input, EditorWindowOptions configuration)
         : channel(std::move(input)), options(std::move(configuration)), renderer(options.title, options.width, options.height) {
@@ -384,6 +391,7 @@ struct EditorWindow::Impl {
     }
     void activate(const std::string& id) {
         if (!documents.contains(id)) { return; }
+        if(active_id!=id)static_cast<void>(close_inline_form());
         active_id = id;
         reveal_tab = true;
         documents.at(id).needs_lines = true;
@@ -394,7 +402,7 @@ struct EditorWindow::Impl {
         documents.erase(id);
         workspace_notices.erase(id);
         std::erase(tabs, id);
-        if (active_id == id) { active_id = tabs.empty() ? std::string{} : tabs.back(); }
+        if (active_id == id) { static_cast<void>(close_inline_form());active_id = tabs.empty() ? std::string{} : tabs.back(); }
     }
     void new_document() {
         execute_policy("ui.new");
@@ -474,6 +482,10 @@ struct EditorWindow::Impl {
     void draw();
     void measure_layout();
     void draw_prompt(SkCanvas* canvas, float width, float height);
+    void draw_inline_form(SkCanvas* canvas);
+    bool inline_key(const SDL_KeyboardEvent& input,bool control,bool shift,bool alt);
+    void emit_form(std::string_view event,std::string_view action={});
+    bool close_inline_form(std::string_view id={});
     void label(SkCanvas* canvas, std::string_view text, float x, float y, float size, SkColor color = 0);
     const TextLayout& label_layout(std::string_view text, float size, SkColor color);
     void elided_label(SkCanvas* canvas,std::string_view text,float x,float y,float size,float available,SkColor color);
@@ -908,7 +920,21 @@ void EditorWindow::Impl::close_document(const std::string& id, bool discard) {
 }
 
 bool EditorWindow::Impl::native_idle() const {
-    return requests.empty() && !active_request && operations.empty() && pending_edits.empty() && pending_reads.empty() && closing_pending.empty();
+    return requests.empty() && !active_request && operations.empty() && pending_edits.empty() && pending_reads.empty() && closing_pending.empty() && form_events.empty();
+}
+
+void EditorWindow::Impl::emit_form(std::string_view event,std::string_view action) {
+    if(!inline_form)return;
+    auto state=inline_form->state();if(!action.empty())state["action"]=action;
+    if(event=="ui.form.changed" && !form_events.empty() && form_events.back().first==event && form_events.back().second.at("id")==inline_form->id()) {
+        form_events.back().second=std::move(state);return;
+    }
+    if(form_events.size()>=256)throw protocol::RpcError(-32004,"Inline event queue capacity exceeded");
+    form_events.emplace_back(event,std::move(state));
+}
+bool EditorWindow::Impl::close_inline_form(std::string_view id) {
+    if(!inline_form || (!id.empty() && inline_form->id()!=id))return false;
+    emit_form("ui.form.closed");inline_form.reset();dragging_form_field.reset();form_fields.clear();preedit.clear();return true;
 }
 
 std::future<Json> EditorWindow::Impl::begin_fence(std::string_view method,const Json& params) {
@@ -975,6 +1001,7 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
     if(kind=="pick")pending.picker.reset(items.get<std::vector<std::string>>());
     else if(!items.empty())pending.items.reset(item_text);
     auto result = pending.completion.get_future();
+    if(inline_form)inline_form->focus(std::nullopt);
     dialog.emplace(std::move(pending));
     prompt = kind == "input" ? Prompt::policy_input : (kind=="pick" ? Prompt::policy_pick : (kind=="text" ? Prompt::policy_text : (kind=="choice" ? Prompt::policy_choice : (kind=="progress" ? Prompt::policy_progress : Prompt::policy_confirm))));
     prompt_text = value; prompt_choice = kind=="choice" ? spec.value("defaultChoice",std::size_t{0}) : 0; prompt_select_all = false; preedit.clear();
@@ -1037,6 +1064,16 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         if (!SDL_SetClipboardText(text.c_str())) { throw std::runtime_error(std::string("Clipboard write failed: ") + SDL_GetError()); }
         return nullptr;
     }
+    if(method=="_ui.form.open") {
+        if(dialog || prompt!=Prompt::none)throw protocol::RpcError(-32004,"Dismiss modal input before opening an inline form");
+        if(form_sequence==std::numeric_limits<std::uint64_t>::max())throw protocol::RpcError(-32004,"Inline component identity exhausted");
+        InlineForm prepared(params,std::to_string(++form_sequence));
+        static_cast<void>(close_inline_form());inline_form.emplace(std::move(prepared));form_fields.clear();preedit.clear();
+        return inline_form->state();
+    }
+    if(method=="_ui.form.read")return inline_form && params.at("id")==inline_form->id() ? inline_form->state() : Json(nullptr);
+    if(method=="_ui.form.close")return close_inline_form(params.at("id").get<std::string>());
+    if(method=="_ui.form.update")return inline_form && inline_form->update(params);
     if (method == "_ui.read") {
         Json result{{"sidebarVisible", show_sidebar}, {"sidebar",git_view ? "git" : (search_view ? "search" : "explorer")}, {"outlineVisible", show_outline}, {"tabs", tabs}, {"gitPath", prompt == Prompt::git_diff ? git_path : std::string{}}, {"gitStaged",git_staged},{"gitPreview",git_preview}};
         result["serviceCommands"]=service_commands;
@@ -1213,6 +1250,7 @@ void EditorWindow::Impl::native_command(std::string_view name) {
         activate(tabs[(index + tabs.size() - 1) % tabs.size()]);
     } else if (name == "ui.cancel") {
         finish_dialog(nullptr);
+        static_cast<void>(close_inline_form());
         prompt = Prompt::none; quit_requested=false;quitting_fences.clear();
         preedit.clear(); error.clear();
     } else if (!name.starts_with("ui.")) {
@@ -1392,6 +1430,7 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
         return;
     }
 
+    if(inline_key(input,control,shift,alt))return;
     std::string key_name;
     if (input.key >= SDLK_A && input.key <= SDLK_Z) { key_name.assign(1, static_cast<char>('A' + input.key - SDLK_A)); }
     else {
@@ -1452,6 +1491,66 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
     default: return;
     }
     editor_command("editor." + editing, {{"extend", shift}});
+}
+
+bool EditorWindow::Impl::inline_key(const SDL_KeyboardEvent& input,bool control,bool shift,bool alt) {
+    if(!inline_form || !inline_form->focus())return false;
+    auto& form=*inline_form;
+    if(alt && !control && input.key>=SDLK_A && input.key<=SDLK_Z) {
+        const auto token=std::string("Alt+")+static_cast<char>('A'+input.key-SDLK_A);
+        for(std::size_t i=0;i<form.toggles().size();++i)if(form.toggles()[i].shortcut==token) {
+            form.toggle(i);emit_form("ui.form.changed");return true;
+        }
+    }
+    if(alt)return false;
+    if(input.key==SDLK_TAB && !control){form.cycle_focus(shift);preedit.clear();return true;}
+    const auto focused=*form.focus();
+    if(focused>=form.fields().size()) {
+        if(input.key==SDLK_SPACE || input.key==SDLK_RETURN || input.key==SDLK_KP_ENTER) {
+            const auto index=focused-form.fields().size();
+            if(index<form.toggles().size()){form.toggle(index);emit_form("ui.form.changed");}
+            else emit_form("ui.form.action",form.actions()[index-form.toggles().size()].id);
+            return true;
+        }
+        return (control && (input.key==SDLK_A || input.key==SDLK_C || input.key==SDLK_X || input.key==SDLK_V || input.key==SDLK_Z || input.key==SDLK_Y)) ||
+            (!control && ((input.key>=SDLK_SPACE && input.key<=SDLK_DELETE) || input.key==SDLK_UP || input.key==SDLK_DOWN || input.key==SDLK_LEFT || input.key==SDLK_RIGHT || input.key==SDLK_HOME || input.key==SDLK_END));
+    }
+    const auto& field=form.fields()[focused];
+    if(input.key==SDLK_RETURN || input.key==SDLK_KP_ENTER) {
+        const auto& action=shift && !field.shift_submit.empty() ? field.shift_submit : field.submit;
+        if(!action.empty())emit_form("ui.form.action",action);
+        return true;
+    }
+    if(control && (input.key==SDLK_C || input.key==SDLK_X)) {
+        const auto selection=field.text.selections().front();
+        const auto text=field.text.text().slice(selection.begin().value,selection.end().value);
+        if(!SDL_SetClipboardText(text.c_str()))throw std::runtime_error(SDL_GetError());
+        if(input.key==SDLK_X && form.edit(editing::Command::insert_text))emit_form("ui.form.changed");
+        return true;
+    }
+    if(control && input.key==SDLK_V) {
+        const std::unique_ptr<char,SdlStringDeleter> pasted(SDL_GetClipboardText());
+        if(!pasted)throw std::runtime_error(SDL_GetError());
+        editing::Options input_options;input_options.text=pasted.get();
+        if(form.edit(editing::Command::insert_text,input_options))emit_form("ui.form.changed");return true;
+    }
+    if(control && (input.key==SDLK_Z || input.key==SDLK_Y)) {
+        if(form.history(input.key==SDLK_Y || shift))emit_form("ui.form.changed");return true;
+    }
+    std::optional<editing::Command> input_command;
+    switch(input.key) {
+    case SDLK_LEFT: input_command=control ? editing::Command::move_word_left : editing::Command::move_left;break;
+    case SDLK_RIGHT: input_command=control ? editing::Command::move_word_right : editing::Command::move_right;break;
+    case SDLK_HOME: input_command=editing::Command::move_home;break;
+    case SDLK_END: input_command=editing::Command::move_end;break;
+    case SDLK_BACKSPACE: input_command=control ? editing::Command::delete_word_backward : editing::Command::backspace;break;
+    case SDLK_DELETE: input_command=control ? editing::Command::delete_word_forward : editing::Command::delete_forward;break;
+    case SDLK_A: if(control)input_command=editing::Command::select_all;break;
+    default:break;
+    }
+    if(!input_command)return !control && ((input.key>=SDLK_SPACE && input.key<=SDLK_DELETE) || input.key==SDLK_UP || input.key==SDLK_DOWN || input.key==SDLK_PAGEUP || input.key==SDLK_PAGEDOWN);
+    editing::Options input_options;input_options.extend=shift;
+    if(form.edit(*input_command,input_options))emit_form("ui.form.changed");return true;
 }
 
 void EditorWindow::Impl::point(float x, float y, bool extend, bool add) {
@@ -1522,7 +1621,12 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             if (existing + entered.size() > 16384) { error = "Input exceeds its 16 KiB limit"; break; }
             if (prompt_select_all) { prompt_text.clear(); prompt_select_all = false; }
             prompt_text += input.text.text; prompt_choice = 0;
-        } else if (prompt == Prompt::none) { editor_command("editor.insert_text", {{"text", input.text.text}}); }
+        } else if (prompt == Prompt::none) {
+            if(inline_form && inline_form->focus()) {
+                editing::Options input_options;input_options.text=input.text.text;
+                if(inline_form->edit(editing::Command::insert_text,input_options))emit_form("ui.form.changed");
+            } else editor_command("editor.insert_text", {{"text", input.text.text}});
+        }
         break;
     case SDL_EVENT_MOUSE_MOTION:
         mouse_x = input.motion.x * ratio_x; mouse_y = input.motion.y * ratio_y;
@@ -1536,6 +1640,16 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                     tabs.insert(tabs.begin()+static_cast<std::ptrdiff_t>(tab.index),id); reveal_tab=true;
                 }
                 break;
+            }
+        }
+        else if(dragging_form_field && inline_form) {
+            const auto index=*dragging_form_field;
+            const auto boxes=InlineFormLayout::measure(geometry.editor,scale,inline_form->fields().size(),inline_form->toggles().size(),inline_form->actions().size());
+            const auto cached=form_fields.find(inline_form->fields()[index].id);
+            if(cached!=form_fields.end() && cached->second.layout) {
+                const auto& box=boxes.fields[index];
+                const auto hit=cached->second.layout->hit_test(mouse_x-box.x-6*scale+cached->second.horizontal,mouse_y-box.y-5*scale);
+                inline_form->select(index,ByteOffset{hit.byte_offset},true);
             }
         }
         else if (dragging_scroll) { scroll_to(mouse_y); }
@@ -1584,6 +1698,29 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             }
         }
         if (prompt != Prompt::none) { break; }
+        if(inline_form) {
+            const auto form_layout=InlineFormLayout::measure(geometry.editor,scale,inline_form->fields().size(),inline_form->toggles().size(),inline_form->actions().size());
+            if(form_layout.panel.contains(mouse_x,mouse_y)) {
+                if(form_layout.close.contains(mouse_x,mouse_y)){static_cast<void>(close_inline_form());break;}
+                for(std::size_t i=0;i<form_layout.fields.size();++i)if(form_layout.fields[i].contains(mouse_x,mouse_y)) {
+                    inline_form->focus(i);
+                    const auto found=form_fields.find(inline_form->fields()[i].id);
+                    if(found!=form_fields.end() && found->second.layout) {
+                        const auto hit=found->second.layout->hit_test(mouse_x-form_layout.fields[i].x-6*scale+found->second.horizontal,mouse_y-form_layout.fields[i].y-5*scale);
+                        inline_form->select(i,ByteOffset{hit.byte_offset},(SDL_GetModState()&SDL_KMOD_SHIFT)!=0);
+                        dragging_form_field=i;
+                    }
+                }
+                for(std::size_t i=0;i<form_layout.toggles.size();++i)if(form_layout.toggles[i].contains(mouse_x,mouse_y)) {
+                    inline_form->focus(inline_form->fields().size()+i);inline_form->toggle(i);emit_form("ui.form.changed");
+                }
+                for(std::size_t i=0;i<form_layout.actions.size();++i)if(form_layout.actions[i].contains(mouse_x,mouse_y)) {
+                    inline_form->focus(inline_form->fields().size()+inline_form->toggles().size()+i);emit_form("ui.form.action",inline_form->actions()[i].id);
+                }
+                break;
+            }
+            inline_form->focus(std::nullopt);preedit.clear();
+        }
         if (!workspace_notice().empty() && mouse_x >= left + 12 * scale && mouse_x < right - 12 * scale &&
             mouse_y >= content_bottom - 142 * scale && mouse_y < content_bottom - 106 * scale) {
             command("ui.dismissWorkspaceNotice"); break;
@@ -1667,7 +1804,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         break;
     }
     case SDL_EVENT_MOUSE_BUTTON_UP:
-        if (input.button.button == SDL_BUTTON_LEFT) { dragging=false; dragging_scroll=false; dragging_sidebar=false; dragging_tab.clear(); }
+        if (input.button.button == SDL_BUTTON_LEFT) { dragging=false; dragging_scroll=false; dragging_sidebar=false; dragging_form_field.reset(); dragging_tab.clear(); }
         break;
     case SDL_EVENT_MOUSE_WHEEL: {
         mouse_x=input.wheel.mouse_x*ratio_x;mouse_y=input.wheel.mouse_y*ratio_y;
@@ -1779,6 +1916,73 @@ void EditorWindow::Impl::measure_layout() {
     const auto index = active == tabs.end() ? 0 : static_cast<std::size_t>(active-tabs.begin());
     tab_strip = TabStrip::measure(geometry.tabs, scale, widths, first_tab, index, reveal_tab);
     first_tab = tab_strip.first; reveal_tab = false;
+}
+
+void EditorWindow::Impl::draw_inline_form(SkCanvas* canvas) {
+    if(!inline_form)return;
+    const auto& form=*inline_form;
+    const auto boxes=InlineFormLayout::measure(geometry.editor,scale,form.fields().size(),form.toggles().size(),form.actions().size());
+    if(boxes.panel.width<=0 || boxes.panel.height<=0)return;
+    rectangle(canvas,boxes.panel.x+3*scale,boxes.panel.y+3*scale,boxes.panel.width,boxes.panel.height,0x55000000);
+    rectangle(canvas,boxes.panel.x,boxes.panel.y,boxes.panel.width,boxes.panel.height,border_color);
+    rectangle(canvas,boxes.panel.x+scale,boxes.panel.y+scale,std::max(0.0F,boxes.panel.width-2*scale),std::max(0.0F,boxes.panel.height-2*scale),sidebar_background);
+    canvas->save();canvas->clipRect(SkRect::MakeXYWH(boxes.panel.x,boxes.panel.y,boxes.panel.width,boxes.panel.height));
+    elided_label(canvas,form.title(),boxes.title.x,boxes.title.y,12,boxes.title.width,foreground);
+    if(boxes.close.contains(mouse_x,mouse_y))rectangle(canvas,boxes.close.x,boxes.close.y,boxes.close.width,boxes.close.height,hover_color);
+    draw_icon(canvas,Icon::close,boxes.close.x+6*scale,boxes.close.y+5*scale,14*scale,muted);
+    for(std::size_t i=0;i<form.fields().size();++i) {
+        const auto& field=form.fields()[i];const auto box=boxes.fields[i];const auto focused=form.focus()==i;
+        auto& cached=form_fields[field.id];const auto text=field.text.text().str();
+        if(!cached.layout || cached.text!=text || cached.scale!=scale) {
+            TextLayoutOptions style;style.font_size=ui_font_size;style.dpi_scale=scale;style.line_height=1.0F;style.color=foreground;
+            style.font_families={"Segoe UI","Microsoft YaHei UI","Segoe UI Emoji"};style.direction=TextDirection::automatic;
+            cached.layout=fonts.layout(text,style);cached.text=text;cached.scale=scale;
+        }
+        rectangle(canvas,box.x,box.y,box.width,box.height,form.error() ? error_color : (focused ? accent : border_color));
+        rectangle(canvas,box.x+scale,box.y+scale,std::max(0.0F,box.width-2*scale),std::max(0.0F,box.height-2*scale),input_color);
+        const auto selection=field.text.selections().front();const auto caret=cached.layout->caret(selection.head.value);
+        const auto available=std::max(0.0F,box.width-12*scale);
+        if(focused) {
+            if(caret.x<cached.horizontal)cached.horizontal=caret.x;
+            if(caret.x>cached.horizontal+available)cached.horizontal=caret.x-available;
+        }
+        cached.horizontal=std::clamp(cached.horizontal,0.0F,std::max(0.0F,cached.layout->width()-available));
+        const auto x=box.x+6*scale-cached.horizontal,y=box.y+5*scale;
+        canvas->save();canvas->clipRect(SkRect::MakeXYWH(box.x+2*scale,box.y+scale,std::max(0.0F,box.width-4*scale),std::max(0.0F,box.height-2*scale)));
+        if(text.empty() && (!focused || preedit.empty()))elided_label(canvas,field.placeholder,box.x+6*scale,box.y+6*scale,13,available,muted);
+        for(const auto& rect:cached.layout->selection_rects(selection.begin().value,selection.end().value)) {
+            rectangle(canvas,x+rect.x,y+rect.y,rect.width,rect.height,focused ? selection_color : hover_color);
+        }
+        cached.layout->draw(canvas,x,y);
+        if(focused) {
+            rectangle(canvas,x+caret.x,y+caret.y,scale,std::min(caret.height,std::max(0.0F,box.height-8*scale)),foreground);
+            int logical_width{},logical_height{},pixels_width{},pixels_height{};
+            if(!SDL_GetWindowSize(renderer.window(),&logical_width,&logical_height) ||
+                !SDL_GetWindowSizeInPixels(renderer.window(),&pixels_width,&pixels_height) || logical_width<=0 || logical_height<=0)throw std::runtime_error(SDL_GetError());
+            const auto rx=static_cast<float>(pixels_width)/static_cast<float>(logical_width),ry=static_cast<float>(pixels_height)/static_cast<float>(logical_height);
+            renderer.set_text_input_area(SDL_Rect{static_cast<int>((x+caret.x)/rx),static_cast<int>((y+caret.y)/ry),
+                2,std::max(1,static_cast<int>(caret.height/ry))},0);
+            if(!preedit.empty()) {
+                TextLayoutOptions style;style.font_size=ui_font_size;style.dpi_scale=scale;style.line_height=1.0F;style.color=foreground;
+                const auto composition=fonts.layout(preedit,style);composition.draw(canvas,x+caret.x,y);
+                rectangle(canvas,x+caret.x,y+20*scale,composition.width(),scale,accent);
+            }
+        }
+        canvas->restore();
+    }
+    for(std::size_t i=0;i<form.toggles().size();++i) {
+        const auto& toggle=form.toggles()[i];const auto box=boxes.toggles[i];const auto focused=form.focus()==form.fields().size()+i;
+        rectangle(canvas,box.x,box.y,box.width,box.height,toggle.value ? selection_color : (box.contains(mouse_x,mouse_y) ? hover_color : sidebar_background));
+        if(focused)rectangle(canvas,box.x,box.bottom()-scale,box.width,scale,accent);
+        elided_label(canvas,toggle.label,box.x+6*scale,box.y+5*scale,11,std::max(0.0F,box.width-12*scale),toggle.value ? foreground : muted);
+    }
+    elided_label(canvas,form.busy() ? "Searching…" : form.message(),boxes.message.x,boxes.message.y,11,boxes.message.width,form.error() ? error_color : muted);
+    for(std::size_t i=0;i<form.actions().size();++i) {
+        const auto box=boxes.actions[i];const auto focused=form.focus()==form.fields().size()+form.toggles().size()+i;
+        rectangle(canvas,box.x,box.y,box.width,box.height,focused ? selection_color : (box.contains(mouse_x,mouse_y) ? hover_color : input_color));
+        elided_label(canvas,form.actions()[i].label,box.x+6*scale,box.y+7*scale,11,std::max(0.0F,box.width-12*scale),foreground);
+    }
+    canvas->restore();
 }
 
 void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height) {
@@ -2190,7 +2394,7 @@ void EditorWindow::Impl::draw() {
                         renderer.set_text_input_area(SDL_Rect{static_cast<int>(cursor_x / rx), static_cast<int>(cursor_y / ry),
                             2, std::max(1, static_cast<int>(caret.height / ry))}, 0);
                     }
-                    if (!preedit.empty() && prompt == Prompt::none) {
+                    if (!preedit.empty() && prompt == Prompt::none && (!inline_form || !inline_form->focus())) {
                         auto composition = fonts.layout(preedit, TextLayoutOptions{options.font_size, scale, 1.5F});
                         rectangle(canvas, cursor_x, cursor_y, composition.width() + 4 * scale, composition.height(), background);
                         composition.draw(canvas, cursor_x, cursor_y);
@@ -2282,6 +2486,7 @@ void EditorWindow::Impl::draw() {
         rectangle(canvas, left + 12 * scale, content_bottom - 58 * scale, std::max(100 * scale, right - left - 24 * scale), 46 * scale, error_background);
         label(canvas, error, left + 24 * scale, content_bottom - 44 * scale, 12, foreground);
     }
+    draw_inline_form(canvas);
     draw_prompt(canvas, width, height);
     if (screenshot) { renderer.capture_png(*screenshot); screenshot.reset(); }
     renderer.end_frame();
@@ -2308,6 +2513,11 @@ WorkbenchLayout EditorWindow::layout() const { return impl_->geometry; }
 WorkbenchViewState EditorWindow::view_state() const {
     WorkbenchViewState result{impl_->geometry,impl_->tab_strip,impl_->tabs,impl_->file_tree.size()};
     result.file_first=impl_->tree_scroll;
+    if(impl_->inline_form) {
+        const auto& form=*impl_->inline_form;
+        result.inline_form_layout=InlineFormLayout::measure(impl_->geometry.editor,impl_->scale,form.fields().size(),form.toggles().size(),form.actions().size());
+        result.inline_form=form.state();result.inline_form["busy"]=form.busy();result.inline_form["error"]=form.error();result.inline_form["message"]=form.message();
+    }
     if(const auto* document=impl_->current()){result.outline_first=document->outline_begin;result.outline_total=document->outline_total;result.visible_outline_rows=document->outline.size();}
     return result;
 }
@@ -2336,6 +2546,11 @@ bool EditorWindow::pump() {
             catch (const std::exception& error) { impl_->error = error.what(); }
         });
         impl_->service_responses();
+        const auto form_deadline=Clock::now()+std::chrono::milliseconds(4);
+        for(int count=0;count<8 && !impl_->form_events.empty() && Clock::now()<form_deadline;++count) {
+            auto event=std::move(impl_->form_events.front());impl_->form_events.pop_front();
+            impl_->workbench->emit(event.first,event.second);
+        }
         impl_->workbench->poll();
         if(impl_->finish_fences())impl_->workbench->poll();
         if(impl_->quit_requested && impl_->workbench->idle() && impl_->native_idle()) {

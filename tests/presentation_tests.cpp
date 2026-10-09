@@ -3,12 +3,85 @@
 #include <astra/ui/workbench_layout.hpp>
 #include <astra/ui/text_line_index.hpp>
 #include <astra/ui/decoration_indexes.hpp>
+#include <astra/ui/inline_form.hpp>
 #include <doctest/doctest.h>
 
 #include <random>
 #include <limits>
 #include <set>
 #include <string>
+
+namespace {
+astra::protocol::Json form_spec() {
+    using Json=astra::protocol::Json;
+    return {{"id","form"},{"title","Find"},{"fields",Json::array({{{"id","query"},{"value","中🙂e\xCC\x81"},{"submit","next"}}})},
+        {"toggles",Json::array({{{"id","regex"},{"label","Regex"},{"value",false}}})},
+        {"actions",Json::array({{{"id","next"},{"label","Next"}}})}};
+}
+}
+
+TEST_CASE("presentation inline inputs preserve graphemes history and result generations") {
+    using astra::editing::Command;
+    astra::ui::InlineForm form(form_spec(),"epoch");
+    const auto initial=form.state();
+    CHECK(initial.at("version")=="epoch-1");
+    REQUIRE(form.update({{"id","form"},{"version",form.version()},{"busy",true},{"message","Working"}}));
+    CHECK_FALSE(form.edit(Command::move_end));CHECK(form.busy());
+    REQUIRE(form.edit(Command::backspace));
+    CHECK(form.state().at("values").at("query")=="中🙂");CHECK_FALSE(form.busy());CHECK(form.message().empty());
+    CHECK_FALSE(form.update({{"id","form"},{"version",initial.at("version")},{"busy",true}}));
+    REQUIRE(form.history(false));CHECK(form.state().at("values").at("query")==initial.at("values").at("query"));
+    REQUIRE(form.history(true));CHECK(form.state().at("values").at("query")=="中🙂");
+    const auto before=form.state();
+    form.focus(1);CHECK_FALSE(form.edit(Command::insert_text,{.text="body"}));
+    form.toggle(0);CHECK(form.state().at("values").at("regex")==true);CHECK(form.version()!=before.at("version").get<std::string>());
+    const auto changed=form.state();CHECK_THROWS(form.toggle(8));CHECK(form.state()==changed);
+    form.focus(std::nullopt);form.cycle_focus(false);CHECK(form.focus()==0);
+    form.cycle_focus(true);CHECK(form.focus()==2);form.cycle_focus(false);CHECK(form.focus()==0);
+    form.select(0,astra::ByteOffset{3},false);
+    CHECK(form.fields()[0].text.selections().front().head.value==3);
+    CHECK_FALSE(form.edit(Command::move_left));CHECK(form.fields()[0].text.selections().front().head.value==0);
+    CHECK_FALSE(form.update({{"id","different"},{"version",form.version()},{"message","late"}}));
+    astra::ui::InlineForm reopened(form_spec(),"next-epoch");
+    CHECK_FALSE(reopened.update({{"id","form"},{"version",initial.at("version")},{"message","stale"}}));
+}
+
+TEST_CASE("presentation inline input rejects invalid text without changing content selection or history") {
+    using astra::editing::Command;
+    auto spec=form_spec();spec["fields"][0]["value"]=std::string(astra::ui::InlineForm::max_input_bytes,'a');
+    astra::ui::InlineForm form(spec);
+    static_cast<void>(form.edit(Command::move_end));
+    const auto before=form.state();const auto selections=form.fields()[0].text.selections();
+    for(const auto& invalid:std::vector<std::string>{"x","a\nb",std::string("a\0b",3),"\xFF"}) {
+        CHECK_THROWS((void)form.edit(Command::insert_text,{.text=invalid}));
+        CHECK(form.state()==before);CHECK(form.fields()[0].text.selections()==selections);
+        CHECK_FALSE(form.fields()[0].text.can_undo());
+    }
+    CHECK_THROWS((void)form.edit(Command::newline));CHECK(form.state()==before);
+    CHECK_THROWS((void)form.update({{"id","form"},{"version",form.version()},{"message",std::string(513,'x')},{"busy",true}}));
+    CHECK_FALSE(form.busy());
+    form.focus(0,true);REQUIRE(form.edit(Command::insert_text,{.text="🙂"}));
+    CHECK(form.state().at("values").at("query")=="🙂");
+    spec["fields"][0]["submit"]="missing";CHECK_THROWS(astra::ui::InlineForm{spec});
+    spec=form_spec();spec["toggles"][0]["id"]="query";CHECK_THROWS(astra::ui::InlineForm{spec});
+    spec=form_spec();spec["focus"]="missing";CHECK_THROWS(astra::ui::InlineForm{spec});
+}
+
+TEST_CASE("presentation inline geometry keeps all controls inside the editor across DPI") {
+    for(const auto scale:{1.0F,1.25F,1.5F,2.0F})for(const auto width:{220.0F,490.0F,1200.0F})for(const auto height:{80.0F,800.0F}) {
+        const astra::ui::Box editor{300*scale,90*scale,width*scale,height*scale};
+        const auto layout=astra::ui::InlineFormLayout::measure(editor,scale,2,3,3);
+        const auto bounded=[&](astra::ui::Box box,astra::ui::Box outer) {
+            CHECK(box.x>=outer.x);CHECK(box.y>=outer.y);CHECK(box.width>=0);CHECK(box.height>=0);
+            CHECK(box.right()<=doctest::Approx(outer.right()).epsilon(0.00001));
+            CHECK(box.bottom()<=doctest::Approx(outer.bottom()).epsilon(0.00001));
+        };
+        bounded(layout.panel,editor);bounded(layout.title,layout.panel);bounded(layout.close,layout.panel);bounded(layout.message,layout.panel);
+        for(const auto& boxes:{layout.fields,layout.toggles,layout.actions})for(const auto box:boxes)bounded(box,layout.panel);
+        CHECK(layout.fields[0].bottom()<=layout.fields[1].y);CHECK(layout.fields[1].bottom()<=layout.toggles[0].y);
+        CHECK(layout.toggles[0].bottom()<=layout.actions[0].y);
+    }
+}
 
 TEST_CASE("presentation text panels index mixed line endings and preserve snapshots") {
     astra::ui::TextLineIndex lines;

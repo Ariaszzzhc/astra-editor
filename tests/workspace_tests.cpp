@@ -657,6 +657,40 @@ TEST_CASE("workspace find next agrees with a flat literal oracle at random scala
     }
 }
 
+TEST_CASE("workspace previous search agrees with a flat Unicode oracle and retains one result") {
+    constexpr auto seed=0xA57BA11U;std::mt19937 random(seed);CAPTURE(seed);
+    const std::array<std::string_view,6> parts{"a","b"," ","中","🙂","e\xCC\x81"};
+    for(unsigned sample=0;sample<300;++sample) {
+        std::string input;for(unsigned i=0;i<80;++i)input+=parts[random()%parts.size()];
+        std::vector<std::size_t> boundaries{0};
+        for(std::size_t i=0;i<input.size();){i+=astra::utf8::decode(input,i).bytes;boundaries.push_back(i);}
+        const auto begin=boundaries[random()%boundaries.size()];
+        SearchOptions options;options.query=parts[random()%parts.size()];
+        for(const auto wrap:{false,true}) {
+            auto expected=begin ? input.rfind(options.query,begin-1) : std::string::npos;
+            const bool wrapped=expected==std::string::npos && wrap;
+            if(wrapped)expected=input.rfind(options.query);
+            const auto actual=astra::workspace::SearchPattern(options).find_previous(input,astra::ByteOffset{begin},wrap);
+            CHECK(actual.match.has_value()==(expected!=std::string::npos));
+            if(actual.match){CHECK(actual.match->begin.value==expected);CHECK(actual.match->end.value==expected+options.query.size());CHECK(actual.wrapped==wrapped);}
+            CHECK_FALSE(actual.cancelled);CHECK_FALSE(actual.truncated);
+        }
+    }
+    SearchOptions options;options.query="a";
+    const auto many=astra::workspace::SearchPattern(options).find_previous(std::string(10000,'a'),astra::ByteOffset{9999});
+    REQUIRE(many.match);CHECK(many.match->begin.value==9998);
+    options.regex=true;options.query="^|$";
+    auto found=astra::workspace::SearchPattern(options).find_previous("中🙂",astra::ByteOffset{7});
+    REQUIRE(found.match);CHECK(found.match->begin.value==0);CHECK_FALSE(found.wrapped);
+    found=astra::workspace::SearchPattern(options).find_previous("中🙂",astra::ByteOffset{0});
+    REQUIRE(found.match);CHECK(found.match->begin.value==7);CHECK(found.wrapped);
+    std::stop_source cancelled;cancelled.request_stop();
+    found=astra::workspace::SearchPattern(options).find_previous("中🙂",astra::ByteOffset{0},true,cancelled.get_token());
+    CHECK(found.cancelled);CHECK_FALSE(found.match);
+    CHECK_THROWS_AS((void)astra::workspace::SearchPattern(options).find_previous("中🙂",astra::ByteOffset{1}),std::invalid_argument);
+    CHECK_THROWS_AS((void)astra::workspace::SearchPattern(options).find_previous("\xFF",astra::ByteOffset{0}),std::invalid_argument);
+}
+
 TEST_CASE("workspace excludes buffer overlay paths before file and byte budgets") {
     WorkspaceFixture fixture;
     fixture.write("a.txt", std::string(2000, 'x'));

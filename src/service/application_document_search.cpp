@@ -48,12 +48,15 @@ void require_not_cancelled(std::stop_token stop) {
 } // namespace
 
 Json ApplicationService::find_document_text(const Json& params) {
-    fields(params, {"id", "baseRevision", "query", "begin", "wrap", "select", "caseSensitive", "regex", "wholeWord"});
+    fields(params, {"id", "baseRevision", "query", "begin", "wrap", "select", "direction", "caseSensitive", "regex", "wholeWord"});
     auto& document = editor_.find_document(params);
     EditorService::require_revision(document, params);
     const auto snapshot = document.snapshot();
     const auto options = search_options(params);
-    auto begin = snapshot.selections.front().head;
+    const auto direction=params.contains("direction") ? string_field(params,"direction") : "forward";
+    if (direction!="forward" && direction!="backward") { throw RpcError(-32602,"Find direction must be forward or backward"); }
+    const bool backwards=direction=="backward";
+    auto begin = backwards ? snapshot.selections.front().begin() : snapshot.selections.front().head;
     if (params.contains("begin")) {
         const auto& value = params.at("begin");
         if (!value.is_number_integer() || (!value.is_number_unsigned() && value.get<std::int64_t>() < 0) ||
@@ -66,11 +69,12 @@ Json ApplicationService::find_document_text(const Json& params) {
     const auto wrap = flag(params, "wrap", true), select = flag(params, "select");
     struct Output { workspace::TextFindResult found; Json match; };
     const auto output = std::make_shared<Output>();
-    return start_operation("documentFind", [snapshot, options, begin, wrap, output](const auto& operation) {
+    return start_operation("documentFind", [snapshot, options, begin, wrap, backwards, output](const auto& operation) {
         const auto stop = operation->cancellation.get_token();
         require_not_cancelled(stop);
         const workspace::SearchPattern pattern(options);
-        output->found = pattern.find_next(snapshot.text.str(), begin, wrap, stop);
+        const auto original=snapshot.text.str();
+        output->found = backwards ? pattern.find_previous(original,begin,wrap,stop) : pattern.find_next(original,begin,wrap,stop);
         require_not_cancelled(stop);
         if (output->found.truncated) { throw RpcError(-32004, "Find exceeded its search work budget"); }
         if (const auto& match = output->found.match) {

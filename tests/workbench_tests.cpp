@@ -1,4 +1,5 @@
 #include <astra/ui/workbench.hpp>
+#include <astra/ui/inline_form.hpp>
 #include <astra/io/file_store.hpp>
 #include <doctest/doctest.h>
 
@@ -36,6 +37,21 @@ std::map<std::string, std::string> modules() {
     return result;
 }
 std::future<Json> ready(Json value) { std::promise<Json> result; result.set_value(std::move(value)); return result.get_future(); }
+struct InlineHost {
+    std::optional<astra::ui::InlineForm> form;
+    Json spec,document{{"id","captured"},{"revision","7"}};
+    std::vector<Json> updates;
+    unsigned sequence{};
+    std::future<Json> operator()(std::string_view method,const Json& params) {
+        if(method=="_ui.read")return ready({{"document",document}});
+        if(method=="_ui.form.open"){spec=params;form.emplace(params,std::to_string(++sequence));return ready(form->state());}
+        if(method=="_ui.form.read")return ready(form && params.at("id")==form->id() ? form->state() : Json(nullptr));
+        if(method=="_ui.form.close"){form.reset();return ready(true);}
+        if(method=="_ui.form.update")return ready(form && form->update(params));
+        if(method=="_ui.update"){updates.push_back(params);if(params.contains("document"))document=params.at("document");return ready(nullptr);}
+        CHECK(method=="_ui.action");return ready(nullptr);
+    }
+};
 }
 
 TEST_CASE("workbench scripts own UI commands and asynchronous document workflows") {
@@ -135,18 +151,87 @@ TEST_CASE("workbench cancellation drains late document search identity") {
     CHECK(std::none_of(updates.begin(),updates.end(),[](const Json& value){return value.contains("document");}));
 }
 
-TEST_CASE("workbench document replace owns both inputs and treats dismissal as cancellation") {
-    auto channel=std::make_shared<Channel>();std::vector<Json> inputs;
-    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params) {
-        if(method=="_ui.dialog") {inputs.push_back(params);return ready(inputs.size()==1 ? Json("needle") : Json(nullptr));}
-        CHECK(method=="_ui.dialog.cancel");return ready(nullptr);
-    },modules());
+TEST_CASE("workbench document replace opens a nonmodal native form without a service request") {
+    auto channel=std::make_shared<Channel>();InlineHost host;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params){return host(method,params);},modules());
     std::optional<astra::script::Runtime::Outcome> outcome;
     workbench.execute("ui.replace",Json::object(),[&](const auto& result){outcome=result;});
     for(int tick=0;tick<16;++tick)workbench.poll();
-    REQUIRE(outcome);CHECK_FALSE(outcome->error);CHECK(outcome->value==false);
-    REQUIRE(inputs.size()==2);CHECK(inputs[0].at("kind")=="input");CHECK(inputs[1].at("kind")=="input");
+    REQUIRE(outcome);CHECK_FALSE(outcome->error);REQUIRE(host.form);
+    CHECK(outcome->value==host.form->state());CHECK(host.form->focus()==1);
+    CHECK(host.spec.at("fields").size()==2);CHECK(host.spec.at("toggles").size()==3);CHECK(host.spec.at("actions").size()==3);
+    CHECK(channel->requests.empty());CHECK(workbench.idle());CHECK_FALSE(workbench.awaiting_input());
+    auto snapshot=host.form->state();host.form.reset();workbench.emit("ui.form.closed",snapshot);
+    for(int tick=0;tick<8;++tick)workbench.poll();
     CHECK(channel->requests.empty());CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench explicit form navigation cancels preview and serializes repeated actions") {
+    auto channel=std::make_shared<Channel>();InlineHost host;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params){return host(method,params);},modules());
+    const auto poll=[&]{for(int tick=0;tick<12;++tick)workbench.poll();};
+    workbench.execute("ui.find",Json::object(),{});poll();REQUIRE(host.form);
+    REQUIRE(host.form->edit(astra::editing::Command::insert_text,{.text="中🙂"}));
+    auto snapshot=host.form->state();workbench.emit("ui.form.changed",snapshot);
+    snapshot["action"]="next";workbench.emit("ui.form.action",snapshot);poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="document.find");
+    CHECK(channel->requests.front().body.at("params").at("select")==true);CHECK(host.form->busy());
+    snapshot["action"]="previous";workbench.emit("ui.form.action",snapshot);poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="document.find");
+    channel->reply({{"operationId","first"}});poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="operation.get");
+    channel->reply({{"state","completed"},{"result",{{"match",{{"begin",3},{"end",10}}},{"wrapped",false},{"document",host.document}}}});poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="document.find");
+    CHECK(channel->requests.front().body.at("params").at("direction")=="backward");
+    channel->reply({{"operationId","second"}});poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="operation.get");
+    channel->reply({{"state","completed"},{"result",{{"match",nullptr},{"wrapped",false}}}});poll();
+    CHECK(channel->requests.empty());CHECK(workbench.idle());CHECK_FALSE(host.form->busy());CHECK(host.form->message()=="No matches");
+    CHECK(workbench.take_errors().empty());
+}
+
+TEST_CASE("workbench inline cancellation captures input before queued changes are dispatched") {
+    auto channel=std::make_shared<Channel>();InlineHost host;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params){return host(method,params);},modules());
+    const auto poll=[&]{for(int tick=0;tick<12;++tick)workbench.poll();};
+    workbench.execute("ui.find",Json::object(),{});poll();REQUIRE(host.form);
+    REQUIRE(host.form->edit(astra::editing::Command::insert_text,{.text="last 中🙂"}));
+    const auto queued=host.form->state();
+    workbench.execute("ui.cancel",Json::object(),{});poll();CHECK_FALSE(host.form);
+    workbench.emit("ui.form.changed",queued);workbench.emit("ui.form.closed",queued);poll();
+    workbench.execute("ui.find",Json::object(),{});poll();REQUIRE(host.form);
+    CHECK(host.form->state().at("values").at("query")=="last 中🙂");
+    CHECK(channel->requests.empty());CHECK(workbench.idle());CHECK(workbench.take_errors().empty());
+}
+
+TEST_CASE("workbench closed inline forms cancel and drain late operations without publishing results") {
+    auto channel=std::make_shared<Channel>();InlineHost host;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params){return host(method,params);},modules());
+    const auto poll=[&]{for(int tick=0;tick<12;++tick)workbench.poll();};
+    workbench.execute("ui.find",Json::object(),{});poll();REQUIRE(host.form);
+    REQUIRE(host.form->edit(astra::editing::Command::insert_text,{.text="needle"}));
+    auto snapshot=host.form->state();workbench.emit("ui.form.changed",snapshot);snapshot["action"]="next";
+    workbench.emit("ui.form.action",snapshot);poll();REQUIRE(channel->requests.size()==1);
+    host.form.reset();workbench.emit("ui.form.closed",snapshot);poll();
+    CHECK_FALSE(workbench.idle());channel->reply({{"operationId","late"}});poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="operation.cancel");
+    channel->reply(nullptr);poll();CHECK(channel->requests.empty());CHECK(workbench.idle());CHECK(workbench.take_errors().empty());
+    CHECK(std::none_of(host.updates.begin(),host.updates.end(),[](const auto& update){return update.contains("document");}));
+    workbench.execute("ui.find",Json::object(),{});poll();REQUIRE(host.form);CHECK(host.form->state().at("values").at("query")=="needle");
+}
+
+TEST_CASE("workbench inline search reports service errors in the current component") {
+    auto channel=std::make_shared<Channel>();InlineHost host;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params){return host(method,params);},modules());
+    const auto poll=[&]{for(int tick=0;tick<12;++tick)workbench.poll();};
+    workbench.execute("ui.find",Json::object(),{});poll();REQUIRE(host.form);
+    REQUIRE(host.form->edit(astra::editing::Command::insert_text,{.text="("}));
+    auto snapshot=host.form->state();workbench.emit("ui.form.changed",snapshot);snapshot["action"]="next";
+    workbench.emit("ui.form.action",snapshot);poll();REQUIRE(channel->requests.size()==1);
+    auto incoming=std::move(channel->requests.front());channel->requests.pop_front();
+    incoming.response.set_value(Json{{"jsonrpc","2.0"},{"id",incoming.body.at("id")},{"error",{{"code",-32602},{"message","Invalid expression"}}}}.dump());
+    poll();CHECK(host.form->error());CHECK_FALSE(host.form->busy());CHECK(host.form->message()=="Invalid expression");
+    CHECK(workbench.take_errors().empty());CHECK(workbench.idle());
 }
 
 TEST_CASE("workbench editing awaits native completion and preserves parameters and errors") {

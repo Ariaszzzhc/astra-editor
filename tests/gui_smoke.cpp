@@ -48,6 +48,24 @@ void text(astra::ui::EditorWindow& window, const std::string& input) {
     settle(window);
 }
 
+void pointer(astra::ui::EditorWindow& window,Uint32 type,float x,float y) {
+    int width{},height{},pixels_x{},pixels_y{};
+    require(SDL_GetWindowSize(window.window(),&width,&height) && SDL_GetWindowSizeInPixels(window.window(),&pixels_x,&pixels_y),"Cannot read pointer scale");
+    SDL_Event event{};event.type=type;
+    if(type==SDL_EVENT_MOUSE_MOTION) {
+        event.motion.windowID=SDL_GetWindowID(window.window());event.motion.state=SDL_BUTTON_LMASK;
+        event.motion.x=x*static_cast<float>(width)/static_cast<float>(pixels_x);event.motion.y=y*static_cast<float>(height)/static_cast<float>(pixels_y);
+    } else {
+        event.button.windowID=SDL_GetWindowID(window.window());event.button.button=SDL_BUTTON_LEFT;event.button.down=type==SDL_EVENT_MOUSE_BUTTON_DOWN;
+        event.button.x=x*static_cast<float>(width)/static_cast<float>(pixels_x);event.button.y=y*static_cast<float>(height)/static_cast<float>(pixels_y);
+    }
+    require(SDL_PushEvent(&event),"Cannot enqueue pointer input");
+}
+void click(astra::ui::EditorWindow& window,astra::ui::Box box) {
+    pointer(window,SDL_EVENT_MOUSE_BUTTON_DOWN,box.x+box.width/2,box.y+box.height/2);
+    pointer(window,SDL_EVENT_MOUSE_BUTTON_UP,box.x+box.width/2,box.y+box.height/2);settle(window);
+}
+
 Json call(const std::shared_ptr<astra::service::ServiceHost>& host, const std::string& method, const Json& params) {
     const auto response = host->submit(Json{{"jsonrpc", "2.0"}, {"id", "acceptance"}, {"method", method}, {"params", params}}.dump()).get();
     require(response.has_value(), "Document verification returned no response");
@@ -65,7 +83,10 @@ public:
     std::future<std::optional<std::string>> submit(std::string body) override {
         const auto request=Json::parse(body);
         const auto method=request.at("method").get<std::string>();
-        if(method=="document.find")++find_requests;
+        if(method=="document.find") {
+            if(request.at("params").value("select",false))++find_requests;
+            else ++preview_requests;
+        }
         if(method=="document.replaceAll")++replace_requests;
         if(method=="document.get" && request.at("params").value("end",std::size_t{0})>
             request.at("params").value("begin",std::size_t{0}))++text_downloads;
@@ -95,7 +116,7 @@ public:
     }
     bool changed{};
     bool hold_next_find{};
-    unsigned find_requests{},replace_requests{},text_downloads{};
+    unsigned find_requests{},preview_requests{},replace_requests{},text_downloads{};
 private:
     struct HeldFind {
         std::string body;
@@ -316,18 +337,64 @@ int main(int argc, char* argv[]) {
         const auto search_requests=concurrent->find_requests;
         const auto replacement_requests=concurrent->replace_requests;
         key(window, SDLK_HOME, SDL_KMOD_CTRL);
-        key(window, SDLK_F, SDL_KMOD_CTRL); text(window, "alpha"); key(window, SDLK_RETURN);
+        const auto before_find=read_document(host,id);
+        key(window, SDLK_F, SDL_KMOD_CTRL);
+        require(window.view_state().inline_form_layout.has_value(),"Find did not open a nonmodal component");
+        require(window.idle(),"Visible nonmodal find incorrectly holds an input task");
+        SDL_Rect ime_area{};int ime_cursor{},ime_logical_width{},ime_logical_height{},ime_pixels_width{},ime_pixels_height{};
+        require(SDL_GetTextInputArea(window.window(),&ime_area,&ime_cursor) &&
+            SDL_GetWindowSize(window.window(),&ime_logical_width,&ime_logical_height) &&
+            SDL_GetWindowSizeInPixels(window.window(),&ime_pixels_width,&ime_pixels_height),"Cannot verify native IME input area");
+        const auto ime_box=window.view_state().inline_form_layout->fields[0];
+        require(ime_box.contains(static_cast<float>(ime_area.x)*static_cast<float>(ime_pixels_width)/static_cast<float>(ime_logical_width),
+            static_cast<float>(ime_area.y)*static_cast<float>(ime_pixels_height)/static_cast<float>(ime_logical_height)),"IME candidate area remained at the document instead of find input");
+        composing.edit.text="中🙂";require(SDL_PushEvent(&composing),"Cannot enqueue input-field IME preedit");settle(window);
+        require(window.view_state().inline_form.at("values").at("query")=="","IME preedit changed find input before commit");
+        text(window,"中🙂e\xCC\x81");key(window,SDLK_BACKSPACE);
+        require(window.view_state().inline_form.at("values").at("query")=="中🙂","Find backspace split a grapheme");
+        key(window,SDLK_Z,SDL_KMOD_CTRL);
+        require(window.view_state().inline_form.at("values").at("query")=="中🙂e\xCC\x81","Find input undo changed the service document");
+        const auto input_box=window.view_state().inline_form_layout->fields[0];
+        pointer(window,SDL_EVENT_MOUSE_BUTTON_DOWN,input_box.x+3*window.layout().scale,input_box.y+input_box.height/2);
+        pointer(window,SDL_EVENT_MOUSE_MOTION,input_box.right()-4*window.layout().scale,input_box.y+input_box.height/2);
+        pointer(window,SDL_EVENT_MOUSE_BUTTON_UP,input_box.right()-4*window.layout().scale,input_box.y+input_box.height/2);settle(window);
+        key(window,SDLK_C,SDL_KMOD_CTRL);
+        const std::unique_ptr<char,decltype(&SDL_free)> copied_query(SDL_GetClipboardText(),SDL_free);
+        require(copied_query!=nullptr,"Cannot inspect input-field clipboard");const std::string query_clipboard(copied_query.get());
+        require(query_clipboard=="中🙂e\xCC\x81","Find input mouse drag and clipboard split Unicode selection");
+        require(read_document(host,id)==before_find,"Find input modified editor content or selections");
+        key(window,SDLK_A,SDL_KMOD_CTRL);text(window,"alpha");
+        require(read_document(host,id)==before_find,"Search preview moved the document selection");
+        key(window,SDLK_C,SDL_KMOD_ALT);
+        require(window.view_state().inline_form.at("values").at("caseSensitive")==false,"Alt+C did not toggle find case sensitivity");
+        key(window,SDLK_TAB);key(window,SDLK_SPACE);
+        require(window.view_state().inline_form.at("values").at("caseSensitive")==true,"Focused toggle did not handle Space");
+        key(window,SDLK_TAB,SDL_KMOD_SHIFT);
+        key(window,SDLK_R,SDL_KMOD_ALT);key(window,SDLK_A,SDL_KMOD_CTRL);text(window,"(");
+        require(window.view_state().inline_form.at("error")==true && window.last_error().empty(),"Invalid find regex did not report a component error");
+        key(window,SDLK_A,SDL_KMOD_CTRL);text(window,"alpha");key(window,SDLK_R,SDL_KMOD_ALT);
+        require(window.view_state().inline_form.at("error")==false,"Corrected query retained a stale component error");
+        key(window,SDLK_RETURN);
         require(read_document(host, id).at("selections").front().at("anchor") == 1, "Find selected the wrong UTF-8 match");
-        key(window, SDLK_H, SDL_KMOD_CTRL); key(window, SDLK_RETURN); text(window, "ALPHA"); key(window, SDLK_RETURN);
+        key(window,SDLK_RETURN,SDL_KMOD_SHIFT);
+        require(read_document(host,id).at("selections").front().at("anchor")==1,"Previous match did not wrap");
+        require(window.view_state().inline_form.at("message")=="Match found · wrapped","Backward wrap did not update find component");
+        click(window,window.view_state().inline_form_layout->actions[1]);
+        require(read_document(host,id).at("selections").front().at("anchor")==1,"Mouse Next did not use the same search policy");
+        key(window, SDLK_H, SDL_KMOD_CTRL);text(window,"ALPHA");
+        require(window.view_state().inline_form.at("values").at("query")=="alpha","Find-to-replace lost query state");
+        window.request_screenshot(remote ? "build/graphics/gui-inline-replace-tcp.png" : "build/graphics/gui-inline-replace.png");settle(window);
+        key(window, SDLK_RETURN);
         require(read_document(host, id).at("text") == "XALPHA\nXbeta", "Replace did not edit the document");
+        key(window,SDLK_ESCAPE);
         key(window, SDLK_Z, SDL_KMOD_CTRL);
         require(read_document(host, id).at("text") == "Xalpha\nXbeta", "Document replace was not one undo transaction");
-        require(concurrent->find_requests==search_requests+1 && concurrent->replace_requests==replacement_requests+1,
+        require(concurrent->find_requests==search_requests+3 && concurrent->replace_requests==replacement_requests+1 && concurrent->preview_requests>0,
             "Document find/replace bypassed the asynchronous service APIs");
         require(concurrent->text_downloads==search_downloads,"Document search downloaded full text to the GUI");
         concurrent->hold_next_find=true;
         window.execute_ui_command("acceptance.findWithoutInput");
-        pump_until(window,[&]{return concurrent->find_requests==search_requests+2;},"Document search was not dispatched");
+        pump_until(window,[&]{return concurrent->find_requests==search_requests+4;},"Document search was not dispatched");
         SDL_Event live_input{};live_input.type=SDL_EVENT_TEXT_INPUT;live_input.text.text="live";
         live_input.text.windowID=SDL_GetWindowID(window.window());
         require(SDL_PushEvent(&live_input),"Push editing during search failed");
@@ -339,6 +406,30 @@ int main(int argc, char* argv[]) {
         require(read_document(host,id)==live_document,"Late cancelled search changed live editing or selections");
         key(window,SDLK_Z,SDL_KMOD_CTRL);
         require(read_document(host,id).at("text")=="Xalpha\nXbeta","Editing during search did not retain undo history");
+        key(window,SDLK_F,SDL_KMOD_CTRL);
+        const auto previews=concurrent->preview_requests;concurrent->hold_next_find=true;
+        live_input.text.text="Xbeta";require(SDL_PushEvent(&live_input),"Cannot update query during nonmodal acceptance");
+        pump_until(window,[&]{return concurrent->preview_requests==previews+1;},"Nonmodal query did not start an asynchronous preview");
+        const auto editing_area=window.layout().editor;
+        pointer(window,SDL_EVENT_MOUSE_BUTTON_DOWN,editing_area.x+120*window.layout().scale,editing_area.y+10*window.layout().scale);
+        pointer(window,SDL_EVENT_MOUSE_BUTTON_UP,editing_area.x+120*window.layout().scale,editing_area.y+10*window.layout().scale);
+        live_input.text.text="live";require(SDL_PushEvent(&live_input),"Cannot enqueue editor input with visible search");
+        pump_until(window,[&]{return read_document(host,id).at("text").get<std::string>().find("live")!=std::string::npos;},"Visible pending find component blocked editor input");
+        require(window.view_state().inline_form_layout.has_value(),"Editing outside find unexpectedly closed its component");
+        const auto edited_with_find=read_document(host,id);
+        window.execute_ui_command("ui.cancel");for(int tick=0;tick<16;++tick)require(window.pump(),"Find cancellation closed editor");
+        concurrent->release_find();settle(window);
+        require(read_document(host,id)==edited_with_find,"Late preview overwrote editing after closing the find component");
+        key(window,SDLK_Z,SDL_KMOD_CTRL);require(read_document(host,id).at("text")=="Xalpha\nXbeta","Nonmodal editing lost its undo transaction");
+        key(window,SDLK_F,SDL_KMOD_CTRL);
+        live_input.text.text="remembered 中🙂";require(SDL_PushEvent(&live_input),"Cannot enqueue last query before immediate cancellation");
+        SDL_Event immediate_cancel{};immediate_cancel.type=SDL_EVENT_KEY_DOWN;immediate_cancel.key.windowID=SDL_GetWindowID(window.window());
+        immediate_cancel.key.key=SDLK_ESCAPE;immediate_cancel.key.down=true;
+        require(SDL_PushEvent(&immediate_cancel),"Cannot enqueue same-batch find cancellation");settle(window);
+        require(!window.view_state().inline_form_layout,"Immediate cancellation kept find open");
+        key(window,SDLK_F,SDL_KMOD_CTRL);
+        require(window.view_state().inline_form.at("values").at("query")=="remembered 中🙂","Same-batch cancellation lost the latest find input");
+        key(window,SDLK_ESCAPE);
         std::cerr << "GUI acceptance: document search passed\n";
 
         window.execute_ui_command("ui.workspaceReplace"); settle(window);

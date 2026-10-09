@@ -260,7 +260,7 @@ TEST_CASE("document search validates offsets revisions and runs with inline comp
     SearchFiles files; PausedSearch service(files.root);
     const auto doc = service.call("document.create", {{"text","中🙂a"}}), id = doc.at("id");
     for (const auto& invalid : std::vector<Json>{Json{{"begin",1}},Json{{"begin",-1}},Json{{"begin",1.5}},
-        Json{{"begin",9}},Json{{"wrap","yes"}},Json{{"select",1}},Json{{"other",true}}}) {
+        Json{{"begin",9}},Json{{"wrap","yes"}},Json{{"select",1}},Json{{"direction","sideways"}},Json{{"direction",2}},Json{{"other",true}}}) {
         Json params{{"id",id},{"baseRevision","0"},{"query","a"}};
         params.update(invalid);
         const auto response = service.app.dispatch(request("document.find",params));
@@ -271,6 +271,17 @@ TEST_CASE("document search validates offsets revisions and runs with inline comp
     service.run_next_inline();
     const auto result = service.call("operation.get", {{"id",service.call("document.find",{{"id",id},{"baseRevision","0"},{"query","a"}}).at("operationId")}});
     REQUIRE(result.at("state") == "completed"); CHECK(result["result"]["match"]["begin"] == 7);
+}
+
+TEST_CASE("document previous search starts at selection beginning and wraps in UTF8 coordinates") {
+    SearchFiles files;SearchHost service(files.root);
+    const auto doc=service.call("document.create",{{"text","中 cat cat 🙂"}}), id=doc.at("id");
+    service.call("document.setSelections",{{"id",id},{"baseRevision","0"},{"selections",Json::array({{{"anchor",8},{"head",11}}})}});
+    auto found=service.done("document.find",{{"id",id},{"baseRevision","0"},{"query","cat"},{"direction","backward"},{"select",true}});
+    REQUIRE(found.at("match").is_object());CHECK(found["match"]["begin"]==4);CHECK_FALSE(found["wrapped"].get<bool>());
+    found=service.done("document.find",{{"id",id},{"baseRevision","0"},{"query","cat"},{"direction","backward"},{"select",true}});
+    CHECK(found["match"]["begin"]==8);CHECK(found["wrapped"].get<bool>());
+    const auto after=service.call("document.get",{{"id",id}});CHECK(after.at("revision")=="0");CHECK_FALSE(after.at("canUndo").get<bool>());
 }
 
 TEST_CASE("document replacement cannot overwrite a concurrent save baseline") {

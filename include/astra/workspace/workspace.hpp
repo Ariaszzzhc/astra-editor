@@ -137,6 +137,8 @@ public:
     // Retains at most one match, independent of the number of earlier matches.
     [[nodiscard]] TextFindResult find_next(std::string_view text, ByteOffset begin,
         bool wrap = true, std::stop_token stop = {}) const;
+    [[nodiscard]] TextFindResult find_previous(std::string_view text, ByteOffset begin,
+        bool wrap = true, std::stop_token stop = {}) const;
     // Literal mode preserves replacement bytes. Regex mode accepts $0..$99,
     // ${name}, and $$; backslashes are literal. Unknown/malformed groups fail.
     // Revalidates the exact match/captures against the original UTF-8 text.

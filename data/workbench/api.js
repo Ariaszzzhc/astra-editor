@@ -2,6 +2,12 @@ const request = (method, params = {}, options) => astra.request(method, params, 
 export const ui = {
     read: (parameters = {}, options) => read(parameters, options),
     update: model => request('_ui.update', model),
+    forms: {
+        open: spec => request('_ui.form.open',spec),
+        read: id => request('_ui.form.read',{id}),
+        update: parameters => request('_ui.form.update',parameters),
+        close: id => request('_ui.form.close',{id})
+    },
     clipboard: {
         read: () => request('_ui.clipboard.read'),
         write: text => request('_ui.clipboard.write', {text})

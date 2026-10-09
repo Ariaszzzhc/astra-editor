@@ -242,6 +242,43 @@ void SearchPattern::validate_replacement(std::string_view replacement) const {
     (void)impl_->replacement_tokens(replacement);
 }
 
+TextFindResult SearchPattern::find_previous(std::string_view text, ByteOffset begin,
+    bool wrap, std::stop_token stop) const {
+    impl_->require_input_size(text);
+    if (begin.value>text.size() || !utf8::is_boundary(text,begin.value)) {
+        throw std::invalid_argument("Find offset must be a UTF-8 scalar boundary");
+    }
+    TextFindResult result;
+    for (std::size_t index=0;index<text.size();) {
+        if (stop.stop_requested()) { result.cancelled=true;return result; }
+        index+=utf8::decode(text,index).bytes;
+    }
+    std::size_t scan_work{};
+    constexpr auto max_scan_work=std::size_t{256}*1024U*1024U;
+    bool wrapping=false;
+    for (std::size_t offset=0;offset<=text.size();) {
+        if (stop.stop_requested()) { result.cancelled=true;result.match.reset();return result; }
+        auto found=impl_->match(text,offset,RE2::UNANCHORED);
+        if (stop.stop_requested()) { result.cancelled=true;result.match.reset();return result; }
+        if (!found) break;
+        const auto work=std::max(std::size_t{1},found->end.value-offset);
+        if (work>max_scan_work-scan_work) { result.truncated=true;result.match.reset();return result; }
+        scan_work+=work;
+        const bool accepted=!impl_->options_.whole_word || word_boundary(text,found->begin.value,found->end.value);
+        const auto match_begin=found->begin.value, end=found->end.value;
+        if (accepted) {
+            if (!wrapping && match_begin>=begin.value) {
+                if (result.match || !wrap) return result;
+                wrapping=true;
+            }
+            result.match=std::move(found);result.wrapped=wrapping;
+        }
+        if (accepted && end>match_begin) offset=end;
+        else { if (match_begin==text.size()) break;offset=match_begin+utf8::decode(text,match_begin).bytes; }
+    }
+    return result;
+}
+
 std::string SearchPattern::expand_replacement(std::string_view text, const TextMatch& match,
     std::string_view replacement, std::size_t max_bytes) const {
     impl_->require_input_size(text);

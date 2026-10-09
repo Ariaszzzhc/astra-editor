@@ -9,6 +9,91 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### Nonmodal document find and replace (2026-10-10)
+
+The document search workflow now uses a retained inline form in the editor's
+upper-right corner. C++ provides a generic bounded component with independent
+Unicode input/history, shaped mouse selection, clipboard, focus traversal,
+IME preedit/candidate positioning and DPI-aware geometry. JS supplies the
+fields, options and actions, debounces nonselecting previews, serializes explicit
+navigation, handles service errors in the component and cancels obsolete work.
+The visible component does not hold a modal input task: clicking the editor
+allows ordinary editing while a preview is pending.
+
+Form identities have native opening epochs and input generations. Status updates
+require both to match; closing/reopening the same extension id cannot accept a
+previous session's result. Events carry captured values and are deferred to the
+owner loop to avoid reentering the JS runtime during a native request. Their queue
+is bounded and consecutive input changes are coalesced. Input values reject
+oversized, multiline, NUL and malformed UTF-8 content before mutation.
+
+`document.find` now supports backward navigation through the same local/TCP
+dispatcher. It starts strictly before the primary selection beginning and wraps
+to the last match. The worker retains one match, preserves original regex
+anchors/Unicode word boundaries and checks cancellation/work bounds. It does not
+download the full document to the GUI or add an undo entry for selection changes.
+See `docs/SERVICE.md` for the asynchronous form API and direction semantics.
+
+This increment does **not** complete the workbench revision. General retained
+extension views, sidebar search controls, remaining native workspace-search
+policy, incremental display mapping and complete current Release/package
+acceptance remain outstanding.
+
+Intermediate failures and corrections:
+
+- Warnings-as-errors rejected discarded `nodiscard` results in exception tests
+  and three local input-option names that shadowed the window options. A doctest
+  string/JSON inequality also failed MSVC overload resolution. The tests now
+  explicitly discard the throwing call results, compare typed strings, and use
+  distinct local names; compiler checks were preserved.
+- The first real GUI run failed with `Nonmodal query did not start an asynchronous
+  preview`. Its fixture typed the same query already remembered from the preceding
+  programmatic search, so there was no value change to debounce. The fixture now
+  types a different query before withholding the preview; its editing/cancellation
+  assertions remain intact.
+- Review found that repeated explicit navigation aborted the previous action,
+  Ctrl+Tab was intercepted by widget focus traversal, and IME preedit could appear
+  in both widget and document. Navigation now cancels previews and sequences actions;
+  plain Tab traverses the component, while Ctrl+Tab retains the workbench binding.
+  Only the focused input paints preedit and owns the native candidate area.
+- Same-batch typing followed immediately by Esc could close the component before
+  JS observed its queued change event. Cancellation now captures the current native
+  values before closing, with a regression for reopening the remembered query.
+
+Windows Debug checks (completed serially):
+
+```powershell
+./scripts/xmake.ps1 build -y astra-tests gui-smoke gui-presentation-smoke gui-recovery-smoke
+./build/windows/x64/debug/astra-tests.exe --no-version
+./scripts/xmake.ps1 build -y astra astra-server
+./build/windows/x64/debug/gui-smoke.exe
+./build/windows/x64/debug/gui-smoke.exe --tcp
+./build/windows/x64/debug/gui-presentation-smoke.exe
+./build/windows/x64/debug/gui-recovery-smoke.exe
+./tests/cli_smoke.ps1 -Mode debug
+```
+
+- Final complete doctest suite: **506 cases / 446,785 assertions**, all pass,
+  no skips. The preceding full run passed 505 cases / 446,891 assertions;
+  asynchronous polling changes successful assertion counts between runs.
+  The earlier affected subset passed **82 cases / 228,690 assertions**.
+- Local and TCP GUI acceptance pass. The same real SDL workflow exercises
+  Unicode/grapheme input and field undo, native IME placement/preedit isolation,
+  shaped drag selection/clipboard, keyboard/mouse navigation, option toggles,
+  invalid-regex error recovery, one-transaction replacement, and visible pending
+  preview plus continued document editing/cancellation. It verifies that search
+  does not download full document text to the GUI.
+- Presentation and recovery GUI acceptance pass, including indexed Explorer,
+  Outline paging, tabs, resize/focus, modal cancellation, unsaved Unicode restore,
+  durable exit and checkpoint-error retention/retry.
+- Independent CLI/server acceptance passes forward/backward Unicode find and
+  no-wrap, capture replacement, selection/history-preserving undo and save.
+- Actual `astra` and `astra-server` Debug executables were rebuilt. Captured
+  `build/graphics/gui-inline-replace.png` and `gui-inline-replace-tcp.png` were
+  visually inspected for readable inputs/options/actions, focus borders and
+  placement without blocking the document. Current Release/package acceptance
+  is still outstanding; these checks establish Windows Debug evidence only.
+
 ### Asynchronous document search and JS policy (2026-10-10)
 
 `document.find` and `document.replaceAll` now use the shared application
@@ -24,7 +109,7 @@ before publication. Input/template/match/output budgets are explicit.
 JS owns document query/replacement input, captured document requests, result
 presentation and cancellation. The C++ window's recursive full-text download,
 literal search/replacement loop and document-specific prompt branches were
-removed. The current generic input component is still modal: the planned
+removed. At that increment the generic input component was still modal: the planned
 nonmodal document find widget, sidebar search controls and remaining native
 workspace search/replacement policy are **not complete**. This increment is the
 service/policy foundation for those components, not UI redesign acceptance.

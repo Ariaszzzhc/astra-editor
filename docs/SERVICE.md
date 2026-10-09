@@ -55,7 +55,7 @@ honor graphemes, including combining marks, emoji sequences, and CRLF pairs.
 | `document.setSelections` | `id`, `baseRevision`, `selections` | Metadata |
 | `document.undo` / `document.redo` | `id`, `baseRevision` | Metadata |
 | `document.close` | `id`, `baseRevision`, optional `discardChanges` | Close result; dirty close otherwise rejected |
-| `document.find` | `id`, `baseRevision`, `query`; optional `begin`, `wrap`, `select`, `caseSensitive`, `regex`, `wholeWord` | Asynchronous operation; `{id,revision,match,wrapped,document?}` |
+| `document.find` | `id`, `baseRevision`, `query`; optional `begin`, `direction`, `wrap`, `select`, `caseSensitive`, `regex`, `wholeWord` | Asynchronous operation; `{id,revision,match,wrapped,document?}` |
 | `document.replaceAll` | `id`, `baseRevision`, `query`, `replacement`; optional `caseSensitive`, `regex`, `wholeWord` | Asynchronous operation; `{document,replacements,changed}` |
 
 Edits contain `{begin,end,text}` in the **same original revision**. Selection
@@ -334,6 +334,47 @@ semantic index and rejects obsolete pages for pointer selection.
 `astra.ui.registerView(spec, provider)` supplies an async model provider;
 `refresh(id, parameters)` cancels older refreshes and only the current generation
 can publish. Current native sidebar model kinds are `explorer`, `search`, `git`.
+
+`astra.ui.forms.open(spec)` returns a Promise for a retained nonmodal input form.
+The acknowledgement is `{id, version, values}`; it does not await dismissal or
+hold a modal input task. `read(id)` returns the current state or null,
+`close(id)` closes only that identity, and `update({id,version,message,busy,error})`
+applies status only to that input generation, returning false for an obsolete
+generation or component. Native openings receive unique epochs, including when
+an extension reuses a component id. One form may be open at a time; replacing it
+emits a closed event for the old identity. Existing modal inputs must be dismissed
+before opening a form.
+
+Specifications contain `id`, `title`, `fields`, `toggles`, `actions` and optional
+`focus` (a field id). There are 1..4 single-line fields and actions, and 0..4
+toggles. All control ids are unique across the form. Fields have `id`, `value`,
+`placeholder`, `submit` and optional `shiftSubmit`; submit identities refer to
+actions. Toggles have `id`, `label`, boolean `value`, and optional `shortcut`
+(`Alt+` plus one uppercase ASCII letter). Actions have `id` and `label`.
+Input text is bounded to 16 KiB per field; CR/LF, NUL and invalid UTF-8 are
+rejected before mutation. Inputs have independent bounded Unicode editing and
+undo history, shaped mouse selection, clipboard and IME candidate positioning.
+Tab/Shift+Tab move focus; Enter/Shift+Enter invoke field actions, and Space/Enter
+activate a focused toggle or button. Clicking outside blurs the form and allows
+ordinary editor input while the component remains visible.
+
+`astra.on('ui.form.changed', state => ...)` observes text/toggle changes;
+`ui.form.action` carries the same state plus `action`, and `ui.form.closed`
+carries the final state. Events are dispatched on the owner loop with a bounded
+queue; consecutive input changes are coalesced. Values and versions are captured
+at the event, not reconstructed later. JS owns debounce, service requests,
+cancellation, results and errors; C++ owns input, focus, layout and rendering.
+
+Default `ui.find` and `ui.replace` open this component. Query changes produce
+cancellable previews without changing document selections. Explicit Previous,
+Next and Replace all actions execute in order; input changes/close abort obsolete
+work. Calls with an explicit `query` retain their programmatic asynchronous
+result API. `document.find` accepts `direction:'forward'` (default) or
+`'backward'`. Without `begin`, forward starts at the primary selection head;
+backward starts at its beginning and finds a match strictly before that byte
+offset. Wrapping backward selects the final match. Reverse regex search retains
+one result while scanning with bounded work on a worker, preserving original
+input anchors, Unicode boundaries and cancellation checks.
 
 ```javascript
 astra.registerCommand("custom.save", async ({id, baseRevision}) => {

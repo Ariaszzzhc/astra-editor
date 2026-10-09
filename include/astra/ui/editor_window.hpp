@@ -2,6 +2,7 @@
 
 #include "astra/ui/editor_channel.hpp"
 #include "astra/ui/workbench_layout.hpp"
+#include "astra/ui/inline_form.hpp"
 
 #include <filesystem>
 #include <memory>
@@ -32,6 +33,8 @@ struct WorkbenchViewState {
     std::size_t visible_file_rows{};
     std::size_t outline_first{},outline_total{},visible_outline_rows{};
     std::size_t file_first{};
+    std::optional<InlineFormLayout> inline_form_layout;
+    protocol::Json inline_form;
 };
 
 // Main-thread editor front end. Every document change goes through EditorChannel.
