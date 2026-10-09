@@ -2,28 +2,143 @@
 
 Product contract: `EditorDoc.md`. Product name: Astra (confirmed by the user).
 
-The native Windows renderer and text layout are verified in Debug and Release.
-The complete GUI application and production packaging remain in progress. No
-Linux/macOS functionality has been tested in this Windows environment.
+The final Windows integrated suites pass in both configurations: **408 cases /
+211,698 assertions in Debug** and **408 cases / 211,712 assertions in Release**.
+The native renderer, text layout, four editor GUI workflows and production TCP
+GUI variant also pass in both configurations. Recovery and atomic-replacement
+failures from earlier runs are fixed and covered by regressions below.
+
+A separate 6,527-file Windows validation package passed inventory and isolated
+runtime smoke checks before the final file-I/O fix. A package from the final clean
+source snapshot remains to be generated. No Linux/macOS functionality has been
+tested here; Windows acceptance is not an all-platform production-release claim.
 
 | Milestone | Scope | State | Acceptance evidence |
 | --- | --- | --- | --- |
 | M0 | xmake, test runner, development rules, reproducible dependencies | Complete | Pinned xmake and recipe archives verified; two repository skills passed official validator |
-| M1 | Persistent SumTree, UTF-8 Rope, positions, transactions, multicursor undo/redo | Complete | Windows Debug and Release: 35 cases, 185,791 assertions each |
-| M2 | Workspace, safe file I/O, recovery, EditorConfig, search/replace | In progress | Real asynchronous open/save, disk conflicts, concurrent save/typing, literal search/replace and EditorConfig pass; recovery and broader search remain |
-| M3 | libuv service, request/response/notifications, local/TCP clients, Agent API | In progress | Real local/TCP parity, cancellation, bounded queues, disconnect/timeout/shutdown, Windows server CLI and Unicode save pass; GUI/Agent acceptance remains |
-| M4 | QuickJS-NG scripting, default commands and VS Code keymap | In progress | Runtime isolation/limits, settings merge, custom commands and bundled defaults pass; GUI keymap acceptance remains |
-| M5 | Tree-sitter syntax/textobjects/outline and LSP | In progress | Nine pinned grammar parsers and incremental syntax pass in Debug/Release; language-service application and bundled tools are under acceptance |
-| M6 | SDL3 + Skia Graphite + Dawn GUI, layout, text input, themes/icons | In progress | Real D3D12/Graphite pixels, SDL resize/minimize/restart, SkParagraph Unicode/caret/hit/selection/DPI tests pass in Debug and Release; editor GUI acceptance remains |
-| M7 | Complete workspace UI, git, global search, command palette | Pending | End-to-end user workflows required |
-| M8 | Packaging, recovery/failure/performance acceptance, documentation | Pending | Clean Windows package smoke test required |
+| M1 | Persistent SumTree, UTF-8 Rope, positions, transactions, multicursor undo/redo | Windows verified | Final Debug/Release suites pass; 1/8/64 MiB Release benchmark validates snapshots, edits, position conversion and undo |
+| M2 | Workspace, safe file I/O, recovery, EditorConfig, search/replace | Windows verified | Final suites include recovery ownership and atomic-replacement regressions; CR-only, RE2, dirty-buffer overlays, watch/conflict and GUI recovery/search workflows pass |
+| M3 | libuv service, request/response/notifications, local/TCP clients, Agent API | Windows verified | Local/TCP parity, cancellation, bounded queues, idle notifications and shutdown pass; independent CLI and production TCP GUI pass |
+| M4 | QuickJS-NG scripting, default commands and VS Code keymap | Windows verified | Runtime limits, incremental configuration, shared commands and actual SDL editing/search shortcuts pass |
+| M5 | Tree-sitter syntax/textobjects/outline and LSP | Windows verified | Nine genuine pinned parsers, incremental syntax, real language services and clangd history diagnostics pass in final Debug/Release suites and GUI workflows |
+| M6 | SDL3 + Skia Graphite + Dawn GUI, layout, text input, themes/icons | Windows automated checks passed | Actual GPU rendering, Unicode layout and all GUI workflows pass both modes; physical DPI/IME/device-loss scenarios remain outside this evidence |
+| M7 | Complete workspace UI, git, global search, command palette | Windows verified | Both modes cover real Git/clangd, dirty/untitled search, search options, confirmed replacement, persistent external conflict and guarded reload |
+| M8 | Packaging, recovery/failure/performance acceptance, documentation | Final package pending | Final suites and Release core benchmark pass; independent validation package passes inventory and isolated smoke; regenerate package from final clean source |
 
 ## Validation boundary
 
 Only Windows tests may run in this environment. Cross-platform code paths and configuration
 do not constitute Linux/macOS verification. No CI jobs for those systems are enabled here.
+Native graphics/runtime/package scripts are source implementations only; they were not
+executed on a foreign platform, emulator or cross toolchain during this work.
 
-## Windows evidence (2026-10-09)
+## Current acceptance checkpoint (2026-10-09)
+
+The following evidence refers to the source snapshots actually tested, not every
+subsequent edit. New tests increase the suite size; historical counts below are
+retained rather than presented as current full-suite totals.
+
+| Check | Windows Debug | Windows Release |
+| --- | --- | --- |
+| Latest integrated `astra-tests` | 408 cases / 211,698 assertions PASS | 408 cases / 211,712 assertions PASS |
+| `graphics-smoke`, `renderer-smoke`, `text-layout-tests` | PASS | PASS |
+| `gui-smoke`: editing, Unicode/IME events, multicursor undo, save/close and long-line paging | PASS | PASS before final file-I/O fix |
+| `gui-services-smoke`: real clangd completion/navigation/rename/formatting and real Git actions | PASS | PASS before final file-I/O fix |
+| `gui-recovery-smoke`: startup review, restore, dirty preservation and durable/failing exit | PASS | PASS again after final file-I/O fix |
+| `gui-workspace-smoke`: search-result activation, Alt+C/R/W, confirmed replace, conflict notice and guarded reload | PASS | PASS again after final file-I/O fix |
+| Real clangd historical-content/undo diagnostic regressions | Focused 7 cases / 152 assertions PASS; final suite PASS | Final suite PASS |
+| `astra-recovery-tests`: persistent store, ownership, corruption and real crash/reopen | 15 cases / 105 assertions PASS | 15 cases / 105 assertions PASS |
+| Earlier Process/Git/LSP platform snapshot | 52 cases / 378 assertions PASS | 52 cases / 378 assertions PASS |
+| Two low-level LSP `clangd_force_rebuild` cases | Final suite PASS | Final suite PASS |
+| RecoveryState integration, including five lifecycle/concurrency regressions | All 9 cases PASS | All 9 cases PASS |
+| Production TCP GUI channel, `gui-smoke --tcp` | PASS | PASS before final file-I/O fix |
+| Independent-process `tests/cli_smoke.ps1` | PASS | PASS again after final file-I/O fix |
+| `astra-core-benchmark`: 1/8/64 MiB | Not run; Release benchmark | PASS; see [PERFORMANCE.md](PERFORMANCE.md) |
+| Independent-directory validation package | Not applicable | 6,527-file inventory and isolated runtime smoke PASS before final file-I/O fix |
+
+The final suite logs are `build/debug-integrated-results.txt` and
+`build/release-integrated-results.txt`. The corresponding configured binaries
+were run with `--no-version --duration=true`. Asynchronous polling produces small
+differences in successful assertion totals between configurations. The complete
+acceptance entry point is `./scripts/test.ps1 -Mode all -Gui -Benchmarks`;
+[BUILD.md](BUILD.md) lists individual targets and prerequisites.
+
+The latest Release CLI command was `./tests/cli_smoke.ps1 -Mode release`.
+Debug also passed with `./tests/cli_smoke.ps1 -Mode debug`. After removing four
+unused default-setting declarations, the focused default/configuration/user
+policy checks passed: 7 cases / 75 assertions. No advertised setting remains
+for the unimplemented word-wrap, line-number, auto-save or default-encoding switches.
+The validation package commands both passed:
+
+```powershell
+./scripts/package-windows.ps1 -Offline -OutputDirectory build/packages/astra-0.1.0-windows-x64-validation -NoArchive
+./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/astra-0.1.0-windows-x64-validation -RunSmoke
+```
+
+That smoke uses an independent Unicode/spaced workspace, isolated profile/state
+and a PATH containing only Windows directories. It exercises packaged executables,
+TCP, Unicode save, Git, clangd, TypeScript, Python and recovery. It is evidence for
+that validation snapshot, not a substitute for regenerating the final package.
+
+`gui-workspace-smoke` uses real SDL keyboard/mouse events, the actual shared
+service and native file-monitor events. It verifies that clicking a dirty or
+untitled search result activates its existing document ID and exact selection;
+global replacement remains uncommitted until confirmation, reports modified
+buffers and leaves their edits dirty with one undo step each. Atomic external
+replacement produces a persistent conflict notice. Reload cancel preserves text;
+a second client's edit invalidates an already-visible reload confirmation.
+Screenshots are `build/graphics/gui-workspace-{search,replace-confirm,conflict,reload-confirm}.png`.
+
+Two earlier full Debug runs of 400 cases each reported two failures. The later
+of those pre-fix runs reported **398 passed / 2 failed**, with **211,636 passed /
+2 failed assertions**. Both failures were recovery restore operations rejected
+as having a live owner. A startup announcement was scanning
+and temporarily claiming abandoned sessions outside the RecoveryState worker
+mutex, so it could conflict with the same host's restore operation. The fix
+serializes that scan and explicitly releases failed/completed restore claims.
+Five new tests cover retained scheduler callbacks, durable transfer, parallel
+startup/restore and immediate ownership release at `ServiceHost::shutdown`.
+All nine recovery-service cases now pass in both final suites. The rebuilt
+recovery GUI also passes; the failed pre-fix runs are retained as history.
+
+An intermediate Debug run recorded **406 cases / 405 passed / 1 failed** and
+**211,889 assertions, all passed**. The exception in the Unicode watcher fixture
+was Windows `ReplaceFileW` error 1175, "Unable to remove file to be replaced".
+The backup path had been reserved with an existing placeholder file; another
+reader holding that placeholder could prevent replacement even with delete
+sharing. The fix reserves a unique directory while leaving its backup filename
+absent. Two new Windows regressions reproduce the placeholder failure and verify
+replacement beside shared readers, retained old handles, stale-version rejection
+and cleanup. Both final 408-case suites pass after this fix, as do the repeated
+Release recovery/workspace GUI and CLI checks.
+
+The Git cleanup follow-up passed its two focused cases. Fixture teardown now
+permits bounded retries only for sharing/lock violations, retains failure
+diagnostics and does not weaken the production process-completion contract.
+The transient external holder was not conclusively identified. Child-process
+tests still require immediately usable working directories after completion.
+
+The following coherent modules were committed and pushed during this stage:
+
+| Commit | Increment |
+| --- | --- |
+| `a0fc831` | Recovery |
+| `1903b69` | LSP integration |
+| `c39b253` | File monitoring and external-change handling |
+| `e217270` | RE2 workspace search and replacement |
+
+Remaining release work is generating and verifying the package from the final
+clean source snapshot. The Release core benchmark passed for 1/8/64 MiB inputs:
+edit P95 was 9.2/10.0/11.3 microseconds and load time was 1.9578/16.1456/130.548 ms.
+It validates 1,000 Unicode insertions, retained snapshots, UTF-16 round trips and
+undo; these are core measurements, not end-to-end GUI latency.
+Physical monitor DPI transitions, real GPU device loss and an installed IME's
+candidate interaction have not been induced by SDL event injection. Packaging
+inventory checks alone do not establish runtime acceptance; the isolated smoke
+above establishes only its recorded Windows package snapshot. Native platform
+builds, runtime checks and distribution validation remain unverified.
+
+## Earlier Windows evidence (2026-10-09)
 
 - Toolchain: xmake 3.1.1, Visual Studio 2026 x64, C++23, `/MT`, warnings treated as errors.
 - `./scripts/xmake.ps1 f -m debug -y`, `build -y astra-core-tests`,

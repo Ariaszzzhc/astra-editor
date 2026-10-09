@@ -23,7 +23,7 @@ function New-TestProcess([string[]]$ProcessArguments) {
 
 $testServer = $null
 try {
-    $testServer = New-TestProcess @('--workspace', $testRoot, '--port', '0')
+    $testServer = New-TestProcess @('--workspace', $testRoot, '--port', '0', '--state-directory', (Join-Path $testRoot 'state'))
     $readyLine = $testServer.StandardOutput.ReadLineAsync()
     if (-not $readyLine.Wait(10000)) { throw 'Server startup timed out' }
     $ready = $readyLine.Result | ConvertFrom-Json

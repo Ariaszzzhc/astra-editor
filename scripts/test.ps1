@@ -1,9 +1,39 @@
-param([ValidateSet('debug', 'release', 'all')][string]$Mode = 'all')
+param(
+    [ValidateSet('debug', 'release', 'all')][string]$Mode = 'all',
+    [switch]$Gui,
+    [switch]$Benchmarks
+)
 
 $ErrorActionPreference = 'Stop'
+if (-not $IsWindows -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64') {
+    throw 'This acceptance entry point is for native Windows x64.'
+}
+$repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $configurations = if ($Mode -eq 'all') { @('debug', 'release') } else { @($Mode) }
-foreach ($configuration in $configurations) {
-    & "$PSScriptRoot/xmake.ps1" f -m $configuration -y
-    & "$PSScriptRoot/xmake.ps1" build -y astra-tests
-    & "$PSScriptRoot/xmake.ps1" test -v
+function Invoke-AcceptanceBinary([string]$Directory, [string]$Name, [string[]]$Arguments = @()) {
+    & (Join-Path $Directory ($Name + '.exe')) @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "$Name failed with exit code $LASTEXITCODE" }
+}
+Push-Location $repository
+try {
+    foreach ($configuration in $configurations) {
+        & "$PSScriptRoot/xmake.ps1" f -m $configuration -y
+        $targets = @('astra-tests','astra-server')
+        if ($Gui) { $targets += @('astra','graphics-smoke','renderer-smoke','text-layout-tests','gui-smoke','gui-services-smoke','gui-recovery-smoke','gui-workspace-smoke') }
+        if ($Benchmarks -and $configuration -eq 'release') { $targets += 'astra-core-benchmark' }
+        & "$PSScriptRoot/xmake.ps1" build -y @targets
+        $directory = Join-Path $repository ('build/windows/x64/' + $configuration)
+        Invoke-AcceptanceBinary $directory 'astra-tests' @('--no-version','--duration=true')
+        & "$repository/tests/cli_smoke.ps1" -Mode $configuration
+        if ($Gui) {
+            foreach ($name in @('graphics-smoke','renderer-smoke','text-layout-tests','gui-smoke','gui-services-smoke','gui-recovery-smoke','gui-workspace-smoke')) {
+                Invoke-AcceptanceBinary $directory $name
+            }
+            Invoke-AcceptanceBinary $directory 'gui-smoke' @('--tcp')
+        }
+        if ($Benchmarks -and $configuration -eq 'release') { Invoke-AcceptanceBinary $directory 'astra-core-benchmark' }
+    }
+    & "$repository/tests/package_scripts_tests.ps1"
+} finally {
+    Pop-Location
 }
