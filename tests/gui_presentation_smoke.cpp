@@ -61,7 +61,20 @@ void run(const fs::path& workspace) {
     {
         astra::ui::EditorWindowOptions options;
         options.workspace_name="ASTRA WORKBENCH";options.resource_directory=fs::current_path();options.open_paths={"one.cpp"};
-        options.user_script="if(astra.context==='client')astra.ui.registerCommand({id:'acceptance.review',title:'Review items'},async()=>{const accepted=await astra.ui.confirm({title:'Review changes',items:Array.from({length:40},(_,i)=>'File '+i+' (2 edits)'),accept:'Apply changes'});await astra.ui.update({status:accepted?'Review accepted':'Review cancelled'});});";
+        options.user_script=R"js(if(astra.context==='client') {
+            astra.ui.registerCommand({id:'acceptance.review',title:'Review items'},async()=>{
+                const accepted=await astra.ui.confirm({title:'Review changes',items:Array.from({length:40},(_,i)=>'File '+i+' (2 edits)'),accept:'Apply changes'});
+                await astra.ui.update({status:accepted?'Review accepted':'Review cancelled'});
+            });
+            astra.ui.registerCommand({id:'acceptance.pick',title:'Choose item'},async()=>{
+                const choice=await astra.ui.pick({title:'CHOOSE A FILE — TYPE TO FILTER',items:Array.from({length:40},(_,i)=>({label:'File '+i+' 中🙂',value:i}))});
+                await astra.ui.update({status:choice ? 'Selected '+choice.value : 'Choice cancelled'});
+            });
+            astra.ui.registerCommand({id:'acceptance.text',title:'Read indexed text'},async()=>{
+                await astra.ui.showText({title:'INDEXED INFORMATION — Esc to close',text:Array.from({length:80},(_,i)=>'Line '+i+' 中🙂').join('\n')});
+                await astra.ui.update({status:'Information closed'});
+            });
+        })js";
         Window window(host,std::move(options));settle(window);
         const auto original=window.view_state();
         require(original.visible_file_rows==files+5,"Indexed file rows were lost");
@@ -121,6 +134,22 @@ void run(const fs::path& workspace) {
         const auto review=astra::ui::ConfirmationLayout::measure(static_cast<float>(review_width),static_cast<float>(review_height),window.layout().scale,true);
         click(window,review.cancel.x+review.cancel.width/2,review.cancel.y+review.cancel.height/2);
         require(window.status_text()=="Review cancelled","Review pointer hit did not settle its awaited JS workflow");
+        window.execute_ui_command("acceptance.pick");settle(window);
+        for(int row=0;row<20;++row)key(window,SDLK_DOWN);
+        window.request_screenshot("build/graphics/gui-workbench-picker.png");settle(window);
+        const auto picker=astra::ui::PickerLayout::measure(static_cast<float>(review_width),static_cast<float>(review_height),window.layout().scale);
+        require(picker.capacity>0,"Picker has no visible rows");
+        const auto first_item=20>=picker.capacity ? 20-picker.capacity+1 : 0;
+        click(window,picker.rows.x+30*window.layout().scale,picker.rows.y+picker.row_height/2);
+        require(window.status_text()=="Selected "+std::to_string(first_item),"Picker pointer selected a display row instead of its source identity");
+        window.execute_ui_command("acceptance.pick");settle(window);
+        SDL_Event filter{};filter.type=SDL_EVENT_TEXT_INPUT;filter.text.windowID=SDL_GetWindowID(window.window());filter.text.text="File 39";
+        require(SDL_PushEvent(&filter),"Cannot enqueue picker filter");settle(window);key(window,SDLK_RETURN);
+        require(window.status_text()=="Selected 39","Picker filtering lost its original source identity");
+        window.execute_ui_command("acceptance.text");settle(window);
+        for(int row=0;row<30;++row)key(window,SDLK_DOWN);
+        window.request_screenshot("build/graphics/gui-workbench-text.png");settle(window);key(window,SDLK_ESCAPE);
+        require(window.status_text()=="Information closed","Text panel dismissal did not settle its awaited JS workflow");
         window.execute_ui_command("ui.closeWindow");
         const auto deadline=Clock::now()+std::chrono::seconds(20);
         while(window.pump()) {require(Clock::now()<deadline,"Workbench shutdown timed out");SDL_Delay(1);}

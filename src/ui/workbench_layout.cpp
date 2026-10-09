@@ -24,6 +24,33 @@ ConfirmationLayout ConfirmationLayout::measure(float width,float height,float sc
     result.items={x+padding,iy,pw-2*padding,has_items?std::max(0.0F,button_y-iy-12*scale):0.0F};
     return result;
 }
+PickerLayout PickerLayout::measure(float width,float height,float scale,std::size_t rows) {
+    if(!std::isfinite(width)||!std::isfinite(height)||!std::isfinite(scale)||width<=0||height<=0||scale<=0)throw std::invalid_argument("Invalid picker dimensions");
+    PickerLayout result;
+    const auto margin=std::min(12*scale,width/4),pw=std::min(600*scale,width-2*margin);
+    const auto y=std::min(64*scale,height/6),ph=std::min((74+34*static_cast<float>(std::clamp(rows,std::size_t{1},std::size_t{12})))*scale,std::max(0.0F,height-y-12*scale));
+    const auto x=(width-pw)/2,pad=std::min(12*scale,pw/6);
+    result.panel={x,y,pw,ph};
+    result.title={x+pad,y+8*scale,pw-2*pad,std::min(20*scale,ph)};
+    const auto iy=std::min(y+30*scale,result.panel.bottom());
+    result.input={x+pad,iy,pw-2*pad,std::min(30*scale,std::max(0.0F,result.panel.bottom()-iy))};
+    const auto ry=std::min(y+66*scale,result.panel.bottom());
+    result.rows={x+pad,ry,pw-2*pad,std::max(0.0F,result.panel.bottom()-ry-8*scale)};
+    result.row_height=34*scale;
+    result.capacity=static_cast<std::size_t>(std::floor(result.rows.height/result.row_height));
+    return result;
+}
+TextPanelLayout TextPanelLayout::measure(float width,float height,float scale,std::size_t rows) {
+    if(!std::isfinite(width)||!std::isfinite(height)||!std::isfinite(scale)||width<=0||height<=0||scale<=0)throw std::invalid_argument("Invalid text panel dimensions");
+    TextPanelLayout result;
+    const auto margin=std::min(24*scale,width/6),pw=std::min(900*scale,width-2*margin);
+    const auto y=std::min(64*scale,height/6),ph=std::min(std::min(620.0F,56+20*static_cast<float>(std::clamp(rows,std::size_t{4},std::size_t{32})))*scale,std::max(0.0F,height-y-24*scale));
+    const auto x=(width-pw)/2,pad=std::min(18*scale,pw/6);
+    result.panel={x,y,pw,ph};result.title={x+pad,y+10*scale,pw-2*pad,std::min(24*scale,ph)};
+    const auto cy=std::min(y+44*scale,result.panel.bottom());
+    result.content={x+pad,cy,pw-2*pad,std::max(0.0F,result.panel.bottom()-cy-12*scale)};
+    return result;
+}
 WorkbenchLayout WorkbenchLayout::measure(float width, float height, float scale,
                                          bool sidebar, float sidebar_width, bool outline, bool explorer) {
     if (!std::isfinite(width) || !std::isfinite(height) || !std::isfinite(scale) ||

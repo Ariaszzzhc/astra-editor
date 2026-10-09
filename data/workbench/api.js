@@ -1,6 +1,6 @@
 const request = (method, params = {}, options) => astra.request(method, params, options);
 export const ui = {
-    read: () => request('_ui.read'),
+    read: (parameters = {}) => request('_ui.read', parameters),
     update: model => request('_ui.update', model),
     clipboard: {
         read: () => request('_ui.clipboard.read'),
@@ -8,6 +8,12 @@ export const ui = {
     },
     input: (spec, options) => dialog('input', spec, options),
     confirm: (spec, options) => dialog('confirm', spec, options),
+    async pick(spec, options) {
+        const items = spec.items.slice();
+        const index = await dialog('pick', {...spec, items:items.map(item => typeof item === 'string' ? item : item.label)}, options);
+        return index === null ? null : items[index];
+    },
+    showText: (spec, options) => dialog('text', spec, options),
     async execute(id, parameters = {}) {
         const handler = commands.get(id);
         if (!handler) throw new Error(`Unknown UI command: ${id}`);

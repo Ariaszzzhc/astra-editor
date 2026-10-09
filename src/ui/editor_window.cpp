@@ -5,6 +5,7 @@
 #include "astra/ui/file_tree_index.hpp"
 #include "astra/ui/icons.hpp"
 #include "astra/ui/text_line_index.hpp"
+#include "astra/ui/picker_index.hpp"
 #include "astra/io/file_store.hpp"
 
 #include "include/core/SkCanvas.h"
@@ -102,11 +103,13 @@ struct EditorWindow::Impl {
     struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; };
     struct FindState { std::string id; std::string revision; std::string query; std::string replacement; std::string text; std::size_t cursor{}; std::size_t size{}; bool replace{}; };
     struct ViewState { std::string id; std::string revision; std::size_t first{}; std::size_t limit{}; std::map<std::size_t, Line> lines; };
-    enum class Prompt { none, policy_input, policy_confirm, palette, save_as, close, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, completion, locations, hover, git_diff, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed };
+    enum class Prompt { none, policy_input, policy_confirm, policy_pick, policy_text, palette, save_as, close, find, replace_query, replace_value, search, workspace_replace_query, workspace_replace_value, replace_confirm, git_diff, recovery, recovery_confirm, recovery_flushing, recovery_exit_failed };
     struct Dialog {
         std::string id; Json spec; std::promise<Json> completion;
         TextLineIndex detail_lines; std::map<std::size_t,TextLayout> detail_layout; float detail_width{},detail_scale{};
         TextLineIndex items;
+        PickerIndex picker;
+        float horizontal{};
         std::optional<TextLayout> input_layout; std::string input_text; float input_scale{};
     };
 
@@ -175,12 +178,6 @@ struct EditorWindow::Impl {
     std::map<std::string, std::string> workspace_notices;
     std::string watch_error;
     std::string replace_notice;
-    Json language_items = Json::array();
-    std::string language_document;
-    std::string language_revision;
-    std::size_t language_offset{};
-    std::uint64_t language_generation{};
-    std::string hover_text;
     bool git_view{};
     Json git_status = Json::object();
     std::string git_path;
@@ -449,10 +446,7 @@ struct EditorWindow::Impl {
     void fetch_lines();
     void fetch_lines_page(std::shared_ptr<ViewState> view, std::size_t first, std::optional<std::size_t> begin = {});
     void fetch_syntax();
-    void language_request(std::string method);
-    void accept_language(const Json& result, std::size_t offset);
-    void fetch_diagnostics(const std::string& id, bool show = false);
-    std::vector<std::size_t> filtered_language_items() const;
+    void fetch_diagnostics(const std::string& id);
     void fetch_git_diff(std::string path, bool staged = false);
     void editor_command(std::string command, Json extra = Json::object());
     void set_selections(Json selections, std::string revision = {});
@@ -738,64 +732,11 @@ void EditorWindow::Impl::editor_command(std::string name, Json extra) {
         [this](const Json& result) { accept_metadata(result); reveal_caret(); status = "Ready"; }, {}});
 }
 
-void EditorWindow::Impl::language_request(std::string method) {
-    const auto* document = current();
-    if (!document) { return; }
-    language_document = active_id;
-    documents.at(active_id).language_active = true;
-    language_revision = document->metadata.at("revision").get<std::string>();
-    language_offset = document->metadata.at("selections").front().at("head").get<std::size_t>();
-    Json params{{"id", language_document}, {"baseRevision", language_revision}, {"method", method}};
-    params["byteOffset"] = language_offset;
-    status = "Language server: " + method;
-    const auto generation = ++language_generation;
-    const auto offset = language_offset;
-    start_operation("language.request", std::move(params), [this, generation, offset](const Json& result) {
-        if (generation == language_generation) { accept_language(result, offset); }
-    });
-}
-
-void EditorWindow::Impl::accept_language(const Json& result, std::size_t offset) {
-    const auto id = result.at("id").get<std::string>();
-    const auto revision = result.at("revision").get<std::string>();
-    if (result.value("obsolete", false) || !documents.contains(id) || documents.at(id).metadata.at("revision") != revision) {
-        status = "Discarded a language result for an older revision"; return;
-    }
-    language_document = id; language_revision = revision; language_offset = offset;
-    const auto method = result.at("method").get<std::string>();
-    const auto& value = result.at("result");
-    fetch_diagnostics(id);
-    prompt_text.clear(); prompt_choice = 0;
-    if (method == "completion") {
-        language_items = value.is_array() ? value : (value.is_object() ? value.value("items", Json::array()) : Json::array());
-        if (language_items.empty()) { status = "No completion items"; return; }
-        prompt = Prompt::completion;
-    } else if (method == "hover") {
-        hover_text.clear();
-        if (!value.is_null()) {
-            const auto& contents = value.at("contents");
-            const auto append = [this](const Json& part) {
-                if (!hover_text.empty()) { hover_text += '\n'; }
-                hover_text += part.is_string() ? part.get<std::string>() : part.value("value", std::string{});
-            };
-            if (contents.is_array()) { for (const auto& part : contents) { append(part); } }
-            else { append(contents); }
-        }
-        if (hover_text.empty()) { status = "No hover information"; return; }
-        prompt = Prompt::hover;
-    } else if (method == "definition" || method == "references") {
-        language_items = result.value("resolvedLocations", Json::array());
-        if (language_items.empty()) { status = "No locations found"; return; }
-        prompt = Prompt::locations;
-        if (language_items.size() == 1) { accept_prompt(); }
-    }
-}
-
-void EditorWindow::Impl::fetch_diagnostics(const std::string& id, bool show) {
-    if (!documents.contains(id) || (documents.at(id).diagnostics_loading && !show)) { return; }
+void EditorWindow::Impl::fetch_diagnostics(const std::string& id) {
+    if (!documents.contains(id) || documents.at(id).diagnostics_loading) { return; }
     documents.at(id).diagnostics_loading = true;
     const auto generation = documents.at(id).diagnostics_generation;
-    enqueue({"language.diagnostics", {{"id", id}}, id, false, [this, id, show, generation](const Json& result) {
+    enqueue({"language.diagnostics", {{"id", id}}, id, false, [this, id, generation](const Json& result) {
         if (!documents.contains(id)) { return; }
         auto& document = documents.at(id);
         document.diagnostics_loading = false;
@@ -803,28 +744,7 @@ void EditorWindow::Impl::fetch_diagnostics(const std::string& id, bool show) {
             ? Clock::now() + std::chrono::milliseconds(750) : Clock::time_point{};
         document.language_active = result.value("available", true);
         if (result.at("revision") == document.metadata.at("revision")) { document.diagnostics = result.value("diagnostics", Json::array()); }
-        if (show) {
-            hover_text.clear();
-            for (const auto& diagnostic : document.diagnostics) {
-                const auto& point = diagnostic.at("range").at("start");
-                hover_text += std::to_string(point.at("line").get<std::size_t>() + 1) + ":" +
-                    std::to_string(point.at("character").get<std::size_t>() + 1) + "  " + diagnostic.at("message").get<std::string>() + "\n";
-            }
-            if (hover_text.empty()) { hover_text = result.value("pending", false) ? "Waiting for language diagnostics..." : result.value("reason", std::string("No diagnostics")); }
-            prompt = Prompt::hover; prompt_choice = 0;
-        }
     }, {}});
-}
-
-std::vector<std::size_t> EditorWindow::Impl::filtered_language_items() const {
-    std::vector<std::size_t> result;
-    const auto query = lower_ascii(prompt_text);
-    for (std::size_t i = 0; i < language_items.size(); ++i) {
-        const auto& item = language_items[i];
-        const auto text = prompt == Prompt::completion ? item.value("label", std::string{}) : item.value("path", item.value("uri", std::string{}));
-        if (query.empty() || lower_ascii(text).find(query) != std::string::npos) { result.push_back(i); }
-    }
-    return result;
 }
 
 void EditorWindow::Impl::fetch_git_diff(std::string path, bool staged) {
@@ -960,13 +880,13 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
     if (dialog || prompt != Prompt::none) { throw protocol::RpcError(-32004, "Another modal input is active"); }
     const auto id = spec.at("id").get<std::string>();
     const auto kind = spec.at("kind").get<std::string>();
-    if (kind != "input" && kind != "confirm") { throw protocol::RpcError(-32602, "Unknown dialog kind"); }
+    if (kind != "input" && kind != "confirm" && kind != "pick" && kind != "text") { throw protocol::RpcError(-32602, "Unknown dialog kind"); }
     const auto title = spec.at("title").get<std::string>();
     const auto value = spec.value("value", std::string{});
-    const auto detail = spec.value("detail", std::string{});
+    const auto detail = spec.value(kind=="text" ? "text" : "detail", std::string{});
     const auto accept = spec.value("accept", std::string("Confirm"));
     const auto placeholder = spec.value("placeholder", std::string{});
-    if (id.empty() || id.size()>128 || title.empty() || title.size() > 4096 || value.size() > 16384 || detail.size() > 65536 || accept.size()>4096 || placeholder.size()>4096) { throw protocol::RpcError(-32602, "Dialog content exceeds its bounds"); }
+    if (id.empty() || id.size()>128 || title.empty() || title.size() > 4096 || value.size() > 16384 || detail.size() > (kind=="text" ? 8*1024*1024U : 65536U) || accept.size()>4096 || placeholder.size()>4096 || value.find_first_of("\r\n")!=value.npos || value.find('\0')!=value.npos) { throw protocol::RpcError(-32602, "Dialog content exceeds its bounds"); }
     Dialog pending;pending.id=id;pending.spec=spec;pending.detail_lines.reset(detail);
     const auto items=spec.value("items",Json::array());
     if(!items.is_array() || items.size()>4096)throw protocol::RpcError(-32602,"Confirmation items must be an array of at most 4096 strings");
@@ -976,10 +896,11 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
         if(label.empty() || label.find_first_of("\r\n")!=std::string::npos || label.size()>4096 || item_text.size()+label.size()+1>65536)throw protocol::RpcError(-32602,"Confirmation item text exceeds its bounds");
         if(!item_text.empty())item_text+='\n';item_text+=label;
     }
-    if(!items.empty())pending.items.reset(item_text);
+    if(kind=="pick")pending.picker.reset(items.get<std::vector<std::string>>());
+    else if(!items.empty())pending.items.reset(item_text);
     auto result = pending.completion.get_future();
     dialog.emplace(std::move(pending));
-    prompt = kind == "input" ? Prompt::policy_input : Prompt::policy_confirm;
+    prompt = kind == "input" ? Prompt::policy_input : (kind=="pick" ? Prompt::policy_pick : (kind=="text" ? Prompt::policy_text : Prompt::policy_confirm));
     prompt_text = value; prompt_choice = 0; prompt_select_all = false; preedit.clear();
     return result;
 }
@@ -1011,7 +932,9 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
     }
     if (method == "_ui.read") {
         Json result{{"sidebarVisible", show_sidebar}, {"sidebar",git_view ? "git" : (search_view ? "search" : "explorer")}, {"outlineVisible", show_outline}, {"tabs", tabs}, {"gitPath", prompt == Prompt::git_diff ? git_path : std::string{}}, {"gitStaged",git_staged},{"gitPreview",git_preview}};
-        if (const auto* document = current()) {
+        const auto requested=params.value("id",active_id);
+        const auto found=documents.find(requested);
+        if (const auto* document = found==documents.end() ? nullptr : &found->second) {
             result["document"] = document->metadata; result["document"]["path"] = document->path;
             result["newline"] = newline(); result["selectionLines"] = Json::array();
             for (const auto& position : document->metadata.value("selectionPositions", Json::array())) {
@@ -1039,6 +962,14 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             search_view = view == "search"; git_view = view == "git"; tree_scroll = 0;
         } else if (name == "document" || name == "documents") { /* Applied before activation above. */ }
         else if (name == "activate") { activate(value.get<std::string>()); }
+        else if (name == "languageActive") {
+            if(const auto found=documents.find(value.at("id").get<std::string>());found!=documents.end())found->second.language_active=value.at("active").get<bool>();
+        }
+        else if (name == "scrollLine") {
+            if(const auto found=documents.find(value.at("id").get<std::string>());found!=documents.end()){
+                found->second.first_line=std::min(value.at("line").get<std::size_t>(),found->second.metadata.at("lineCount").get<std::size_t>()-1);found->second.needs_lines=true;
+            }
+        }
         else if (name == "revealCaret") { if (value.get<bool>()) { reveal_caret(); } }
         else if (name == "workspaceNotice") { workspace_notices[value.at("id").get<std::string>()] = value.at("text").get<std::string>(); }
         else if (name == "gitDiff") {
@@ -1048,7 +979,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             TextLineIndex lines;lines.reset(text);
             const auto marks=model.value("gutter",Json::array());
             if(!marks.is_array())throw protocol::RpcError(-32602,"Git gutter must be an array");
-            git_path=std::move(path);git_staged=staged;hover_text=std::move(text);git_preview=std::move(preview);
+            git_path=std::move(path);git_staged=staged;git_preview=std::move(preview);
             git_diff_lines=std::move(lines);git_diff_layouts.clear();git_diff_layout_scale=0;
             for(auto& [id,document]:documents){
                 static_cast<void>(id);
@@ -1153,11 +1084,6 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     else if (name == "ui.replace") { prompt = Prompt::replace_query; prompt_text = search_query; }
     else if (name == "ui.search") { prompt = Prompt::search; prompt_text = search_query; }
     else if (name == "ui.workspaceReplace") { prompt = Prompt::workspace_replace_query; prompt_text = search_query; }
-    else if (name == "ui.completion") { language_request("completion"); }
-    else if (name == "ui.hover") { language_request("hover"); }
-    else if (name == "ui.diagnostics") { if (current()) { fetch_diagnostics(active_id, true); } }
-    else if (name == "ui.definition") { language_request("definition"); }
-    else if (name == "ui.references") { language_request("references"); }
     else if (name == "ui.selectFunction" || name == "ui.selectClass" || name == "ui.selectBlock" || name == "ui.selectString") {
         const auto* document = current();
         if (!document) { return; }
@@ -1241,6 +1167,11 @@ std::vector<const MenuCommand*> EditorWindow::Impl::filtered_commands() const {
 void EditorWindow::Impl::accept_prompt() {
     if (prompt == Prompt::policy_input) { finish_dialog(prompt_text); }
     else if (prompt == Prompt::policy_confirm) { finish_dialog(true); }
+    else if (prompt == Prompt::policy_pick && dialog) {
+        dialog->picker.filter(prompt_text);
+        if(dialog->picker.size())finish_dialog(dialog->picker.at(std::min(prompt_choice,dialog->picker.size()-1)).source);
+    }
+    else if (prompt == Prompt::policy_text) { finish_dialog(nullptr); }
     else if (prompt == Prompt::recovery) {
         const auto matches = filtered_recovery_sessions();
         if (matches.empty()) { return; }
@@ -1248,36 +1179,6 @@ void EditorWindow::Impl::accept_prompt() {
         prompt = Prompt::recovery_confirm; prompt_choice = 0; prompt_text.clear();
     } else if (prompt == Prompt::recovery_confirm) { command("ui.confirmRecovery"); }
     else if (prompt == Prompt::recovery_exit_failed) { command("ui.retryExit"); }
-    else if (prompt == Prompt::completion || prompt == Prompt::locations) {
-        const auto matches = filtered_language_items();
-        if (matches.empty()) { return; }
-        const auto item = language_items[matches[std::min(prompt_choice, matches.size() - 1)]];
-        const auto mode = prompt; prompt = Prompt::none;
-        if (mode == Prompt::completion) {
-            const auto found = documents.find(language_document);
-            if (found == documents.end() || found->second.metadata.at("revision") != language_revision ||
-                found->second.metadata.at("selections").front().at("head") != language_offset) {
-                status = "Completion became stale; request it again"; return;
-            }
-            enqueue({"language.applyCompletion", {{"id", language_document}, {"baseRevision", language_revision},
-                     {"completionItem", item}, {"byteOffset", language_offset}}, {}, false,
-                [this](const Json& result) { accept_metadata(result); reveal_caret(); status = "Completion applied"; }, {}});
-        } else {
-            if (!item.contains("path")) { status = "Location is outside the workspace: " + item.value("uri", std::string{}); return; }
-            start_operation("workspace.open", {{"path", item.at("path")}}, [this, item](const Json& result) {
-                accept_metadata(result); activate(result.at("id").get<std::string>());
-                if (item.contains("targetRevision") && item.at("targetRevision") != result.at("revision")) {
-                    status = "Navigation target changed; request the location again"; return;
-                }
-                if (item.contains("byteOffset")) {
-                    set_selections(Json::array({{{"anchor", item.at("byteOffset")}, {"head", item.value("endByteOffset", item.at("byteOffset").get<std::size_t>())}}}));
-                } else {
-                    documents.at(active_id).first_line = item.value("line", std::size_t{0});
-                    documents.at(active_id).needs_lines = true;
-                }
-            });
-        }
-    } else if (prompt == Prompt::hover) { prompt = Prompt::none; }
     else if (prompt == Prompt::git_diff) { prompt = Prompt::none; }
     else if (prompt == Prompt::palette) {
         const auto matches = filtered_commands();
@@ -1448,15 +1349,17 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
             else if (input.key == SDLK_D) { command("ui.discard"); }
             return;
         }
-        if (prompt == Prompt::hover || prompt == Prompt::git_diff) {
+        if (prompt == Prompt::git_diff || prompt == Prompt::policy_text) {
             if (prompt == Prompt::git_diff) {
                 if (input.key == SDLK_S) { command("ui.gitStage"); return; }
                 if (input.key == SDLK_U) { command("ui.gitUnstage"); return; }
                 if (input.key == SDLK_D) { command("ui.gitDiscard"); return; }
             }
-            if (input.key == SDLK_RETURN) { prompt = Prompt::none; }
+            if (input.key == SDLK_RETURN) { if(dialog)finish_dialog(nullptr);else prompt = Prompt::none; }
             else if (input.key == SDLK_DOWN) { ++prompt_choice; }
             else if (input.key == SDLK_UP && prompt_choice != 0) { --prompt_choice; }
+            else if (dialog && input.key == SDLK_LEFT) { dialog->horizontal=std::max(0.0F,dialog->horizontal-64*scale); }
+            else if (dialog && input.key == SDLK_RIGHT) { dialog->horizontal=std::min(64*1024*1024*scale,dialog->horizontal+64*scale); }
             return;
         }
         if (control && input.key == SDLK_A) { prompt_select_all = true; return; }
@@ -1475,10 +1378,12 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
             const std::unique_ptr<char, SdlStringDeleter> text(SDL_GetClipboardText());
             if (!text) { throw std::runtime_error(std::string("Clipboard read failed: ") + SDL_GetError()); }
             const std::string_view pasted(text.get());
+            if(dialog && (pasted.find_first_of("\r\n")!=pasted.npos || pasted.find('\0')!=pasted.npos)) { error="Input must contain one logical line";return; }
             const auto existing=prompt_select_all ? std::size_t{0} : prompt_text.size();
             if (existing>16384 || pasted.size()>16384-existing) { error="Input exceeds its 16 KiB limit"; return; }
             if (prompt_select_all) { prompt_text.clear(); prompt_select_all = false; }
             prompt_text += pasted;
+            prompt_choice=0;
         }
         return;
     }
@@ -1601,10 +1506,13 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         preedit.clear();
         if (!input.text.text) { break; }
         if (prompt != Prompt::none && prompt != Prompt::close && prompt != Prompt::replace_confirm &&
-            prompt != Prompt::hover && prompt != Prompt::git_diff &&
+            prompt != Prompt::policy_text && prompt != Prompt::git_diff &&
             prompt != Prompt::recovery_confirm && prompt != Prompt::recovery_flushing && prompt != Prompt::recovery_exit_failed && prompt != Prompt::policy_confirm) {
+            const std::string_view entered(input.text.text);
+            if(dialog && entered.find_first_of("\r\n")!=entered.npos){error="Input must contain one logical line";break;}
+            const auto existing=prompt_select_all ? std::size_t{0} : prompt_text.size();
+            if (existing + entered.size() > 16384) { error = "Input exceeds its 16 KiB limit"; break; }
             if (prompt_select_all) { prompt_text.clear(); prompt_select_all = false; }
-            if (prompt_text.size() + std::string_view(input.text.text).size() > 16384) { error = "Input exceeds its 16 KiB limit"; break; }
             prompt_text += input.text.text; prompt_choice = 0;
         } else if (prompt == Prompt::none) { editor_command("editor.insert_text", {{"text", input.text.text}}); }
         break;
@@ -1629,6 +1537,17 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         if (input.button.button != SDL_BUTTON_LEFT) { break; }
         mouse_x = input.button.x * ratio_x; mouse_y = input.button.y * ratio_y;
         const auto width = static_cast<float>(pixels.width);
+        if (prompt == Prompt::policy_pick && dialog) {
+            dialog->picker.filter(prompt_text);
+            const auto layout=PickerLayout::measure(width,static_cast<float>(pixels.height),scale,dialog->picker.size());
+            if(layout.rows.contains(mouse_x,mouse_y) && layout.capacity && dialog->picker.size()){
+                prompt_choice=std::min(prompt_choice,dialog->picker.size()-1);
+                const auto first=prompt_choice>=layout.capacity ? prompt_choice-layout.capacity+1 : 0;
+                const auto row=static_cast<std::size_t>((mouse_y-layout.rows.y)/layout.row_height);
+                if(row<layout.capacity && first+row<dialog->picker.size()){prompt_choice=first+row;accept_prompt();}
+            }
+            break;
+        }
         if (prompt == Prompt::policy_confirm) {
             const auto layout=ConfirmationLayout::measure(width,static_cast<float>(pixels.height),scale,dialog && dialog->items.size()>0);
             if(layout.accept.contains(mouse_x,mouse_y))finish_dialog(true);
@@ -1663,7 +1582,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             }
             break;
         }
-        if (prompt == Prompt::palette || prompt == Prompt::completion || prompt == Prompt::locations || prompt == Prompt::recovery) {
+        if (prompt == Prompt::palette || prompt == Prompt::recovery) {
             const auto bx = (width - 600 * scale) / 2;
             if (mouse_x > bx && mouse_x < bx + 600 * scale && mouse_y >= 130 * scale) {
                 const auto first = prompt_choice >= 12 ? prompt_choice - 11 : 0;
@@ -1777,6 +1696,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
     case SDL_EVENT_MOUSE_WHEEL: {
         const auto direction = input.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0F : 1.0F;
         if (prompt != Prompt::none) {
+            if(prompt==Prompt::policy_text && dialog && (SDL_GetModState()&SDL_KMOD_SHIFT)!=0){dialog->horizontal=std::clamp(dialog->horizontal-input.wheel.y*direction*40*scale,0.0F,64*1024*1024*scale);break;}
             const auto shift = static_cast<long long>(std::round(input.wheel.y * direction * 3));
             prompt_choice = static_cast<std::size_t>(std::max(0LL, static_cast<long long>(prompt_choice) - shift));
             break;
@@ -1879,6 +1799,28 @@ void EditorWindow::Impl::measure_layout() {
 void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height) {
     if (prompt == Prompt::none) { return; }
     rectangle(canvas, 0, 0, width, height, SkColorSetA(background, 160));
+    if (prompt == Prompt::policy_text && dialog) {
+        const auto layout=TextPanelLayout::measure(width,height,scale,dialog->detail_lines.size());
+        rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,layout.panel.height,panel_background);
+        rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,2*scale,accent);
+        elided_label(canvas,dialog->spec.at("title").get<std::string>(),layout.title.x,layout.title.y,11,layout.title.width,muted);
+        TextLayoutOptions style;style.font_size=13;style.dpi_scale=scale;style.color=foreground;
+        style.font_families={"Segoe UI","Microsoft YaHei UI","sans-serif"};
+        if(dialog->detail_scale!=scale){dialog->detail_layout.clear();dialog->detail_scale=scale;}
+        prompt_choice=std::min(prompt_choice,dialog->detail_lines.size()-1);
+        const auto count=static_cast<std::size_t>(std::ceil(layout.content.height/(18*scale)))+1;
+        canvas->save();canvas->clipRect(SkRect::MakeXYWH(layout.content.x,layout.content.y,layout.content.width,layout.content.height));
+        float y=layout.content.y;
+        dialog->detail_lines.for_each_range(prompt_choice,std::min(dialog->detail_lines.size(),prompt_choice+count),[&](std::size_t row,const std::string& text){
+            if(y>=layout.content.bottom())return;
+            auto found=dialog->detail_layout.find(row);
+            if(found==dialog->detail_layout.end()){
+                if(dialog->detail_layout.size()>=256)dialog->detail_layout.erase(dialog->detail_layout.begin());
+                found=dialog->detail_layout.emplace(row,fonts.layout(text,style)).first;
+            }
+            found->second.draw(canvas,layout.content.x-dialog->horizontal,y);y+=found->second.height();
+        });canvas->restore();return;
+    }
     if (prompt == Prompt::policy_confirm && dialog) {
         const auto layout=ConfirmationLayout::measure(width,height,scale,dialog->items.size()>0);
         const auto fill=[&](const Box& box,SkColor color){rectangle(canvas,box.x,box.y,box.width,box.height,color);};
@@ -1910,29 +1852,46 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         label(canvas,"Cancel",layout.cancel.x+16*scale,layout.cancel.y+8*scale,13);
         return;
     }
-    if (prompt == Prompt::policy_input && dialog) {
-        const auto panel_width=std::min(600*scale,width-24*scale),x=(width-panel_width)/2;
-        rectangle(canvas,x,64*scale,panel_width,76*scale,panel_background);
-        rectangle(canvas,x,64*scale,panel_width,2*scale,accent);
-        elided_label(canvas,dialog->spec.at("title").get<std::string>(),x+16*scale,73*scale,10,panel_width-32*scale,muted);
-        rectangle(canvas,x+12*scale,94*scale,panel_width-24*scale,30*scale,input_color);
-        if(prompt_select_all&&!prompt_text.empty())rectangle(canvas,x+20*scale,97*scale,panel_width-40*scale,25*scale,selection_color);
+    if ((prompt == Prompt::policy_input || prompt == Prompt::policy_pick) && dialog) {
+        const auto picking=prompt==Prompt::policy_pick;
+        if(picking)dialog->picker.filter(prompt_text);
+        const auto layout=PickerLayout::measure(width,height,scale,picking ? dialog->picker.size() : 0);
+        rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,picking ? layout.panel.height : layout.input.bottom()-layout.panel.y+16*scale,panel_background);
+        rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,2*scale,accent);
+        elided_label(canvas,dialog->spec.at("title").get<std::string>(),layout.title.x+4*scale,layout.title.y,10,layout.title.width-8*scale,muted);
+        rectangle(canvas,layout.input.x,layout.input.y,layout.input.width,layout.input.height,input_color);
+        if(prompt_select_all&&!prompt_text.empty())rectangle(canvas,layout.input.x+8*scale,layout.input.y+3*scale,layout.input.width-16*scale,25*scale,selection_color);
         TextLayoutOptions style;style.font_size=14;style.dpi_scale=scale;style.color=foreground;
+        style.font_families={"Segoe UI","Microsoft YaHei UI","sans-serif"};
         if(!dialog->input_layout || dialog->input_text!=prompt_text || dialog->input_scale!=scale){
             dialog->input_layout=fonts.layout(prompt_text,style);dialog->input_text=prompt_text;dialog->input_scale=scale;
         }
         const auto& input=*dialog->input_layout;
-        const auto horizontal=std::max(0.0F,input.width()-(panel_width-64*scale));
-        const auto input_x=x+22*scale+input.width()-horizontal;
-        canvas->save();canvas->clipRect(SkRect::MakeXYWH(x+20*scale,97*scale,panel_width-40*scale,27*scale));
-        if(prompt_text.empty())label(canvas,dialog->spec.value("placeholder",std::string("Type text, then press Enter")),x+22*scale,100*scale,14,muted);
-        else input.draw(canvas,x+22*scale-horizontal,100*scale);
-        if(!preedit.empty()){const auto composition=fonts.layout(preedit,style);composition.draw(canvas,input_x,100*scale);rectangle(canvas,input_x,120*scale,composition.width(),scale,accent);}
-        else rectangle(canvas,input_x,100*scale,scale,20*scale,cursor_color);
+        const auto horizontal=std::max(0.0F,input.width()-(layout.input.width-40*scale));
+        const auto input_x=layout.input.x+10*scale+input.width()-horizontal,input_y=layout.input.y+6*scale;
+        canvas->save();canvas->clipRect(SkRect::MakeXYWH(layout.input.x+8*scale,layout.input.y+3*scale,layout.input.width-16*scale,27*scale));
+        if(prompt_text.empty())label(canvas,dialog->spec.value("placeholder",std::string(picking ? "Type to filter; Enter to choose" : "Type text, then press Enter")),layout.input.x+10*scale,input_y,14,muted);
+        else input.draw(canvas,layout.input.x+10*scale-horizontal,input_y);
+        if(!preedit.empty()){const auto composition=fonts.layout(preedit,style);composition.draw(canvas,input_x,input_y);rectangle(canvas,input_x,input_y+20*scale,composition.width(),scale,accent);}
+        else rectangle(canvas,input_x,input_y,scale,20*scale,cursor_color);
         canvas->restore();
         int logical_width{},logical_height{};
         if(SDL_GetWindowSize(renderer.window(),&logical_width,&logical_height)&&logical_width>0&&logical_height>0){
-            renderer.set_text_input_area({static_cast<int>(input_x*static_cast<float>(logical_width)/width),static_cast<int>(98*scale*static_cast<float>(logical_height)/height),2,static_cast<int>(26*scale*static_cast<float>(logical_height)/height)},0);
+            renderer.set_text_input_area({static_cast<int>(input_x*static_cast<float>(logical_width)/width),static_cast<int>(input_y*static_cast<float>(logical_height)/height),2,static_cast<int>(26*scale*static_cast<float>(logical_height)/height)},0);
+        }
+        if(picking){
+            dialog->picker.filter(prompt_text);
+            if(dialog->picker.size())prompt_choice=std::min(prompt_choice,dialog->picker.size()-1);
+            else prompt_choice=0;
+            const auto first=layout.capacity && prompt_choice>=layout.capacity ? prompt_choice-layout.capacity+1 : 0;
+            canvas->save();canvas->clipRect(SkRect::MakeXYWH(layout.rows.x,layout.rows.y,layout.rows.width,layout.rows.height));
+            dialog->picker.for_each_range(first,std::min(dialog->picker.size(),first+layout.capacity),[&](std::size_t row,const PickerIndex::Row& item){
+                const auto y=layout.rows.y+static_cast<float>(row-first)*layout.row_height;
+                if(row==prompt_choice)rectangle(canvas,layout.rows.x,y,layout.rows.width,layout.row_height-2*scale,hover_color);
+                elided_label(canvas,item.label,layout.rows.x+8*scale,y+7*scale,13,layout.rows.width-16*scale,foreground);
+            });
+            if(!dialog->picker.size())label(canvas,"No matching items",layout.rows.x+8*scale,layout.rows.y+7*scale,13,muted);
+            canvas->restore();
         }
         return;
     }
@@ -2003,11 +1962,11 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         label(canvas, "Cancel", x + 398 * scale, 197 * scale, 13);
         return;
     }
-    if (prompt == Prompt::hover || prompt == Prompt::git_diff) {
+    if (prompt == Prompt::git_diff) {
         const auto x = (width - 680 * scale) / 2;
         const auto panel_bottom = std::min(height - 70 * scale, 610 * scale);
         rectangle(canvas, x, 70 * scale, 680 * scale, panel_bottom - 70 * scale, panel_background);
-        label(canvas, prompt == Prompt::git_diff ? "DIFF — " + git_path + (git_staged ? " [staged]" : " [working tree]") : "LANGUAGE INFORMATION — Esc to close · arrows to scroll", x + 18 * scale, 83 * scale, 11, muted);
+        label(canvas, "DIFF — " + git_path + (git_staged ? " [staged]" : " [working tree]"), x + 18 * scale, 83 * scale, 11, muted);
         if (prompt == Prompt::git_diff) { label(canvas, "S: Stage  ·  U: Unstage  ·  D: Discard  ·  Esc: Close", x + 18 * scale, 100 * scale, 10, accent); }
         canvas->save(); canvas->clipRect(SkRect::MakeLTRB(x + 14 * scale, 115 * scale, x + 666 * scale, panel_bottom - 12 * scale));
         if(prompt==Prompt::git_diff){
@@ -2030,42 +1989,13 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
             });
             canvas->restore();return;
         }
-        std::size_t begin{}; std::size_t line{}; float y = 115 * scale;
-        while (begin <= hover_text.size()) {
-            auto end = hover_text.find('\n', begin);
-            if (end == std::string::npos) { end = hover_text.size(); }
-            auto part = hover_text.substr(begin, end - begin);
-            if (!part.empty() && part.back() == '\r') { part.pop_back(); }
-            if (line++ >= prompt_choice) {
-                TextLayoutOptions style; style.font_size = 14; style.dpi_scale = scale; style.color = foreground; style.wrap_width = 630 * scale;
-                auto layout = fonts.layout(std::move(part), style);
-                layout.draw(canvas, x + 22 * scale, y); y += layout.height() + 5 * scale;
-            }
-            if (end == hover_text.size() || y > panel_bottom) { break; }
-            begin = end + 1;
-        }
-        canvas->restore(); return;
-    }
-    if (prompt == Prompt::replace_confirm) {
-        const auto x = (width - 600 * scale) / 2;
-        rectangle(canvas, x, 90 * scale, 600 * scale, 175 * scale, panel_background);
-        rectangle(canvas, x, 90 * scale, 600 * scale, 2 * scale, accent);
-        label(canvas, "Replace " + std::to_string(search_results.size()) + " workspace matches?", x + 24 * scale, 108 * scale, 17);
-        label(canvas, "Find: " + search_query, x + 24 * scale, 146 * scale, 13, muted);
-        label(canvas, "Replace with: " + replacement_text, x + 24 * scale, 172 * scale, 13, muted);
-        rectangle(canvas, x + 24 * scale, 211 * scale, 236 * scale, 34 * scale, accent);
-        rectangle(canvas, x + 340 * scale, 211 * scale, 236 * scale, 34 * scale, border_color);
-        label(canvas, "Replace matches", x + 85 * scale, 218 * scale, 13);
-        label(canvas, "Cancel", x + 432 * scale, 218 * scale, 13);
         return;
     }
     const auto x = (width - 600 * scale) / 2;
     const auto matches = filtered_commands();
-    const auto language_matches = filtered_language_items();
     const auto recovery_matches = filtered_recovery_sessions();
-    const bool language_list = prompt == Prompt::completion || prompt == Prompt::locations;
-    const auto total = prompt == Prompt::palette ? matches.size() : (language_list ? language_matches.size() :
-        (prompt == Prompt::recovery ? recovery_matches.size() : std::size_t{0}));
+    const auto total = prompt == Prompt::palette ? matches.size() :
+        (prompt == Prompt::recovery ? recovery_matches.size() : std::size_t{0});
     if (total != 0) { prompt_choice = std::min(prompt_choice, total - 1); }
     const auto first = prompt_choice >= 12 ? prompt_choice - 11 : 0;
     const auto count = std::min(total, std::size_t{12});
@@ -2078,8 +2008,6 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
     else if (prompt == Prompt::replace_value || prompt == Prompt::workspace_replace_value) { hint = "REPLACEMENT TEXT — ENTER TO CONTINUE"; }
     else if (prompt == Prompt::search) { hint = "SEARCH WORKSPACE AND UNSAVED BUFFERS"; }
     else if (prompt == Prompt::workspace_replace_query) { hint = "REPLACE ACROSS WORKSPACE — FIND TEXT"; }
-    else if (prompt == Prompt::completion) { hint = "COMPLETION — TYPE TO FILTER · ENTER TO INSERT"; }
-    else if (prompt == Prompt::locations) { hint = "LANGUAGE LOCATIONS — ENTER TO OPEN"; }
     else if (prompt == Prompt::recovery) { hint = "RECOVERY — SELECT A SESSION TO REVIEW · ESC TO KEEP EDITING"; }
     label(canvas, prompt == Prompt::policy_input && dialog ? dialog->spec.at("title").get<std::string>() : hint, x + 16 * scale, 73 * scale, 10, muted);
     rectangle(canvas, x + 12 * scale, 94 * scale, 576 * scale, 30 * scale, background);
@@ -2115,12 +2043,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         const auto y = (130 + static_cast<float>(i) * 34) * scale;
         if (first + i == prompt_choice) { rectangle(canvas, x + 6 * scale, y, 588 * scale, 32 * scale, hover_color); }
         canvas->save(); canvas->clipRect(SkRect::MakeLTRB(x + 12 * scale, y, x + 588 * scale, y + 33 * scale));
-        if (language_list) {
-            const auto& item = language_items[language_matches[first + i]];
-            const auto title = prompt == Prompt::completion ? item.value("label", std::string{})
-                : item.value("path", item.value("uri", std::string{})) + ":" + std::to_string(item.value("line", 0U) + 1);
-            label(canvas, title, x + 20 * scale, y + 7 * scale, 13);
-        } else if (prompt == Prompt::recovery) {
+        if (prompt == Prompt::recovery) {
             const auto& session = recovery_sessions[recovery_matches[first + i]];
             label(canvas, session.at("id").get<std::string>() + " — " + std::to_string(session.value("buffers", Json::array()).size()) + " unsaved buffers",
                   x + 20 * scale, y + 7 * scale, 13);

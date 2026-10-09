@@ -180,6 +180,31 @@ format/rename, deferred rename confirmation, and a 40-item review scrolled with
 real Down keys and cancelled with a pointer were exercised. The rename and review
 GPU screenshots were visually inspected. The final idle-frame Skia warning remains.
 
+Completion, hover, definition/reference navigation and explicit diagnostic review
+now execute in client JS as well. Superseded interactive language requests are
+cancelled; source revisions, completion caret positions and navigation target
+revisions are checked across awaits. C++ retains passive diagnostic updates and
+provides generic Promise-based picker/text components rather than language-specific
+request/apply branches. Picker results preserve original item identity after
+filtering or scrolling. Its measured source/visible trees retain snapshots, cache
+the current filter and seek only visible rows during painting. Short lists and
+information panels shrink to their content; text panels support horizontal and
+vertical scrolling with a bounded shape cache.
+
+Windows Debug `build -y astra-tests gui-services-smoke gui-presentation-smoke
+gui-workspace-smoke` passed. Focused
+`--test-case=presentation*,workbench*,QuickJS*,JavaScript*`:
+**44 cases / 210,060 assertions PASS**. The picker differential test uses 2,000
+Unicode labels and 150 filter changes (seed `0xA57A91`) and retains old snapshots.
+New delayed-future cases check selected completion payloads, stale caret rejection
+and target-revision rejection before navigation activation. All three actual GUI
+executables passed after the final content-height adjustment. Native acceptance
+includes a 40-item list, source identity after pointer selection, text filtering,
+an 80-line text panel and Promise settlement on dismissal. Regenerated completion,
+hover, picker and text screenshots were visually inspected. An intermediate build
+failed on a duplicated local test variable; it was renamed before the passing
+build. The final idle-frame Skia warning remains.
+
 Remaining work includes the rest of the public UI/provider contract,
 native component extraction, indexed diagnostic/display views, incremental
 syntax indexes, full Debug/Release and native GUI acceptance, and packaging the

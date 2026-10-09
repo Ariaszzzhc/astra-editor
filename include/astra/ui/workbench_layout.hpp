@@ -22,6 +22,16 @@ struct ConfirmationLayout {
     Box panel,title,detail,items,accept,cancel;
     static ConfirmationLayout measure(float width,float height,float scale,bool has_items);
 };
+struct PickerLayout {
+    Box panel,title,input,rows;
+    float row_height{};
+    std::size_t capacity{};
+    static PickerLayout measure(float width,float height,float scale,std::size_t rows=12);
+};
+struct TextPanelLayout {
+    Box panel,title,content;
+    static TextPanelLayout measure(float width,float height,float scale,std::size_t rows=32);
+};
 struct TabBox { std::size_t index{}; Box bounds; Box close; };
 struct TabStrip {
     std::vector<TabBox> visible;

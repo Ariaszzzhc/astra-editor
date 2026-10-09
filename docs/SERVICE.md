@@ -196,7 +196,13 @@ overrides. `astra.ui.input({title, value, placeholder}, {signal, timeoutMs})`
 returns entered text or `null` on dismissal. `astra.ui.confirm({title, detail,
 accept, items}, options)` returns `true` or `null`. Optional `items` are a
 scrollable review list, bounded to 4,096 single-line labels, 4 KiB per label and
-64 KiB combined. These are native retained modal
+64 KiB combined. `astra.ui.pick({title, items, placeholder}, options)` returns the
+selected original item or `null`; items can be strings or objects with a `label`.
+Filtering uses ASCII case folding and literal Unicode text matching; row identity
+survives filtering and scrolling. Limits match the confirmation list. Native
+filtering occurs when the query changes, not on each frame.
+`astra.ui.showText({title, text}, options)` awaits dismissal of an indexed text
+panel, supporting arrows and Shift-wheel for horizontal scrolling. These are native retained modal
 components with Promise completion; input/focus/drawing stays in C++ and the
 following service workflow stays in JS. Abort dismisses the matching dialog and
 drains its native future. Dialogs default to five minutes, with a separate bounded

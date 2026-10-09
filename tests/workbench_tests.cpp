@@ -319,6 +319,53 @@ TEST_CASE("workbench rename awaits name and plan review before applying captured
     CHECK(workbench.idle());
 }
 
+TEST_CASE("workbench completion awaits a native choice and rejects a changed caret") {
+    auto channel=std::make_shared<Channel>();std::promise<Json> choice;Json picker;std::size_t head=12;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params){
+        if(method=="_ui.read")return ready({{"document",{{"id","source"},{"revision","7"},{"selections",Json::array({{{"anchor",head},{"head",head}}})}}}});
+        if(method=="_ui.dialog"){picker=params;return choice.get_future();}
+        return ready(nullptr);
+    },modules());
+    workbench.execute("ui.completion",Json::object(),{});
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("params").at("byteOffset")==12);
+    channel->reply({{"id","source"},{"revision","7"},{"result",{{"items",Json::array({{{"label","first"}},{{"label","中🙂"},{"insertText","selected"}}})}}}});
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    CHECK(workbench.awaiting_input());CHECK(channel->requests.empty());CHECK(picker.at("kind")=="pick");CHECK(picker.at("items")==Json::array({"first","中🙂"}));
+    SUBCASE("the original choice applies to the captured revision"){
+        choice.set_value(1);
+        for(int tick=0;tick<6;++tick)workbench.poll();
+        REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="language.applyCompletion");
+        CHECK(channel->requests.front().body.at("params")==Json{{"id","source"},{"baseRevision","7"},{"byteOffset",12},{"completionItem",{{"label","中🙂"},{"insertText","selected"}}}});
+        channel->reply({{"id","source"},{"revision","8"}});
+    }
+    SUBCASE("a moved caret does not receive the old insertion"){
+        head=20;choice.set_value(1);
+        for(int tick=0;tick<6;++tick)workbench.poll();
+        CHECK(channel->requests.empty());
+    }
+    for(int tick=0;tick<6;++tick)workbench.poll();CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench navigation verifies a target revision before selection or activation") {
+    auto channel=std::make_shared<Channel>();std::vector<Json> updates;
+    astra::ui::Workbench workbench(channel,[&](std::string_view method,const Json& params){
+        if(method=="_ui.read")return ready({{"document",{{"id","source"},{"revision","7"},{"selections",Json::array({{{"anchor",12},{"head",12}}})}}}});
+        if(method=="_ui.update")updates.push_back(params);
+        return ready(nullptr);
+    },modules());
+    workbench.execute("ui.definition",Json::object(),{});
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);
+    channel->reply({{"id","source"},{"revision","7"},{"resolvedLocations",Json::array({{{"path","target.cpp"},{"targetRevision","3"},{"byteOffset",4}}})}});
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    REQUIRE(channel->requests.size()==1);CHECK(channel->requests.front().body.at("method")=="workspace.open");
+    channel->reply({{"id","target"},{"revision","4"}});
+    for(int tick=0;tick<6;++tick)workbench.poll();
+    CHECK(channel->requests.empty());CHECK(workbench.idle());
+    for(const auto& update:updates)CHECK_FALSE(update.contains("activate"));
+}
+
 TEST_CASE("workbench formatting discards obsolete results without applying edits") {
     auto channel=std::make_shared<Channel>();
     astra::ui::Workbench workbench(channel,[](std::string_view method,const Json&){

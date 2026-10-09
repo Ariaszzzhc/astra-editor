@@ -1,4 +1,5 @@
 #include <astra/ui/file_tree_index.hpp>
+#include <astra/ui/picker_index.hpp>
 #include <astra/ui/workbench_layout.hpp>
 #include <astra/ui/text_line_index.hpp>
 #include <doctest/doctest.h>
@@ -71,6 +72,51 @@ TEST_CASE("presentation file tree collapse preserves nested state and old snapsh
     index.reset(Json::array({entry("z.md",false)})); CHECK(index.size()==1); CHECK_FALSE(index.collapsed("a"));
     CHECK_THROWS_AS(index.reset(Json::array({entry("z",false),entry("z",false)})),std::invalid_argument);
     CHECK(index.at(0)["path"]=="z.md");
+}
+
+TEST_CASE("presentation picker filtering preserves source identity and old snapshots") {
+    astra::ui::PickerIndex index;
+    std::vector<std::string> labels;
+    for(std::size_t i=0;i<2000;++i)labels.push_back("File "+std::to_string(i)+" 中🙂");
+    index.reset(labels);
+    const auto retained=index.snapshot();
+    std::mt19937 random(0xA57A91);
+    for(int iteration=0;iteration<150;++iteration){
+        const auto query=iteration%3==0 ? std::string("中🙂") : "fILE "+std::to_string(random()%2000);
+        index.filter(query);
+        std::vector<std::size_t> expected;
+        auto normalized=query;
+        for(auto& byte:normalized)if(byte>='A'&&byte<='Z')byte=static_cast<char>(byte-'A'+'a');
+        for(std::size_t i=0;i<labels.size();++i){
+            auto folded=labels[i];folded[0]='f';
+            if(folded.find(normalized)!=folded.npos)expected.push_back(i);
+        }
+        REQUIRE(index.size()==expected.size());
+        index.for_each_range(0,index.size(),[&](std::size_t row,const auto& item){CHECK(item.source==expected[row]);CHECK(item.label==labels[item.source]);});
+        CHECK(index.snapshot().validate());CHECK(retained.size()==labels.size());CHECK(retained.at(1999).label==labels.back());
+    }
+    index.filter("");CHECK(index.size()==2000);
+    CHECK_THROWS_AS(index.reset({"invalid\nlabel"}),std::length_error);CHECK(index.size()==2000);
+    CHECK_THROWS_AS(index.reset(std::vector<std::string>(4097,"row")),std::length_error);
+    CHECK_THROWS_AS(index.reset({std::string(4097,'x')}),std::length_error);
+    CHECK_THROWS_AS(index.reset(std::vector<std::string>(17,std::string(4096,'x'))),std::length_error);
+}
+
+TEST_CASE("presentation modal layouts share bounded rows and pointer geometry") {
+    for(const auto scale:{1.0F,1.25F,1.5F,2.0F})for(const auto width:{260.0F,640.0F,1440.0F}){
+        const auto picker=astra::ui::PickerLayout::measure(width*scale,600*scale,scale);
+        CHECK(picker.panel.x>=0);CHECK(picker.panel.right()<=width*scale);
+        CHECK(picker.input.right()<=picker.panel.right());CHECK(picker.rows.bottom()<=picker.panel.bottom());
+        CHECK(picker.capacity*picker.row_height<=picker.rows.height);
+        CHECK(picker.rows.contains(picker.rows.x+1,picker.rows.y+1));
+        const auto text=astra::ui::TextPanelLayout::measure(width*scale,600*scale,scale);
+        CHECK(text.panel.x>=0);CHECK(text.panel.right()<=width*scale);CHECK(text.content.bottom()<=text.panel.bottom());
+    }
+    CHECK_THROWS_AS((void)astra::ui::PickerLayout::measure(0,100,1),std::invalid_argument);
+    CHECK_THROWS_AS((void)astra::ui::TextPanelLayout::measure(100,100,0),std::invalid_argument);
+    CHECK(astra::ui::PickerLayout::measure(1440,900,1,1).capacity==1);
+    CHECK(astra::ui::PickerLayout::measure(1440,900,1,1).panel.height<150);
+    CHECK(astra::ui::TextPanelLayout::measure(1440,900,1,6).panel.height<200);
 }
 
 TEST_CASE("presentation file tree random collapse matches a flat reference") {
