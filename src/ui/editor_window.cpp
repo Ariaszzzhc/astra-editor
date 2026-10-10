@@ -14,6 +14,7 @@
 #include "astra/ui/text_input_layout.hpp"
 #include "astra/ui/text_labels.hpp"
 #include "astra/ui/tab_bar.hpp"
+#include "astra/ui/view_rows.hpp"
 #include "astra/ui/picker_index.hpp"
 #include "astra/ui/decoration_indexes.hpp"
 #include "astra/ui/inline_form.hpp"
@@ -63,22 +64,6 @@ std::string lower_ascii(std::string text) {
 std::string basename(std::string_view path) {
     const auto slash = path.find_last_of("/\\");
     return std::string(path.substr(slash == std::string_view::npos ? 0 : slash + 1));
-}
-
-Icon view_icon(std::string_view name) {
-    const std::pair<std::string_view, Icon> icons[] = {{"files", Icon::files},
-                                                       {"search", Icon::search},
-                                                       {"branch", Icon::branch},
-                                                       {"braces", Icon::braces},
-                                                       {"symbol", Icon::symbol},
-                                                       {"folder", Icon::folder},
-                                                       {"code", Icon::code},
-                                                       {"function", Icon::function},
-                                                       {"warning", Icon::warning}};
-    for (const auto& [id, icon] : icons)
-        if (id == name)
-            return icon;
-    return Icon::document;
 }
 
 std::string form_key(std::string_view id, std::string_view field) {
@@ -272,6 +257,8 @@ struct EditorWindow::Impl {
     std::string workspace_branch{"Astra"};
     TextLabels labels{fonts};
     TabBar tab_bar{labels};
+    ViewRows view_rows{labels};
+    std::size_t painted_view_rows{};
     float scale{1};
     float row_height{26};
     float left{};
@@ -752,6 +739,7 @@ struct EditorWindow::Impl {
     bool inline_key(const SDL_KeyboardEvent& input, bool control, bool shift, bool alt);
     void focus_view(std::optional<std::string> id);
     std::size_t view_page() const;
+    ViewRowsLayout view_rows_layout() const;
     void
     emit_form(std::string_view event, std::string_view action = {}, InlineForm* target = nullptr);
     bool close_inline_form(std::string_view id = {});
@@ -2962,8 +2950,16 @@ void EditorWindow::Impl::focus_view(std::optional<std::string> id) {
 }
 
 std::size_t EditorWindow::Impl::view_page() const {
-    return static_cast<std::size_t>(std::clamp(
-        std::floor(geometry.sidebar_rows.height / geometry.sidebar_row_height), 1.0F, 256.0F));
+    return view_rows_layout().page();
+}
+
+ViewRowsLayout EditorWindow::Impl::view_rows_layout() const {
+    const auto& view = sidebar_views.at(active_view);
+    return ViewRowsLayout::measure(geometry.sidebar_rows,
+                                   geometry.scale,
+                                   geometry.sidebar_row_height,
+                                   view.expanded ? view.index.size() : 0,
+                                   view.scroll);
 }
 
 void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
@@ -3781,16 +3777,14 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             auto& view = sidebar_views.at(active_view);
             if (!view.expanded)
                 break;
-            const auto row =
-                view.scroll + static_cast<std::size_t>((mouse_y - geometry.sidebar_rows.y) /
-                                                       geometry.sidebar_row_height);
-            if (row < view.index.size()) {
-                const auto item = view.index.at(row);
+            const auto row = view_rows_layout().hit(mouse_x, mouse_y);
+            if (row) {
+                const auto item = view.index.at(*row);
                 focus_view(active_view);
                 static_cast<void>(sidebar_views.select(
                     active_view, item.value->at("id").get<std::string>(), view_page()));
                 if (item.group)
-                    sidebar_views.toggle(active_view, row);
+                    sidebar_views.toggle(active_view, *row);
                 else {
                     if (form_events.size() >= 256)
                         throw protocol::RpcError(-32004, "Policy event queue capacity exceeded");
@@ -3975,6 +3969,10 @@ void EditorWindow::Impl::measure_layout(bool prepare_tabs) {
                                         sidebar_width,
                                         show_outline,
                                         sidebar_views.at(active_view).spec.value("outline", false));
+    const auto row_style = ui_style.text(13, scale, ui_style.colors.foreground);
+    geometry.sidebar_row_height =
+        std::max(geometry.sidebar_row_height,
+                 std::ceil(row_style.font_size * scale * row_style.line_height + 8 * scale));
     if (const auto* form = forms.mounted(active_view); form && show_sidebar) {
         const auto panel = form_layout(*form).panel;
         const auto bottom = geometry.sidebar_rows.bottom();
@@ -4649,6 +4647,7 @@ void EditorWindow::Impl::draw() {
               scale,
               geometry.activity.height,
               ui_style.colors.border);
+    painted_view_rows = 0;
     if (geometry.sidebar.width > 0) {
         fill(geometry.sidebar, ui_style.colors.sidebar);
         const auto sx = geometry.sidebar.x;
@@ -4687,103 +4686,26 @@ void EditorWindow::Impl::draw() {
                      12,
                      geometry.sidebar.width - 30 * scale,
                      ui_style.colors.foreground);
-        const auto count = view.expanded ? view.index.size() : 0;
-        if (view.scroll >= count)
-            view.scroll = count ? count - 1 : 0;
-        const auto visible_count =
-            static_cast<std::size_t>(
-                std::ceil(geometry.sidebar_rows.height / geometry.sidebar_row_height)) +
-            1;
-        const auto end = std::min(count, view.scroll + visible_count);
-        canvas->save();
-        canvas->clipRect(SkRect::MakeXYWH(geometry.sidebar_rows.x,
-                                          geometry.sidebar_rows.y,
-                                          geometry.sidebar_rows.width,
-                                          geometry.sidebar_rows.height));
-        view.index.for_each_range(view.scroll, end, [&](std::size_t index, const ViewRow& row) {
-            const auto& item = *row.value;
-            const auto y = geometry.sidebar_rows.y +
-                           static_cast<float>(index - view.scroll) * geometry.sidebar_row_height;
-            const auto x = sx + (8 + 12 * static_cast<float>(row.depth)) * scale;
-            const bool selected_row = view.cursor == item.at("id").get<std::string>();
-            const bool focused_row = focused_view == active_view && selected_row;
-            if (item.value("selected", false) || selected_row)
-                rectangle(canvas,
-                          sx,
-                          y,
-                          geometry.sidebar.width,
-                          geometry.sidebar_row_height,
-                          focused_view == active_view ? ui_style.colors.selection
-                                                      : ui_style.colors.inactive_selection);
-            else if (geometry.sidebar_rows.contains(mouse_x, mouse_y) && mouse_y >= y &&
-                     mouse_y < y + geometry.sidebar_row_height)
-                rectangle(canvas,
-                          sx,
-                          y,
-                          geometry.sidebar.width,
-                          geometry.sidebar_row_height,
-                          ui_style.colors.hover);
-            if (focused_row)
-                rectangle(
-                    canvas, sx, y, 2 * scale, geometry.sidebar_row_height, ui_style.colors.accent);
-            if (row.group)
-                draw_icon(canvas,
-                          view.index.collapsed(item.at("id").get<std::string>())
-                              ? Icon::chevron_right
-                              : Icon::chevron_down,
-                          x,
-                          y + 4 * scale,
-                          16 * scale,
-                          ui_style.colors.muted);
-            const auto projected = item.contains("iconPath")
-                                       ? std::optional<FileIcon>(file_icons.lookup(
-                                             item.at("iconPath").get<std::string>(), row.group))
-                                       : std::nullopt;
-            const auto icon =
-                projected ? projected->glyph : view_icon(item.value("icon", std::string{}));
-            const auto icon_color = icon == Icon::folder   ? ui_style.colors.folder
-                                    : icon == Icon::code   ? ui_style.colors.code_icon
-                                    : icon == Icon::braces ? ui_style.colors.script_icon
-                                                           : ui_style.colors.muted;
-            draw_icon(canvas,
-                      icon,
-                      x + 18 * scale,
-                      y + 4 * scale,
-                      16 * scale,
-                      projected ? projected->color(ui_style.colors) : icon_color);
-            const auto tone = item.value("tone", std::string{});
-            const auto color = tone == "error"     ? ui_style.colors.error
-                               : tone == "added"   ? ui_style.colors.added
-                               : tone == "changed" ? ui_style.colors.changed
-                               : tone == "muted"   ? ui_style.colors.muted
-                                                   : ui_style.colors.foreground;
-            const auto badge = item.value("badge", std::string{});
-            const auto badge_width = badge.empty() ? 0.0F : 48 * scale;
-            elided_label(canvas,
-                         item.at("label").get<std::string>(),
-                         x + 42 * scale,
-                         y + 4 * scale,
-                         13,
-                         std::max(0.0F, left - x - 48 * scale - badge_width),
-                         color);
-            if (!badge.empty())
-                elided_label(canvas,
-                             badge,
-                             left - badge_width,
-                             y + 4 * scale,
-                             12,
-                             badge_width - 8 * scale,
-                             color);
-        });
-        if (!count && view.expanded)
-            elided_label(canvas,
-                         view.empty,
-                         sx + 16 * scale,
-                         geometry.sidebar_rows.y + 12 * scale,
-                         12,
-                         geometry.sidebar.width - 32 * scale,
-                         ui_style.colors.muted);
-        canvas->restore();
+        const auto rows = view_rows_layout();
+        view.scroll = rows.first();
+        painted_view_rows = view_rows.paint(
+            canvas,
+            view.index,
+            rows,
+            ui_style,
+            {view.cursor ? std::string_view(*view.cursor) : std::string_view{},
+             view.empty,
+             focused_view == active_view,
+             view.expanded,
+             mouse_x,
+             mouse_y},
+            [this](const ViewRow& row) -> std::optional<ViewRows::Decoration> {
+                if (!row.value->contains("iconPath"))
+                    return std::nullopt;
+                const auto icon = file_icons.lookup(
+                    row.value->at("iconPath").get_ref<const std::string&>(), row.group);
+                return ViewRows::Decoration{icon.glyph, icon.color(ui_style.colors)};
+            });
         if (geometry.outline_header.height > 0) {
             fill(geometry.outline_header, ui_style.colors.sidebar);
             draw_icon(canvas,
@@ -5304,20 +5226,16 @@ WorkbenchViewState EditorWindow::view_state() const {
     result.style = impl_->style_model();
     result.file_icons = impl_->file_icons.state();
     auto visible_icons = Json::array();
-    const auto first_icon = std::min(sidebar.scroll, sidebar.index.size());
-    sidebar.index.for_each_range(
-        first_icon,
-        std::min(sidebar.index.size(), first_icon + impl_->view_page()),
-        [&](std::size_t, const ViewRow& row) {
-            if (!row.value->contains("iconPath"))
-                return;
-            const auto path = row.value->at("iconPath").get<std::string>();
-            if (const auto icon = impl_->file_icons.peek(path, row.group)) {
-                visible_icons.push_back({{"path", path},
-                                         {"glyph", static_cast<int>(icon->glyph)},
-                                         {"tone", icon->tone}});
-            }
-        });
+    const auto rows = impl_->view_rows_layout();
+    sidebar.index.for_each_range(rows.first(), rows.end(), [&](std::size_t, const ViewRow& row) {
+        if (!row.value->contains("iconPath"))
+            return;
+        const auto path = row.value->at("iconPath").get<std::string>();
+        if (const auto icon = impl_->file_icons.peek(path, row.group)) {
+            visible_icons.push_back(
+                {{"path", path}, {"glyph", static_cast<int>(icon->glyph)}, {"tone", icon->tone}});
+        }
+    });
     result.file_icons["visibleRows"] = std::move(visible_icons);
     result.tab_layout = {{"count", impl_->tabs.size()},
                          {"pending", impl_->tabs.pending()},
@@ -5333,6 +5251,10 @@ WorkbenchViewState EditorWindow::view_state() const {
                           {"reused", label_stats.reused},
                           {"evicted", label_stats.evicted}};
     result.sidebar = impl_->sidebar_views.state(impl_->active_view);
+    result.sidebar["viewport"] = {{"first", rows.first()},
+                                  {"end", rows.end()},
+                                  {"page", rows.page()},
+                                  {"painted", impl_->painted_view_rows}};
     result.view_retirement = {{"queued", retired.queued},
                               {"completed", retired.completed},
                               {"reserved", retired.reserved},

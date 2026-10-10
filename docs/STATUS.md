@@ -20,6 +20,76 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### Shared native indexed view rows (2026-10-11)
+
+Explorer, Search, Git and registered sidebar views now use the same native
+`ViewRows` component. It borrows immutable indexed rows and JS-supplied labels,
+icons, badges and selection descriptors. Provider content, row actions, refresh
+and publication remain JS policy. Window code supplies current focus/pointer
+state and a narrow file-icon resolver rather than embedding the row painter.
+`ViewRowsLayout` supplies one clipped, half-open row range to painting, pointer
+hit testing, keyboard paging and visible file-icon discovery. Painting visits
+only that range through the measured tree; it does not flatten the source.
+
+Row height now reserves the configured UI font's line height and padding while
+preserving the default 24-unit minimum. Labels retain native Unicode grapheme
+elision and the bounded paragraph cache. Focused/inactive selection, JS-selected
+rows, hover, badges, group chevrons and projected icons use shared theme roles.
+Canvas clip/transform/save state is restored even when an icon resolver throws;
+collapsed, zero-area and wholly clipped-out views prepare no captions. Agent
+sidebar state exposes `viewport.{first,end,page,painted}`; `painted` is the last
+completed frame's component count, while the range describes current geometry.
+
+Windows evidence and retained failures:
+
+- Initial `./scripts/xmake.ps1 build -y -j 2 astra-tests viewport-layout-tests
+  gui-presentation-smoke astra` passed (`build/view-rows-build-debug.log`). The
+  first row-boundary run failed two assertions: float rounding admitted a
+  zero-height final row and disagreed at its preceding boundary. The corrected
+  layout checks physical rounded edges and bounded adjacent-row hit correction;
+  `build/view-rows-unit-debug.log` retains the failure. The next run failed 31
+  fixture midpoint samples: a positive one-ULP final span's computed midpoint
+  rounded to its excluded bottom. The fixture now samples a representable point
+  inside the rectangle and asserts containment, retaining all height/top/bottom
+  checks; `build/view-rows-unit-corrected-debug.log` retains that failure.
+- `build/view-rows-build-final-debug.log` records a test compilation failure:
+  this pinned doctest's `CAPTURE` macro accepts one expression. Split diagnostic
+  captures into separate calls without changing warnings or assertions. Final
+  formatting/build passed in `build/view-rows-format-fixed.log` and
+  `build/view-rows-build-fixed-debug.log`.
+- `./build/windows/x64/debug/astra-tests.exe '--test-case=presentation*row*'
+  --no-version` passed six cases / 181,860 assertions, with 596 unrelated cases
+  filtered out (`build/view-rows-unit-fixed-debug.log`). Coverage includes 2,000
+  fractional geometry rounds (seed `0xA57A94`), half-open boundaries, partial
+  rows, tail clamping, maximum index values, zero area and invalid/precision-lost
+  geometry. `./build/windows/x64/debug/viewport-layout-tests.exe --rows` passed
+  actual native-font Unicode pixels at four DPI scales, exact seven-row access
+  into a 5,000-row source, selection/hover/theme pixels, warm reuse, retained tree
+  immutability and canvas failure ownership (`build/view-rows-native-fixed-debug.log`).
+- `./build/windows/x64/debug/gui-presentation-smoke.exe` exited 0. The real
+  602-row JS custom view verifies visible-range paint counts and the final
+  intersecting row's SDL pointer action, then exercises folding, indexed paging,
+  cancellation, publication and JS action identity. Styled inputs also check
+  row height against the configured native UI font. `build/view-rows-gui-debug.log`.
+- Final `./scripts/test.ps1 -Mode all -Gui` exited 0 with source/runtime resources
+  unchanged during execution: Debug 602 cases / 2,445,612 assertions; Release
+  602 / 2,445,550, zero failed/skipped. Real renderer/fonts/worker/viewport and
+  native row checks, all editing/service/recovery/workspace/workbench GUI flows,
+  TCP editing, 12 package-helper and seven shaping-provenance checks passed.
+  `build/view-rows-acceptance-all.log`. Debug and Release GPU captures
+  `build/graphics/gui-style-large.png` and `gui-custom-view.png` were visually
+  inspected; later acceptance runs overwrite those capture paths.
+- Restored Debug with `./scripts/xmake.ps1 f -m debug -y`
+  (`build/view-rows-restore-debug.log`). Final `./scripts/format.ps1 -Check
+  -Offline` passed 176 C++ / 13 JS files (`build/view-rows-final-format-check.log`);
+  `git diff --check` passed. Documentation alone changed after full acceptance.
+
+Sidebar outer chrome, headers and Outline still have separate native window
+code. This increment does not establish whole-product visual acceptance or
+complete font adaptation for every chrome component. Same-text selection
+metadata ordering, physical installed-IME interaction and a new distribution
+also remain incomplete. Only Windows evidence is claimed.
+
 ### JS Explorer reveal and retained selection (2026-10-11)
 
 Explorer automatic reveal is now JS policy, enabled by the declarative

@@ -671,6 +671,9 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
             settle(window);
             require(window.view_state().style.at("workbench").at("uiFontSize") == size,
                     "Native style did not follow the awaited JS update");
+            require(window.layout().sidebar_row_height >=
+                        std::ceil(size * window.layout().scale * 1.15F + 8 * window.layout().scale),
+                    "Configured UI text does not fit its sidebar row height");
             window.request_screenshot(fs::path("build/graphics") / (std::string(capture) + ".png"));
             settle(window);
             window.execute_ui_command("acceptance.inputEditing");
@@ -1595,6 +1598,26 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         auto custom = window.view_state();
         require(custom.sidebar.at("id") == "acceptance-view" && custom.sidebar.at("total") == 602,
                 "Registered custom view was not presented");
+        const auto& viewport = custom.sidebar.at("viewport");
+        require(viewport.at("painted") == viewport.at("end").get<std::size_t>() -
+                                              viewport.at("first").get<std::size_t>() &&
+                    viewport.at("painted").get<std::size_t>() < 100,
+                "Native row component scanned outside the custom view viewport");
+        const auto partial = viewport.at("end").get<std::size_t>() - 1;
+        const auto partial_top =
+            custom.layout.sidebar_rows.y +
+            static_cast<float>(partial - viewport.at("first").get<std::size_t>()) *
+                custom.layout.sidebar_row_height;
+        require(partial_top < custom.layout.sidebar_rows.bottom(),
+                "Custom view did not retain its intersecting final row");
+        click(window,
+              custom.layout.sidebar_rows.x + 65 * custom.layout.scale,
+              (partial_top + custom.layout.sidebar_rows.bottom()) / 2);
+        require(window.view_state().sidebar.at("index") == partial &&
+                    window.status_text() == "Custom row " + std::to_string(partial - 1) + " 中🙂",
+                "Painted final row and native pointer action used different identities");
+        key(window, SDLK_HOME);
+        custom = window.view_state();
         click(window,
               custom.layout.sidebar_rows.x + 45 * custom.layout.scale,
               custom.layout.sidebar_rows.y + custom.layout.sidebar_row_height / 2);

@@ -525,6 +525,24 @@ configuration. It is not interchangeable with the local graphics package.
 
 ## Workbench style ownership and live updates
 
+Indexed sidebar views share native `ViewRows` presentation. JS supplies row
+descriptors, providers and actions; C++ draws immutable projected rows and
+dispatches input. `ViewRowsLayout` gives painting, pointer hit testing, keyboard
+paging and icon visibility one clipped half-open range. Fractional pixel edges
+use the same rounded rectangles for paint and hit testing, including partially
+visible final rows. Tree access visits the visible range without flattening.
+
+Row height reserves configured UI font line metrics plus padding, with the
+existing 24-unit minimum. Unicode labels use the shared grapheme-aware elision
+and retained paragraph cache; selection, inactive selection and hover retain
+their separate theme roles. The painter restores caller canvas state on failure
+and skips caption preparation for collapsed, zero-area and fully clipped views.
+Native-font pixel checks cover four DPI values; real SDL/GPU tests cover a
+602-row custom JS view and font updates. Agent sidebar `viewport.painted` reports
+the most recent completed frame, while `first`, `end` and `page` describe current
+geometry. Sidebar headers, outer chrome and Outline remain separate components;
+this evidence does not establish whole-product visual acceptance.
+
 Quick Open and user-provided asynchronous pickers share `PickerLayout`, native
 editable text geometry and the persistent `PickerIndex`. Painting and pointer
 placement reserve the same empty loading row. Query changes retain previous

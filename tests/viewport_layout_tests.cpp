@@ -5,6 +5,7 @@
 #include <astra/ui/text_labels.hpp>
 #include <astra/ui/text_field.hpp>
 #include <astra/ui/tab_bar.hpp>
+#include <astra/ui/view_rows.hpp>
 #include "../src/ui/glyph_cache.hpp"
 
 #include "include/core/SkCanvas.h"
@@ -72,6 +73,141 @@ void equal(const TextLayout& cached, const TextLayout& fresh) {
                     cached.grapheme_boundaries().end(),
                 "Cached hit splits a grapheme");
     }
+}
+
+void view_row_surfaces(TextLayoutEngine& engine) {
+    using Json = astra::protocol::Json;
+    constexpr std::uint32_t untouched = 0xFF102030;
+    ViewBuilder builder;
+    for (std::size_t first = 0; first < 5000; first += 100) {
+        Json page = Json::array();
+        for (auto index = first; index < std::min(first + 100, std::size_t{5000}); ++index)
+            page.push_back({{"id", std::to_string(index)},
+                            {"label", "Native 中🙂e\xCC\x81 " + std::string(200, 'x')},
+                            {"badge", "M"},
+                            {"tone", "changed"},
+                            {"selected", index == 4100}});
+        builder.append(page);
+    }
+    ViewIndex source(std::move(builder).finish());
+    require(source.filter_step(), "Row source was not ready");
+    const auto retained = source.snapshot();
+    WorkbenchStyle theme;
+    theme.font_size = 13;
+    theme.font_families = {"Segoe UI", "Segoe UI Emoji"};
+    theme.monospace_families = {"Cascadia Code"};
+    theme.colors.selection = 0xFF264F78;
+    theme.colors.inactive_selection = 0xFF37373D;
+    theme.colors.accent = 0xFF3399FF;
+    theme.colors.foreground = 0xFFCCCCCC;
+    theme.colors.muted = 0xFF909090;
+    theme.colors.changed = 0xFFDBAA66;
+    theme.colors.hover = 0xFF2A2D2E;
+    TextLabels labels(engine);
+    ViewRows rows(labels);
+    for (const auto scale : {0.75F, 1.0F, 1.5F, 2.0F}) {
+        const auto layout =
+            ViewRowsLayout::measure({12 * scale, 20 * scale, 220 * scale, 156 * scale},
+                                    scale,
+                                    24 * scale,
+                                    source.size(),
+                                    4096);
+        const auto render = [&](bool focused) {
+            const auto info = SkImageInfo::MakeN32Premul(1024, 768);
+            auto surface = SkSurfaces::Raster(info);
+            require(surface != nullptr, "Cannot create indexed row pixel surface");
+            auto* canvas = surface->getCanvas();
+            canvas->clear(untouched);
+            const auto hover = layout.row(4098);
+            const auto saves = canvas->getSaveCount();
+            std::vector<std::size_t> decorated;
+            const auto painted = rows.paint(
+                canvas,
+                source,
+                layout,
+                theme,
+                {"4097", "Empty", focused, true, hover.x + 3 * scale, hover.y + 9 * scale},
+                [&](const ViewRow& row) {
+                    decorated.push_back(row.ordinal);
+                    return ViewRows::Decoration{Icon::warning, 0xFFDBAA66};
+                });
+            require(painted == 7 &&
+                        decorated ==
+                            std::vector<std::size_t>{4096, 4097, 4098, 4099, 4100, 4101, 4102} &&
+                        canvas->getSaveCount() == saves,
+                    "Row painter visited offscreen source or leaked canvas ownership");
+            std::vector<std::uint32_t> result(1024 * 768);
+            require(surface->readPixels(info, result.data(), info.minRowBytes(), 0, 0),
+                    "Cannot read indexed row pixels");
+            const auto at = [&](float x, float y) {
+                return result.at(static_cast<std::size_t>(y) * 1024 + static_cast<std::size_t>(x));
+            };
+            const auto selected = layout.row(4097);
+            const auto requested = layout.row(4100);
+            require(at(selected.right() - 4 * scale, selected.y + selected.height / 2) ==
+                        (focused ? theme.colors.selection : theme.colors.inactive_selection),
+                    "Retained cursor lost focused/inactive selection pixels");
+            require(at(requested.right() - 4 * scale, requested.y + requested.height / 2) ==
+                        (focused ? theme.colors.selection : theme.colors.inactive_selection),
+                    "JS selected descriptor lost its theme background");
+            require(at(selected.x + scale / 2, selected.y + selected.height / 2) ==
+                        (focused ? theme.colors.accent : theme.colors.inactive_selection),
+                    "Focus accent did not follow the current cursor");
+            require(at(hover.right() - 4 * scale, hover.y + hover.height / 2) == theme.colors.hover,
+                    "Pointer hover did not follow the painted row rectangle");
+            require(at(1, 1) == untouched &&
+                        at(layout.bounds().right() + 2, layout.bounds().y + 2) == untouched &&
+                        at(layout.bounds().x + 2, layout.bounds().bottom() + 2) == untouched,
+                    "Indexed row paint escaped its viewport clip");
+            return result;
+        };
+        const auto first = render(false);
+        const auto shaped = labels.statistics().shaped;
+        require(render(false) == first && labels.statistics().shaped == shaped,
+                "Warm indexed row painting reshaped text or changed pixels");
+        require(render(true) != first, "Focus did not change row pixels");
+        require(retained.size() == 5000 && retained.at(4097).value->at("id") == "4097" &&
+                    retained.validate(),
+                "Native paint changed its retained tree source");
+    }
+    auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(320, 120));
+    require(surface != nullptr, "Cannot create row failure surface");
+    auto* canvas = surface->getCanvas();
+    const auto layout = ViewRowsLayout::measure({10, 10, 200, 60}, 1, 24, source.size(), 10);
+    const auto saves = canvas->getSaveCount();
+    const auto original_matrix = canvas->getTotalMatrix();
+    const auto original_clip = canvas->getDeviceClipBounds();
+    bool rejected = false;
+    try {
+        static_cast<void>(
+            rows.paint(canvas,
+                       source,
+                       layout,
+                       theme,
+                       {},
+                       [canvas](const ViewRow&) -> std::optional<ViewRows::Decoration> {
+                           canvas->translate(15, 19);
+                           canvas->clipRect(SkRect::MakeXYWH(0, 0, 20, 20));
+                           throw std::runtime_error("Expected decorator failure");
+                       }));
+    } catch (const std::runtime_error&) {
+        rejected = true;
+    }
+    require(rejected && canvas->getSaveCount() == saves &&
+                canvas->getTotalMatrix() == original_matrix &&
+                canvas->getDeviceClipBounds() == original_clip,
+            "Row decorator failure leaked the caller's canvas state");
+    const auto before = labels.statistics().shaped;
+    const auto hidden = ViewRowsLayout::measure({10, 10, 0, 60}, 1, 24, source.size(), 10);
+    const auto outside = ViewRowsLayout::measure({500, 500, 200, 60}, 1, 24, source.size(), 10);
+    require(rows.paint(canvas, source, hidden, theme, {}, {}) == 0 &&
+                rows.paint(canvas, source, layout, theme, {.expanded = false}, {}) == 0 &&
+                rows.paint(canvas, source, outside, theme, {}, {}) == 0 &&
+                labels.statistics().shaped == before && canvas->getSaveCount() == saves,
+            "Hidden view prepared text or painted rows");
+    std::cout
+        << "Native indexed view rows: Unicode elision, viewport-only access, partial rows, "
+           "focus/hover/descriptor pixels, DPI, warm reuse and canvas failure ownership: PASS\n";
 }
 
 void text_fields(TextLayoutEngine& engine) {
@@ -1183,6 +1319,10 @@ void tab_bars(TextLayoutEngine& engine) {
 int main(int argc, char* argv[]) {
     try {
         TextLayoutEngine engine;
+        if (argc == 2 && std::string_view(argv[1]) == "--rows") {
+            view_row_surfaces(engine);
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--tabs") {
             tab_bars(engine);
             return 0;
@@ -1218,6 +1358,7 @@ int main(int argc, char* argv[]) {
         text_labels(engine);
         text_fields(engine);
         tab_bars(engine);
+        view_row_surfaces(engine);
         std::shared_ptr<const TextLayout> retained;
         {
             TextLayoutEngine temporary;

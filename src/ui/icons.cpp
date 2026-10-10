@@ -3,8 +3,25 @@
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkPathBuilder.h"
+#include <utility>
 
 namespace astra::ui {
+Icon view_icon(std::string_view name) {
+    const std::pair<std::string_view, Icon> icons[] = {{"files", Icon::files},
+                                                       {"search", Icon::search},
+                                                       {"branch", Icon::branch},
+                                                       {"braces", Icon::braces},
+                                                       {"symbol", Icon::symbol},
+                                                       {"folder", Icon::folder},
+                                                       {"code", Icon::code},
+                                                       {"function", Icon::function},
+                                                       {"warning", Icon::warning}};
+    for (const auto& [id, icon] : icons)
+        if (id == name)
+            return icon;
+    return Icon::document;
+}
+
 void draw_icon(SkCanvas* canvas, Icon icon, float x, float y, float size, std::uint32_t color) {
     canvas->save();
     canvas->translate(x, y);

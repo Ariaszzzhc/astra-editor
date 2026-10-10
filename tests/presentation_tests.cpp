@@ -7,6 +7,7 @@
 #include <astra/ui/inline_form.hpp>
 #include <astra/ui/form_registry.hpp>
 #include <astra/ui/view_store.hpp>
+#include <astra/ui/view_rows_layout.hpp>
 #include <astra/ui/workbench_style.hpp>
 #include <astra/script/runtime.hpp>
 #include <astra/io/file_store.hpp>
@@ -44,6 +45,101 @@ astra::protocol::Json shipped_style_settings() {
     return runtime.settings();
 }
 } // namespace
+
+TEST_CASE("presentation row viewport shares clipped paint pointer and page boundaries") {
+    using astra::ui::ViewRowsLayout;
+    const auto layout = ViewRowsLayout::measure({10, 20, 200, 50.5F}, 1.5F, 24, 10000, 5000);
+    CHECK(layout.first() == 5000);
+    CHECK(layout.end() == 5003);
+    CHECK(layout.page() == 2);
+    CHECK(layout.row(5002).y == 68);
+    CHECK(layout.row(5002).height == 2.5F);
+    CHECK(layout.hit(11, 20) == 5000);
+    CHECK(layout.hit(11, 44) == 5001);
+    CHECK(layout.hit(11, 70.25F) == 5002);
+    CHECK_FALSE(layout.hit(11, 70.5F));
+    CHECK_FALSE(layout.hit(210, 20));
+    CHECK_FALSE(layout.hit(9, 20));
+    CHECK_THROWS(static_cast<void>(layout.row(4999)));
+    CHECK_THROWS(static_cast<void>(layout.row(5003)));
+    const auto tail = ViewRowsLayout::measure({10, 20, 200, 50.5F}, 1, 24, 4, 9999);
+    CHECK(tail.first() == 3);
+    CHECK(tail.end() == 4);
+    CHECK(tail.hit(11, 43) == 3);
+    CHECK_FALSE(tail.hit(11, 44));
+    CHECK_FALSE(tail.hit(11, 70));
+    const auto maximum = std::numeric_limits<std::size_t>::max();
+    const auto huge = ViewRowsLayout::measure({0, 0, 100, 2.5F}, 1, 1, maximum, maximum - 2);
+    CHECK(huge.first() == maximum - 2);
+    CHECK(huge.end() == maximum);
+    CHECK(huge.hit(1, 1.5F) == maximum - 1);
+    CHECK_FALSE(huge.hit(1, 2.25F));
+    for (const auto total : {std::size_t{}, std::size_t{100}}) {
+        const auto zero_width = ViewRowsLayout::measure({0, 0, 0, 60}, 1, 24, total, 80);
+        const auto zero_height = ViewRowsLayout::measure({0, 0, 100, 0}, 1, 24, total, 80);
+        CHECK(zero_width.end() == zero_width.first());
+        CHECK(zero_height.end() == zero_height.first());
+        CHECK_FALSE(zero_width.hit(0, 1));
+        CHECK_FALSE(zero_height.hit(1, 0));
+    }
+    const auto nan = std::numeric_limits<float>::quiet_NaN();
+    const auto infinity = std::numeric_limits<float>::infinity();
+    const auto largest = std::numeric_limits<float>::max();
+    for (const auto box : {astra::ui::Box{nan, 0, 100, 50},
+                           {0, infinity, 100, 50},
+                           {0, 0, -1, 50},
+                           {0, 0, 100, -1},
+                           {largest, 0, largest, 50},
+                           {0, largest, 100, 1}})
+        CHECK_THROWS(static_cast<void>(ViewRowsLayout::measure(box, 1, 24, 10, 0)));
+    for (const auto invalid : {nan, infinity, 0.0F, -1.0F}) {
+        CHECK_THROWS(
+            static_cast<void>(ViewRowsLayout::measure({0, 0, 100, 60}, invalid, 24, 10, 0)));
+        CHECK_THROWS(
+            static_cast<void>(ViewRowsLayout::measure({0, 0, 100, 60}, 1, invalid, 10, 0)));
+    }
+    CHECK_THROWS(static_cast<void>(ViewRowsLayout::measure({0, 0, 100, 60}, 1, 0.5F, 10, 0)));
+    CHECK_FALSE(layout.hit(nan, 22));
+    CHECK_FALSE(layout.hit(11, infinity));
+}
+
+TEST_CASE("presentation fractional row edges agree with physical pointer hit testing") {
+    using astra::ui::ViewRowsLayout;
+    std::mt19937 random(0xA57A94);
+    for (int round = 0; round < 2000; ++round) {
+        const auto scale = 0.5F + static_cast<float>(random() % 16) / 8;
+        const auto height = 19.3F * scale;
+        const astra::ui::Box bounds{static_cast<float>(random() % 123) / 7,
+                                    static_cast<float>(random() % 600) / 17,
+                                    217 * scale,
+                                    height * static_cast<float>(random() % 30) / 2};
+        const auto layout = ViewRowsLayout::measure(bounds, scale, height, 1000, random() % 1100);
+        const auto x = bounds.x + bounds.width / 2;
+        for (auto index = layout.first(); index < layout.end(); ++index) {
+            const auto box = layout.row(index);
+            CAPTURE(round);
+            CAPTURE(index);
+            CAPTURE(box.y);
+            CAPTURE(box.height);
+            REQUIRE(box.height > 0);
+            const auto middle =
+                std::min(box.y + box.height / 2, std::nextafter(box.bottom(), box.y));
+            REQUIRE(box.contains(x, middle));
+            CHECK(layout.hit(x, middle) == index);
+            CHECK(layout.hit(x, box.y) == index);
+            if (index + 1 < layout.end()) {
+                CHECK(box.bottom() == layout.row(index + 1).y);
+                CHECK(layout.hit(x, box.bottom()) == index + 1);
+            } else {
+                CHECK_FALSE(layout.hit(x, box.bottom()));
+            }
+        }
+        CHECK_FALSE(layout.hit(x, bounds.bottom()));
+        CHECK_FALSE(layout.hit(bounds.right(), bounds.y));
+        CHECK(layout.page() >= 1);
+        CHECK(layout.page() <= 256);
+    }
+}
 
 TEST_CASE("presentation style derives every UI text role from JS defaults") {
     using astra::ui::WorkbenchStyle;
