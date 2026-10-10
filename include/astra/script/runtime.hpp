@@ -86,7 +86,10 @@ class Runtime {
     [[nodiscard]] Json evaluate_module(std::string_view source, std::string_view filename);
     [[nodiscard]] std::vector<std::string> commands() const;
     [[nodiscard]] Json settings() const;
-    [[nodiscard]] std::map<std::string, std::string> keybindings() const;
+    // Owner-local registration sequence; identical-value rebindings still count
+    // as explicit policy changes. Invalid calls do not advance the sequence.
+    [[nodiscard]] std::uint64_t keybinding_generation() const;
+    [[nodiscard]] std::map<std::string, std::string> keybindings(std::uint64_t after = 0) const;
 
   private:
     struct Impl;

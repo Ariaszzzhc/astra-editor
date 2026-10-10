@@ -192,6 +192,24 @@ executes a registered command. QuickJS memory, stack, execution time, JSON size,
 and pending jobs are bounded. A poisoned Promise queue requires runtime reload;
 script failure does not replace or corrupt a document.
 
+The window's default document keymap comes from the client JS command modules.
+Retained service bindings override those defaults, and explicit client user
+registrations override the service layer. Calling `astra.bind` with the same
+value as the shipped default still expresses an explicit client preference.
+Client commands may rebind after `await`; the next platform key observes the
+new registration. An unknown/unbound document key has no hidden native editing
+fallback. Native modal/form and view navigation controls retain their own
+focused interaction behavior.
+
+`Ctrl+Tab` / `Ctrl+Shift+Tab` and `Ctrl+PageDown` / `Ctrl+PageUp` select the next /
+previous tab. `PageUp` / `PageDown` invoke JS scroll commands. Immediate UI reads
+include `viewport: {firstLine, pageLines}` for the requested document; these are
+document-line and visible-page metrics from native geometry. JS computes the
+target and publishes the existing `scrollLine: {id, line}` update, which clamps
+to the retained document extent. Page scrolling changes viewport position and
+preserves the document text and selection. Its default command handlers are
+user-overridable through the same asynchronous command registry.
+
 `astra.request(method, parameters, {signal, timeoutMs, raw})` always returns a Promise.
 Dispatch is deferred to an owner-loop tick; it never waits for a transport or
 worker future. Service operations are awaited automatically, including paged

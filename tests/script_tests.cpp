@@ -111,6 +111,24 @@ TEST_CASE("JavaScript errors do not corrupt the reusable host") {
     }
 }
 
+TEST_CASE("JavaScript explicit keymap changes survive identical values and invalid calls") {
+    Runtime runtime(echo);
+    static_cast<void>(runtime.evaluate("astra.bind('Left', 'editor.move_left')"));
+    const auto defaults = runtime.keybinding_generation();
+    CHECK(runtime.keybindings(defaults).empty());
+    static_cast<void>(runtime.evaluate("astra.bind('Left', 'editor.move_left')"));
+    CHECK(runtime.keybinding_generation() > defaults);
+    CHECK(runtime.keybindings(defaults).at("Left") == "editor.move_left");
+    const auto explicit_preference = runtime.keybinding_generation();
+    CHECK_THROWS_AS(static_cast<void>(runtime.evaluate("astra.bind('', 'invalid')")), ScriptError);
+    CHECK(runtime.keybinding_generation() == explicit_preference);
+    CHECK(runtime.keybindings().at("Left") == "editor.move_left");
+    static_cast<void>(runtime.evaluate("astra.bind('Right', 'custom.right')"));
+    const auto changes = runtime.keybindings(explicit_preference);
+    CHECK(changes.size() == 1);
+    CHECK(changes.at("Right") == "custom.right");
+}
+
 TEST_CASE("QuickJS interrupts infinite loops and permits subsequent execution") {
     Runtime::Limits limits;
     limits.execution_time = std::chrono::milliseconds(20);

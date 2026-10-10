@@ -1,17 +1,20 @@
 # Astra
 
 Astra is a native, scriptable code editor built around C++23, xmake, SDL3,
-Skia Graphite, Dawn, QuickJS-NG and libuv. It implements the contract in
+Skia Graphite, Dawn, QuickJS-NG and libuv. It is developed against the contract in
 [EditorDoc.md](EditorDoc.md): editing, multicursor undo, a workspace tree,
 search and replacement, Tree-sitter syntax, language services, Git and recovery.
 The GUI, JavaScript commands and external automation share one document service.
 
-Windows Debug and Release each pass the full 408-case suite. Four real GUI
-workflows and the TCP GUI variant also pass in both configurations; exact source
-snapshots and package evidence are recorded in [STATUS.md](docs/STATUS.md).
-The Windows ZIP from clean source commit `afcfbac` passed inventory, archive
-round-trip and isolated runtime smoke checks. Linux/macOS source and native build
-scripts are present but have not been built or tested in this Windows environment.
+The workbench is being revised toward JS-owned product policy, asynchronous user
+APIs and shared native presentation components. Windows acceptance exercises
+Debug/Release, real GPU rendering, GUI editing/services/recovery/presentation and
+the TCP GUI variant; current results and remaining work are recorded in
+[STATUS.md](docs/STATUS.md). A previous Windows ZIP from source commit `afcfbac`
+passed inventory, archive round-trip and isolated runtime smoke checks. The
+current workbench revision still requires final visual and distribution acceptance.
+Linux/macOS source and native build scripts are present but have not been built
+or tested in this Windows environment.
 
 ## Build on Windows
 
@@ -53,7 +56,8 @@ syntax-object selection, language actions and Git operations.
 | Search / replace across the workspace | `Ctrl+Shift+F` / `Ctrl+Shift+H` |
 | Case / regex / whole-word search options | `Alt+C` / `Alt+R` / `Alt+W` in the workspace search prompt |
 | Completion / definition / references / rename | `Ctrl+Space` / `F12` / `Shift+F12` / `F2` |
-| Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
+| Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab`, `Ctrl+PageDown` / `Ctrl+PageUp` |
+| Scroll a document page up / down | `PageUp` / `PageDown` |
 
 Workspace search includes unsaved and untitled buffers. Replacement requires
 confirmation; edits to those buffers remain dirty and undoable. External file

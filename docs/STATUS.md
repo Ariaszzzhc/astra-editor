@@ -18,6 +18,68 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### JS-owned document keymaps and page policy (2026-10-10)
+
+The window no longer supplies a second hardcoded default keymap or an editing /
+Alt+F4 / page-scrolling fallback after JS binding lookup. Built-in client command
+registrations supply the initial map, followed by retained service preferences
+and explicit client preferences. SDL token conversion, focused native widget
+interaction and revision-checked editing primitives remain in C++. An unmatched
+document key cannot silently execute a different native editing policy.
+
+Runtime key bindings carry owner-local registration generations. An explicit
+rebinding to the same default value survives the client preference projection,
+instead of being erased by an equal-value comparison. The native adapter checks
+the generation on key dispatch and publishes a fully prepared map before use;
+client rebinding after an async command await takes effect on the next key.
+Invalid registrations preserve the map and generation.
+
+JS owns PageUp/PageDown target calculation from native visible-page metrics
+provided by immediate UI reads. The existing native scroll update clamps the
+captured document's viewport without editing text/selection. Previous/next tab
+registrations now include Ctrl+Shift+Tab and Ctrl+Tab; Ctrl+PageUp/PageDown and
+Ctrl+Shift+Z are explicit JS aliases. README now points to current acceptance
+evidence instead of presenting the old 408-case/older ZIP as the revised workbench.
+
+Focused Windows evidence:
+
+- Initial build failures were in the new acceptance code: a nonexistent
+  `EditorWindow.activate_document` call and a multi-argument doctest `CAPTURE`.
+  Replaced the former with production `open_path` calls and the latter with
+  individual captures. Failure logs: `js-keymap-build-first-failed.log` and
+  `js-keymap-build-second-failed.log`. The corrected
+  `./scripts/xmake.ps1 build -y astra-tests gui-presentation-smoke astra` passed;
+  log: `js-keymap-build-debug.log`.
+- `astra-tests.exe --no-version '--test-case=JavaScript*keymap*,workbench JS*'`
+  passed 4 cases / 52 assertions; 557 cases were excluded by the filter. These
+  check default bindings, deliberate same-value preferences, invalid-call
+  preservation, rebinding after await, deferred page reads and document/boundary
+  target calculation. Log: `js-keymap-unit-debug.log`.
+- `gui-presentation-smoke.exe` passed actual SDL3/Graphite/Dawn acceptance.
+  The fixture intentionally gives the service a conflicting previous-tab key;
+  an explicit client binding back to the default wins. Actual Ctrl+Tab,
+  Ctrl+Shift+Tab, Ctrl+PageUp/PageDown and plain PageUp/PageDown pass. Rebinding
+  PageDown after await consumes the next native key without scrolling; restoring
+  its JS default restores scrolling. A captured service document revision and
+  selection remain unchanged across those page actions. Existing workbench,
+  input, view publication/cancellation and shutdown checks also pass. Log:
+  `js-keymap-gui-debug.log`.
+
+- `./scripts/test.ps1 -Mode all -Gui` completed with exit code 0 on Windows.
+  Debug: 561 cases / 1,188,382 assertions; Release: 561 cases / 1,188,336
+  assertions. All passed with zero failed or skipped cases. Both modes passed
+  real renderer/fonts/viewport/input checks, all GUI workflows (including the
+  new JS key-policy scenarios), TCP editing and 12 package helper invariants.
+  Log: `build/js-keymap-acceptance-all.log`. This did not create a distribution.
+- Restored Debug configuration after every acceptance process exited with
+  `./scripts/xmake.ps1 f -m debug -y`; log: `js-keymap-restore-debug.log`.
+  Final `./scripts/format.ps1 -Check -Offline` passed 149 C++ / 12 JS files,
+  and `git diff --check` passed. Log: `js-keymap-final-format.log`.
+
+Remaining native theme/icon policy, coherent UI font scaling, component
+extraction, document IME preparation, row-internal incremental glyph layout,
+whole-product visual acceptance and a final distribution remain incomplete.
+
 ### Shared native text fields and IME presentation (2026-10-10)
 
 Modal/picker inputs and JS inline/mounted form fields now use `TextField`.

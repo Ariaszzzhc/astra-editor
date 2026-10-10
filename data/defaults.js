@@ -135,7 +135,11 @@ const bindings = {
     'Ctrl+Shift+F': 'ui.search',
     'Ctrl+Shift+H': 'ui.workspaceReplace',
     'Ctrl+Tab': 'ui.nextTab',
-    'Ctrl+Shift+Tab': 'ui.previousTab'
+    'Ctrl+Shift+Tab': 'ui.previousTab',
+    'Ctrl+PageDown': 'ui.nextTab',
+    'Ctrl+PageUp': 'ui.previousTab',
+    PageUp: 'ui.pageUp',
+    PageDown: 'ui.pageDown'
 };
 for (const [key, command] of Object.entries(bindings)) astra.bind(key, command);
 // Selection extension is interpreted by the UI for movement commands, preserving

@@ -63,7 +63,14 @@ struct Runtime::Impl {
     bool stopping{};
     std::map<std::string, JSValue> callbacks;
     Json configuration = Json::object();
-    std::map<std::string, std::string> bindings;
+
+    struct Binding {
+        std::string command;
+        std::uint64_t generation{};
+    };
+
+    std::map<std::string, Binding> bindings;
+    std::uint64_t binding_generation{};
     using Clock = std::chrono::steady_clock;
 
     struct Pending {
@@ -942,7 +949,12 @@ struct Runtime::Impl {
             if (key.empty() || key.size() > 128 || command.empty() || command.size() > 128) {
                 return JS_ThrowRangeError(context, "Invalid key binding");
             }
-            host.bindings.insert_or_assign(key, command);
+            if (host.binding_generation == std::numeric_limits<std::uint64_t>::max()) {
+                return JS_ThrowRangeError(context, "Key binding generation capacity exceeded");
+            }
+            const auto generation = host.binding_generation + 1;
+            host.bindings.insert_or_assign(key, Binding{command, generation});
+            host.binding_generation = generation;
             return JS_UNDEFINED;
         });
     }
@@ -1228,9 +1240,20 @@ Runtime::Json Runtime::settings() const {
     return impl_->configuration;
 }
 
-std::map<std::string, std::string> Runtime::keybindings() const {
+std::uint64_t Runtime::keybinding_generation() const {
     impl_->require_owner();
-    return impl_->bindings;
+    return impl_->binding_generation;
+}
+
+std::map<std::string, std::string> Runtime::keybindings(std::uint64_t after) const {
+    impl_->require_owner();
+    std::map<std::string, std::string> result;
+    for (const auto& [key, binding] : impl_->bindings) {
+        if (binding.generation > after) {
+            result.emplace(key, binding.command);
+        }
+    }
+    return result;
 }
 
 } // namespace astra::script

@@ -10,6 +10,7 @@
 #include <deque>
 #include <filesystem>
 #include <utility>
+#include <tuple>
 
 namespace {
 using Json = astra::protocol::Json;
@@ -560,6 +561,104 @@ TEST_CASE("workbench user commands replace builtins and preserve service errors"
     CHECK(outcome->error->at("code") == -32001);
     CHECK(outcome->error->at("data")["revision"] == "9");
     CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench JS owns complete default keys and explicit client preferences") {
+    auto channel = std::make_shared<Channel>();
+    astra::ui::Workbench workbench(
+        channel,
+        [](auto, const auto&) {
+            return ready(nullptr);
+        },
+        modules(),
+        R"js(
+            astra.bind('Ctrl+S', 'ui.save');
+            astra.bind('Left', 'temporary.left');
+            astra.bind('Left', 'editor.move_left');
+            astra.registerCommand('change.binding', async () => {
+                await astra.sleep(0);
+                astra.bind('PageDown', 'custom.page');
+            });
+        )js");
+    const auto defaults = workbench.default_keybindings();
+    for (const auto& [key, command] :
+         std::map<std::string, std::string>{{"Left", "editor.move_left"},
+                                            {"Ctrl+Home", "editor.move_document_start"},
+                                            {"Shift+Tab", "editor.outdent"},
+                                            {"Ctrl+Shift+Z", "editor.redo"},
+                                            {"Ctrl+B", "ui.toggleSidebar"},
+                                            {"Ctrl+Tab", "ui.nextTab"},
+                                            {"Ctrl+Shift+Tab", "ui.previousTab"},
+                                            {"Ctrl+PageUp", "ui.previousTab"},
+                                            {"Ctrl+PageDown", "ui.nextTab"},
+                                            {"PageUp", "ui.pageUp"},
+                                            {"PageDown", "ui.pageDown"},
+                                            {"Alt+F4", "ui.closeWindow"}}) {
+        CAPTURE(key);
+        CHECK(defaults.at(key) == command);
+    }
+    const auto preferences = workbench.keybindings();
+    REQUIRE(preferences.size() == 2);
+    CHECK(preferences.at("Ctrl+S") == "ui.save");
+    CHECK(preferences.at("Left") == "editor.move_left");
+    const auto before = workbench.keybinding_generation();
+    workbench.execute("change.binding", Json::object(), {});
+    for (int tick = 0; tick < 12 && !workbench.idle(); ++tick) {
+        workbench.poll();
+    }
+    REQUIRE(workbench.idle());
+    CHECK(workbench.keybinding_generation() > before);
+    CHECK(workbench.keybindings().at("PageDown") == "custom.page");
+    CHECK(workbench.default_keybindings().at("PageDown") == "ui.pageDown");
+    CHECK(workbench.take_errors().empty());
+    CHECK(channel->requests.empty());
+}
+
+TEST_CASE("workbench JS page scrolling awaits native metrics and clamps the captured document") {
+    auto channel = std::make_shared<Channel>();
+    Json state{{"document", {{"id", "captured"}, {"lineCount", 80}}},
+               {"viewport", {{"firstLine", 37}, {"pageLines", 15}}}};
+    std::vector<Json> updates;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](auto method, const auto& params) {
+            if (method == "_ui.read") {
+                return ready(state);
+            }
+            if (method == "_ui.update") {
+                updates.push_back(params);
+                return ready(nullptr);
+            }
+            throw std::runtime_error("Unexpected page policy request");
+        },
+        modules());
+    for (const auto& [command, first, expected] :
+         std::vector<std::tuple<std::string, std::size_t, std::size_t>>{{"ui.pageDown", 37, 52},
+                                                                        {"ui.pageDown", 75, 79},
+                                                                        {"ui.pageUp", 37, 22},
+                                                                        {"ui.pageUp", 5, 0}}) {
+        CAPTURE(command);
+        CAPTURE(first);
+        state["viewport"]["firstLine"] = first;
+        const auto before = updates.size();
+        workbench.execute(command, Json::object(), {});
+        CHECK(updates.size() == before);
+        for (int tick = 0; tick < 12 && !workbench.idle(); ++tick) {
+            workbench.poll();
+        }
+        REQUIRE(workbench.idle());
+        REQUIRE(updates.size() == before + 1);
+        CHECK(updates.back().at("scrollLine") == Json{{"id", "captured"}, {"line", expected}});
+    }
+    state["document"] = nullptr;
+    const auto before = updates.size();
+    workbench.execute("ui.pageDown", Json::object(), {});
+    for (int tick = 0; tick < 12 && !workbench.idle(); ++tick) {
+        workbench.poll();
+    }
+    CHECK(updates.size() == before);
+    CHECK(channel->requests.empty());
+    CHECK(workbench.take_errors().empty());
 }
 
 TEST_CASE("workbench document search uses asynchronous service results without downloading text") {

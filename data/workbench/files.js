@@ -154,13 +154,40 @@ export function registerFiles() {
         ['ui.nextTab', 1],
         ['ui.previousTab', -1]
     ]) {
-        ui.registerCommand({ id, title: delta > 0 ? 'Next tab' : 'Previous tab' }, async () => {
-            const state = await ui.read({ immediate: true }),
-                tabs = state.tabs;
-            if (!tabs.length) return;
-            const index = tabs.indexOf(state.document?.id);
-            await ui.update({ activate: tabs[(index + delta + tabs.length) % tabs.length] });
-        });
+        ui.registerCommand(
+            {
+                id,
+                title: delta > 0 ? 'Next tab' : 'Previous tab',
+                shortcut: delta > 0 ? 'Ctrl+Tab' : 'Ctrl+Shift+Tab'
+            },
+            async () => {
+                const state = await ui.read({ immediate: true }),
+                    tabs = state.tabs;
+                if (!tabs.length) return;
+                const index = tabs.indexOf(state.document?.id);
+                await ui.update({ activate: tabs[(index + delta + tabs.length) % tabs.length] });
+            }
+        );
+    }
+    astra.bind('Ctrl+PageDown', 'ui.nextTab');
+    astra.bind('Ctrl+PageUp', 'ui.previousTab');
+    for (const [id, direction, shortcut] of [
+        ['ui.pageUp', -1, 'PageUp'],
+        ['ui.pageDown', 1, 'PageDown']
+    ]) {
+        ui.registerCommand(
+            { id, title: direction < 0 ? 'Scroll page up' : 'Scroll page down', shortcut },
+            async () => {
+                const state = await ui.read({ immediate: true });
+                if (!state.document || !state.viewport) return;
+                const { firstLine, pageLines } = state.viewport;
+                const line = Math.max(
+                    0,
+                    Math.min(state.document.lineCount - 1, firstLine + direction * pageLines)
+                );
+                await ui.update({ scrollLine: { id: state.document.id, line } });
+            }
+        );
     }
 }
 async function save(saveAs, parameters = {}) {

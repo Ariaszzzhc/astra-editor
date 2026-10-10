@@ -150,6 +150,9 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
     astra::service::ServiceHostOptions service;
     service.workspace = workspace;
     service.defaults_script = astra::io::read_file("data/defaults.js").text;
+    // The client's explicit default-value preference must win over this
+    // retained service override when native settings arrive asynchronously.
+    service.defaults_script += "\nastra.bind('Ctrl+Shift+Tab', 'ui.nextTab');\n";
     service.resource_directory = fs::current_path();
     service.watch_files = false;
     auto host = std::make_shared<astra::service::ServiceHost>(std::move(service));
@@ -159,6 +162,21 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         options.resource_directory = fs::current_path();
         options.open_paths = {"one.cpp"};
         options.user_script = R"js(if(astra.context==='client') {
+            astra.bind('Ctrl+Shift+Tab', 'ui.previousTab');
+            astra.ui.registerCommand(
+                { id: 'acceptance.ignorePage', title: 'Custom page binding', palette: false },
+                async () => {
+                    await astra.ui.update({ status: 'Custom page binding' });
+                }
+            );
+            astra.registerCommand('acceptance.rebindPage', async () => {
+                await astra.sleep(0);
+                astra.bind('PageDown', 'acceptance.ignorePage');
+            });
+            astra.registerCommand('acceptance.restorePage', async () => {
+                await astra.sleep(0);
+                astra.bind('PageDown', 'ui.pageDown');
+            });
             let nextGate, releaseNext, waitInView=false;
             astra.ui.registerCommand({id:'ui.view.next',title:'Custom view next',palette:false},async ({id,...guards})=>{
                 if(nextGate) await nextGate;
@@ -479,6 +497,42 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         window.open_path("three.cpp");
         settle(window);
         const auto three = window.active_document_id();
+        key(window, SDLK_TAB, static_cast<SDL_Keymod>(SDL_KMOD_CTRL | SDL_KMOD_SHIFT));
+        require(window.active_document_id() == two,
+                "Explicit client previous-tab binding lost to the service default");
+        key(window, SDLK_TAB, SDL_KMOD_CTRL);
+        require(window.active_document_id() == three, "Default JS next-tab binding failed");
+        key(window, SDLK_PAGEUP, SDL_KMOD_CTRL);
+        require(window.active_document_id() == two, "JS Ctrl+PageUp alias did not change tabs");
+        key(window, SDLK_PAGEDOWN, SDL_KMOD_CTRL);
+        require(window.active_document_id() == three, "JS Ctrl+PageDown alias did not change tabs");
+        window.open_path("one.cpp");
+        settle(window);
+        key(window, SDLK_HOME, SDL_KMOD_CTRL);
+        window.execute_ui_command("acceptance.captureBody");
+        settle(window);
+        key(window, SDLK_PAGEDOWN);
+        require(window.view_state().document_viewport.at("firstLine").get<std::size_t>() > 0,
+                "Default JS PageDown did not scroll the document viewport");
+        key(window, SDLK_PAGEUP);
+        require(window.view_state().document_viewport.at("firstLine") == 0,
+                "Default JS PageUp did not restore the first page");
+        window.execute_ui_command("acceptance.rebindPage");
+        settle(window);
+        key(window, SDLK_PAGEDOWN);
+        require(window.status_text() == "Custom page binding" &&
+                    window.view_state().document_viewport.at("firstLine") == 0,
+                "Runtime JS rebinding was ignored or fell through to native page policy");
+        window.execute_ui_command("acceptance.restorePage");
+        settle(window);
+        key(window, SDLK_PAGEDOWN);
+        require(window.view_state().document_viewport.at("firstLine").get<std::size_t>() > 0,
+                "Runtime rebinding back to the JS default did not take effect");
+        key(window, SDLK_PAGEUP);
+        window.execute_ui_command("acceptance.verifyBody");
+        settle(window);
+        window.open_path("three.cpp");
+        settle(window);
         auto state = window.view_state();
         require(state.tab_strip.visible.size() == 3, "Wide workbench should show all three tabs");
         require(state.tab_strip.visible[0].bounds.width != state.tab_strip.visible[1].bounds.width,

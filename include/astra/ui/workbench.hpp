@@ -4,6 +4,7 @@
 #include <astra/ui/editor_channel.hpp>
 
 #include <functional>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <span>
@@ -37,6 +38,11 @@ class Workbench final {
     [[nodiscard]] bool awaiting(std::string_view method) const;
     [[nodiscard]] bool awaiting(std::span<const std::string_view> methods) const;
     [[nodiscard]] Json settings() const;
+    [[nodiscard]] std::map<std::string, std::string> default_keybindings() const;
+    [[nodiscard]] std::uint64_t keybinding_generation() const;
+    // Explicit client registrations after built-in JS policy, including a
+    // deliberate rebinding to the default value. Service bindings merge between
+    // defaults and this client preference layer.
     [[nodiscard]] std::map<std::string, std::string> keybindings() const;
     [[nodiscard]] std::vector<Json> take_errors();
     void shutdown();

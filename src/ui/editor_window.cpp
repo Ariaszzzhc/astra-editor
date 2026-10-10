@@ -232,6 +232,7 @@ struct EditorWindow::Impl {
     std::uint64_t next_read{1};
     std::uint64_t next_request{1};
     std::map<std::string, std::string> keybindings;
+    std::uint64_t keybinding_generation{};
     Json service_commands = Json::array();
     std::unique_ptr<Workbench> workbench;
     InputQueue policy_inputs;
@@ -450,38 +451,10 @@ struct EditorWindow::Impl {
                                          SDL_GetError());
             }
         }
-        keybindings = {{"Ctrl+N", "ui.new"},
-                       {"Ctrl+P", "ui.quickOpen"},
-                       {"Ctrl+Shift+P", "ui.commandPalette"},
-                       {"Ctrl+S", "ui.save"},
-                       {"Ctrl+Shift+S", "ui.saveAs"},
-                       {"Ctrl+W", "ui.closeTab"},
-                       {"Ctrl+Z", "editor.undo"},
-                       {"Ctrl+Y", "editor.redo"},
-                       {"Ctrl+Shift+Z", "editor.redo"},
-                       {"Ctrl+A", "editor.select_all"},
-                       {"Ctrl+C", "ui.copy"},
-                       {"Ctrl+X", "ui.cut"},
-                       {"Ctrl+V", "ui.paste"},
-                       {"Ctrl+/", "editor.toggle_line_comment"},
-                       {"Shift+Alt+Down", "editor.duplicate_line"},
-                       {"Ctrl+Alt+Up", "editor.add_cursor_above"},
-                       {"Ctrl+Alt+Down", "editor.add_cursor_below"},
-                       {"Ctrl+B", "ui.toggleSidebar"},
-                       {"Ctrl+Tab", "ui.nextTab"},
-                       {"Ctrl+F", "ui.find"},
-                       {"Ctrl+H", "ui.replace"},
-                       {"Ctrl+Shift+F", "ui.search"},
-                       {"Ctrl+Shift+H", "ui.workspaceReplace"},
-                       {"Ctrl+Space", "ui.completion"},
-                       {"Ctrl+K", "ui.hover"},
-                       {"F12", "ui.definition"},
-                       {"Shift+F12", "ui.references"},
-                       {"F2", "ui.rename"},
-                       {"Shift+Alt+F", "ui.format"},
-                       {"Ctrl+Shift+G", "ui.gitStatus"},
-                       {"Ctrl+Shift+E", "ui.explorer"},
-                       {"Ctrl+Shift+M", "ui.diagnostics"}};
+        for (const auto& [key, name] : workbench->default_keybindings()) {
+            keybindings[normalized_binding(key)] = name;
+        }
+        refresh_bindings();
         enqueue(
             {"script.settings",
              Json::object(),
@@ -573,9 +546,8 @@ struct EditorWindow::Impl {
                          service_ui_commands.insert(name);
                      }
                  }
-                 for (const auto& [key, name] : workbench->keybindings()) {
-                     keybindings[normalized_binding(key)] = name;
-                 }
+                 keybinding_generation = 0;
+                 refresh_bindings();
              },
              {}});
         enqueue({"workspace.documents",
@@ -608,6 +580,19 @@ struct EditorWindow::Impl {
     const Document* current() const {
         const auto found = documents.find(active_id);
         return found == documents.end() ? nullptr : &found->second;
+    }
+
+    void refresh_bindings() {
+        const auto generation = workbench->keybinding_generation();
+        if (generation == keybinding_generation) {
+            return;
+        }
+        auto replacement = keybindings;
+        for (const auto& [key, name] : workbench->keybindings()) {
+            replacement[normalized_binding(key)] = name;
+        }
+        keybindings.swap(replacement);
+        keybinding_generation = generation;
     }
 
     void enqueue(Request request) {
@@ -2280,6 +2265,10 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         if (const auto* document = found == documents.end() ? nullptr : &found->second) {
             result["document"] = document->metadata;
             result["document"]["path"] = document->path;
+            result["viewport"] = {{"firstLine", document->first_line},
+                                  {"pageLines",
+                                   static_cast<std::size_t>(std::max(
+                                       1.0F, (content_bottom - content_top) / row_height))}};
             result["newline"] = newline(document);
             result["selectionLines"] = Json::array();
             for (const auto& position :
@@ -2790,6 +2779,7 @@ std::size_t EditorWindow::Impl::view_page() const {
 }
 
 void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
+    refresh_bindings();
     if (input.key < consumed_modal_keys.size()) {
         if (input.repeat && consumed_modal_keys.test(input.key)) {
             consumed_modal_text = true;
@@ -2974,6 +2964,12 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
         case SDLK_TAB:
             key_name = "Tab";
             break;
+        case SDLK_PAGEUP:
+            key_name = "PageUp";
+            break;
+        case SDLK_PAGEDOWN:
+            key_name = "PageDown";
+            break;
         case SDLK_HOME:
             key_name = "Home";
             break;
@@ -3030,68 +3026,6 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
         }
         return;
     }
-    if (alt && input.key == SDLK_F4) {
-        command("ui.closeWindow");
-        return;
-    }
-    if (alt) {
-        return;
-    }
-    if (focused_view)
-        return;
-    std::string editing;
-    switch (input.key) {
-    case SDLK_LEFT:
-        editing = control ? "move_word_left" : "move_left";
-        break;
-    case SDLK_RIGHT:
-        editing = control ? "move_word_right" : "move_right";
-        break;
-    case SDLK_UP:
-        editing = "move_up";
-        break;
-    case SDLK_DOWN:
-        editing = "move_down";
-        break;
-    case SDLK_HOME:
-        editing = control ? "move_document_start" : "move_home";
-        break;
-    case SDLK_END:
-        editing = control ? "move_document_end" : "move_end";
-        break;
-    case SDLK_BACKSPACE:
-        editing = control ? "delete_word_backward" : "backspace";
-        break;
-    case SDLK_DELETE:
-        editing = control ? "delete_word_forward" : "delete_forward";
-        break;
-    case SDLK_RETURN:
-    case SDLK_KP_ENTER:
-        editing = "newline";
-        break;
-    case SDLK_TAB:
-        editing = shift ? "outdent" : "indent";
-        break;
-    case SDLK_PAGEUP:
-    case SDLK_PAGEDOWN: {
-        auto* document = current();
-        if (!document) {
-            return;
-        }
-        const auto step =
-            static_cast<std::size_t>(std::max(1.0F, (content_bottom - content_top) / row_height));
-        document->first_line =
-            input.key == SDLK_PAGEUP
-                ? (document->first_line > step ? document->first_line - step : 0)
-                : std::min(document->first_line + step,
-                           document->metadata.at("lineCount").get<std::size_t>() - 1);
-        document->needs_lines = true;
-        return;
-    }
-    default:
-        return;
-    }
-    editor_policy("editor." + editing, {{"extend", shift}});
 }
 
 bool EditorWindow::Impl::inline_key(const SDL_KeyboardEvent& input,

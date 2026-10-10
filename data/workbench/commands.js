@@ -54,6 +54,7 @@ export function registerNativeCommands() {
             ui.native(id, parameters)
         );
     }
+    astra.bind('Ctrl+Shift+Z', 'editor.redo');
     ui.registerCommand(
         { id: 'ui.commandPalette', title: 'Command palette', shortcut: 'Ctrl+Shift+P' },
         async () => {

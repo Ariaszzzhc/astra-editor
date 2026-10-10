@@ -20,6 +20,7 @@ struct Workbench::Impl {
     std::map<script::Runtime::TaskId, Completion> commands;
     std::unique_ptr<script::Runtime> runtime;
     std::map<std::string, std::string> default_bindings;
+    std::uint64_t default_binding_generation{};
     std::uint64_t next_id{1};
 
     Impl(std::shared_ptr<EditorChannel> transport,
@@ -61,6 +62,7 @@ struct Workbench::Impl {
         static_cast<void>(runtime->evaluate_module(
             "import {initialize} from 'astra/workbench'; initialize();", "astra-client.js"));
         default_bindings = runtime->keybindings();
+        default_binding_generation = runtime->keybinding_generation();
         if (!user.empty()) {
             static_cast<void>(runtime->evaluate(user, "astra-client-user.js"));
         }
@@ -166,12 +168,15 @@ Workbench::Json Workbench::settings() const {
 }
 
 std::map<std::string, std::string> Workbench::keybindings() const {
-    auto result = impl_->runtime->keybindings();
-    std::erase_if(result, [this](const auto& entry) {
-        const auto found = impl_->default_bindings.find(entry.first);
-        return found != impl_->default_bindings.end() && found->second == entry.second;
-    });
-    return result;
+    return impl_->runtime->keybindings(impl_->default_binding_generation);
+}
+
+std::map<std::string, std::string> Workbench::default_keybindings() const {
+    return impl_->default_bindings;
+}
+
+std::uint64_t Workbench::keybinding_generation() const {
+    return impl_->runtime->keybinding_generation();
 }
 
 std::vector<Workbench::Json> Workbench::take_errors() {
