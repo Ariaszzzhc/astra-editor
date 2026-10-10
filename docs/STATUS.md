@@ -2,12 +2,78 @@
 
 Product contract: `EditorDoc.md`. Product name: Astra (confirmed by the user).
 
+## Working-tree formatting check (2026-10-10)
+
+The new, uncommitted `layout_jobs.hpp` and `layout_jobs.cpp` drafts contained
+compressed control flow before formatting. Ran `./scripts/format.ps1 -Offline`,
+then `./scripts/format.ps1 -Check -Offline` on native Windows: all 139 C++ and
+12 JavaScript files passed. Existing tracked source files were unchanged.
+At that point the layout job drafts were not integrated or behavior-validated;
+that check established formatting only. Integration evidence follows below.
+
 ## Active architecture and workbench revision (2026-10-09)
 
 The previous Windows acceptance below covers the earlier implementation. It does
 not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
+
+### Background document paragraph layout (2026-10-10)
+
+Cold document rows of at least 4096 UTF-8 bytes now shape through a bounded libuv
+queue. Full SkParagraph/Unicode/tab/bidi semantics are retained. Each work item
+uses a private font collection/engine, then transfers the paragraph exclusively
+to the UI; no worker reuses a published paragraph's fonts. One work item runs at
+a time. Default admission is 16 jobs / 64 MiB of accounted input/style storage,
+16 MiB per text input, and a 30-second soft deadline. Native calls cannot be
+preempted: cancellation/expiry drains and discards the result; expiry returns a
+terminal error. Large late-cancelled paragraph destruction is also scheduled on
+the worker. Shutdown closes admission and keeps pumping until work drains.
+
+`DocumentViewport` coalesces pending rows, applies completed paragraphs to the
+matching publication/style, cancels invalidated work, and retains exact cache
+reuse. Failed worker styles remain terminal until changed or invalidated.
+Drawing and vertical movement share paragraph preparation, including adjacent
+rows outside the painted area. Pointer selection waiting for geometry preserves
+its captured document/revision and blocks subsequent same-document edits/reads;
+presentation reads can still fetch the required rows. Revision, DPI and font-size
+changes reject captured pointer geometry. Idle observation includes layout work.
+
+Focused Windows checks passed: `viewport-layout-tests.exe` compares real worker
+paragraphs against fresh Windows font/SkParagraph pixels, carets, hits, UTF-16
+conversion and mixed tab/CJK/emoji/combining/bidi styles. It covers bounds,
+cancel/drain, queued/running deadlines, retirement, retained font lifetime,
+long-row parity, stale publication, failed styles and viewport destruction.
+The real SDL/Graphite/Dawn GUI regression observes a cold 70 KiB row, sends
+pointer-down/up and immediate text, and checks placement, full paginated undo
+and long-line save. Earlier GUI checks passed after correcting its test oracle:
+`document.get` returns bounded pages, so comparing the first page against a full
+70 KiB string was invalid. The initial compiler check also exposed and corrected
+an MSVC JSON/string equality overload issue. Artifacts: `build/layout-worker-*`.
+
+Final integrated Windows evidence:
+
+- `./scripts/test.ps1 -Mode all -Gui`: passed. Debug: 557 cases / 1,185,927
+  assertions; Release: 557 cases / 1,185,690 assertions. Zero failures/skips.
+  Both modes passed CLI/process transport, actual D3D12/Dawn/Graphite readback,
+  renderer, native Unicode and background viewport pixel/geometry tests, local
+  and TCP editing, real clangd/Git, recovery, workspace and presentation checks.
+  The long-row GUI regression also queues End/Down and immediate input from a
+  tab/CJK/emoji source line, comparing its placement with independently shaped
+  visual geometry on a 70 KiB target row. Package helpers passed 12 checks;
+  no new distribution package was produced.
+- `./scripts/format.ps1 -Check -Offline`: all 139 C++ / 12 JS files passed;
+  `git diff --check` passed. Configuration restored with
+  `./scripts/xmake.ps1 f -m debug -y`.
+- Complete integrated log: `build/layout-worker-acceptance-all.log`. Focused
+  logs: `layout-worker-viewport-debug.log`, `layout-worker-pointer-debug.log`.
+  Initial failure excerpts from tool output and their causes are retained in
+  `build/layout-worker-initial-failures.txt`.
+
+This moves full cold document shaping off the input/render thread. It does not
+claim incremental glyph shaping within a changed long row, bounded total native
+font/paragraph heap, constant frame latency, asynchronous shaping for all other
+UI components, whole-project completion or new distribution-package acceptance.
 
 ### JS-owned Git comparison and generic text actions (2026-10-10)
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <astra/ui/text_layout.hpp>
+#include <astra/ui/layout_jobs.hpp>
 #include <astra/ui/viewport_index.hpp>
 
 #include <cstddef>
@@ -27,7 +28,9 @@ struct ViewportCacheStatistics {
 // handles are immutable; layout keys have relative UTF-8 colors and all options.
 class DocumentViewport final {
   public:
-    explicit DocumentViewport(const TextLayoutEngine&, ViewportCacheLimits = {});
+    explicit DocumentViewport(const TextLayoutEngine&,
+                              ViewportCacheLimits = {},
+                              std::shared_ptr<LayoutJobs> = {});
     ~DocumentViewport();
     DocumentViewport(DocumentViewport&&) noexcept;
     DocumentViewport& operator=(DocumentViewport&&) noexcept;
@@ -39,6 +42,12 @@ class DocumentViewport final {
     [[nodiscard]] const ViewportIndex& lines() const noexcept;
     [[nodiscard]] const TextLayout* layout(std::size_t number) const;
     [[nodiscard]] const TextLayout& shape(std::size_t number, const TextLayoutOptions&);
+    // Short rows/cache hits are immediate. Cold long rows return null until
+    // poll_layouts() transfers their completed paragraph onto the UI thread.
+    [[nodiscard]] const TextLayout* prepare(std::size_t number, const TextLayoutOptions&);
+    [[nodiscard]] bool pending(std::size_t number) const;
+    [[nodiscard]] bool layouts_pending() const noexcept;
+    void poll_layouts();
     [[nodiscard]] std::shared_ptr<const TextLayout> layout_snapshot(std::size_t number) const;
     [[nodiscard]] ViewportCacheStatistics statistics() const noexcept;
 

@@ -28,10 +28,35 @@ struct DocumentViewport::Impl {
     Entries recent;
     std::multimap<std::size_t, Entries::iterator> lookup;
 
-    Impl(const TextLayoutEngine& engine, ViewportCacheLimits limits)
-        : engine(engine), limits(limits) {
+    struct Pending {
+        TextLayoutOptions options;
+        std::optional<LayoutJobs::Ticket> ticket;
+        std::exception_ptr error;
+    };
+
+    std::shared_ptr<LayoutJobs> jobs;
+    std::map<std::size_t, Pending> pending;
+
+    Impl(const TextLayoutEngine& engine,
+         ViewportCacheLimits limits,
+         std::shared_ptr<LayoutJobs> jobs)
+        : engine(engine), limits(limits), jobs(std::move(jobs)) {
         if (limits.entries > 4096 || limits.bytes > 256 * 1024 * 1024)
             throw std::invalid_argument("Viewport cache exceeds bounded limits");
+    }
+
+    ~Impl() {
+        cancel();
+    }
+
+    void cancel() {
+        for (const auto& [number, value] : pending) {
+            static_cast<void>(number);
+            if (value.ticket) {
+                jobs->cancel(*value.ticket);
+            }
+        }
+        pending.clear();
     }
 
     static std::size_t accounted(std::string_view text, const TextLayoutOptions& options) {
@@ -68,7 +93,8 @@ struct DocumentViewport::Impl {
         ++stats.evicted;
     }
 
-    std::shared_ptr<const TextLayout> get(std::string_view text, const TextLayoutOptions& options) {
+    std::shared_ptr<const TextLayout> find(std::string_view text,
+                                           const TextLayoutOptions& options) {
         const auto hash = std::hash<std::string_view>{}(text);
         const auto [begin, end] = lookup.equal_range(hash);
         for (auto found = begin; found != end; ++found) {
@@ -81,12 +107,17 @@ struct DocumentViewport::Impl {
                 return paragraph;
             }
         }
+        return {};
+    }
+
+    void store(const std::shared_ptr<const TextLayout>& paragraph,
+               const TextLayoutOptions& options) {
+        const auto text = paragraph->text();
+        const auto hash = std::hash<std::string_view>{}(text);
         const auto bytes = accounted(text, options);
-        auto paragraph =
-            std::make_shared<const TextLayout>(engine.layout(std::string(text), options));
         ++stats.shaped;
         if (!limits.entries || bytes > limits.bytes)
-            return paragraph;
+            return;
         recent.push_front({hash, bytes, options, paragraph});
         try {
             lookup.emplace(hash, recent.begin());
@@ -97,12 +128,23 @@ struct DocumentViewport::Impl {
         stats.accounted_bytes += bytes;
         while (recent.size() > limits.entries || stats.accounted_bytes > limits.bytes)
             evict();
+    }
+
+    std::shared_ptr<const TextLayout> get(std::string_view text, const TextLayoutOptions& options) {
+        if (auto cached = find(text, options)) {
+            return cached;
+        }
+        auto paragraph =
+            std::make_shared<const TextLayout>(engine.layout(std::string(text), options));
+        store(paragraph, options);
         return paragraph;
     }
 };
 
-DocumentViewport::DocumentViewport(const TextLayoutEngine& engine, ViewportCacheLimits limits)
-    : impl_(std::make_unique<Impl>(engine, limits)) {
+DocumentViewport::DocumentViewport(const TextLayoutEngine& engine,
+                                   ViewportCacheLimits limits,
+                                   std::shared_ptr<LayoutJobs> jobs)
+    : impl_(std::make_unique<Impl>(engine, limits, std::move(jobs))) {
 }
 
 DocumentViewport::~DocumentViewport() = default;
@@ -115,6 +157,7 @@ void DocumentViewport::publish(std::vector<ViewportLine> lines) {
 }
 
 void DocumentViewport::invalidate_layouts() {
+    impl_->cancel();
     impl_->current.clear();
 }
 
@@ -131,10 +174,105 @@ const TextLayout& DocumentViewport::shape(std::size_t number, const TextLayoutOp
     const auto* line = impl_->lines.find(number);
     if (!line)
         throw std::out_of_range("Cannot shape a line outside the published viewport");
+    if (const auto found = impl_->pending.find(number); found != impl_->pending.end()) {
+        if (found->second.ticket) {
+            impl_->jobs->cancel(*found->second.ticket);
+        }
+        impl_->pending.erase(found);
+    }
     auto paragraph = impl_->get(line->text, options);
     auto& current = impl_->current[number];
     current = std::move(paragraph);
     return *current;
+}
+
+const TextLayout* DocumentViewport::prepare(std::size_t number, const TextLayoutOptions& options) {
+    const auto* line = impl_->lines.find(number);
+    if (!line) {
+        throw std::out_of_range("Cannot prepare a line outside the published viewport");
+    }
+    if (!impl_->jobs || line->text.size() < 4096) {
+        return &shape(number, options);
+    }
+    if (auto cached = impl_->find(line->text, options)) {
+        if (const auto found = impl_->pending.find(number); found != impl_->pending.end()) {
+            if (found->second.ticket) {
+                impl_->jobs->cancel(*found->second.ticket);
+            }
+            impl_->pending.erase(found);
+        }
+        impl_->current[number] = std::move(cached);
+        return layout(number);
+    }
+    auto found = impl_->pending.find(number);
+    if (found != impl_->pending.end() && found->second.options != options) {
+        if (found->second.ticket) {
+            impl_->jobs->cancel(*found->second.ticket);
+        }
+        impl_->pending.erase(found);
+        found = impl_->pending.end();
+    }
+    if (found == impl_->pending.end()) {
+        found = impl_->pending.emplace(number, Impl::Pending{options, {}, {}}).first;
+    }
+    impl_->current.erase(number);
+    auto& value = found->second;
+    if (value.error) {
+        std::rethrow_exception(value.error);
+    }
+    if (!value.ticket) {
+        value.ticket = impl_->jobs->submit(line->text, value.options);
+    }
+    return nullptr;
+}
+
+bool DocumentViewport::pending(std::size_t number) const {
+    const auto found = impl_->pending.find(number);
+    return found != impl_->pending.end() && !found->second.error;
+}
+
+bool DocumentViewport::layouts_pending() const noexcept {
+    for (const auto& [number, value] : impl_->pending) {
+        static_cast<void>(number);
+        if (!value.error) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void DocumentViewport::poll_layouts() {
+    for (auto it = impl_->pending.begin(); it != impl_->pending.end();) {
+        auto& [number, value] = *it;
+        if (value.error) {
+            ++it;
+            continue;
+        }
+        const auto* line = impl_->lines.find(number);
+        if (!line) {
+            throw std::logic_error("Pending layout lost its viewport snapshot");
+        }
+        if (!value.ticket) {
+            value.ticket = impl_->jobs->submit(line->text, value.options);
+        }
+        auto result = value.ticket ? impl_->jobs->take(*value.ticket) : std::nullopt;
+        if (!result) {
+            ++it;
+            continue;
+        }
+        value.ticket.reset();
+        if (result->error) {
+            value.error = result->error;
+            ++it;
+            continue;
+        }
+        if (!result->paragraph) {
+            throw std::logic_error("Layout job completed without a paragraph");
+        }
+        impl_->store(result->paragraph, value.options);
+        impl_->current[number] = std::move(result->paragraph);
+        it = impl_->pending.erase(it);
+    }
 }
 
 std::shared_ptr<const TextLayout> DocumentViewport::layout_snapshot(std::size_t number) const {

@@ -100,7 +100,8 @@ struct EditorWindow::Impl {
     using Line = ViewportLine;
 
     struct Document {
-        explicit Document(const TextLayoutEngine& fonts) : viewport(fonts) {
+        explicit Document(const TextLayoutEngine& fonts, std::shared_ptr<LayoutJobs> jobs)
+            : viewport(fonts, {}, std::move(jobs)) {
         }
 
         Json metadata;
@@ -156,6 +157,7 @@ struct EditorWindow::Impl {
         std::function<void()> failure{};
         std::shared_ptr<PendingEdit> edit{};
         std::shared_ptr<PendingRead> read{};
+        std::function<bool()> ready{};
     };
 
     struct ActiveRequest {
@@ -214,6 +216,7 @@ struct EditorWindow::Impl {
     EditorWindowOptions options;
     Renderer renderer;
     TextLayoutEngine fonts;
+    std::shared_ptr<LayoutJobs> layout_jobs = std::make_shared<LayoutJobs>();
     std::map<std::string, Document> documents;
     std::vector<std::string> tabs;
     std::size_t first_tab{};
@@ -589,7 +592,7 @@ struct EditorWindow::Impl {
 
     void accept_metadata(const Json& metadata) {
         const auto id = metadata.at("id").get<std::string>();
-        auto [found, inserted] = documents.try_emplace(id, fonts);
+        auto [found, inserted] = documents.try_emplace(id, fonts, layout_jobs);
         auto& document = found->second;
         if (inserted) {
             tabs.push_back(id);
@@ -722,6 +725,7 @@ struct EditorWindow::Impl {
                           std::size_t first,
                           std::optional<std::size_t> begin = {});
     void fetch_syntax();
+    const TextLayout* prepare_line(Document&, std::size_t);
     void fetch_diagnostics(const std::string& id);
     void editor_command(std::string command,
                         Json extra = Json::object(),
@@ -938,8 +942,49 @@ void EditorWindow::Impl::service_responses() {
         if (requests.empty()) {
             break;
         }
-        const auto next =
-            std::find_if(requests.begin(), requests.end(), [this](const Request& request) {
+        std::set<std::string> geometry_waiting;
+        const auto next = std::find_if(
+            requests.begin(), requests.end(), [this, &geometry_waiting](const Request& request) {
+                if (request.edit && request.edit->cancelled) {
+                    return true;
+                }
+                const bool presentation_read = request.method == "document.lines" ||
+                                               request.method == "document.syntax" ||
+                                               request.method == "language.diagnostics";
+                if (!presentation_read && geometry_waiting.contains(request.document)) {
+                    return false;
+                }
+                bool ready = !request.ready || request.ready();
+                if (ready && request.method == "_ui.vertical") {
+                    const auto found = documents.find(request.document);
+                    if (found != documents.end() && request.document == active_id &&
+                        found->second.view_revision ==
+                            found->second.metadata.at("revision").get<std::string>()) {
+                        auto& document = found->second;
+                        const auto& positions = document.metadata.contains("selectionPositions")
+                                                    ? document.metadata.at("selectionPositions")
+                                                    : document.metadata.at("selections");
+                        for (const auto& position : positions) {
+                            const auto number = position.value("line", std::size_t{0});
+                            const auto target =
+                                request.params.at("name") == "editor.move_down"
+                                    ? std::min(
+                                          number + 1,
+                                          document.metadata.at("lineCount").get<std::size_t>() - 1)
+                                    : (number ? number - 1 : 0);
+                            for (const auto row : {number, target}) {
+                                if (document.viewport.lines().find(row) &&
+                                    !prepare_line(document, row)) {
+                                    ready = false;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!ready) {
+                    geometry_waiting.insert(request.document);
+                    return false;
+                }
                 if (request.edit && request.edit->cancelled)
                     return true;
                 if (request.read &&
@@ -1545,7 +1590,7 @@ bool EditorWindow::Impl::native_idle(bool waiting_inputs) const {
     }
     return requests.empty() && !active_request && operations.empty() && pending_edits.empty() &&
            pending_reads.empty() && closing_pending.empty() && form_events.empty() &&
-           sidebar_views.quiescent() && inputs_idle;
+           sidebar_views.quiescent() && inputs_idle && layout_jobs->idle();
 }
 
 void EditorWindow::Impl::emit_form(std::string_view event,
@@ -2396,6 +2441,43 @@ void EditorWindow::Impl::accept_prompt() {
     }
 }
 
+const TextLayout* EditorWindow::Impl::prepare_line(Document& document, std::size_t number) {
+    if (const auto* shaped = document.viewport.layout(number)) {
+        return shaped;
+    }
+    if (document.viewport.pending(number)) {
+        return nullptr;
+    }
+    const auto* line = document.viewport.lines().find(number);
+    if (!line) {
+        return nullptr;
+    }
+    TextLayoutOptions style;
+    style.font_size = options.font_size;
+    style.dpi_scale = scale;
+    style.line_height = std::clamp(editor_settings.value("lineHeight", 1.4F), 1.0F, 4.0F);
+    style.tab_size = editor_settings.value("tabSize", 4U);
+    style.color = foreground;
+    if (document.editor_config.contains("tab_width")) {
+        style.tab_size = static_cast<unsigned>(
+            std::stoul(document.editor_config.at("tab_width").get<std::string>()));
+    }
+    if (editor_settings.contains("fontFamilies")) {
+        style.font_families = editor_settings.at("fontFamilies").get<std::vector<std::string>>();
+    }
+    if (document.syntax_revision == document.view_revision) {
+        document.decorations.highlights.intersect(
+            line->begin, line->end, [&](const auto& highlight) {
+                const auto begin = std::max(line->begin, highlight.begin);
+                const auto end = std::min(line->end, highlight.end);
+                const auto found = syntax_colors.find(highlight.value);
+                const auto color = found == syntax_colors.end() ? foreground : found->second;
+                style.color_spans.push_back({begin - line->begin, end - line->begin, color});
+            });
+    }
+    return document.viewport.prepare(number, style);
+}
+
 std::optional<Json> EditorWindow::Impl::vertical(std::string_view id,
                                                  bool down,
                                                  bool extend,
@@ -2912,7 +2994,76 @@ void EditorWindow::Impl::point(float x, float y, bool extend, bool add) {
         document->first_line + static_cast<std::size_t>((y - content_top) / row_height);
     const auto* found = document->viewport.lines().find(number);
     const auto* shaped = document->viewport.layout(number);
-    if (!found || !shaped) {
+    if (!found) {
+        return;
+    }
+    if (!shaped ||
+        document->view_revision != document->metadata.at("revision").get<std::string>()) {
+        const auto id = active_id;
+        const auto revision = document->metadata.at("revision").get<std::string>();
+        const auto click_scale = scale;
+        const auto click_font_size = options.font_size;
+        const auto local_x = x - left - gutter + document->horizontal;
+        const auto local_y = std::max(
+            0.0F, y - content_top - static_cast<float>(number - document->first_line) * row_height);
+        const bool drag = dragging;
+        Request request{
+            "document.setSelections", Json::object(), id, false, [this](const Json& result) {
+                accept_metadata(result);
+                reveal_caret();
+            }};
+        request.ready = [this, id, revision, number, click_scale, click_font_size] {
+            const auto found = documents.find(id);
+            if (found == documents.end() || found->second.metadata.at("revision") != revision ||
+                scale != click_scale || options.font_size != click_font_size) {
+                return true;
+            }
+            if (found->second.view_revision != revision) {
+                return false;
+            }
+            return !found->second.viewport.lines().find(number) ||
+                   found->second.viewport.layout(number) != nullptr;
+        };
+        request.build_params = [this,
+                                id,
+                                revision,
+                                number,
+                                click_scale,
+                                click_font_size,
+                                local_x,
+                                local_y,
+                                extend,
+                                add,
+                                drag] {
+            auto& document = documents.at(id);
+            if (document.view_revision != revision ||
+                document.metadata.at("revision") != revision || scale != click_scale ||
+                options.font_size != click_font_size) {
+                throw protocol::RpcError(-32002, "Pointer geometry changed before selection");
+            }
+            const auto* line = document.viewport.lines().find(number);
+            const auto* layout = document.viewport.layout(number);
+            if (!line || !layout) {
+                throw protocol::RpcError(-32002, "Pointer row left the viewport");
+            }
+            const auto offset = line->begin + layout->hit_test(local_x, local_y).byte_offset;
+            auto selections = add ? document.metadata.at("selections") : Json::array();
+            const auto anchor = add ? offset
+                                    : (drag ? drag_anchor
+                                            : (extend ? document.metadata.at("selections")
+                                                            .front()
+                                                            .at("anchor")
+                                                            .get<std::size_t>()
+                                                      : offset));
+            selections.push_back({{"anchor", anchor}, {"head", offset}});
+            if (!drag && !add) {
+                drag_anchor = anchor;
+            }
+            vertical_column.reset();
+            return Json{
+                {"id", id}, {"baseRevision", revision}, {"selections", std::move(selections)}};
+        };
+        enqueue(std::move(request));
         return;
     }
     const auto hit = shaped->hit_test(
@@ -4434,36 +4585,9 @@ void EditorWindow::Impl::draw() {
             if (y >= content_bottom) {
                 return;
             }
-            auto* shaped = document->viewport.layout(number);
+            const auto* shaped = prepare_line(*document, number);
             if (!shaped) {
-                TextLayoutOptions style;
-                style.font_size = options.font_size;
-                style.dpi_scale = scale;
-                style.line_height =
-                    std::clamp(editor_settings.value("lineHeight", 1.4F), 1.0F, 4.0F);
-                style.tab_size = editor_settings.value("tabSize", 4U);
-                style.color = foreground;
-                if (document->editor_config.contains("tab_width")) {
-                    style.tab_size = static_cast<unsigned>(
-                        std::stoul(document->editor_config.at("tab_width").get<std::string>()));
-                }
-                if (editor_settings.contains("fontFamilies")) {
-                    style.font_families =
-                        editor_settings.at("fontFamilies").get<std::vector<std::string>>();
-                }
-                if (document->syntax_revision == document->view_revision) {
-                    document->decorations.highlights.intersect(
-                        line.begin, line.end, [&](const auto& highlight) {
-                            const auto begin = std::max(line.begin, highlight.begin);
-                            const auto end = std::min(line.end, highlight.end);
-                            const auto found = syntax_colors.find(highlight.value);
-                            const auto color =
-                                found == syntax_colors.end() ? foreground : found->second;
-                            style.color_spans.push_back(
-                                {begin - line.begin, end - line.begin, color});
-                        });
-                }
-                shaped = &document->viewport.shape(number, style);
+                return;
             }
             if (document->reveal_horizontal && number == active_line && !selections.empty()) {
                 const auto head = selections.front().at("head").get<std::size_t>();
@@ -4905,7 +5029,10 @@ WorkbenchViewState EditorWindow::view_state() const {
             {"accountedBytes", cache.accounted_bytes},
             {"shaped", cache.shaped},
             {"reused", cache.reused},
-            {"evicted", cache.evicted}};
+            {"evicted", cache.evicted},
+            {"layoutsPending", document->viewport.layouts_pending()},
+            {"workerSubmitted", impl_->layout_jobs->statistics().submitted},
+            {"workerJobs", impl_->layout_jobs->statistics().jobs}};
         result.outline_first = document->outline_begin;
         result.outline_total = document->outline_total;
         result.visible_outline_rows = document->outline.size();
@@ -4915,6 +5042,7 @@ WorkbenchViewState EditorWindow::view_state() const {
 
 bool EditorWindow::pump() {
     if (!impl_->running) {
+        impl_->layout_jobs->poll();
         if (!impl_->stopping_workbench) {
             impl_->finish_dialog(nullptr);
             while (!impl_->pending_edits.empty()) {
@@ -4937,9 +5065,11 @@ bool EditorWindow::pump() {
             impl_->workbench->shutdown();
             impl_->policy_inputs.clear();
             impl_->view_inputs.clear();
+            impl_->layout_jobs->close();
         }
         impl_->workbench->poll();
-        if (impl_->workbench->idle() && impl_->sidebar_views.quiescent()) {
+        if (impl_->workbench->idle() && impl_->sidebar_views.quiescent() &&
+            impl_->layout_jobs->idle()) {
             return false;
         }
         if (Clock::now() >= impl_->workbench_shutdown_deadline) {
@@ -4956,6 +5086,11 @@ bool EditorWindow::pump() {
                 impl_->error = error.what();
             }
         });
+        impl_->layout_jobs->poll();
+        for (auto& [id, document] : impl_->documents) {
+            static_cast<void>(id);
+            document.viewport.poll_layouts();
+        }
         // Read-only modal shortcuts retain their keystroke through release,
         // including auto-repeat and its text/IME packets after the panel closes.
         // Other keydowns, pointer input and new dialogs start a fresh text sequence.

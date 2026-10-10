@@ -96,8 +96,10 @@ class TextLayout final {
     friend class TextLayoutEngine;
 };
 
-// Keep one engine per UI thread. Its native font manager and shaped-run caches
-// are shared by its layouts; layouts may safely outlive the engine object.
+// An engine and the layouts sharing its font caches have one owning thread.
+// A worker may transfer a paragraph after retiring its private engine; it must
+// never subsequently access that paragraph or reuse its fonts. Layouts may
+// outlive the engine object. Callers serialize all paragraph access.
 class TextLayoutEngine final {
   public:
     TextLayoutEngine();

@@ -313,6 +313,24 @@ evidence of native runtime behavior. Independent native acceptance must include
 window startup, resize, DPI, minimize/restore, Unicode/IME/clipboard, actual GPU
 readback, device loss, shared-library loading and shutdown on each window system.
 
+## Document paragraph scheduling
+
+Document paragraphs use `DocumentViewport` and `LayoutJobs`. Cache hits and short
+rows remain immediate; cold rows of at least 4096 UTF-8 bytes shape on libuv
+workers. A job owns a private native font collection/engine and transfers its
+completed paragraph to the UI without further worker access to those fonts.
+Paragraph access is serialized. This preserves complete Unicode, bidi, tab and
+color-run semantics rather than slicing a shaping run arbitrarily.
+
+The queue admits at most 16 jobs / 64 MiB of accounted input/style storage by
+default, with a 16 MiB text-input limit and a 30-second soft deadline. Those
+counts do not measure native font/paragraph/GPU heaps. Cancellation cannot
+interrupt an active native shaping call: completion discards its result and
+drains safely. The event loop keeps running during shutdown until the queue is
+idle. Viewport publication/style changes cancel obsolete jobs, and geometry
+dependent input waits for a matching paragraph. Changed long rows still require
+complete native shaping; other text components may still shape synchronously.
+
 ## Upstream references
 
 - [Skia build requirements](https://skia.org/docs/user/build/)

@@ -6,11 +6,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -226,6 +228,194 @@ void differential(TextLayoutEngine& engine) {
     }
     std::cout << "Viewport pixel/Unicode/style differential seed=" << seed << ": PASS\n";
 }
+
+template <typename Predicate> void await(LayoutJobs& jobs, Predicate predicate) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!predicate()) {
+        require(std::chrono::steady_clock::now() < deadline, "Layout worker did not drain");
+        jobs.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+LayoutJobResult result(LayoutJobs& jobs, LayoutJobs::Ticket ticket) {
+    std::optional<LayoutJobResult> completed;
+    await(jobs, [&] {
+        completed = jobs.take(ticket);
+        return completed.has_value();
+    });
+    return std::move(*completed);
+}
+
+void background_layout(TextLayoutEngine& engine) {
+    LayoutJobs jobs;
+    const std::vector<std::string> text{"中🙂é\tvalue", "abc אבג def", "é 中文 中🙂"};
+    for (unsigned int index = 0; index < 12; ++index) {
+        TextLayoutOptions style;
+        style.font_size = 12.0F + index;
+        style.dpi_scale = index % 2 ? 1.25F : 1.0F;
+        style.line_height = index % 3 ? 1.4F : 1.8F;
+        style.tab_size = 2 + index % 7;
+        style.color = index % 2 ? 0xFF70A0C0 : 0xFFB0D040;
+        style.color_spans = {{0, 2, 0xFFC04070U}};
+        style.font_families = {"Consolas", "Microsoft YaHei", "Segoe UI Emoji"};
+        style.locale = index % 2 ? "en" : "zh";
+        style.direction = index % 2 ? TextDirection::automatic : TextDirection::left_to_right;
+        style.wrap_width = index % 3 == 0 && index % text.size() != 0 ? 80.0F : 0.0F;
+        const auto ticket = jobs.submit(text[index % text.size()], style);
+        require(ticket.has_value(), "Empty queue rejected a paragraph");
+        const auto completed = result(jobs, *ticket);
+        if (completed.error) {
+            std::rethrow_exception(completed.error);
+        }
+        require(completed.paragraph != nullptr, "Worker returned no paragraph");
+        equal(*completed.paragraph, engine.layout(text[index % text.size()], style));
+    }
+    const auto invalid = jobs.submit(std::string("\xFF", 1), {});
+    require(result(jobs, *invalid).error != nullptr, "Worker Unicode failure was lost");
+    LayoutJobLimits limits;
+    limits.jobs = 1;
+    LayoutJobs bounded(limits);
+    const auto first = bounded.submit("中🙂", {});
+    require(!bounded.submit("second", {}), "Queue exceeded its job bound");
+    bounded.cancel(*first);
+    await(bounded, [&] {
+        return bounded.idle();
+    });
+    for (int index = 0; index < 1000; ++index) {
+        const auto ticket = jobs.submit("cancelled", {});
+        if (ticket) {
+            jobs.cancel(*ticket);
+        }
+        jobs.poll();
+        require(jobs.statistics().jobs <= 16, "Cancellation accumulated unbounded jobs");
+    }
+    jobs.close();
+    await(jobs, [&] {
+        return jobs.idle();
+    });
+    require(jobs.statistics().bytes == 0, "Drained queue retained accounted bytes");
+    bool closed = false;
+    try {
+        (void)jobs.submit("closed", {});
+    } catch (const std::logic_error&) {
+        closed = true;
+    }
+    require(closed, "Shutdown admitted more work");
+    limits.timeout = std::chrono::milliseconds(1);
+    limits.jobs = 2;
+    LayoutJobs expiring(limits);
+    const auto timed = expiring.submit("deadline", {});
+    const auto queued_timeout = expiring.submit("queued deadline", {});
+    std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    expiring.poll();
+    const auto expired = result(expiring, *timed);
+    require(expired.error && !expired.paragraph && expiring.statistics().expired == 2,
+            "Expired job disappeared without a terminal error");
+    require(result(expiring, *queued_timeout).error != nullptr,
+            "Queued deadline disappeared without a terminal error");
+    limits.timeout = std::chrono::seconds(30);
+    limits.bytes = 4096;
+    limits.text_bytes = 512;
+    LayoutJobs byte_limited(limits);
+    bool oversized = false;
+    try {
+        (void)byte_limited.submit(std::string(513, 'x'), {});
+    } catch (const std::length_error&) {
+        oversized = true;
+    }
+    require(oversized && byte_limited.idle() && byte_limited.statistics().bytes == 0,
+            "Oversized admission mutated queue accounting");
+    const auto retiring = byte_limited.submit("retire completed 中🙂", {});
+    await(byte_limited, [&] {
+        return byte_limited.statistics().completed == 1;
+    });
+    byte_limited.cancel(*retiring);
+    await(byte_limited, [&] {
+        return byte_limited.idle();
+    });
+    require(!byte_limited.take(*retiring), "Cancellation published a completed paragraph");
+    std::shared_ptr<const TextLayout> retained;
+    {
+        LayoutJobs temporary;
+        retained = result(temporary, *temporary.submit("retained 中🙂", {})).paragraph;
+    }
+    equal(*retained, engine.layout("retained 中🙂", {}));
+    std::cout << "Actual Windows worker shaping: pixels, Unicode, styles, bounds, cancellation, "
+                 "deadline and font lifetime: PASS\n";
+}
+
+void background_viewport(TextLayoutEngine& engine) {
+    auto jobs = std::make_shared<LayoutJobs>();
+    DocumentViewport viewport(engine, {}, jobs);
+    std::string text;
+    for (int index = 0; index < 500; ++index) {
+        text += "中🙂é abc אבג ";
+    }
+    viewport.publish(rows({text}));
+    TextLayoutOptions style;
+    require(viewport.prepare(0, style) == nullptr && viewport.pending(0),
+            "Cold long paragraph blocked instead of queuing");
+    const auto submitted = jobs->statistics().submitted;
+    require(viewport.prepare(0, style) == nullptr && jobs->statistics().submitted == submitted,
+            "Repeated preparation duplicated worker jobs");
+    await(*jobs, [&] {
+        viewport.poll_layouts();
+        return !viewport.layouts_pending();
+    });
+    const auto retained = viewport.layout_snapshot(0);
+    const auto fresh = engine.layout(text, style);
+    require(retained && pixels(*retained) == pixels(fresh) && retained->width() == fresh.width(),
+            "Long worker paragraph differs from complete native shaping");
+    viewport.invalidate_layouts();
+    require(viewport.prepare(0, style) == retained.get(), "Long paragraph cache hit queued work");
+    style.font_size += 2;
+    require(!viewport.prepare(0, style), "New long paragraph style reused old geometry");
+    viewport.publish(rows({"new snapshot"}));
+    require(!viewport.layouts_pending() && !viewport.layout(0),
+            "Publication retained stale geometry");
+    require(viewport.prepare(0, {}) && viewport.layout(0)->text() == "new snapshot",
+            "Cancelled paragraph replaced new text");
+    await(*jobs, [&] {
+        return jobs->idle();
+    });
+    viewport.poll_layouts();
+    require(viewport.layout(0)->text() == "new snapshot", "Late result overwrote a new snapshot");
+    require(pixels(*retained) == pixels(fresh), "Cancellation mutated a retained paragraph");
+    {
+        DocumentViewport temporary(engine, {}, jobs);
+        temporary.publish(rows({text}));
+        require(!temporary.prepare(0, {}), "Cold destruction case did not queue work");
+    }
+    await(*jobs, [&] {
+        return jobs->idle();
+    });
+    viewport.publish(rows({text}));
+    TextLayoutOptions invalid;
+    invalid.tab_size = 0;
+    require(!viewport.prepare(0, invalid), "Cold invalid style blocked the UI");
+    await(*jobs, [&] {
+        viewport.poll_layouts();
+        return !viewport.layouts_pending();
+    });
+    bool failed = false;
+    try {
+        (void)viewport.prepare(0, invalid);
+    } catch (const std::invalid_argument&) {
+        failed = true;
+    }
+    require(failed && !viewport.layout(0), "Worker failure published invalid geometry");
+    const auto after_failure = jobs->statistics().submitted;
+    try {
+        (void)viewport.prepare(0, invalid);
+    } catch (const std::invalid_argument&) {
+    }
+    require(jobs->statistics().submitted == after_failure,
+            "Failed style was resubmitted every frame");
+    viewport.invalidate_layouts();
+    std::cout << "Async viewport: long-row parity, coalescing, cache hits, stale publication, "
+                 "cancellation and destruction: PASS\n";
+}
 } // namespace
 
 int main() {
@@ -235,6 +425,8 @@ int main() {
         limits(engine);
         option_keys(engine);
         differential(engine);
+        background_layout(engine);
+        background_viewport(engine);
         std::shared_ptr<const TextLayout> retained;
         {
             TextLayoutEngine temporary;

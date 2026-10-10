@@ -1,4 +1,5 @@
 #include "astra/ui/editor_window.hpp"
+#include <astra/ui/text_layout.hpp>
 #include "astra/service/service_host.hpp"
 #include "astra/io/file_store.hpp"
 #include <astra/transport/editor_channel.hpp>
@@ -11,6 +12,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -105,6 +107,27 @@ Json call(const std::shared_ptr<astra::service::ServiceHost>& host,
 Json read_document(const std::shared_ptr<astra::service::ServiceHost>& host,
                    const std::string& id) {
     return call(host, "document.get", {{"id", id}});
+}
+
+std::string read_all_text(const std::shared_ptr<astra::service::ServiceHost>& host,
+                          const std::string& id) {
+    std::string text;
+    std::optional<std::string> revision;
+    for (;;) {
+        const auto page = call(host, "document.get", {{"id", id}, {"begin", text.size()}});
+        const auto current_revision = page.at("revision").get<std::string>();
+        require(!revision || *revision == current_revision,
+                "Document changed during paginated verification");
+        revision = current_revision;
+        const auto end = page.at("range").at("end").get<std::size_t>();
+        text += page.at("text").get<std::string>();
+        require(end == text.size(), "Document page has inconsistent byte extent");
+        if (end == page.at("sizeBytes").get<std::size_t>()) {
+            return text;
+        }
+        require(!page.at("text").get_ref<const std::string&>().empty(),
+                "Document pagination did not advance");
+    }
 }
 
 class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
@@ -221,6 +244,12 @@ int main(int argc, char* argv[]) {
             file << "baseline";
         }
         const auto long_line = std::string(70'000, 'a') + "\t中文🙂";
+        const std::string navigation_source = "\t中文🙂";
+        const auto navigation_target = std::string(70'000, 'b');
+        {
+            std::ofstream file(workspace / "long-navigation.txt", std::ios::binary);
+            file << navigation_source << '\n' << navigation_target;
+        }
         {
             std::ofstream file(workspace / "cache.cpp", std::ios::binary);
             for (int i = 0; i < 80; ++i)
@@ -1098,12 +1127,70 @@ int main(int argc, char* argv[]) {
         window.execute_ui_command("ui.closeTab");
         settle(window);
         window.open_path("long.txt");
-        settle(window);
+        const auto cold_deadline = Clock::now() + std::chrono::seconds(15);
+        while (!window.view_state().document_viewport.value("layoutsPending", false)) {
+            require(Clock::now() < cold_deadline && window.pump(),
+                    "Cold long paragraph was never queued");
+            require(window.last_error().empty(), "Cold paragraph failed: " + window.last_error());
+            SDL_Delay(1);
+        }
+        const auto long_id = window.active_document_id();
+        const auto editor = window.layout().editor;
+        pointer(window,
+                SDL_EVENT_MOUSE_BUTTON_DOWN,
+                editor.x + 120 * window.layout().scale,
+                editor.y + 10 * window.layout().scale);
+        pointer(window,
+                SDL_EVENT_MOUSE_BUTTON_UP,
+                editor.x + 120 * window.layout().scale,
+                editor.y + 10 * window.layout().scale);
+        text(window, "Ω");
+        const auto pointed = read_document(host, long_id).at("text").get<std::string>();
+        require(pointed.find("Ω") > 0 && pointed.find("Ω") < 32,
+                "Typing overtook a pointer awaiting long-row geometry");
+        key(window, SDLK_Z, SDL_KMOD_CTRL);
+        require(read_all_text(host, long_id) == long_line,
+                "Deferred pointer/text transaction could not be undone");
         key(window, SDLK_END, SDL_KMOD_CTRL);
         text(window, "!");
         key(window, SDLK_S, SDL_KMOD_CTRL);
         require(astra::io::read_file(workspace / "long.txt").text == long_line + "!",
                 "Long-line continuation or caret clipped text beyond 64 KiB");
+        window.execute_ui_command("ui.closeTab");
+        settle(window);
+        window.open_path("long-navigation.txt");
+        const auto navigation_deadline = Clock::now() + std::chrono::seconds(15);
+        while (!window.view_state().document_viewport.value("layoutsPending", false)) {
+            require(Clock::now() < navigation_deadline && window.pump(),
+                    "Navigation long paragraph was never queued");
+            require(window.last_error().empty(),
+                    "Navigation paragraph failed: " + window.last_error());
+            SDL_Delay(1);
+        }
+        const auto navigation_id = window.active_document_id();
+        for (const auto code : {SDLK_END, SDLK_DOWN}) {
+            SDL_Event input{};
+            input.type = SDL_EVENT_KEY_DOWN;
+            input.key.windowID = SDL_GetWindowID(window.window());
+            input.key.key = code;
+            input.key.down = true;
+            require(SDL_PushEvent(&input), "Cannot queue cold long-row navigation");
+        }
+        text(window, "Ω");
+        astra::ui::TextLayoutEngine navigation_fonts;
+        astra::ui::TextLayoutOptions navigation_style;
+        navigation_style.dpi_scale = window.layout().scale;
+        navigation_style.font_families = {"Cascadia Code", "Consolas", "monospace"};
+        const auto source_layout = navigation_fonts.layout(navigation_source, navigation_style);
+        const auto target_layout = navigation_fonts.layout(navigation_target, navigation_style);
+        const auto expected_head = target_layout
+                                       .hit_test(source_layout.caret(navigation_source.size()).x,
+                                                 target_layout.height() / 2)
+                                       .byte_offset;
+        const auto navigated = read_all_text(host, navigation_id);
+        require(navigated.find("Ω") == navigation_source.size() + 1 + expected_head,
+                "Long-row vertical navigation used a text column instead of actual geometry");
+        key(window, SDLK_Z, SDL_KMOD_CTRL);
         window.execute_ui_command("ui.closeTab");
         settle(window);
         std::cout << "GUI " << (remote ? "TCP" : "local")
