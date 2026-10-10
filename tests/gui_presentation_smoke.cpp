@@ -37,7 +37,7 @@ void settle(Window& window) {
     throw std::runtime_error("Presentation workbench did not settle");
 }
 
-void mouse(Window& window, Uint32 type, float x, float y) {
+void enqueue_mouse(Window& window, Uint32 type, float x, float y) {
     int width{}, height{}, pixels_x{}, pixels_y{};
     require(SDL_GetWindowSize(window.window(), &width, &height) &&
                 SDL_GetWindowSizeInPixels(window.window(), &pixels_x, &pixels_y),
@@ -57,6 +57,10 @@ void mouse(Window& window, Uint32 type, float x, float y) {
         event.button.y = y * static_cast<float>(height) / static_cast<float>(pixels_y);
     }
     require(SDL_PushEvent(&event), "Cannot enqueue native pointer input");
+}
+
+void mouse(Window& window, Uint32 type, float x, float y) {
+    enqueue_mouse(window, type, x, y);
     settle(window);
 }
 
@@ -86,6 +90,17 @@ void await_surface(Window& window) {
              window.view_state().text_surface.value("pending", false))) {
         require(Clock::now() < until && window.pump(),
                 "Long modal text never queued native shaping");
+        require(window.last_error().empty(), window.last_error());
+        SDL_Delay(1);
+    }
+}
+
+void await_input(Window& window, std::size_t submitted) {
+    const auto until = Clock::now() + std::chrono::seconds(20);
+    while (!window.view_state().input_layout.value("pending", false) ||
+           window.view_state().input_layout.at("workerSubmitted").get<std::size_t>() <= submitted) {
+        require(Clock::now() < until && window.pump(),
+                "Long input never submitted shaping: " + window.view_state().input_layout.dump());
         require(window.last_error().empty(), window.last_error());
         SDL_Delay(1);
     }
@@ -242,6 +257,65 @@ void run(const fs::path& workspace) {
                     });
                     await astra.ui.update({
                         status: value === null ? 'Input cancelled' : 'Input ' + value
+                    });
+                }
+            );
+            const longInput = '中🙂éאב\t'.repeat(700);
+            astra.ui.registerCommand(
+                { id: 'acceptance.longInput', title: 'Long input' },
+                async () => {
+                    const value = await astra.ui.input({
+                        title: 'LONG INPUT',
+                        value: longInput
+                    });
+                    await astra.ui.update({
+                        status: value === null
+                            ? 'Long input cancelled'
+                            : 'Long input ' + value.slice(0, 20) + ' length ' + value.length
+                    });
+                }
+            );
+            astra.ui.registerCommand(
+                { id: 'acceptance.longForm', title: 'Long form input' },
+                async () => {
+                    await astra.ui.forms.open({
+                        id: 'acceptance-long-input',
+                        title: 'Long form input',
+                        fields: [{ id: 'value', value: longInput, submit: 'accept' }],
+                        actions: [{ id: 'accept', label: 'Accept' }]
+                    });
+                }
+            );
+            astra.on('ui.form.action', async (snapshot) => {
+                if (snapshot.id === 'acceptance-long-input' && snapshot.action === 'accept') {
+                    await astra.ui.update({ status: 'Long form accepted' });
+                    await astra.ui.forms.close(snapshot.id);
+                }
+            });
+            astra.ui.registerCommand(
+                { id: 'acceptance.closeLongForm', title: 'Close long input through JS' },
+                async () => {
+                    await astra.ui.forms.close('acceptance-long-input');
+                }
+            );
+            astra.ui.registerCommand(
+                { id: 'acceptance.overwriteLongForm', title: 'Programmatic long input change' },
+                async () => {
+                    const state = await astra.ui.forms.read('acceptance-long-input');
+                    await astra.sleep(0);
+                    const result = await astra.ui.forms.setValues({
+                        id: state.id,
+                        version: state.version,
+                        values: { value: 'changed' }
+                    });
+                    const current = result || await astra.ui.forms.read(state.id);
+                    await astra.ui.forms.update({
+                        id: current.id,
+                        version: current.version,
+                        message: result ? 'Overwrite accepted' : 'Overwrite stale'
+                    });
+                    await astra.ui.update({
+                        status: result ? 'Overwrite accepted' : 'Overwrite stale'
                     });
                 }
             );
@@ -529,14 +603,14 @@ void run(const fs::path& workspace) {
                                                                 0)
                                    .input;
         const auto local_x = 40 * window.layout().scale;
-        mouse(window,
-              SDL_EVENT_MOUSE_BUTTON_DOWN,
-              input_box.x + 6 * window.layout().scale + local_x,
-              input_box.y + 10 * window.layout().scale);
-        mouse(window,
-              SDL_EVENT_MOUSE_BUTTON_UP,
-              input_box.x + 6 * window.layout().scale + local_x,
-              input_box.y + 10 * window.layout().scale);
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_DOWN,
+                      input_box.x + 6 * window.layout().scale + local_x,
+                      input_box.y + 10 * window.layout().scale);
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_UP,
+                      input_box.x + 6 * window.layout().scale + local_x,
+                      input_box.y + 10 * window.layout().scale);
         unicode_input.text.text = "中";
         require(SDL_PushEvent(&unicode_input), "Cannot queue text after modal pointer");
         settle(window);
@@ -554,6 +628,203 @@ void run(const fs::path& workspace) {
         key(window, SDLK_RETURN);
         require(window.status_text() == "Input " + expected,
                 "Same-frame modal pointer used stale text geometry");
+        std::string long_input;
+        for (int repeat = 0; repeat < 700; ++repeat) {
+            long_input += "中🙂éאב\t";
+        }
+        const auto workers_before =
+            window.view_state().input_layout.at("workerSubmitted").get<std::size_t>();
+        window.execute_ui_command("acceptance.longInput");
+        await_input(window, workers_before);
+        require(window.view_state().input_layout.value("pending", false) &&
+                    window.view_state().input_layout.at("workerSubmitted").get<std::size_t>() >
+                        workers_before,
+                "Cold long input did not submit background shaping: " +
+                    window.view_state().input_layout.dump() + " error=" + window.last_error() +
+                    " status=" + window.status_text());
+        const auto long_box = astra::ui::PickerLayout::measure(static_cast<float>(input_width),
+                                                               static_cast<float>(input_height),
+                                                               window.layout().scale,
+                                                               0)
+                                  .input;
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_DOWN,
+                      long_box.x + 6 * window.layout().scale + local_x,
+                      long_box.y + 10 * window.layout().scale);
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_UP,
+                      long_box.x + 6 * window.layout().scale + local_x,
+                      long_box.y + 10 * window.layout().scale);
+        unicode_input.text.text = "X";
+        require(SDL_PushEvent(&unicode_input), "Cannot queue text behind cold long input pointer");
+        SDL_Event accept_input{};
+        accept_input.type = SDL_EVENT_KEY_DOWN;
+        accept_input.key.windowID = SDL_GetWindowID(window.window());
+        accept_input.key.key = SDLK_RETURN;
+        require(SDL_PushEvent(&accept_input), "Cannot queue long input acceptance");
+        settle(window);
+        const auto long_paragraph = input_fonts.layout(long_input, input_style);
+        const auto long_offset =
+            long_paragraph.hit_test(local_x, long_paragraph.height() / 2).byte_offset;
+        const auto long_expected =
+            long_input.substr(0, long_offset) + "X" + long_input.substr(long_offset);
+        const auto expected_paragraph = input_fonts.layout(long_expected, input_style);
+        const auto prefix_bytes = expected_paragraph.byte_offset_from_utf16(20);
+        require(window.status_text() ==
+                    "Long input " + long_expected.substr(0, prefix_bytes) + " length 5601",
+                "Cold long input pointer/text/acceptance reordered or split Unicode");
+        const auto cancellation_workers =
+            window.view_state().input_layout.at("workerSubmitted").get<std::size_t>();
+        window.execute_ui_command("acceptance.longInput");
+        await_input(window, cancellation_workers);
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_DOWN,
+                      long_box.x + 6 * window.layout().scale + local_x,
+                      long_box.y + 10 * window.layout().scale);
+        require(SDL_PushEvent(&unicode_input), "Cannot queue cancelled input text");
+        key(window, SDLK_ESCAPE);
+        settle(window);
+        require(window.status_text() == "Long input cancelled" &&
+                    window.view_state().input_layout.at("queuedEvents") == 0 &&
+                    !window.view_state().input_layout.at("pointerPending").get<bool>(),
+                "Escape did not cancel the deferred input sequence");
+        window.execute_ui_command("acceptance.inputEditing");
+        settle(window);
+        key(window, SDLK_RETURN);
+        require(window.status_text() == "Input A🙂éB",
+                "Cancelled long input contaminated the next dialog");
+        window.execute_ui_command("acceptance.longForm");
+        for (int frame = 0; frame < 200 && (!window.view_state().inline_form.is_object() ||
+                                            window.view_state().inline_form.value(
+                                                "id", std::string{}) != "acceptance-long-input");
+             ++frame) {
+            require(window.pump(), "Long form closed the editor");
+        }
+        const auto field_box = window.view_state().inline_form_layout->fields.front();
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_DOWN,
+                      field_box.x + 6 * window.layout().scale + local_x,
+                      field_box.y + 10 * window.layout().scale);
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_UP,
+                      field_box.x + 6 * window.layout().scale + local_x,
+                      field_box.y + 10 * window.layout().scale);
+        require(SDL_PushEvent(&unicode_input), "Cannot queue cold form input");
+        settle(window);
+        auto form_style = input_style;
+        form_style.font_size = 13;
+        const auto form_paragraph = input_fonts.layout(long_input, form_style);
+        const auto form_offset =
+            form_paragraph.hit_test(local_x, form_paragraph.height() / 2).byte_offset;
+        const auto form_expected =
+            long_input.substr(0, form_offset) + "X" + long_input.substr(form_offset);
+        require(window.view_state().inline_form.at("values").at("value") == form_expected,
+                "Cold inline form pointer/text used stale or synchronous geometry");
+        window.request_screenshot("build/graphics/gui-editable-long-input.png");
+        settle(window);
+        key(window, SDLK_RETURN);
+        require(window.status_text() == "Long form accepted", "Long form action did not settle");
+        window.execute_ui_command("acceptance.longForm");
+        for (int frame = 0; frame < 200 && (!window.view_state().inline_form.is_object() ||
+                                            window.view_state().inline_form.value(
+                                                "id", std::string{}) != "acceptance-long-input");
+             ++frame) {
+            require(window.pump(), "Programmatic form change closed the editor");
+        }
+        const auto race_field = window.view_state().inline_form_layout->fields.front();
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_DOWN,
+                      race_field.x + 6 * window.layout().scale + local_x,
+                      race_field.y + 10 * window.layout().scale);
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_UP,
+                      race_field.x + 6 * window.layout().scale + local_x,
+                      race_field.y + 10 * window.layout().scale);
+        // Keep the sequence pending even if the worker completes in this frame.
+        // The production drain accepts at most 16 events per frame.
+        for (int step = 0; step < 128; ++step) {
+            enqueue_key(window, SDLK_LEFT);
+        }
+        require(SDL_PushEvent(&unicode_input), "Cannot queue racing form input");
+        require(window.pump() && window.view_state().input_layout.at("queuedEvents") > 0,
+                "Programmatic race did not retain a captured input sequence");
+        window.execute_ui_command("acceptance.overwriteLongForm");
+        const auto race_deadline = Clock::now() + std::chrono::seconds(20);
+        do {
+            require(window.pump() && Clock::now() < race_deadline,
+                    "Programmatic input change did not settle");
+            SDL_Delay(1);
+        } while (!window.idle());
+        const auto raced_value = window.view_state().inline_form.at("values").at("value");
+        const auto race_result = window.view_state().inline_form.at("message").get<std::string>();
+        if (race_result == "Overwrite accepted") {
+            require(raced_value == "changed",
+                    "Obsolete pointer/text overwrote a programmatic value");
+            require(window.last_error().empty() ||
+                        window.last_error().find("Input target changed") != std::string::npos ||
+                        window.last_error().find("Input content or style changed") !=
+                            std::string::npos,
+                    "Programmatic input race hid an unrelated failure");
+        } else {
+            require(race_result == "Overwrite stale" && raced_value == "X" + long_input &&
+                        window.last_error().empty(),
+                    "Stale programmatic input changed the user edit: status=" +
+                        window.status_text() + " error=" + window.last_error() +
+                        " value=" + raced_value.get<std::string>().substr(0, 64) +
+                        " bytes=" + std::to_string(raced_value.get<std::string>().size()));
+        }
+        std::cout << "GUI programmatic input race: " << race_result << "\n";
+        window.execute_ui_command("ui.cancel");
+        settle(window);
+        window.execute_ui_command("acceptance.longForm");
+        for (int frame = 0; frame < 200 && window.view_state().inline_form.is_null(); ++frame) {
+            require(window.pump(), "Cold form cancellation closed the editor");
+        }
+        const auto close_form = window.view_state().inline_form_layout->close;
+        const auto cancel_field = window.view_state().inline_form_layout->fields.front();
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_DOWN,
+                      cancel_field.x + 6 * window.layout().scale + local_x,
+                      cancel_field.y + 10 * window.layout().scale);
+        require(SDL_PushEvent(&unicode_input), "Cannot queue cancelled form input");
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_DOWN,
+                      close_form.x + close_form.width / 2,
+                      close_form.y + close_form.height / 2);
+        settle(window);
+        require(window.view_state().inline_form.is_null() &&
+                    window.view_state().input_layout.at("queuedEvents") == 0,
+                "Close button did not cancel the deferred form sequence");
+        window.execute_ui_command("acceptance.longForm");
+        for (int frame = 0; frame < 200 && window.view_state().inline_form.is_null(); ++frame) {
+            require(window.pump(), "JS form cancellation closed the editor");
+        }
+        const auto js_close_field = window.view_state().inline_form_layout->fields.front();
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_DOWN,
+                      js_close_field.x + 6 * window.layout().scale + local_x,
+                      js_close_field.y + 10 * window.layout().scale);
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_UP,
+                      js_close_field.x + 6 * window.layout().scale + local_x,
+                      js_close_field.y + 10 * window.layout().scale);
+        for (int step = 0; step < 128; ++step) {
+            enqueue_key(window, SDLK_LEFT);
+        }
+        require(SDL_PushEvent(&unicode_input), "Cannot queue JS-cancelled form input");
+        const auto js_close_deadline = Clock::now() + std::chrono::seconds(20);
+        do {
+            require(window.pump() && Clock::now() < js_close_deadline,
+                    "JS-close pointer placement did not complete");
+            SDL_Delay(1);
+        } while (window.view_state().input_layout.at("pointerPending").get<bool>());
+        require(window.view_state().input_layout.at("queuedEvents") > 0,
+                "JS-close fixture did not retain post-pointer input");
+        window.execute_ui_command("acceptance.closeLongForm");
+        settle(window);
+        require(window.view_state().inline_form.is_null() &&
+                    window.view_state().input_layout.at("queuedEvents") == 0,
+                "JS form close retained its completed pointer's input sequence");
         window.execute_ui_command("acceptance.text");
         settle(window);
         for (int row = 0; row < 30; ++row)

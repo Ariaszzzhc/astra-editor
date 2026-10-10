@@ -44,6 +44,10 @@ class InlineForm final {
         return title_;
     }
 
+    [[nodiscard]] const std::string& epoch() const noexcept {
+        return epoch_;
+    }
+
     [[nodiscard]] const std::string& view() const noexcept {
         return view_;
     }

@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <unordered_map>
 #include <stdexcept>
 #include <utility>
 
@@ -269,6 +270,14 @@ struct TextLayout::Impl {
     float tab_stop{};
     float measured_width{};
 
+    struct LineGeometry {
+        double ascent{}, descent{}, baseline{}, left{}, width{};
+    };
+
+    // Compact immutable geometry. Native getLineMetricsAt rebuilds every style
+    // run's font metrics, so calling it for each tab/caret is quadratic.
+    std::vector<LineGeometry> lines;
+
     [[nodiscard]] std::size_t floor_boundary(std::size_t offset) const {
         if (offset > text.size()) {
             throw std::out_of_range("Text offset exceeds the UTF-8 line");
@@ -306,10 +315,10 @@ struct TextLayout::Impl {
         result.x = (trailing != rtl) ? glyph.fGraphemeLayoutBounds.right()
                                      : glyph.fGraphemeLayoutBounds.left();
         const auto line_index = shaped->getLineNumberAtUTF16Offset(byte_to_utf16[probe]);
-        paragraph::LineMetrics metrics;
-        if (shaped->getLineMetricsAt(line_index, &metrics)) {
-            result.y = static_cast<float>(metrics.fBaseline - metrics.fAscent);
-            result.height = static_cast<float>(metrics.fAscent + metrics.fDescent);
+        if (line_index >= 0 && static_cast<std::size_t>(line_index) < lines.size()) {
+            const auto& metrics = lines[static_cast<std::size_t>(line_index)];
+            result.y = static_cast<float>(metrics.baseline - metrics.ascent);
+            result.height = static_cast<float>(metrics.ascent + metrics.descent);
         } else {
             result.y = glyph.fGraphemeLayoutBounds.top();
             result.height = glyph.fGraphemeLayoutBounds.height();
@@ -427,14 +436,29 @@ TextLayout TextLayoutEngine::layout(std::string text, const TextLayoutOptions& o
     std::vector<std::size_t> tab_offsets;
     float advance{};
     std::size_t segment_begin{};
+    // These are independent width estimates for tab-delimited segments, with
+    // one unchanged paragraph style. Repeated segments have identical widths;
+    // cache only this estimate, never a slice of the final shaped paragraph.
+    constexpr std::size_t max_segment_estimates = 256;
+    std::unordered_map<std::string_view, float> segment_estimates;
     for (std::size_t i = 0; i < result->text.size(); ++i) {
         if (result->text[i] != '\t') {
             continue;
         }
         if (i != segment_begin) {
-            advance +=
-                make_text(std::string_view(result->text).substr(segment_begin, i - segment_begin))
-                    ->getMaxIntrinsicWidth();
+            const auto segment =
+                std::string_view(result->text).substr(segment_begin, i - segment_begin);
+            const auto found = segment_estimates.find(segment);
+            float segment_width{};
+            if (found != segment_estimates.end()) {
+                segment_width = found->second;
+            } else {
+                segment_width = make_text(segment)->getMaxIntrinsicWidth();
+                if (segment_estimates.size() < max_segment_estimates) {
+                    segment_estimates.emplace(segment, segment_width);
+                }
+            }
+            advance += segment_width;
         }
         const auto width = next_tab_width(advance, result->tab_stop);
         tab_widths.push_back(width);
@@ -495,6 +519,14 @@ TextLayout TextLayoutEngine::layout(std::string text, const TextLayoutOptions& o
         }
         result->shaped = builder->Build();
         result->shaped->layout(layout_width);
+        std::vector<paragraph::LineMetrics> metrics;
+        result->shaped->getLineMetrics(metrics);
+        result->lines.clear();
+        result->lines.reserve(metrics.size());
+        for (const auto& line : metrics) {
+            result->lines.push_back(
+                {line.fAscent, line.fDescent, line.fBaseline, line.fLeft, line.fWidth});
+        }
     };
     build_paragraph();
     // Wrapping and bidi placement can move a tab to another visual position.
@@ -512,17 +544,17 @@ TextLayout TextLayoutEngine::layout(std::string text, const TextLayoutOptions& o
         for (std::size_t i = 0; i < boxes.size(); ++i) {
             const auto number =
                 result->shaped->getLineNumberAtUTF16Offset(result->byte_to_utf16[tab_offsets[i]]);
-            paragraph::LineMetrics metrics;
-            if (!result->shaped->getLineMetricsAt(number, &metrics)) {
+            if (number < 0 || static_cast<std::size_t>(number) >= result->lines.size()) {
                 throw std::runtime_error("Tab line metrics are unavailable");
             }
+            const auto& metrics = result->lines[static_cast<std::size_t>(number)];
             line_numbers.push_back(number);
             positions.push_back(rtl_tabs
                                     ? (options.wrap_width > 0
                                            ? options.wrap_width
-                                           : static_cast<float>(metrics.fLeft + metrics.fWidth)) -
+                                           : static_cast<float>(metrics.left + metrics.width)) -
                                           boxes[i].rect.right()
-                                    : boxes[i].rect.left() - static_cast<float>(metrics.fLeft));
+                                    : boxes[i].rect.left() - static_cast<float>(metrics.left));
         }
         for (std::size_t i = 0; i < boxes.size(); ++i) {
             visual_order.push_back(i);

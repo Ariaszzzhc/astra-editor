@@ -346,8 +346,30 @@ pointer input prepares the current text/style before hit testing, including
 multiple SDL events processed before the next paint. The cache key includes
 all layout options, so theme/font/DPI changes replace geometry. Failed text or
 style preparation preserves the previous cache entry. These single-line fields
-are bounded to 16 KiB and still shape synchronously; background editable shaping
-and row-internal incremental layout are not established by this component.
+are bounded to 16 KiB. Cold fields of at least 4096 UTF-8 bytes use the shared
+layout queue; short fields and exact cache hits remain immediate. Pending fields
+paint their border and a progress marker without using geometry from old text.
+Worker failures retain the document/cache, display an error, and leave other
+controls active. Field cancellation/destruction discards its own pending job.
+
+Pointer placement waiting for editable geometry captures widget identity/epoch,
+focused field, document revision/selection, style, coordinates and a 30-second
+deadline. Following SDL input owns its text/IME payloads in a FIFO limited to
+256 events / 64 KiB, with a 16 KiB per-payload limit. Adjacent motion packets
+coalesce. Replay accepts at most 16 events, checking a 4 ms frame budget between
+events and checking the current target before each event; changed focus/content/
+style rejects obsolete input
+visibly. Escape, window closure and the inline form's close button bypass the
+queue. These input deadlines are soft, as are native layout deadlines.
+
+Paragraph layout caches compact numeric line metrics once per native layout.
+Tab refinement and caret queries reuse them instead of repeatedly asking
+SkParagraph to rebuild every style run's font metrics. A bounded 256-entry cache
+also reuses repeated tab-delimited width estimates within one unchanged style;
+the final paragraph still receives full native Unicode/bidi/tab shaping.
+Text validation, document flattening and short/preedit shaping remain explicit
+UI-thread costs. This does not establish row-internal incremental glyph shaping,
+bounded native font/paragraph heaps or constant frame latency.
 
 ## Upstream references
 

@@ -18,6 +18,122 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### Background editable input and native line metrics (2026-10-10)
+
+Modal inputs and inline form fields now share background preparation through
+`TextInputLayout` and the existing libuv `LayoutJobs`. Cold single-line inputs
+of at least 4096 UTF-8 bytes submit one coalesced job; short inputs and exact
+text/style cache hits remain immediate. Content/style changes cancel obsolete
+jobs. Failed preparation retains the successful cache and document, reports an
+error, and paints an unavailable state while other controls remain usable.
+
+Geometry-dependent pointer input captures widget identity/epoch, focused field,
+document revision/selection, exact style and a 30-second deadline. Following SDL
+input owns its text and IME payloads in `InputEvents`: 256 events / 64 KiB total,
+16 KiB per payload, adjacent-motion coalescing and FIFO transitions/text. Replay
+accepts at most 16 events, checking a 4 ms frame budget between events. Target
+changes reject obsolete input visibly; Escape, window closure and inline-form
+close bypass the queue. Both
+pointer and native layout deadlines are soft; native calls still drain safely.
+Agent view state exposes input pending/queue and shared worker observations.
+JavaScript continues to own dialog/form workflows and await their existing APIs.
+
+A 13.5 KiB tab/CJK/emoji/combining/bidi paragraph exposed repeated native font
+metric construction in `getLineMetricsAt`, once for each tab and caret. The
+paragraph now retains compact numeric metrics from one `getLineMetrics` call
+per actual layout. Refinement and caret queries reuse those native metrics.
+Identical tab-delimited width estimates also reuse a bounded 256-entry cache
+within one unchanged style. Final paragraphs still use full native shaping.
+
+Focused Windows evidence:
+
+- `./scripts/xmake.ps1 build -y gui-presentation-smoke` passed in Debug.
+  `viewport-layout-tests` and the UI were rebuilt during this increment as well.
+- `./build/windows/x64/debug/viewport-layout-tests.exe` passed real Windows font/
+  SkParagraph pixels, grapheme carets/hits and UTF-16 comparisons. New checks
+  cover cold editable shaping, frame coalescing, exact changed-style geometry,
+  late cancellation, terminal worker errors, destruction and admission retry.
+  Deferred SDL events cover owned/moved payloads, captured modifiers, motion
+  coalescing and event/byte overflow without losing already accepted entries.
+- `./build/windows/x64/debug/gui-presentation-smoke.exe` passed on actual
+  SDL3/Graphite/Dawn. Long modal/form pointer/text placement agrees with
+  independently shaped geometry. Confirm, Escape, close-button cancellation and
+  a programmatic update interleaved with a captured input sequence preserve the
+  expected content. The latter observed an accepted JS update and visible stale
+  input rejection. Log: `build/editable-async-gui-debug.log`.
+- Visually inspected `build/graphics/gui-editable-long-input.png`: long mixed
+  Unicode input, field clipping, caret and focused border render correctly.
+  This is component evidence, not whole-product visual acceptance.
+- `./scripts/format.ps1 -Offline`: 145 C++ / 12 JS files passed. JS additions
+  inside the C++ test fixture are directly written across readable lines.
+
+Corrections and retained failures:
+
+- The earlier shared-input entry overstated its same-batch pointer regression:
+  the old mouse helper settled between events. This increment uses an enqueue-
+  only helper for text/pointer/text and drains the actual SDL batch together.
+- The first build incorrectly treated `utf8::validate` as a boolean instead of
+  its throwing/void interface. It was corrected before rebuilding. The log is
+  `editable-async-build-first-failed.log`.
+- Initial long-tab layout runs exceeded the worker deadline. Reusing segment
+  estimates alone did not resolve this. Profiling the pinned native call path
+  identified line metric rebuilding; temporary profiling was removed after the
+  compact metric cache fix. Logs: `editable-async-viewport-first-failed.log`,
+  `editable-async-viewport-diagnostic-failed.log`,
+  `editable-async-tab-cache-failed.log`, and
+  `editable-async-tab-probe-first-failed.log`.
+- Early GUI waits checked before an actual paint submitted work, and one later
+  wait expired while the native metric bottleneck remained. Preserved logs:
+  `editable-async-gui-first-failed.log`, `editable-async-gui-diagnostic-failed.log`
+  and `editable-async-gui-wait-failed.log`.
+- The first script race scheduled the update before pointer capture and therefore
+  observed a valid click on the changed text. It now captures a bounded backlog
+  before starting the script. The next fixture inferred the JS result from a
+  status subsequently replaced by the intended stale-input error. It now records
+  and checks the actual form API result independently of status/error. Logs:
+  `editable-async-gui-race-first-failed.log`,
+  `editable-async-gui-race-second-failed.log` and
+  `editable-async-gui-race-diagnostic-failed.log`.
+
+Integrated Windows evidence before the final post-pointer close correction:
+
+- `./scripts/test.ps1 -Mode all -Gui` passed. Debug: 557 cases / 1,185,931
+  assertions; Release: 557 cases / 1,185,797 assertions. Zero failures/skips.
+  Both passed CLI/TCP, actual D3D12/Dawn/Graphite readback, native Unicode/pixel
+  checks, editable background layout, all GUI workflows, real clangd/Git,
+  workspace/recovery and shutdown. Package helpers passed 12 checks; no new
+  distribution package was produced. Log: `build/editable-async-acceptance-all.log`.
+- An additional real GUI regression then completed pointer placement while
+  retaining queued keys/text and closed the form through its JS API. It exposed
+  a real cancellation omission: closing cleared only a pending pointer, leaving
+  post-pointer input to be reported as stale. Form close now clears the matching
+  widget/epoch input sequence; global cancellation clears queued input as well.
+  The failed Release fixture is retained in
+  `build/editable-async-close-first-failed.log`.
+
+Final Windows evidence after the post-pointer close correction:
+
+- Rebuilt `astra`, `gui-smoke`, `gui-presentation-smoke`, `gui-services-smoke`,
+  `gui-recovery-smoke` and `gui-workspace-smoke` in both configurations with
+  `./scripts/xmake.ps1 build -y` followed by those target names. Build logs:
+  `editable-async-final-build-{debug,release}.log`.
+- Ran `gui-presentation-smoke.exe`, `gui-smoke.exe`, `gui-services-smoke.exe`,
+  `gui-recovery-smoke.exe`, `gui-workspace-smoke.exe` and `gui-smoke.exe --tcp`
+  from both `build/windows/x64/debug/` and `release/`: every run passed. This
+  includes JS form close after pointer completion with retained keys/text, the
+  programmatic update race, native Escape/close controls and the existing real
+  editing, clangd/Git, recovery/workspace, input ordering and shutdown workflows.
+  Logs: `build/editable-async-final-gui-*-{debug,release}.log`.
+- `./scripts/format.ps1 -Check -Offline`: 145 C++ / 12 JS files passed;
+  `git diff --check` passed. Log: `editable-async-final-format-check.log`.
+- Restored Debug with `./scripts/xmake.ps1 f -m debug -y` before the final Debug
+  build/tests. Log: `editable-async-final-restore-debug.log`.
+
+Text validation/flattening, short/preedit shaping and remaining native window
+components can still cost UI time. Row-internal incremental glyph layout,
+complete component extraction, whole-product visual acceptance and a new final
+distribution package remain incomplete. No non-Windows validation is claimed.
+
 ### Shared editable input behavior and geometry (2026-10-10)
 
 Modal input/picker fields now use the same bounded Unicode document model and

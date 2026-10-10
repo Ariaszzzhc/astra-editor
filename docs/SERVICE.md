@@ -322,7 +322,13 @@ following service workflow stays in JS. Abort dismisses the matching dialog and
 drains its native future. Dialogs default to five minutes, with a separate bounded
 client task deadline. UI automation distinguishes waiting for user input from
 unfinished background operations. Input is bounded to 16 KiB; confirmation
-details to 64 KiB. Native text panels index logical CR/LF/CRLF rows and bound their
+details to 64 KiB. Cold editable inputs of at least 4096 UTF-8 bytes prepare
+paragraph geometry on the shared libuv worker queue. Pointer-dependent input
+waits for matching widget/focus/revision/style; following SDL text/IME packets
+own their payloads in a bounded FIFO. Programmatic changes invalidate obsolete
+input visibly, while Escape and native close controls remain responsive. The
+limits, replay budget and soft deadlines are documented in [GRAPHICS.md](GRAPHICS.md).
+Native text panels index logical CR/LF/CRLF rows and bound their
 source to 8 MiB and 100,000 lines; diff shaping caches only a bounded visible-row
 working set. Git comparison uses this same component: JS captures its path,
 staged state and exact service preview identity; JS decides line tones, offers

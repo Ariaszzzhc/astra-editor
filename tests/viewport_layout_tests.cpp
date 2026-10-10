@@ -1,6 +1,7 @@
 #include <astra/ui/document_viewport.hpp>
 #include <astra/ui/text_surface.hpp>
 #include <astra/ui/text_input_layout.hpp>
+#include <astra/ui/input_events.hpp>
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkImageInfo.h"
@@ -234,7 +235,12 @@ void differential(TextLayoutEngine& engine) {
 template <typename Predicate> void await(LayoutJobs& jobs, Predicate predicate) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (!predicate()) {
-        require(std::chrono::steady_clock::now() < deadline, "Layout worker did not drain");
+        const auto stats = jobs.statistics();
+        require(std::chrono::steady_clock::now() < deadline,
+                "Layout worker did not drain: jobs=" + std::to_string(stats.jobs) +
+                    " running=" + std::to_string(stats.running) +
+                    " submitted=" + std::to_string(stats.submitted) +
+                    " completed=" + std::to_string(stats.completed));
         jobs.poll();
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -552,9 +558,171 @@ void editable_geometry(astra::ui::TextLayoutEngine& engine) {
                  "stale text and atomic failure preservation: PASS\n";
 }
 
-int main() {
+void editable_background(TextLayoutEngine& engine) {
+    auto jobs = std::make_shared<LayoutJobs>();
+    TextInputLayout input(engine, jobs);
+    TextLayoutOptions style;
+    style.direction = TextDirection::automatic;
+    std::string text;
+    for (int index = 0; index < 900; ++index) {
+        text += "中🙂éאב\t";
+    }
+    require(input.prepare_async(text, style) == nullptr && input.pending(),
+            "Cold editable input shaped synchronously");
+    for (int frame = 0; frame < 20; ++frame) {
+        require(input.prepare_async(text, style) == nullptr,
+                "Pending editable input exposed mismatched geometry");
+    }
+    require(jobs->statistics().submitted == 1, "Repeated editable frames duplicated work");
+    std::cout << "Editable background: awaiting original paragraph\n" << std::flush;
+    await(*jobs, [&] {
+        input.poll();
+        return !input.pending();
+    });
+    const auto* original = input.prepare_async(text, style);
+    require(original != nullptr, "Completed editable input has no geometry");
+    equal(*original, engine.layout(text, style));
+    require(input.prepare_async(text, style) == original && jobs->statistics().submitted == 1,
+            "Exact editable cache hit submitted work");
+    auto changed = style;
+    changed.dpi_scale = 1.25F;
+    changed.font_size = 19;
+    changed.color = 0xFF32C481;
+    require(!input.prepare_async(text, changed), "Changed editable style reused old geometry");
+    const auto cancelled = jobs->statistics().cancelled;
+    const auto* short_input = input.prepare_async("short 中🙂", style);
+    require(short_input && jobs->statistics().cancelled > cancelled,
+            "New short input did not cancel obsolete shaping");
+    std::cout << "Editable background: awaiting cancellation\n" << std::flush;
+    await(*jobs, [&] {
+        return jobs->idle();
+    });
+    input.poll();
+    require(input.matches("short 中🙂") && input.layout() == short_input,
+            "Late editable result replaced new content");
+    auto invalid = style;
+    invalid.dpi_scale = 0;
+    require(!input.prepare_async(text, invalid), "Invalid long style bypassed the worker");
+    std::cout << "Editable background: awaiting invalid style\n" << std::flush;
+    await(*jobs, [&] {
+        input.poll();
+        return !input.pending();
+    });
+    const auto submitted = jobs->statistics().submitted;
+    bool rejected{};
+    try {
+        static_cast<void>(input.prepare_async(text, invalid));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    require(rejected && input.matches("short 中🙂") && jobs->statistics().submitted == submitted,
+            "Editable worker failure discarded valid geometry or resubmitted");
+    require(!input.prepare_async(text, changed), "Corrected editable style did not retry");
+    std::cout << "Editable background: awaiting corrected style\n" << std::flush;
+    await(*jobs, [&] {
+        input.poll();
+        return !input.pending();
+    });
+    equal(*input.prepare_async(text, changed), engine.layout(text, changed));
+    {
+        TextInputLayout retired(engine, jobs);
+        require(!retired.prepare_async(text + "!", style), "Cold retired input was synchronous");
+    }
+    std::cout << "Editable background: awaiting destruction\n" << std::flush;
+    await(*jobs, [&] {
+        return jobs->idle();
+    });
+    require(jobs->statistics().bytes == 0, "Destroyed input retained worker accounting");
+    LayoutJobLimits limits;
+    limits.jobs = 1;
+    auto full = std::make_shared<LayoutJobs>(limits);
+    const auto blocker = full->submit(text, style);
+    TextInputLayout waiting(engine, full);
+    require(!waiting.prepare_async(text + "?", style) && waiting.pending() &&
+                full->statistics().submitted == 1,
+            "Editable backpressure exceeded the queue limit");
+    static_cast<void>(result(*full, *blocker));
+    std::cout << "Editable background: awaiting backpressure retry\n" << std::flush;
+    await(*full, [&] {
+        waiting.poll();
+        return !waiting.pending();
+    });
+    equal(*waiting.prepare_async(text + "?", style), engine.layout(text + "?", style));
+    std::cout << "Editable background layout: exact Unicode/style pixels, coalescing, "
+                 "late cancellation, terminal errors, destruction and backpressure: PASS\n";
+}
+
+void input_event_ownership() {
+    InputEvents queue;
+    std::string source = "中🙂";
+    SDL_Event text{};
+    text.type = SDL_EVENT_TEXT_INPUT;
+    text.text.text = source.c_str();
+    queue.push(text, SDL_KMOD_SHIFT);
+    source = "different";
+    auto stored = queue.take();
+    require(std::string(stored.get().text.text) == "中🙂" && stored.modifiers == SDL_KMOD_SHIFT &&
+                queue.bytes() == 0,
+            "Deferred text lost ownership or captured modifiers");
+    SDL_Event motion{};
+    motion.type = SDL_EVENT_MOUSE_MOTION;
+    motion.motion.x = 4;
+    queue.push(motion, SDL_KMOD_NONE);
+    motion.motion.x = 9;
+    queue.push(motion, SDL_KMOD_SHIFT);
+    require(queue.size() == 1 && queue.take().get().motion.x == 9,
+            "Adjacent motion events did not coalesce");
+    SDL_Event key{};
+    key.type = SDL_EVENT_KEY_DOWN;
+    key.key.key = SDLK_LEFT;
+    for (std::size_t index = 0; index < InputEvents::max_events; ++index) {
+        queue.push(key, SDL_KMOD_NONE);
+    }
+    bool rejected{};
+    try {
+        queue.push(key, SDL_KMOD_NONE);
+    } catch (const std::length_error&) {
+        rejected = true;
+    }
+    require(rejected && queue.size() == InputEvents::max_events,
+            "Event capacity failure discarded accepted input");
+    queue.clear();
+    source.assign(InputEvents::max_text_bytes, 'a');
+    text.text.text = source.c_str();
+    for (int index = 0; index < 4; ++index) {
+        queue.push(text, SDL_KMOD_NONE);
+    }
+    rejected = false;
+    try {
+        queue.push(text, SDL_KMOD_NONE);
+    } catch (const std::length_error&) {
+        rejected = true;
+    }
+    require(rejected && queue.size() == 4 && queue.bytes() == InputEvents::max_bytes,
+            "Payload capacity failure changed accepted input");
+    queue.clear();
+    source.push_back('!');
+    text.text.text = source.c_str();
+    rejected = false;
+    try {
+        queue.push(text, SDL_KMOD_NONE);
+    } catch (const std::length_error&) {
+        rejected = true;
+    }
+    require(rejected && queue.size() == 0, "Oversized payload entered the input queue");
+    std::cout << "Deferred SDL input: payload ownership, modifiers, motion coalescing, "
+                 "event/byte bounds and atomic admission failure: PASS\n";
+}
+
+int main(int argc, char* argv[]) {
     try {
         TextLayoutEngine engine;
+        if (argc == 2 && std::string_view(argv[1]) == "--editable") {
+            editable_geometry(engine);
+            editable_background(engine);
+            input_event_ownership();
+            return 0;
+        }
         reuse(engine);
         limits(engine);
         option_keys(engine);
@@ -563,6 +731,8 @@ int main() {
         background_viewport(engine);
         text_surfaces(engine);
         editable_geometry(engine);
+        editable_background(engine);
+        input_event_ownership();
         std::shared_ptr<const TextLayout> retained;
         {
             TextLayoutEngine temporary;
