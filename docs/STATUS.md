@@ -20,6 +20,72 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### Cached asynchronous document IME preparation (2026-10-11)
+
+Document preedit now uses the existing shared `TextInputLayout` / libuv layout
+queue instead of shaping a new paragraph on every paint. Cold candidates of at
+least 4096 UTF-8 bytes return a progress underline while the owner loop continues;
+short candidates and exact cache hits remain immediate. The key includes font,
+DPI, line height, foreground and automatic direction. Candidate updates accept
+at most 16 KiB of single-line UTF-8 and validate/allocate before replacing the
+retained preview. Preedit never changes document text, selections or history.
+
+One clearing path retires candidate jobs/cache on empty updates, Escape,
+document activation/active-document closure, input focus changes, window focus
+loss and shutdown. Explicit cancellation dismisses native composition through
+the narrow SDL adapter. Committed text clears only the preview: it does not
+cancel an OS composition started after that packet. Pending ticketless work is
+included in native idle detection. View state reports pending/drawn status,
+candidate byte count and the actual paragraph foreground for GUI observability.
+Preparation exceptions report an IME preview error and paint an error marker
+without closing the window through its fatal renderer boundary. Failed job keys
+do not resubmit during repaint; changing the candidate/style or clearing the
+preview permits another preparation.
+
+Windows evidence:
+
+- `./scripts/format.ps1 -Offline` passed 157 C++ / 13 JS files;
+  log: `build/document-ime-format.log`.
+- `./scripts/xmake.ps1 build -y -j 2 gui-smoke astra` passed in Debug;
+  log: `build/document-ime-build-debug.log`.
+- `./build/windows/x64/debug/gui-smoke.exe` passed the real SDL3 / Graphite /
+  Dawn local editing workflow; log: `build/document-ime-gui-debug.log`.
+  New checks send 13,000-byte CJK/emoji/combining candidates, require cold
+  asynchronous publication and one worker submission, then verify eight warm
+  paints and an identical candidate submit no additional shaping. Theme changes
+  replace foreground geometry. Candidate cancellation, document switch/close
+  and focus loss drain obsolete work. Oversized, malformed UTF-8 and multiline
+  candidates retain the prior preview and entire authoritative document state.
+- First `./scripts/test.ps1 -Mode all -Gui` passed with exit code 0. Debug:
+  582 cases / 1,616,808 assertions; Release: 582 cases / 1,616,795 assertions.
+  All GUI/TCP workflows and 12 package-helper invariants passed.
+  Log: `build/document-ime-acceptance-all.log`. Subsequent review found that
+  native preedit preparation failures reached the fatal renderer boundary;
+  corrected the exception boundary.
+- Final `./scripts/test.ps1 -Mode all -Gui` passed with exit code 0 using
+  unchanged native source/resources. Debug: 582 cases / 1,616,913 assertions;
+  Release: 582 cases / 1,616,774 assertions, zero failed/skipped. All renderer,
+  font, viewport, input, editing/service/recovery/workspace/presentation GUI
+  workflows and TCP editing passed, as did 12 package-helper invariants.
+  Log: `build/document-ime-acceptance-all-final.log`. Existing real-worker
+  editable-layout checks cover failed native style, retained cache, terminal
+  failure/no resubmission, corrected style, cancellation and destruction.
+- Actual GPU captures `build/graphics/gui-document-ime.png` and
+  `build/graphics/gui-document-ime-tcp.png` were inspected: the
+  candidate's CJK/emoji/combining glyphs and underline stay clipped to the document
+  viewport, with the changed foreground. This validates injected SDL events,
+  not a physical input-method candidate window or scalar-range candidate styling.
+- After final acceptance exited, `./scripts/xmake.ps1 f -m debug -y` restored
+  Debug configuration (`build/document-ime-restore-debug.log`). Final
+  `./scripts/format.ps1 -Check -Offline` passed 157 C++ / 13 JS files and
+  `git diff --check` passed; log: `build/document-ime-final-check.log`.
+
+Further native component extraction, row-internal incremental glyph layout,
+whole-product visual acceptance and a new distribution remain incomplete.
+SDL candidate start/length styling is not implemented by this painter; physical
+IME interaction remains unverified.
+No non-Windows validation is claimed.
+
 ### JS file icon policy and bounded descriptors (2026-10-10)
 
 Shipped `fileIcons` preferences now own filename, longest compound-extension and

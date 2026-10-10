@@ -395,6 +395,23 @@ older request, and blur/empty preedit releases its cache and retires its job.
 The underline follows native paragraph height. Preedit never mutates the input
 model. The existing JS form/dialog APIs and asynchronous workflows are unchanged.
 
+Document IME preedit uses the same exact text/style cache and shared layout queue.
+Its single-line UTF-8 payload is bounded to 16 KiB; malformed or oversized
+updates reject before replacing the current preview. Cold candidates of at least
+4096 bytes prepare in the background, displaying only a progress underline while
+pending. Identical candidates reuse their paragraph. Font, DPI, line-height and
+foreground changes invalidate the exact key; direction detection is automatic.
+Candidate replacement/empty updates retire obsolete work. Escape, document
+activation/closure, field focus changes, window focus loss and shutdown release
+the preview and dismiss the native composition. A committed SDL text packet
+clears the preview without cancelling a subsequent OS composition. Preparing
+preedit never changes document text, selections or undo history. Candidate-range
+styling from SDL's scalar start/length fields is not implemented by this painter.
+An IME preparation exception reports a preview error and paints an error marker,
+without routing it through the window's fatal renderer boundary. Failed queued
+keys remain terminal until the candidate/style changes or the preview is cleared;
+repainting does not resubmit failed work.
+
 Pointer placement waiting for editable geometry captures widget identity/epoch,
 focused field, document revision/selection, style, coordinates and a 30-second
 deadline. Following SDL input owns its text/IME payloads in a FIFO limited to
@@ -410,8 +427,8 @@ Tab refinement and caret queries reuse them instead of repeatedly asking
 SkParagraph to rebuild every style run's font metrics. A bounded 256-entry cache
 also reuses repeated tab-delimited width estimates within one unchanged style;
 the final paragraph still receives full native Unicode/bidi/tab shaping.
-Text validation, document flattening, short field/preedit shaping and document
-IME preedit preparation remain explicit UI-thread costs. This does not establish
+Text validation, document flattening and short field/preedit shaping remain
+explicit UI-thread costs. This does not establish
 row-internal incremental glyph shaping,
 bounded native font/paragraph heaps or constant frame latency.
 

@@ -595,4 +595,10 @@ void Renderer::set_text_input_area(const SDL_Rect& area, int cursor_offset) {
     }
 }
 
+void Renderer::clear_composition() {
+    if (!SDL_ClearComposition(window())) {
+        sdl_failure("Dismiss IME composition");
+    }
+}
+
 } // namespace astra::ui

@@ -413,6 +413,18 @@ int main(int argc, char* argv[]) {
                 if(!await observed)throw new Error('Editor action cancellation did not reject');
                 await astra.ui.update({status:'Queued edit cancelled'});
             });
+            let compositionStyle;
+            astra.ui.registerCommand({
+                id: 'acceptance.ime.recolor', title: 'Recolor IME preview'
+            }, async () => {
+                compositionStyle = await astra.ui.style.read();
+                await astra.ui.style.update({theme: {foreground: '#F0B040'}});
+            });
+            astra.ui.registerCommand({
+                id: 'acceptance.ime.restore', title: 'Restore IME preview style'
+            }, async () => {
+                await astra.ui.style.update(compositionStyle);
+            });
         })js";
         std::shared_ptr<astra::ui::EditorChannel> channel = host;
         if (remote) {
@@ -650,6 +662,100 @@ int main(int argc, char* argv[]) {
         settle(window);
         require(read_document(host, id).at("text") == "Xalpha\nXbeta",
                 "IME preedit modified the document before commit");
+        const auto before_composition = read_document(host, id);
+        const auto composition_tabs = window.view_state().tabs;
+        std::string long_composition;
+        for (unsigned index = 0; index < 1300; ++index) {
+            long_composition += "中🙂e\xCC\x81";
+        }
+        const auto enqueue_composition = [&](const std::string& value) {
+            composing.edit.text = value.c_str();
+            require(SDL_PushEvent(&composing), "Cannot queue document composition");
+            require(window.pump(), "Window closed during document composition");
+        };
+        const auto worker_before = window.view_state().input_layout.at("workerSubmitted");
+        enqueue_composition(long_composition);
+        const auto cold_composition = window.view_state().input_layout;
+        require(cold_composition.at("documentCompositionPending") == true &&
+                    cold_composition.at("documentCompositionDrawn") == false &&
+                    cold_composition.at("documentCompositionBytes") == long_composition.size(),
+                "Cold long IME preview blocked paint or displayed stale geometry");
+        settle(window);
+        require(window.view_state().input_layout.at("documentCompositionDrawn") == true &&
+                    window.view_state().input_layout.at("documentCompositionPending") == false &&
+                    window.view_state().input_layout.at("workerSubmitted").get<std::size_t>() ==
+                        worker_before.get<std::size_t>() + 1,
+                "Long IME preview did not publish one background paragraph");
+        const auto warm_composition = window.view_state();
+        for (unsigned frame = 0; frame < 8; ++frame) {
+            require(window.pump(), "Window closed during warm IME paint");
+        }
+        enqueue_composition(long_composition);
+        settle(window);
+        require(window.view_state().input_layout.at("workerSubmitted") ==
+                        warm_composition.input_layout.at("workerSubmitted") &&
+                    window.view_state().document_viewport.at("shaped") ==
+                        warm_composition.document_viewport.at("shaped") &&
+                    read_document(host, id) == before_composition,
+                "Warm IME paint resubmitted shaping or changed document state");
+        window.execute_ui_command("acceptance.ime.recolor");
+        settle(window);
+        require(window.view_state().input_layout.at("documentCompositionColor") == 0xFFF0B040 &&
+                    window.view_state().input_layout.at("documentCompositionDrawn") == true,
+                "IME preview retained geometry with obsolete theme colors");
+        window.request_screenshot(remote ? "build/graphics/gui-document-ime-tcp.png"
+                                         : "build/graphics/gui-document-ime.png");
+        settle(window);
+        window.execute_ui_command("acceptance.ime.restore");
+        settle(window);
+
+        const auto cleared_composition = [&] {
+            const auto state = window.view_state().input_layout;
+            require(state.at("documentCompositionBytes") == 0 &&
+                        state.at("documentCompositionPending") == false &&
+                        state.at("documentCompositionDrawn") == false &&
+                        read_document(host, id) == before_composition,
+                    "Cancelled IME preview survived or changed document state");
+        };
+        long_composition += "!";
+        enqueue_composition(long_composition);
+        key(window, SDLK_ESCAPE);
+        cleared_composition();
+        enqueue_composition(long_composition);
+        window.execute_ui_command("ui.new");
+        settle(window);
+        require(window.active_document_id() != id, "IME blocked opening another document");
+        cleared_composition();
+        window.execute_ui_command("ui.closeTab");
+        settle(window);
+        require(window.active_document_id() == id && window.view_state().tabs == composition_tabs,
+                "Composition cancellation changed retained tabs");
+        enqueue_composition(long_composition);
+        SDL_Event focus_lost{};
+        focus_lost.type = SDL_EVENT_WINDOW_FOCUS_LOST;
+        focus_lost.window.windowID = SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&focus_lost), "Cannot queue IME focus loss");
+        settle(window);
+        cleared_composition();
+
+        const std::string short_composition = "中文";
+        enqueue_composition(short_composition);
+        settle(window);
+        for (const auto& invalid :
+             {std::string(16385, 'x'), std::string("\xFF"), std::string("candidate\nline")}) {
+            enqueue_composition(invalid);
+            require(!window.last_error().empty() &&
+                        window.view_state().input_layout.at("documentCompositionBytes") ==
+                            short_composition.size() &&
+                        read_document(host, id) == before_composition,
+                    "Invalid IME candidate replaced the retained preview or document");
+            window.execute_ui_command("ui.cancel");
+            settle(window);
+            cleared_composition();
+            enqueue_composition(short_composition);
+            settle(window);
+        }
+        std::cerr << "GUI acceptance: asynchronous document IME passed\n";
         text(window, "中文🙂 e\xCC\x81");
         require(read_document(host, id).at("text") == "中文🙂 e\xCC\x81", "Unicode input failed");
         key(window, SDLK_A, SDL_KMOD_CTRL);

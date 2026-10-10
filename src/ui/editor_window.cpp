@@ -11,6 +11,7 @@
 #include "astra/ui/text_panel.hpp"
 #include "astra/ui/text_surface.hpp"
 #include "astra/ui/text_field.hpp"
+#include "astra/ui/text_input_layout.hpp"
 #include "astra/ui/text_labels.hpp"
 #include "astra/ui/picker_index.hpp"
 #include "astra/ui/decoration_indexes.hpp"
@@ -220,6 +221,9 @@ struct EditorWindow::Impl {
     Renderer renderer;
     TextLayoutEngine fonts;
     std::shared_ptr<LayoutJobs> layout_jobs = std::make_shared<LayoutJobs>();
+    TextInputLayout document_composition{fonts, layout_jobs};
+    bool document_composition_drawn{};
+    std::uint32_t document_composition_color{};
     std::map<std::string, Document> documents;
     TabIndex tabs;
     std::optional<TextLayoutOptions> tab_measure_style;
@@ -579,7 +583,7 @@ struct EditorWindow::Impl {
         active_id = id;
         reveal_tab = true;
         documents.at(id).needs_lines = true;
-        preedit.clear();
+        clear_preedit();
         vertical_column.reset();
     }
 
@@ -588,6 +592,7 @@ struct EditorWindow::Impl {
         documents.erase(id);
         workspace_notices.erase(id);
         if (active_id == id) {
+            clear_preedit();
             static_cast<void>(close_inline_form());
             active_id = tabs.empty() ? std::string{} : tabs.id_at(tabs.size() - 1);
         }
@@ -677,6 +682,9 @@ struct EditorWindow::Impl {
     bool
     text_input_key(InlineForm&, const SDL_KeyboardEvent&, bool, bool, const std::function<void()>&);
     TextLayoutOptions input_style(float) const;
+    TextLayoutOptions composition_style() const;
+    void clear_preedit(bool cancel_native = true);
+    void set_preedit(const char* text);
     void draw_field(
         SkCanvas*, const InlineForm::Field&, Box, bool, bool, TextField&, std::string_view, float);
     const TextLayout* prepare_line(Document&, std::size_t);
@@ -1552,7 +1560,7 @@ bool EditorWindow::Impl::native_idle(bool waiting_inputs) const {
     return requests.empty() && !active_request && operations.empty() && pending_edits.empty() &&
            pending_reads.empty() && closing_pending.empty() && form_events.empty() &&
            sidebar_views.quiescent() && inputs_idle && layout_jobs->idle() && !input_point &&
-           input_events.size() == 0 && pending_styles.empty();
+           input_events.size() == 0 && pending_styles.empty() && !document_composition.pending();
 }
 
 void EditorWindow::Impl::emit_form(std::string_view event,
@@ -1588,7 +1596,7 @@ bool EditorWindow::Impl::close_inline_form(std::string_view id) {
     }
     emit_form("ui.form.closed", {}, inline_form);
     if (inline_form->focus())
-        preedit.clear();
+        clear_preedit();
     clear_form_cache(*inline_form);
     static_cast<void>(forms.close(inline_form->id()));
     return true;
@@ -1766,7 +1774,7 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
                                                                        : Prompt::policy_confirm))));
     prompt_text = value;
     prompt_choice = kind == "choice" ? spec.value("defaultChoice", std::size_t{0}) : 0;
-    preedit.clear();
+    clear_preedit();
     consumed_modal_text = false;
     return result;
 }
@@ -1781,7 +1789,7 @@ void EditorWindow::Impl::finish_dialog(Json value) {
     prompt = Prompt::none;
     prompt_text.clear();
     dragging_dialog_input = false;
-    preedit.clear();
+    clear_preedit();
     pending.completion.set_value(std::move(value));
 }
 
@@ -1971,7 +1979,7 @@ bool EditorWindow::Impl::point_dialog_input(float x, float y, bool extend) {
     auto& input_geometry = *dialog->input_layout;
     const auto [text_x, text_y] = input_geometry.to_text(layout.input, scale, x, y);
     point_input(*dialog->input, 0, input_geometry, text_x, text_y, extend, dialog->id);
-    preedit.clear();
+    clear_preedit();
     return true;
 }
 
@@ -2262,7 +2270,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         }
         dragging_form_field.reset();
         dragging_form_id.clear();
-        preedit.clear();
+        clear_preedit();
         if (!forms.find(id)->view().empty())
             sidebar_views.at(forms.find(id)->view()).expanded = true;
         return forms.find(id)->state();
@@ -2303,7 +2311,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
                     static_cast<std::size_t>(found - form->fields().begin()),
                     params.value("selectAll", true));
         dragging_form_field.reset();
-        preedit.clear();
+        clear_preedit();
         return form->state();
     }
     if (method == "_ui.form.blur") {
@@ -2311,7 +2319,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         if (!form)
             return false;
         if (form->focus())
-            preedit.clear();
+            clear_preedit();
         form->focus(std::nullopt);
         dragging_form_field.reset();
         return true;
@@ -2335,7 +2343,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         if (params.value("editor", false)) {
             focus_view(std::nullopt);
             forms.blur();
-            preedit.clear();
+            clear_preedit();
             return true;
         }
         const auto id = params.value("id", active_view);
@@ -2478,7 +2486,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             if (!show_sidebar)
                 if (const auto* focused = forms.focused(); focused && !focused->view().empty()) {
                     forms.blur();
-                    preedit.clear();
+                    clear_preedit();
                 }
         } else if (name == "outlineVisible") {
             show_outline = value.get<bool>();
@@ -2491,7 +2499,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             if (const auto* focused = forms.focused();
                 focused && !focused->view().empty() && focused->view() != active_view) {
                 forms.blur();
-                preedit.clear();
+                clear_preedit();
             }
         } else if (name == "document" ||
                    name == "documents") { /* Applied before activation above. */
@@ -2715,7 +2723,7 @@ void EditorWindow::Impl::native_command(std::string_view name) {
         prompt = Prompt::none;
         quit_requested = false;
         quitting_fences.clear();
-        preedit.clear();
+        clear_preedit();
         error.clear();
     } else if (!name.starts_with("ui.")) {
         enqueue({"script.command",
@@ -2865,7 +2873,7 @@ void EditorWindow::Impl::focus_view(std::optional<std::string> id) {
     focused_view = std::move(id);
     focused_view_version = focused_view ? sidebar_views.at(*focused_view).version : std::string{};
     ++view_focus_sequence;
-    preedit.clear();
+    clear_preedit();
 }
 
 std::size_t EditorWindow::Impl::view_page() const {
@@ -3144,7 +3152,7 @@ bool EditorWindow::Impl::inline_key(const SDL_KeyboardEvent& input,
         return false;
     if (input.key == SDLK_TAB && !control) {
         form.cycle_focus(shift);
-        preedit.clear();
+        clear_preedit();
         return true;
     }
     const auto focused = *form.focus();
@@ -3436,14 +3444,17 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
     case SDL_EVENT_WINDOW_FOCUS_LOST:
         consumed_modal_keys.reset();
         consumed_modal_text = false;
+        clear_preedit();
         break;
     case SDL_EVENT_TEXT_EDITING:
         if (consumed_modal_text)
             break;
-        preedit = !focused_view && input.edit.text ? input.edit.text : "";
+        set_preedit(!focused_view ? input.edit.text : nullptr);
         break;
     case SDL_EVENT_TEXT_INPUT:
-        preedit.clear();
+        // The OS already committed this packet. Do not cancel a new composition
+        // which the platform may have started after emitting it.
+        clear_preedit(false);
         if (!input.text.text || focused_view || consumed_modal_text) {
             break;
         }
@@ -3579,7 +3590,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                 static_cast<void>(close_inline_form(form->id()));
                 break;
             }
-            preedit.clear();
+            clear_preedit();
             for (std::size_t i = 0; i < boxes.fields.size(); ++i)
                 if (boxes.fields[i].contains(mouse_x, mouse_y)) {
                     forms.focus(form->id(), i);
@@ -3612,7 +3623,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             break;
         focus_view(std::nullopt);
         forms.blur();
-        preedit.clear();
+        clear_preedit();
         if (!workspace_notice().empty() && mouse_x >= left + 12 * scale &&
             mouse_x < right - 12 * scale && mouse_y >= content_bottom - 142 * scale &&
             mouse_y < content_bottom - 106 * scale) {
@@ -3953,6 +3964,55 @@ void EditorWindow::Impl::draw_inline_form(SkCanvas* canvas) {
 
 TextLayoutOptions EditorWindow::Impl::input_style(float font_size) const {
     return ui_style.text(font_size, scale, ui_style.colors.foreground, 1.0F);
+}
+
+void EditorWindow::Impl::clear_preedit(bool cancel_native) {
+    const auto had_text = !preedit.empty();
+    preedit.clear();
+    document_composition.reset();
+    document_composition_drawn = false;
+    document_composition_color = 0;
+    if (cancel_native && had_text) {
+        renderer.clear_composition();
+    }
+}
+
+void EditorWindow::Impl::set_preedit(const char* text) {
+    std::size_t size{};
+    if (text) {
+        while (size <= InlineForm::max_input_bytes && text[size] != '\0') {
+            ++size;
+        }
+    }
+    if (size > InlineForm::max_input_bytes) {
+        throw std::length_error("IME composition exceeds its text bound");
+    }
+    const auto value = text ? std::string_view(text, size) : std::string_view{};
+    if (value.find_first_of("\r\n") != value.npos) {
+        throw std::invalid_argument("IME composition requires single-line UTF-8");
+    }
+    utf8::validate(value);
+    if (value == preedit) {
+        return;
+    }
+    std::string replacement(value);
+    document_composition.reset();
+    document_composition_drawn = false;
+    document_composition_color = 0;
+    preedit.swap(replacement);
+}
+
+TextLayoutOptions EditorWindow::Impl::composition_style() const {
+    TextLayoutOptions style;
+    style.font_size = options.font_size;
+    style.dpi_scale = scale;
+    style.line_height = std::clamp(editor_settings.value("lineHeight", 1.4F), 1.0F, 4.0F);
+    style.color = ui_style.colors.foreground;
+    style.direction = TextDirection::automatic;
+    if (editor_settings.contains("fontFamilies")) {
+        style.font_families = editor_settings.at("fontFamilies").get<std::vector<std::string>>();
+    }
+    return style;
 }
 
 void EditorWindow::Impl::input_area(float x, float y, float height) {
@@ -4443,6 +4503,8 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
 }
 
 void EditorWindow::Impl::draw() {
+    document_composition_drawn = false;
+    document_composition_color = 0;
     auto* canvas = renderer.begin_frame();
     if (!canvas) {
         return;
@@ -4922,19 +4984,40 @@ void EditorWindow::Impl::draw() {
                             0);
                     }
                     if (!preedit.empty() && prompt == Prompt::none && !forms.focused()) {
-                        auto composition = fonts.layout(
-                            preedit, TextLayoutOptions{options.font_size, scale, 1.5F});
+                        const TextLayout* composition{};
+                        std::uint32_t composition_color{};
+                        bool composition_failed{};
+                        try {
+                            const auto style = composition_style();
+                            composition = document_composition.prepare_async(preedit, style);
+                            composition_color = style.color;
+                        } catch (const std::exception& failure) {
+                            error = std::string("IME preview failed: ") + failure.what();
+                            composition_failed = true;
+                        }
+                        if (!composition) {
+                            rectangle(canvas,
+                                      cursor_x,
+                                      cursor_y + caret.height - scale,
+                                      4 * scale,
+                                      scale,
+                                      composition_failed ? ui_style.colors.error
+                                                         : ui_style.colors.accent);
+                            continue;
+                        }
+                        document_composition_drawn = true;
+                        document_composition_color = composition_color;
                         rectangle(canvas,
                                   cursor_x,
                                   cursor_y,
-                                  composition.width() + 4 * scale,
-                                  composition.height(),
+                                  composition->width() + 4 * scale,
+                                  composition->height(),
                                   ui_style.colors.background);
-                        composition.draw(canvas, cursor_x, cursor_y);
+                        composition->draw(canvas, cursor_x, cursor_y);
                         rectangle(canvas,
                                   cursor_x,
-                                  cursor_y + composition.height() - scale,
-                                  composition.width(),
+                                  cursor_y + composition->height() - scale,
+                                  composition->width(),
                                   scale,
                                   ui_style.colors.accent);
                     }
@@ -5264,6 +5347,14 @@ WorkbenchViewState EditorWindow::view_state() const {
                               {"reserved", retired.reserved},
                               {"bytes", retired.bytes}};
     result.input_layout = {{"pointerPending", impl_->input_point.has_value()},
+                           {"documentCompositionPending", impl_->document_composition.pending()},
+                           {"documentCompositionDrawn", impl_->document_composition_drawn},
+                           {"documentCompositionColor", impl_->document_composition_color},
+                           {"documentCompositionBytes",
+                            impl_->prompt == Impl::Prompt::none && !impl_->forms.focused() &&
+                                    !impl_->focused_view && impl_->current()
+                                ? impl_->preedit.size()
+                                : 0},
                            {"queuedEvents", impl_->input_events.size()},
                            {"queuedBytes", impl_->input_events.bytes()},
                            {"workerSubmitted", impl_->layout_jobs->statistics().submitted},
@@ -5366,6 +5457,7 @@ bool EditorWindow::pump() {
                 pending.completion.set_value(false);
             }
             impl_->stopping_workbench = true;
+            impl_->clear_preedit();
             impl_->clear_input_events();
             for (auto& pending : impl_->pending_styles) {
                 pending.completion.set_value(nullptr);
@@ -5398,6 +5490,7 @@ bool EditorWindow::pump() {
             }
         });
         impl_->layout_jobs->poll();
+        impl_->document_composition.poll();
         for (auto& [id, document] : impl_->documents) {
             static_cast<void>(id);
             document.viewport.poll_layouts();

@@ -45,6 +45,8 @@ class Renderer final {
 
     // SDL expects window coordinates, which can differ from physical pixels.
     void set_text_input_area(const SDL_Rect& area, int cursor_offset);
+    // Dismiss the OS composition without disabling text input.
+    void clear_composition();
 
   private:
     struct Impl;
