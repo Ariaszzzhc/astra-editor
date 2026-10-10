@@ -42,10 +42,6 @@ export function registerNativeCommands() {
         ['editor.add_cursor_below', 'Add cursor below', 'Ctrl+Alt+Down'],
         ['ui.closeWindow', 'Close window', 'Alt+F4'],
         ['ui.dismissWorkspaceNotice', 'Dismiss workspace notice'],
-        ['ui.selectFunction', 'Select enclosing function'],
-        ['ui.selectClass', 'Select enclosing class'],
-        ['ui.selectBlock', 'Select enclosing block'],
-        ['ui.selectString', 'Select string content'],
         ['ui.recovery', 'Review unsaved sessions'],
         ['ui.checkpoint', 'Write recovery checkpoint']
     ];

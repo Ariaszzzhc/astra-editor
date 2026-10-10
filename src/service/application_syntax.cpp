@@ -10,6 +10,7 @@ namespace astra::service {
 namespace {
 using protocol::Json;
 using protocol::RpcError;
+constexpr std::uint64_t max_js_byte_offset = 9007199254740991ULL;
 
 void allowed_fields(const Json& params, std::initializer_list<std::string_view> fields) {
     if (!params.is_object()) {
@@ -162,6 +163,7 @@ Json ApplicationService::syntax_view(const Json& params) {
                 (operation->second->state == "pending" || operation->second->state == "failed")) {
                 result["state"] = operation->second->state;
                 result["operationId"] = operation->first;
+                result["shared"] = true;
                 if (!operation->second->error.is_null()) {
                     result["error"] = operation->second->error;
                 }
@@ -223,11 +225,12 @@ Json ApplicationService::syntax_view(const Json& params) {
         SyntaxJob{snapshot.revision, *language, started["operationId"].get<std::string>()});
     result["state"] = "pending";
     result["operationId"] = started["operationId"];
+    result["shared"] = true;
     return result;
 }
 
 Json ApplicationService::select_object(const Json& params) {
-    allowed_fields(params, {"id", "baseRevision", "kind", "inner", "expand"});
+    allowed_fields(params, {"id", "baseRevision", "baseSelections", "kind", "inner", "expand"});
     auto& document = editor_.find_document(params);
     EditorService::require_revision(document, params);
     if (!params.contains("kind") || !params["kind"].is_string()) {
@@ -252,6 +255,40 @@ Json ApplicationService::select_object(const Json& params) {
     for (const auto flag : {"inner", "expand"}) {
         if (params.contains(flag) && !params[flag].is_boolean()) {
             throw RpcError(-32602, "Textobject flags must be boolean");
+        }
+    }
+    if (params.contains("baseSelections")) {
+        const auto& expected = params.at("baseSelections");
+        if (!expected.is_array() || expected.empty() ||
+            expected.size() > EditorService::max_selections) {
+            throw RpcError(-32602, "baseSelections requires a bounded nonempty array");
+        }
+        auto matches = expected.size() == document.selections().size();
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            const auto& item = expected.at(index);
+            allowed_fields(item, {"anchor", "head"});
+            for (const auto field : {"anchor", "head"}) {
+                if (!item.contains(field) || !item.at(field).is_number_integer() ||
+                    (!item.at(field).is_number_unsigned() &&
+                     item.at(field).get<std::int64_t>() < 0)) {
+                    throw RpcError(-32602,
+                                   "baseSelections requires nonnegative integer byte offsets");
+                }
+                const auto offset = item.at(field).get<std::uint64_t>();
+                if (offset > max_js_byte_offset ||
+                    offset > std::numeric_limits<std::size_t>::max()) {
+                    throw RpcError(-32602, "baseSelections exceeds the JavaScript-safe byte range");
+                }
+            }
+            if (index < document.selections().size()) {
+                const auto& current = document.selections().at(index);
+                matches = matches &&
+                          item.at("anchor").get<std::uint64_t>() == current.anchor.value &&
+                          item.at("head").get<std::uint64_t>() == current.head.value;
+            }
+        }
+        if (!matches) {
+            throw RpcError(-32001, "Document selections changed before syntax selection");
         }
     }
     const auto syntax = syntax_.find(document.id().value);

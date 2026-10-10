@@ -68,6 +68,20 @@ async function navigate(item, options) {
         });
 }
 export function registerLanguage() {
+    for (const [id, title, kind, inner] of [
+        ['ui.selectFunction', 'Select enclosing function', 'function', false],
+        ['ui.selectClass', 'Select enclosing class', 'class', false],
+        ['ui.selectBlock', 'Select enclosing block', 'block', false],
+        ['ui.selectString', 'Select string content', 'string', true]
+    ]) {
+        ui.registerCommand({ id, title }, (parameters) =>
+            ui.selectObject(
+                kind,
+                { ...parameters, inner: parameters.inner ?? inner },
+                { signal: parameters.signal, timeoutMs: parameters.timeoutMs }
+            )
+        );
+    }
     ui.registerCommand(
         { id: 'ui.completion', title: 'Trigger completion', shortcut: 'Ctrl+Space' },
         () =>

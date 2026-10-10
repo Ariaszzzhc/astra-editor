@@ -356,6 +356,73 @@ TEST_CASE("QuickJS late operation cancellation retains its originating request i
     CHECK(runtime.idle());
 }
 
+TEST_CASE("QuickJS cancelled late shared operations retain service ownership") {
+    std::promise<Json> delayed;
+    std::vector<std::string> requests;
+    Runtime runtime(Runtime::AsyncRequest{[&](std::string_view method, const Json&) {
+        requests.emplace_back(method);
+        CHECK(method == "document.syntax");
+        return delayed.get_future();
+    }});
+    const auto task = runtime.start_evaluation("astra.request('document.syntax')");
+    runtime.poll();
+    REQUIRE(requests == std::vector<std::string>{"document.syntax"});
+    runtime.cancel(task);
+    const auto outcome = runtime.take_result(task);
+    REQUIRE(outcome);
+    REQUIRE(outcome->error);
+    CHECK(outcome->error->at("name") == "AbortError");
+    runtime.poll();
+    CHECK_FALSE(runtime.idle());
+    delayed.set_value({{"operationId", "shared-parse"}, {"shared", true}, {"state", "pending"}});
+    runtime.poll();
+    runtime.poll();
+    CHECK(requests == std::vector<std::string>{"document.syntax"});
+    CHECK(runtime.request_owner() == 0);
+    CHECK(runtime.idle());
+}
+
+TEST_CASE("QuickJS shared operation timeout drains its waiter without cancelling the service") {
+    std::promise<Json> delayed;
+    std::vector<std::string> requests;
+    Runtime runtime(Runtime::AsyncRequest{[&](std::string_view method, const Json& params) {
+        requests.emplace_back(method);
+        if (method == "document.syntax") {
+            std::promise<Json> reply;
+            reply.set_value({{"operationId", "shared-parse"}, {"shared", true}});
+            return reply.get_future();
+        }
+        CHECK(method == "operation.get");
+        CHECK(params.at("id") == "shared-parse");
+        return delayed.get_future();
+    }});
+    const auto task = runtime.start_evaluation(R"js(
+        (async () => {
+            try {
+                await astra.request('document.syntax', {}, {timeoutMs: 50});
+            } catch (error) {
+                return error.name;
+            }
+        })()
+    )js");
+    runtime.poll();
+    runtime.poll();
+    REQUIRE(requests == std::vector<std::string>{"document.syntax", "operation.get"});
+    CHECK_FALSE(runtime.take_result(task));
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    runtime.poll();
+    const auto outcome = runtime.take_result(task);
+    REQUIRE(outcome);
+    CHECK_FALSE(outcome->error);
+    CHECK(outcome->value == "TimeoutError");
+    CHECK_FALSE(runtime.idle());
+    delayed.set_value({{"state", "completed"}, {"result", {{"state", "ready"}}}});
+    runtime.poll();
+    runtime.poll();
+    CHECK(requests == std::vector<std::string>{"document.syntax", "operation.get"});
+    CHECK(runtime.idle());
+}
+
 TEST_CASE("JavaScript async commands preserve service error codes and can recover") {
     Runtime runtime([](std::string_view method, const Json&) -> Json {
         if (method == "fail") {

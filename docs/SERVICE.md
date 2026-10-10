@@ -216,6 +216,41 @@ before an update publishes. Modal input may remain open. Cancellation removes
 unpublished updates; shutdown settles pending native futures without publication.
 The queue has a 30-second native deadline in addition to the request timeout.
 
+`astra.ui.selectObject(kind, parameters = {}, options = {})` is an asynchronous
+client workflow. Kinds are `function`, `class`, `comment`, `string`, `block`,
+`parameter` and `heading`; parameters accept `id`, `baseRevision`, `inner` and
+`expand`. The command captures a fenced document read and its selections, requests
+current syntax without downloading highlights/Outline, then awaits any parser
+operation through the shared service. Cancellation/timeouts prevent a later
+selection request. Unsupported or obsolete syntax returns `null` with a status;
+invalid flags reject and service failures remain observable.
+
+Syntax operation descriptors include `shared:true`: the service caches one parser
+job per document revision for all callers. Aborting or timing out an automatic JS
+wait drains its outstanding response without sending `operation.cancel`, including
+when the initial descriptor arrives after cancellation. Owned operation descriptors
+omit this marker and retain automatic cancellation. An explicit `operation.cancel`
+still requests service-job cancellation; clients should not use it to abandon only
+their wait on shared syntax.
+
+The resulting `document.selectObject` request includes optional `baseSelections`:
+a nonempty array of at most 4096 `{anchor, head}` JavaScript-safe UTF-8 byte
+integers matching the current selections exactly. A mismatch rejects with stale
+state code `-32001` before changing any selection. This guard is separate from
+`baseRevision`, because moving a cursor does not increment the text revision.
+Legacy service requests without that optional guard select from the current
+selections at dispatch. The same checks run for in-process and TCP clients.
+
+Default Select Function/Class/Block/String commands are registered in JS;
+String defaults to inner content. Users can override a command or call the same
+API with explicit flags. Publication uses `revealCaretFor: document.id`, an
+owner-loop UI update that reveals only if that document is still active. An
+async selection result cannot activate or scroll a different current document.
+The native command-result adapter also checks the returned document identity
+before revealing a caret, including after the JS completion callback.
+Duplicate native tab/sidebar/Outline/Explorer and textobject policy branches
+were removed; these product commands must resolve through the JS registry.
+
 `data/defaults.js` supplies complete settings and VS Code-style bindings.
 Explicit `--config <workspace-relative.js>` runs user configuration afterward:
 

@@ -2,6 +2,7 @@ const request = (method, params = {}, options) => astra.request(method, params, 
 export const ui = {
     read: (parameters = {}, options) => read(parameters, options),
     update: (model) => request('_ui.update', model),
+    selectObject,
     style: {
         read: (options) => request('_ui.style.read', {}, options),
         update: (patch, options) => updateStyle(patch, options)
@@ -322,6 +323,61 @@ let actionId = 0;
 let readId = 0;
 let fenceId = 0;
 let styleId = 0;
+async function selectObject(kind, parameters = {}, options = {}) {
+    if (
+        !['function', 'class', 'comment', 'string', 'block', 'parameter', 'heading'].includes(kind)
+    ) {
+        throw new TypeError('Unknown syntax object kind');
+    }
+    if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) {
+        throw new TypeError('Syntax selection parameters require an object');
+    }
+    for (const flag of ['inner', 'expand']) {
+        if (parameters[flag] !== undefined && typeof parameters[flag] !== 'boolean') {
+            throw new TypeError('Syntax selection flags must be boolean');
+        }
+    }
+    const state = await ui.read(parameters.id ? { id: parameters.id } : {}, options),
+        document = state.document;
+    if (!document) return null;
+    const revision = parameters.baseRevision ?? document.revision;
+    const syntax = await request(
+        'document.syntax',
+        {
+            id: document.id,
+            baseRevision: revision,
+            begin: 0,
+            end: 0,
+            includeOutline: false
+        },
+        options
+    );
+    if (syntax.state === 'unsupported') {
+        await ui.update({ status: 'Syntax selection is unavailable for this document' });
+        return null;
+    }
+    if (syntax.state === 'obsolete' || syntax.id !== document.id || syntax.revision !== revision) {
+        await ui.update({ status: 'Syntax selection was superseded by a newer revision' });
+        return null;
+    }
+    if (syntax.state !== 'ready') {
+        throw new Error('Current syntax could not be prepared');
+    }
+    const selected = await request(
+        'document.selectObject',
+        {
+            id: document.id,
+            baseRevision: revision,
+            kind,
+            baseSelections: document.selections,
+            inner: parameters.inner ?? false,
+            expand: parameters.expand ?? false
+        },
+        options
+    );
+    await ui.update({ document: selected, revealCaretFor: document.id });
+    return selected;
+}
 async function updateStyle(patch, options = {}) {
     const id = `style-${++styleId}`,
         signal = options.signal;

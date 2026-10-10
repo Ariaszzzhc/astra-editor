@@ -87,6 +87,7 @@ struct Runtime::Impl {
         std::size_t offset{};
         Json accumulated;
         bool raw{};
+        bool shared_operation{};
     };
 
     struct Task {
@@ -606,12 +607,12 @@ struct Runtime::Impl {
     }
 
     void request_cancel(Pending& incoming) {
-        if (!incoming.operation.empty()) {
+        if (!incoming.operation.empty() && !incoming.shared_operation) {
             cancellations.push_back(
                 submit(incoming.owner, "operation.cancel", {{"id", incoming.operation}}));
         } else if (incoming.future) {
-            // An outstanding transport response may reveal an operation ID only
-            // after cancellation. Retain it and cancel that operation on receipt.
+            // Drain an outstanding response. A late descriptor can reveal an
+            // owned operation to cancel; shared service jobs keep running.
             abandoned.push_back({incoming.method, std::move(*incoming.future), incoming.owner});
             incoming.future.reset();
         }
@@ -679,6 +680,7 @@ struct Runtime::Impl {
                         if (!incoming.raw && incoming.operation.empty() && value.is_object() &&
                             value.contains("operationId")) {
                             incoming.operation = value.at("operationId").get<std::string>();
+                            incoming.shared_operation = value.value("shared", false);
                         } else if (!incoming.operation.empty()) {
                             const auto state = value.at("state").get<std::string>();
                             if (state == "failed" || state == "cancelled") {
@@ -760,7 +762,8 @@ struct Runtime::Impl {
             i = abandoned.erase(i);
             try {
                 const auto reply = completed.future.get();
-                if (reply.is_object() && reply.contains("operationId")) {
+                if (reply.is_object() && reply.contains("operationId") &&
+                    !reply.value("shared", false)) {
                     cancellations.push_back(submit(
                         completed.owner, "operation.cancel", {{"id", reply.at("operationId")}}));
                 }

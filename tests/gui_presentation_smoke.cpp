@@ -300,6 +300,20 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
                 const {document}=await astra.ui.read();
                 capturedBody=document;
             });
+            astra.registerCommand('acceptance.revealBackground', async () => {
+                const before = await astra.ui.read({immediate: true});
+                const background = before.tabs.find(id => id !== before.document.id);
+                if (!background || !before.viewport.firstLine) {
+                    throw Error('Background reveal acceptance needs a scrolled document');
+                }
+                await astra.ui.update({revealCaretFor: background});
+                const after = await astra.ui.read({immediate: true});
+                if (after.document.id !== before.document.id ||
+                    after.viewport.firstLine !== before.viewport.firstLine) {
+                    throw Error('Background caret reveal changed the active viewport');
+                }
+                return await astra.request('document.get', {id: background});
+            });
             astra.registerCommand('acceptance.verifyBody',async()=>{
                 const document=await astra.request('document.get',{id:capturedBody.id});
                 if(document.revision!==capturedBody.revision ||
@@ -680,6 +694,11 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         key(window, SDLK_PAGEDOWN);
         require(window.view_state().document_viewport.at("firstLine").get<std::size_t>() > 0,
                 "Default JS PageDown did not scroll the document viewport");
+        const auto scrolled_line = window.view_state().document_viewport.at("firstLine");
+        window.execute_ui_command("acceptance.revealBackground");
+        settle(window);
+        require(window.view_state().document_viewport.at("firstLine") == scrolled_line,
+                "Background command result scrolled the active document after JS completion");
         key(window, SDLK_PAGEUP);
         require(window.view_state().document_viewport.at("firstLine") == 0,
                 "Default JS PageUp did not restore the first page");

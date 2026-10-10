@@ -2451,6 +2451,10 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             if (value.get<bool>()) {
                 reveal_caret();
             }
+        } else if (name == "revealCaretFor") {
+            if (active_id == value.get<std::string>()) {
+                reveal_caret();
+            }
         } else if (name == "workspaceNotice") {
             workspace_notices[value.at("id").get<std::string>()] =
                 value.at("text").get<std::string>();
@@ -2489,7 +2493,9 @@ void EditorWindow::Impl::execute_policy(std::string_view name, const Json& param
                    outcome.value.contains("lineCount") && outcome.value.contains("selections") &&
                    outcome.value.contains("selectionPositions")) {
             accept_metadata(outcome.value);
-            reveal_caret();
+            if (active_id == outcome.value.at("id").get<std::string>()) {
+                reveal_caret();
+            }
         }
     });
     // Settle ready native focus/layout primitives before the next SDL event.
@@ -2640,60 +2646,6 @@ void EditorWindow::Impl::native_command(std::string_view name) {
         } else if (!workspace_notices.empty()) {
             workspace_notices.erase(workspace_notices.begin());
         }
-    } else if (name == "ui.toggleSidebar") {
-        show_sidebar = !show_sidebar;
-        if (!show_sidebar) {
-            focus_view(std::nullopt);
-            if (const auto* focused = forms.focused(); focused && !focused->view().empty())
-                forms.blur();
-        }
-        if (auto* doc = current()) {
-            doc->needs_lines = true;
-        }
-    } else if (name == "ui.explorer") {
-        if (focused_view && *focused_view != "explorer")
-            focus_view(std::nullopt);
-        active_view = "explorer";
-        show_sidebar = true;
-    } else if (name == "ui.toggleOutline") {
-        show_outline = !show_outline;
-    } else if (name == "ui.refreshTree") {
-        refresh_tree();
-    } else if (name == "ui.selectFunction" || name == "ui.selectClass" ||
-               name == "ui.selectBlock" || name == "ui.selectString") {
-        const auto* document = current();
-        if (!document) {
-            return;
-        }
-        if (document->syntax_state != "ready" ||
-            document->syntax_revision != document->metadata.at("revision").get<std::string>()) {
-            status = "Wait for parsing before selecting a syntax object";
-            return;
-        }
-        const auto kind =
-            name == "ui.selectFunction"
-                ? "function"
-                : (name == "ui.selectClass" ? "class"
-                                            : (name == "ui.selectBlock" ? "block" : "string"));
-        enqueue({"document.selectObject",
-                 {{"kind", kind}, {"inner", name == "ui.selectString"}},
-                 active_id,
-                 true,
-                 [this](const Json& result) {
-                     accept_metadata(result);
-                     reveal_caret();
-                 },
-                 {}});
-    } else if (name == "ui.nextTab" && !tabs.empty()) {
-        const auto current_tab = std::ranges::find(tabs, active_id);
-        const auto index =
-            current_tab == tabs.end() ? 0 : static_cast<std::size_t>(current_tab - tabs.begin());
-        activate(tabs[(index + 1) % tabs.size()]);
-    } else if (name == "ui.previousTab" && !tabs.empty()) {
-        const auto position = std::ranges::find(tabs, active_id);
-        const auto index =
-            position == tabs.end() ? 0 : static_cast<std::size_t>(position - tabs.begin());
-        activate(tabs[(index + tabs.size() - 1) % tabs.size()]);
     } else if (name == "ui.cancel") {
         clear_input_events();
         finish_dialog(nullptr);

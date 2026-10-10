@@ -4195,3 +4195,197 @@ TEST_CASE("workbench style APIs await native completion and return authoritative
     CHECK(result->value.at("updated").at("workbench").at("uiFontSize") == 16);
     CHECK(channel->requests.empty());
 }
+
+TEST_CASE("workbench JS textobject commands capture fenced document and selection guards") {
+    for (const auto& [command, kind, inner] :
+         std::vector<std::tuple<std::string, std::string, bool>>{
+             {"ui.selectFunction", "function", false},
+             {"ui.selectClass", "class", false},
+             {"ui.selectBlock", "block", false},
+             {"ui.selectString", "string", true}}) {
+        auto channel = std::make_shared<Channel>();
+        std::promise<Json> reading;
+        std::vector<Json> updates;
+        astra::ui::Workbench workbench(
+            channel,
+            [&](std::string_view method, const Json& params) {
+                if (method == "_ui.read") {
+                    CHECK(params.contains("readId"));
+                    return reading.get_future();
+                }
+                CHECK(method == "_ui.update");
+                updates.push_back(params);
+                return ready(true);
+            },
+            modules());
+        std::optional<astra::script::Runtime::Outcome> outcome;
+        workbench.execute(command, Json::object(), [&](const auto& result) {
+            outcome = result;
+        });
+        for (int tick = 0; tick < 8; ++tick)
+            workbench.poll();
+        CHECK(channel->requests.empty());
+        CHECK_FALSE(outcome);
+        const auto selections = Json::array({{{"anchor", 12}, {"head", 12}}});
+        reading.set_value(
+            {{"document", {{"id", "captured"}, {"revision", "7"}, {"selections", selections}}}});
+        for (int tick = 0; tick < 8; ++tick)
+            workbench.poll();
+        REQUIRE(channel->requests.size() == 1);
+        CHECK(channel->requests.front().body.at("method") == "document.syntax");
+        CHECK(channel->requests.front().body.at("params") == Json{{"id", "captured"},
+                                                                  {"baseRevision", "7"},
+                                                                  {"begin", 0},
+                                                                  {"end", 0},
+                                                                  {"includeOutline", false}});
+        channel->reply({{"id", "captured"}, {"revision", "7"}, {"state", "ready"}});
+        for (int tick = 0; tick < 8; ++tick)
+            workbench.poll();
+        REQUIRE(channel->requests.size() == 1);
+        CHECK(channel->requests.front().body.at("method") == "document.selectObject");
+        CHECK(channel->requests.front().body.at("params") == Json{{"id", "captured"},
+                                                                  {"baseRevision", "7"},
+                                                                  {"baseSelections", selections},
+                                                                  {"kind", kind},
+                                                                  {"inner", inner},
+                                                                  {"expand", false}});
+        const auto selected = Json{{"id", "captured"},
+                                   {"revision", "7"},
+                                   {"selections", Json::array({{{"anchor", 4}, {"head", 30}}})}};
+        channel->reply(selected);
+        for (int tick = 0; tick < 8; ++tick)
+            workbench.poll();
+        REQUIRE(outcome);
+        CHECK_FALSE(outcome->error);
+        CHECK(outcome->value == selected);
+        REQUIRE(updates.size() == 1);
+        CHECK(updates.front() == Json{{"document", selected}, {"revealCaretFor", "captured"}});
+        CHECK(channel->requests.empty());
+    }
+}
+
+TEST_CASE("workbench JS textobject API rejects invalid flags and retires unavailable syntax") {
+    for (const auto* state : {"unsupported", "obsolete"}) {
+        auto channel = std::make_shared<Channel>();
+        std::vector<Json> updates;
+        astra::ui::Workbench workbench(
+            channel,
+            [&](std::string_view method, const Json& params) {
+                if (method == "_ui.read")
+                    return ready({{"document",
+                                   {{"id", "source"},
+                                    {"revision", "9"},
+                                    {"selections", Json::array({{{"anchor", 0}, {"head", 0}}})}}}});
+                CHECK(method == "_ui.update");
+                updates.push_back(params);
+                return ready(true);
+            },
+            modules(),
+            R"js(
+            astra.registerCommand('acceptance.invalidObject', async () => {
+                for (const [kind, params] of [['missing', {}], ['function', {inner: 'true'}]]) {
+                    const selecting = astra.ui.selectObject(kind, params);
+                    if (!(selecting instanceof Promise)) throw Error('Selection must be async');
+                    let rejected = false;
+                    try {
+                        await selecting;
+                    } catch (error) {
+                        rejected = error.name === 'TypeError';
+                    }
+                    if (!rejected) throw Error('Invalid syntax object options were accepted');
+                }
+            });
+        )js");
+        std::optional<astra::script::Runtime::Outcome> result;
+        workbench.execute("acceptance.invalidObject", Json::object(), [&](const auto& outcome) {
+            result = outcome;
+        });
+        for (int tick = 0; tick < 10; ++tick)
+            workbench.poll();
+        REQUIRE(result);
+        CHECK_FALSE(result->error);
+        CHECK(channel->requests.empty());
+        result.reset();
+        workbench.execute("ui.selectFunction", Json::object(), [&](const auto& outcome) {
+            result = outcome;
+        });
+        for (int tick = 0; tick < 8; ++tick)
+            workbench.poll();
+        REQUIRE(channel->requests.size() == 1);
+        channel->reply({{"id", "source"}, {"revision", "9"}, {"state", state}});
+        for (int tick = 0; tick < 8; ++tick)
+            workbench.poll();
+        REQUIRE(result);
+        CHECK_FALSE(result->error);
+        CHECK(result->value.is_null());
+        CHECK(channel->requests.empty());
+        REQUIRE(updates.size() == 1);
+        CHECK(updates.front().contains("status"));
+        CHECK_FALSE(updates.front().contains("document"));
+    }
+}
+
+TEST_CASE("workbench JS textobject cancellation drains parsing without selecting") {
+    auto channel = std::make_shared<Channel>();
+    unsigned updates{};
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json&) {
+            if (method == "_ui.read")
+                return ready({{"document",
+                               {{"id", "captured"},
+                                {"revision", "3"},
+                                {"selections", Json::array({{{"anchor", 4}, {"head", 4}}})}}}});
+            if (method == "_ui.update")
+                ++updates;
+            else
+                CHECK(method == "_ui.read.cancel");
+            return ready(nullptr);
+        },
+        modules(),
+        R"js(
+        let abortSelection;
+        astra.registerCommand('acceptance.select', async () => {
+            const controller = new AbortController();
+            abortSelection = () => controller.abort();
+            return await astra.ui.selectObject('parameter', {inner: true, expand: true}, {
+                signal: controller.signal
+            });
+        });
+        astra.registerCommand('acceptance.abortSelection', () => abortSelection());
+    )js");
+    std::optional<astra::script::Runtime::Outcome> result;
+    workbench.execute("acceptance.select", Json::object(), [&](const auto& outcome) {
+        result = outcome;
+    });
+    for (int tick = 0; tick < 8; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "document.syntax");
+    channel->reply({{"operationId", "parse"},
+                    {"shared", true},
+                    {"state", "pending"},
+                    {"id", "captured"},
+                    {"revision", "3"}});
+    for (int tick = 0; tick < 8; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "operation.get");
+    CHECK_FALSE(result);
+    workbench.execute("acceptance.abortSelection", Json::object(), {});
+    for (int tick = 0; tick < 12; ++tick)
+        workbench.poll();
+    REQUIRE(result);
+    REQUIRE(result->error);
+    CHECK(result->error->at("name") == "AbortError");
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "operation.get");
+    channel->reply({{"state", "completed"},
+                    {"result", {{"id", "captured"}, {"revision", "3"}, {"state", "ready"}}}});
+    for (int tick = 0; tick < 12; ++tick)
+        workbench.poll();
+    CHECK(channel->requests.empty());
+    CHECK(updates == 0);
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}

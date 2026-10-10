@@ -858,3 +858,75 @@ TEST_CASE("application Git branch switching and staging preserve unsaved documen
     CHECK(app.done("git.switchBranch", {{"name", "feature"}})["branch"] == "feature");
     CHECK_FALSE(app.call("document.get", {{"id", doc["id"]}})["dirty"].get<bool>());
 }
+
+TEST_CASE("application textobject guards reject stale selections without any mutation") {
+    AppFiles files;
+    const std::string source = "int one() { return 1; }\nint two() { return 2; }\n";
+    files.write("objects.cpp", source);
+    LiveApp app(files.root());
+    const auto document = app.done("workspace.open", {{"path", "objects.cpp"}});
+    const auto id = document.at("id");
+    const auto syntax = app.call("document.syntax", {{"id", id}, {"baseRevision", "0"}});
+    CHECK(syntax.at("shared") == true);
+    const auto second_waiter = app.call("document.syntax", {{"id", id}, {"baseRevision", "0"}});
+    if (second_waiter.contains("operationId")) {
+        CHECK(second_waiter.at("operationId") == syntax.at("operationId"));
+        CHECK(second_waiter.at("shared") == true);
+    } else {
+        CHECK(second_waiter.at("state") == "ready");
+    }
+    CHECK(app.wait(syntax).at("state") == "completed");
+    const auto first = source.find("return"), second = source.rfind("return");
+    const auto captured = app.call("document.setSelections",
+                                   {{"id", id},
+                                    {"baseRevision", "0"},
+                                    {"selections",
+                                     Json::array({{{"anchor", first}, {"head", first}},
+                                                  {{"anchor", second}, {"head", second}}})}});
+    const auto changed = app.call("document.setSelections",
+                                  {{"id", id},
+                                   {"baseRevision", "0"},
+                                   {"selections", Json::array({{{"anchor", 0}, {"head", 0}}})}});
+    CHECK(changed.at("revision") == captured.at("revision"));
+    const auto rejected = app.response("document.selectObject",
+                                       {{"id", id},
+                                        {"baseRevision", "0"},
+                                        {"kind", "function"},
+                                        {"baseSelections", captured.at("selections")}});
+    CHECK(rejected.at("error").at("code") == -32001);
+    const auto retained = app.call("document.get", {{"id", id}});
+    CHECK(retained.at("text") == source);
+    CHECK(retained.at("selections") == changed.at("selections"));
+    CHECK(retained.at("revision") == changed.at("revision"));
+    CHECK(retained.at("dirty") == changed.at("dirty"));
+    for (const auto& invalid :
+         std::vector<Json>{Json::array(),
+                           Json::array({{{"anchor", -1}, {"head", 0}}}),
+                           Json::array({{{"anchor", 0.5}, {"head", 0}}}),
+                           Json::array({{{"anchor", 9007199254740992ULL}, {"head", 0}}}),
+                           Json::array({{{"head", 0}}}),
+                           Json::array({{{"anchor", 0}, {"head", 0}, {"extra", true}}})}) {
+        CHECK(app.response("document.selectObject",
+                           {{"id", id},
+                            {"baseRevision", "0"},
+                            {"kind", "function"},
+                            {"baseSelections", invalid}})
+                  .at("error")
+                  .at("code") == -32602);
+        CHECK(app.call("document.get", {{"id", id}}).at("selections") == changed.at("selections"));
+    }
+    static_cast<void>(
+        app.call("document.setSelections",
+                 {{"id", id}, {"baseRevision", "0"}, {"selections", captured.at("selections")}}));
+    const auto selected = app.call("document.selectObject",
+                                   {{"id", id},
+                                    {"baseRevision", "0"},
+                                    {"kind", "function"},
+                                    {"baseSelections", captured.at("selections")}});
+    REQUIRE(selected.at("selections").size() == 2);
+    CHECK(selected.at("selections").at(0).at("anchor") == 0);
+    CHECK(selected.at("selections").at(0).at("head") == source.find('\n'));
+    CHECK(selected.at("selections").at(1).at("anchor") == source.find('\n') + 1);
+    CHECK(selected.at("selections").at(1).at("head") == source.size() - 1);
+    CHECK(app.call("document.get", {{"id", id}}).at("text") == source);
+}

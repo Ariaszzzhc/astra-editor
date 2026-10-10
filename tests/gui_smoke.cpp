@@ -964,7 +964,7 @@ int main(int argc, char* argv[]) {
         text(window,
              "// Astra · real editing, real pixels\n\n#include <iostream>\n\nint main() {\n    // "
              "中文、emoji 🙂 与组合字符 e\xCC\x81\n    std::cout << \"Hello, Astra\" << '\\n';\n   "
-             " return 0;\n}\n");
+             " return 0;\n}\n\nclass Sample { public: int field; };\n");
         key(window, SDLK_HOME, SDL_KMOD_CTRL);
         for (unsigned i = 0; i < 4; ++i) {
             key(window, SDLK_DOWN);
@@ -975,6 +975,42 @@ int main(int argc, char* argv[]) {
             read_document(host, window.active_document_id()).at("selections").front();
         require(selected_function.at("head") != selected_function.at("anchor"),
                 "Syntax object selection did not use the parsed function");
+        const auto object_id = window.active_document_id();
+        const auto before_objects = read_document(host, object_id);
+        const auto object_source = before_objects.at("text").get<std::string>();
+        const auto select_object_at = [&](const char* command, std::size_t offset) {
+            static_cast<void>(
+                call(host,
+                     "document.setSelections",
+                     {{"id", object_id},
+                      {"baseRevision", before_objects.at("revision")},
+                      {"selections", Json::array({{{"anchor", offset}, {"head", offset}}})}}));
+            settle(window);
+            window.execute_ui_command(command);
+            settle(window);
+            const auto selected = read_document(host, object_id);
+            require(selected.at("text") == object_source &&
+                        selected.at("revision") == before_objects.at("revision") &&
+                        selected.at("dirty") == before_objects.at("dirty"),
+                    "Syntax selection changed document content, revision or save state");
+            return selected.at("selections").front();
+        };
+        const auto string_begin = object_source.find("Hello, Astra");
+        const auto selected_string = select_object_at("ui.selectString", string_begin + 2);
+        require(selected_string.at("anchor") == string_begin &&
+                    selected_string.at("head") ==
+                        string_begin + std::string_view("Hello, Astra").size(),
+                "JS string policy did not select its Unicode byte-positioned inner content");
+        const auto selected_block =
+            select_object_at("ui.selectBlock", object_source.find("return 0"));
+        require(object_source.at(selected_block.at("anchor").get<std::size_t>()) == '{' &&
+                    object_source.at(selected_block.at("head").get<std::size_t>() - 1) == '}',
+                "JS block policy did not select the enclosing block");
+        const auto selected_class =
+            select_object_at("ui.selectClass", object_source.find("int field"));
+        require(selected_class.at("anchor") == object_source.find("class Sample") &&
+                    object_source.at(selected_class.at("head").get<std::size_t>() - 1) == '}',
+                "JS class policy did not select the enclosing class");
         key(window, SDLK_HOME, SDL_KMOD_CTRL);
         window.execute_ui_command("ui.explorer");
         settle(window);

@@ -18,6 +18,71 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### JS textobject workflows and shared parsing (2026-10-10)
+
+Default function/class/block/string selections now execute JS-owned workflows
+through `astra.ui.selectObject`. Its fenced document read captures the document,
+text revision and all selections before asynchronous parser preparation. The
+service validates optional `baseSelections` before mutation; cursor movement
+without a text revision change therefore rejects the stale selection request.
+Malformed, empty, oversized or JavaScript-unsafe guards also reject atomically.
+Legacy callers without this optional guard retain current-selection semantics.
+
+The service advertises cached parser operations with `shared:true`. Automatic
+JS cancellation or timeout drains only that caller's outstanding response, even
+when its operation descriptor arrives late. It does not cancel a parser used by
+another client. Owned operations retain automatic cancellation, and explicit
+`operation.cancel` retains its service-job semantics. Cancelled selection
+continuations cannot submit a later selection or UI publication.
+
+Targeted `revealCaretFor` publication and the native JS completion adapter both
+check the document identity before revealing a caret. Background document results
+cannot activate or scroll the current document. Duplicate native textobject,
+tab, sidebar, Outline and Explorer product-command branches were removed; those
+commands resolve through the JS registry. Parsing, document validation, selection
+primitives, font geometry and rendering remain native.
+
+Windows evidence:
+
+- The first focused run failed because the new test requested nonexistent
+  `document.read`. Corrected the fixture to production `document.get`;
+  retained failure log: `build/js-object-unit-first-failed.log`.
+- `./scripts/xmake.ps1 build -y astra-tests gui-smoke gui-presentation-smoke astra`
+  passed in Debug, including the shared-operation runtime changes.
+  Log: `build/js-object-build-debug.log`.
+- `astra-tests.exe --no-version '--test-case=application textobject guards*,workbench JS textobject*,QuickJS*shared operation*,QuickJS*late operation cancellation*'`
+  passed 7 cases / 258 assertions; 564 unrelated cases were filtered out.
+  Log: `build/js-object-unit-debug.log`. These cover fenced deferred reads,
+  selection guards, flags/defaults, unavailable/obsolete syntax, actual service
+  parser-sharing descriptors, late cancellation, timeout and unchanged owned-job
+  cancellation semantics.
+- `./scripts/test.ps1 -Mode all -Gui` completed with exit code 0 before the final
+  native completion-adapter identity guard. Debug: 571 cases / 1,188,752 assertions;
+  Release: 571 cases / 1,188,686 assertions. All passed, zero failed or skipped.
+  Both modes passed real renderer/font/viewport/input checks, all GUI workflows,
+  TCP editing and 12 package-helper invariants. No source or JS resources changed
+  while this acceptance session was live. Log: `build/js-object-acceptance-all.log`.
+- After that process exited, the final native completion-adapter guard and GUI
+  regression were added. The test returns background document metadata after
+  JS publication and checks the active scroll position after command completion.
+  `build -y astra-tests astra gui-smoke gui-services-smoke gui-recovery-smoke gui-workspace-smoke gui-presentation-smoke`
+  passed in both modes. Logs: `build/js-object-final-build-{debug,release}.log`.
+  Each mode then passed `gui-smoke`, `gui-services-smoke`, `gui-recovery-smoke`,
+  `gui-workspace-smoke`, `gui-presentation-smoke`, and `gui-smoke --tcp`.
+  Logs: `build/js-object-final-gui-{debug,release}.log`. Real local/TCP editing
+  verifies all four default selectors on C++ source containing CJK, emoji and
+  combining characters, exact string-inner byte bounds and retained content,
+  text revision and dirty state.
+- `./scripts/xmake.ps1 f -m debug -y` restored Debug configuration;
+  log: `build/js-object-restore-debug.log`. Final
+  `./scripts/format.ps1 -Check -Offline` passed 151 C++ / 12 JS files and
+  `git diff --check` passed; log: `build/js-object-final-check.log`.
+
+This increment does not finish the architecture/UI revision. Native icon policy,
+component extraction, measured tab layout, document IME preparation, row-internal
+incremental glyph layout, whole-product visual acceptance and a new distribution
+remain incomplete. No new package or non-Windows validation is claimed.
+
 ### JS-owned workbench style and async updates (2026-10-10)
 
 The client now imports the real shipped `data/defaults.js` before the workbench
