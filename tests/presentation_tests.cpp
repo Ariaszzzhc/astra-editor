@@ -964,7 +964,7 @@ TEST_CASE("presentation picker filtering preserves source identity and old snaps
 
 TEST_CASE("presentation modal layouts share bounded rows and pointer geometry") {
     for (const auto scale : {1.0F, 1.25F, 1.5F, 2.0F})
-        for (const auto width : {260.0F, 640.0F, 1440.0F}) {
+        for (const auto width : {160.0F, 260.0F, 584.0F, 640.0F, 680.0F, 1440.0F}) {
             const auto picker = astra::ui::PickerLayout::measure(width * scale, 600 * scale, scale);
             CHECK(picker.panel.x >= 0);
             CHECK(picker.panel.right() <= width * scale);
@@ -1079,6 +1079,13 @@ TEST_CASE("presentation workbench layout stays bounded across DPI and narrow win
             CHECK(layout.outline_rows.bottom() == layout.status.y);
             CHECK(layout.editor.width >= 0);
             CHECK(layout.sidebar.width >= 0);
+            if (layout.sidebar.width > 0) {
+                CHECK(layout.editor.width >= 360 * scale);
+            }
+            CHECK(layout.command_center.x >= layout.header.x);
+            CHECK(layout.command_center.right() <= layout.header.right());
+            CHECK(layout.command_center.bottom() <= layout.header.bottom());
+            CHECK(layout.command_center.width >= 0);
             CHECK(layout.sidebar_handle.contains(layout.editor.x, 100 * scale) ==
                   (layout.sidebar.width > 0));
         }
@@ -1105,6 +1112,57 @@ TEST_CASE("presentation tabs use measured labels reveal active tabs and expose c
     for (const auto& tab : strip.visible) {
         CHECK(tab.bounds.right() <= strip.previous.x);
     }
+}
+
+TEST_CASE("presentation tab overflow preserves separate controls at every width") {
+    using astra::ui::TabStrip;
+    for (const auto scale : {1.0F, 1.25F, 1.5F, 2.0F}) {
+        for (const auto width : {0.0F, 20.0F, 70.0F, 160.0F, 240.0F, 308.0F, 600.0F}) {
+            const astra::ui::Box bounds{17 * scale, 32 * scale, width * scale, 34 * scale};
+            const auto strip = TabStrip::measure(
+                bounds, scale, {180 * scale, 150 * scale, 40 * scale}, 0, 0, false);
+            float previous_right = bounds.x;
+            const auto content_right = strip.next.width > 0 ? strip.previous.x : bounds.right();
+            for (const auto& tab : strip.visible) {
+                CHECK(tab.bounds.width >= 96 * scale);
+                CHECK(tab.bounds.x >= previous_right);
+                CHECK(tab.bounds.right() <= content_right);
+                CHECK(tab.close.x >= tab.bounds.x + 34 * scale);
+                CHECK(tab.close.right() <= tab.bounds.right());
+                CHECK(tab.close.contains(tab.close.x + tab.close.width / 2,
+                                         tab.close.y + tab.close.height / 2));
+                previous_right = tab.bounds.right();
+            }
+            if (strip.next.width > 0) {
+                CHECK(strip.previous.x >= bounds.x);
+                CHECK(strip.previous.right() == doctest::Approx(strip.next.x));
+                CHECK(strip.next.right() == doctest::Approx(bounds.right()));
+                CHECK(strip.next.width <= 26 * scale);
+            }
+        }
+        // The old layout painted a close button over the next file icon in
+        // this remaining 64-unit sliver. Only a usable first tab may be shown.
+        const auto narrow = TabStrip::measure({0, 0, 308 * scale, 34 * scale},
+                                              scale,
+                                              {128 * scale, 128 * scale, 128 * scale},
+                                              0,
+                                              0,
+                                              false);
+        REQUIRE(narrow.visible.size() == 1);
+        CHECK(narrow.visible.front().index == 0);
+        const auto revealed = TabStrip::measure({0, 0, 308 * scale, 34 * scale},
+                                                scale,
+                                                {128 * scale, 128 * scale, 128 * scale},
+                                                0,
+                                                2,
+                                                true);
+        REQUIRE(revealed.visible.size() == 1);
+        CHECK(revealed.visible.front().index == 2);
+    }
+    CHECK_THROWS_AS((void)TabStrip::measure({0, 0, -1, 34}, 1, {20}, 0, 0, false),
+                    std::invalid_argument);
+    CHECK_THROWS_AS((void)TabStrip::measure({0, 0, 100, 34}, 0, {}, 0, 0, false),
+                    std::invalid_argument);
 }
 
 TEST_CASE("presentation text panels validate atomic actions and measured tone ranges") {

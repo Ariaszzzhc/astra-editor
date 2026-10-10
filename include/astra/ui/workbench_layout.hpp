@@ -21,7 +21,7 @@ struct Box {
 };
 
 struct WorkbenchLayout {
-    Box header, activity, sidebar, sidebar_rows, outline_header, outline_rows;
+    Box header, command_center, activity, sidebar, sidebar_rows, outline_header, outline_rows;
     Box tabs, breadcrumb, editor, status, sidebar_handle;
     float scale{1};
     float sidebar_row_height{24};

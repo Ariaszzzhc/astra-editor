@@ -116,6 +116,29 @@ void run(const fs::path& workspace) {
     for (const auto* name : {"one.cpp", "two_with_a_long_name.cpp", "three.cpp"}) {
         std::ofstream output(workspace / name);
         output << "// Astra workspace\nint answer(int input) { return input + 42; }\n";
+        if (std::string_view(name) == "two_with_a_long_name.cpp") {
+            output << R"cpp(
+
+namespace astra {
+
+struct EditorState {
+    bool dirty{};
+    unsigned line{};
+    unsigned column{};
+};
+
+[[nodiscard]] const char* status(const EditorState& state) noexcept {
+    return state.dirty ? "Unsaved changes" : "Ready 中🙂";
+}
+
+void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
+    state.line = line;
+    state.column = column;
+}
+
+} // namespace astra
+)cpp";
+        }
         if (std::string_view(name) == "one.cpp")
             for (int i = 0; i < 80; ++i)
                 output << "int outline" << i << "() { return " << i << "; }\n";
@@ -352,6 +375,28 @@ void run(const fs::path& workspace) {
         require(original.layout.outline_rows.height == 0,
                 "Outline should default to collapsed inside Explorer");
         const auto one = window.active_document_id();
+        click(window, 18 * original.layout.scale, original.layout.header.height / 2);
+        require(!window.view_state().input_layout.contains("bytes") &&
+                    window.active_document_id() == one,
+                "Decorative header text opened a picker or changed the document");
+        const auto command_center = window.layout().command_center;
+        click(window,
+              command_center.x + command_center.width / 2,
+              command_center.y + command_center.height / 2);
+        require(window.view_state().input_layout.contains("bytes"),
+                "Painted command center did not open the JS command palette");
+        window.request_screenshot("build/graphics/gui-chrome-command-center.png");
+        settle(window);
+        key(window, SDLK_ESCAPE);
+        const auto shaped_before_repaint =
+            window.view_state().text_labels.at("shaped").get<std::size_t>();
+        for (int repaint = 0; repaint < 12; ++repaint) {
+            require(window.pump(), "Chrome cache repaint closed the editor");
+        }
+        require(window.view_state().text_labels.at("shaped") == shaped_before_repaint &&
+                    window.view_state().text_labels.at("entries") <= 512 &&
+                    window.view_state().text_labels.at("bytes") <= 2 * 1024 * 1024,
+                "Stable chrome repaint reshaped text or exceeded the LRU bounds");
         click(window,
               original.layout.sidebar_rows.x + 50 * original.layout.scale,
               original.layout.sidebar_rows.y + original.layout.sidebar_row_height / 2);
@@ -462,8 +507,13 @@ void run(const fs::path& workspace) {
                                   static_cast<int>(600 * state.layout.scale)),
                 "Cannot resize the native SDL window");
         settle(window);
-        require(window.layout().editor.width >= 200 * window.layout().scale,
+        require(window.layout().editor.width >= 360 * window.layout().scale,
                 "Narrow layout lost the document region");
+        for (const auto& tab : window.view_state().tab_strip.visible) {
+            require(tab.bounds.width >= 96 * window.layout().scale &&
+                        tab.close.x >= tab.bounds.x + 34 * window.layout().scale,
+                    "Narrow tab painted overlapping icon/close targets");
+        }
         require(window.view_state().tab_strip.next.width > 0,
                 "Narrow workbench did not expose tab overflow controls");
         window.request_screenshot("build/graphics/gui-workbench-narrow.png");

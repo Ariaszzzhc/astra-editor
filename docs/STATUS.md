@@ -18,6 +18,78 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### Shared chrome text and responsive controls (2026-10-10)
+
+`TextLabels` now owns plain title/tab/row/status text preparation and Unicode
+elision. It reuses the existing exact paragraph cache through a one-row measured
+viewport: 512 entries / 2 MiB of accounted text/style, immutable retained
+paragraphs and incremental LRU eviction. The old concatenated, rounded float
+cache keys and clear-all-after-1024 behavior were removed. DPI/resize no longer
+clear the entire chrome cache; exact font/DPI/color/family/locale keys certify
+each reuse. UI caption direction is automatic for bidi text.
+
+Display preparation scans a bounded 4096-byte source prefix, normalizes controls
+and Unicode line separators, conservatively omits a potentially incomplete
+final grapheme, and explicitly appends an ellipsis. Width elision measures its
+final grapheme-safe text. The full source model is unchanged. This is plain
+unwrapped chrome text, not document or editable-input shaping.
+
+Native `WorkbenchLayout.command_center` is shared by painting and hit testing.
+Decorative header clicks are ignored; the visible control invokes the existing
+JS command palette. Titles/breadcrumbs now elide within their visible width.
+Narrow windows preserve 360 logical units for editing while the sidebar remains
+visible. A tab must fit separate icon/caption/close targets; unusable fragments
+of the next tab remain in overflow navigation. Tiny navigation targets and the
+tab band stay bounded/clipped to the parent. The native GUI fixture also displays
+a multiline C++ example with real highlighting, CJK/emoji and Outline symbols.
+
+Focused Windows evidence:
+
+- `./scripts/xmake.ps1 build -y astra-tests viewport-layout-tests
+  gui-presentation-smoke astra` passed in Debug. The first build found a leftover
+  `labels.clear()` in the DPI handler after replacing its type. Exact keys now
+  replace that obsolete bulk invalidation. Failure log:
+  `build/chrome-text-build-first-failed.log`.
+- `astra-tests.exe --no-version '--test-case=presentation workbench layout*,presentation tabs use*,presentation tab overflow*'`
+  passed 3 cases / 406 assertions; 555 other cases were excluded by that filter.
+  Bounds cover widths 0–1440 and scales 1/1.25/1.5/2, separate tab hit targets,
+  active-tab reveal and invalid dimensions. Log: `chrome-text-layout-debug.log`.
+- `viewport-layout-tests.exe --labels` passed actual Windows font/SkParagraph
+  pixel and geometry comparisons. New tests cover an exact DPI change smaller
+  than the old string key's precision, color, bidi/CJK/emoji/combining text,
+  control normalization, width-limited grapheme elision, a byte boundary inside
+  an emoji family, a long single combining cluster, invalid UTF-8 and retained
+  paragraphs across bounded LRU eviction. Log: `chrome-text-labels-debug.log`.
+- `gui-presentation-smoke.exe` passed on actual SDL3/Graphite/Dawn. It verifies
+  decorative/header-control clicks, twelve stable repaints without new shaping,
+  cache limits, the enlarged narrow editor area and separated tab hit targets;
+  the existing real presentation, editable input and shutdown checks also pass.
+  Log: `chrome-text-gui-debug.log`.
+- Visually inspected real GPU captures `gui-workbench.png`,
+  `gui-workbench-narrow.png` and `gui-chrome-command-center.png` under
+  `build/graphics/`: the narrow editor area is larger, tab icon/close overlap is
+  absent, code/Outline hierarchy is readable and the native palette matches its
+  command-center hit target. This is workbench/component evidence, not final
+  whole-product visual acceptance.
+- `./scripts/format.ps1 -Offline`: 147 C++ / 12 JS files passed;
+  `git diff --check` passed.
+
+- `./scripts/test.ps1 -Mode all -Gui` completed with exit code 0 on Windows:
+  Debug 558 cases / 1,188,298 assertions and Release 558 cases / 1,188,270
+  assertions, all passed with no skipped cases. Real native graphics, fonts,
+  viewport/input/label layout, all GUI workflows, local/TCP editing and all
+  12 package helper invariants passed. Log: `build/chrome-text-acceptance-all.log`.
+  This command validates package helpers; it does not produce a new distribution.
+- Restored Debug configuration after all acceptance processes exited with
+  `./scripts/xmake.ps1 f -m debug -y`; log: `chrome-text-restore-debug.log`.
+  Final `./scripts/format.ps1 -Check -Offline` and `git diff --check` passed;
+  formatting log: `chrome-text-final-format.log`.
+
+Short caption preparation and remaining native components still cost UI time.
+Complete component extraction, row-internal incremental glyph layout, final
+whole-product visual acceptance and a new final package remain incomplete.
+No non-Windows validation is claimed.
+
 ### Background editable input and native line metrics (2026-10-10)
 
 Modal inputs and inline form fields now share background preparation through

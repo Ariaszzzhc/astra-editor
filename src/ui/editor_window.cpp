@@ -9,6 +9,7 @@
 #include "astra/ui/text_panel.hpp"
 #include "astra/ui/text_surface.hpp"
 #include "astra/ui/text_input_layout.hpp"
+#include "astra/ui/text_labels.hpp"
 #include "astra/ui/picker_index.hpp"
 #include "astra/ui/decoration_indexes.hpp"
 #include "astra/ui/inline_form.hpp"
@@ -285,7 +286,7 @@ struct EditorWindow::Impl {
     std::string watch_error;
     std::string replace_notice;
     std::string workspace_branch{"Astra"};
-    std::map<std::string, TextLayout> labels;
+    TextLabels labels{fonts};
     float scale{1};
     float row_height{26};
     float left{};
@@ -823,7 +824,9 @@ struct EditorWindow::Impl {
     bool close_inline_form(std::string_view id = {});
     void
     label(SkCanvas* canvas, std::string_view text, float x, float y, float size, SkColor color = 0);
-    const TextLayout& label_layout(std::string_view text, float size, SkColor color);
+    TextLayoutOptions label_style(float size, SkColor color) const;
+    std::shared_ptr<const TextLayout>
+    label_layout(std::string_view text, float size, SkColor color);
     void elided_label(SkCanvas* canvas,
                       std::string_view text,
                       float x,
@@ -3613,7 +3616,9 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             break;
         }
         if (geometry.header.contains(mouse_x, mouse_y)) {
-            command("ui.commandPalette");
+            if (geometry.command_center.contains(mouse_x, mouse_y)) {
+                command("ui.commandPalette");
+            }
             break;
         }
         if (geometry.sidebar_handle.contains(mouse_x, mouse_y)) {
@@ -3814,7 +3819,8 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         break;
     case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
     case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
-        labels.clear();
+        // Chrome paragraphs certify exact DPI/style keys; resizing only changes
+        // their elision bounds and does not require clearing the entire LRU.
         for (auto& [id, document] : documents) {
             static_cast<void>(id);
             document.needs_lines = true;
@@ -3838,34 +3844,23 @@ void EditorWindow::Impl::label(
     if (text.empty()) {
         return;
     }
-    label_layout(text, size, color).draw(canvas, x, y);
+    label_layout(text, size, color)->draw(canvas, x, y);
 }
 
-const TextLayout&
+TextLayoutOptions EditorWindow::Impl::label_style(float size, SkColor color) const {
+    TextLayoutOptions style;
+    style.font_size = size * ui_font_size / 13.0F;
+    style.dpi_scale = scale;
+    style.color = color == 0 ? foreground : color;
+    style.line_height = 1.15F;
+    style.direction = TextDirection::automatic;
+    style.font_families = {"Segoe UI", "Microsoft YaHei UI", "Segoe UI Emoji"};
+    return style;
+}
+
+std::shared_ptr<const TextLayout>
 EditorWindow::Impl::label_layout(std::string_view text, float size, SkColor color) {
-    size = size * ui_font_size / 13.0F;
-    if (color == 0) {
-        color = foreground;
-    }
-    std::string display(text);
-    std::ranges::replace(display, '\n', ' ');
-    std::ranges::replace(display, '\r', ' ');
-    const auto cache_key = display + '\0' + std::to_string(size) + ':' + std::to_string(color) +
-                           ':' + std::to_string(scale);
-    if (labels.size() > 1024) {
-        labels.clear();
-    }
-    auto found = labels.find(cache_key);
-    if (found == labels.end()) {
-        TextLayoutOptions style;
-        style.font_size = size;
-        style.dpi_scale = scale;
-        style.color = color;
-        style.line_height = 1.15F;
-        style.font_families = {"Segoe UI", "Microsoft YaHei UI", "Segoe UI Emoji"};
-        found = labels.emplace(cache_key, fonts.layout(std::move(display), style)).first;
-    }
-    return found->second;
+    return labels.prepare(text, label_style(size, color));
 }
 
 void EditorWindow::Impl::elided_label(SkCanvas* canvas,
@@ -3875,27 +3870,12 @@ void EditorWindow::Impl::elided_label(SkCanvas* canvas,
                                       float size,
                                       float available,
                                       SkColor color) {
-    if (text.empty() || available <= 0)
-        return;
-    const auto& full = label_layout(text, size, color);
-    if (full.width() <= available) {
-        full.draw(canvas, x, y);
-        return;
+    if (const auto paragraph = labels.elide(text, label_style(size, color), available)) {
+        canvas->save();
+        canvas->clipRect(SkRect::MakeXYWH(x, y, available, paragraph->height()));
+        paragraph->draw(canvas, x, y);
+        canvas->restore();
     }
-    const auto points = full.grapheme_boundaries();
-    const std::vector<std::size_t> boundaries(points.begin(), points.end());
-    if (label_layout("…", size, color).width() > available)
-        return;
-    std::size_t low{}, high = boundaries.size() - 1;
-    while (low < high) {
-        const auto middle = (low + high + 1) / 2;
-        const auto candidate = std::string(text.substr(0, boundaries[middle])) + "…";
-        if (label_layout(candidate, size, color).width() <= available)
-            low = middle;
-        else
-            high = middle - 1;
-    }
-    label(canvas, std::string(text.substr(0, boundaries[low])) + "…", x, y, size, color);
 }
 
 void EditorWindow::Impl::measure_layout() {
@@ -3922,7 +3902,7 @@ void EditorWindow::Impl::measure_layout() {
     for (const auto& id : tabs) {
         const auto& path = documents.at(id).path;
         widths.push_back(
-            label_layout(path.empty() ? "Untitled" : basename(path), 13, foreground).width());
+            label_layout(path.empty() ? "Untitled" : basename(path), 13, foreground)->width());
     }
     const auto active = std::ranges::find(tabs, active_id);
     const auto index = active == tabs.end() ? 0 : static_cast<std::size_t>(active - tabs.begin());
@@ -4511,24 +4491,40 @@ void EditorWindow::Impl::draw() {
     };
     fill(geometry.header, activity_background);
     rectangle(canvas, 0, geometry.header.bottom() - scale, width, scale, border_color);
-    label(canvas, "Astra", 14 * scale, 8 * scale, 12, muted);
-    const auto search_width = std::min(480 * scale, width * 0.44F);
-    const auto search_x = (width - search_width) / 2;
+    const auto search = geometry.command_center;
+    if (search.x >= 72 * scale) {
+        label(canvas, "Astra", 14 * scale, 8 * scale, 12, muted);
+    }
     SkPaint search_paint;
     search_paint.setColor(input_color);
     search_paint.setAntiAlias(true);
-    canvas->drawRoundRect(SkRect::MakeXYWH(search_x, 5 * scale, search_width, 22 * scale),
-                          4 * scale,
-                          4 * scale,
-                          search_paint);
-    draw_icon(canvas, Icon::search, search_x + 9 * scale, 8 * scale, 15 * scale, muted);
+    const auto search_rect = SkRect::MakeXYWH(search.x, search.y, search.width, search.height);
+    canvas->drawRoundRect(search_rect, 4 * scale, 4 * scale, search_paint);
+    search_paint.setStyle(SkPaint::kStroke_Style);
+    search_paint.setStrokeWidth(scale);
+    search_paint.setColor(search.contains(mouse_x, mouse_y) ? accent : border_color);
+    canvas->drawRoundRect(search_rect, 4 * scale, 4 * scale, search_paint);
     canvas->save();
-    canvas->clipRect(
-        SkRect::MakeXYWH(search_x + 30 * scale, 5 * scale, search_width - 115 * scale, 22 * scale));
-    label(canvas, options.workspace_name, search_x + 31 * scale, 8 * scale, 12, foreground);
+    canvas->clipRect(search_rect);
+    draw_icon(canvas, Icon::search, search.x + 9 * scale, search.y + 3 * scale, 15 * scale, muted);
+    const bool show_hint = search.width > 260 * scale;
+    elided_label(canvas,
+                 options.workspace_name,
+                 search.x + 31 * scale,
+                 search.y + 3 * scale,
+                 12,
+                 search.width - (show_hint ? 126 : 39) * scale,
+                 foreground);
+    if (show_hint) {
+        elided_label(canvas,
+                     "Ctrl+Shift+P",
+                     search.right() - 85 * scale,
+                     search.y + 4 * scale,
+                     10,
+                     77 * scale,
+                     muted);
+    }
     canvas->restore();
-    if (search_width > 260 * scale)
-        label(canvas, "Ctrl+Shift+P", search_x + search_width - 85 * scale, 9 * scale, 10, muted);
     fill(geometry.activity, activity_background);
     const auto activity_views = sidebar_views.ordered();
     canvas->save();
@@ -4700,6 +4696,9 @@ void EditorWindow::Impl::draw() {
             canvas, left - scale, geometry.sidebar.y, scale, geometry.sidebar.height, border_color);
     }
     fill(geometry.tabs, panel_background);
+    canvas->save();
+    canvas->clipRect(SkRect::MakeXYWH(
+        geometry.tabs.x, geometry.tabs.y, geometry.tabs.width, geometry.tabs.height));
     for (const auto& tab : tab_strip.visible) {
         const auto& document = documents.at(tabs[tab.index]);
         const bool active = tabs[tab.index] == active_id;
@@ -4756,6 +4755,7 @@ void EditorWindow::Impl::draw() {
                   14 * scale,
                   muted);
     }
+    canvas->restore();
     fill(geometry.breadcrumb, background);
     if (const auto* document = current()) {
         canvas->save();
@@ -4763,12 +4763,13 @@ void EditorWindow::Impl::draw() {
                                           geometry.breadcrumb.y,
                                           geometry.breadcrumb.width,
                                           geometry.breadcrumb.height));
-        label(canvas,
-              document->path.empty() ? "Untitled" : document->path,
-              left + 18 * scale,
-              geometry.breadcrumb.y + 5 * scale,
-              12,
-              muted);
+        elided_label(canvas,
+                     document->path.empty() ? "Untitled" : document->path,
+                     left + 18 * scale,
+                     geometry.breadcrumb.y + 5 * scale,
+                     12,
+                     geometry.breadcrumb.width - 36 * scale,
+                     muted);
         canvas->restore();
     }
     rectangle(
@@ -5078,7 +5079,7 @@ void EditorWindow::Impl::draw() {
         if (width > 820 * scale)
             detail += "    " + std::string(spaces ? "Spaces: " : "Tab Size: ") +
                       std::to_string(tab_size) + (document->language_active ? "    LSP" : "");
-        const auto detail_width = label_layout(detail, 11, status_foreground).width();
+        const auto detail_width = label_layout(detail, 11, status_foreground)->width();
         label(canvas,
               detail,
               std::max(130 * scale, width - detail_width - 16 * scale),
@@ -5187,12 +5188,18 @@ WorkbenchLayout EditorWindow::layout() const {
 
 WorkbenchViewState EditorWindow::view_state() const {
     const auto retired = impl_->sidebar_views.retirement_stats();
+    const auto label_stats = impl_->labels.statistics();
     WorkbenchViewState result{impl_->geometry,
                               impl_->tab_strip,
                               impl_->tabs,
                               impl_->sidebar_views.at("explorer").index.size()};
     const auto& sidebar = impl_->sidebar_views.at(impl_->active_view);
     result.file_first = sidebar.scroll;
+    result.text_labels = {{"entries", label_stats.entries},
+                          {"bytes", label_stats.accounted_bytes},
+                          {"shaped", label_stats.shaped},
+                          {"reused", label_stats.reused},
+                          {"evicted", label_stats.evicted}};
     result.sidebar = impl_->sidebar_views.state(impl_->active_view);
     result.view_retirement = {{"queued", retired.queued},
                               {"completed", retired.completed},

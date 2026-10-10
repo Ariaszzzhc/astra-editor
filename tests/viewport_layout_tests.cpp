@@ -2,6 +2,7 @@
 #include <astra/ui/text_surface.hpp>
 #include <astra/ui/text_input_layout.hpp>
 #include <astra/ui/input_events.hpp>
+#include <astra/ui/text_labels.hpp>
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkImageInfo.h"
@@ -67,6 +68,82 @@ void equal(const TextLayout& cached, const TextLayout& fresh) {
                     cached.grapheme_boundaries().end(),
                 "Cached hit splits a grapheme");
     }
+}
+
+void text_labels(TextLayoutEngine& engine) {
+    TextLayoutOptions style;
+    style.font_size = 13;
+    style.line_height = 1.15F;
+    style.direction = TextDirection::automatic;
+    style.font_families = {"Segoe UI", "Microsoft YaHei UI", "Segoe UI Emoji"};
+    TextLabels labels(engine);
+    const std::string source = "מסמך 中🙂é👨‍👩‍👧‍👦.cpp";
+    const auto original = labels.prepare(source, style);
+    equal(*original, engine.layout(source, style));
+    require(labels.prepare(source, style) == original, "Chrome text cache did not reuse its key");
+    auto changed = style;
+    changed.dpi_scale = std::nextafter(style.dpi_scale, 2.0F);
+    const auto tiny_dpi_change = labels.prepare(source, changed);
+    require(tiny_dpi_change != original,
+            "A rounded string cache key hid an exact chrome DPI change");
+    equal(*tiny_dpi_change, engine.layout(source, changed));
+    changed.color = 0xFF66AA11;
+    const auto colored = labels.prepare(source, changed);
+    equal(*colored, engine.layout(source, changed));
+    require(pixels(*colored) != pixels(*original), "Chrome color change reused stale pixels");
+    const auto normalized = labels.prepare("A\r\nB\tC\u2028中", style);
+    require(normalized->text() == "A  B C 中" && normalized->line_count() == 1,
+            "Chrome separators escaped the single-line display");
+    equal(*normalized, engine.layout("A  B C 中", style));
+    for (float width = 1; width < original->width(); width += 7) {
+        const auto elided = labels.elide(source, style, width);
+        if (!elided) {
+            require(engine.layout("…", style).width() > width,
+                    "A fitting chrome ellipsis was unnecessarily hidden");
+            continue;
+        }
+        require(elided->width() <= width && elided->text().ends_with("…"),
+                "Elided chrome text escaped its measured width");
+        const auto prefix = elided->text().substr(0, elided->text().size() - 3);
+        require(source.starts_with(prefix) &&
+                    std::ranges::find(original->grapheme_boundaries(), prefix.size()) !=
+                        original->grapheme_boundaries().end(),
+                "Chrome elision split a combining or emoji sequence");
+        equal(*elided, engine.layout(std::string(elided->text()), style));
+    }
+    require(!labels.elide(source, style, 0), "Zero-width chrome text produced a paragraph");
+    std::string crossing(4090, 'a');
+    crossing += "👨‍👩‍👧‍👦";
+    const auto bounded = labels.prepare(crossing, style);
+    require(bounded->text() == std::string(4090, 'a') + "…",
+            "A byte-limited chrome prefix displayed half an emoji family");
+    std::string combining = "e";
+    for (int count = 0; count < 2500; ++count) {
+        combining += "́";
+    }
+    require(labels.prepare(combining, style)->text() == "…",
+            "A bounded chrome caption displayed an incomplete combining cluster");
+    const auto prepared_before_failure = labels.statistics().shaped;
+    bool invalid{};
+    try {
+        static_cast<void>(labels.prepare(std::string("bad\xFF"), style));
+    } catch (const std::invalid_argument&) {
+        invalid = true;
+    }
+    require(invalid && labels.statistics().shaped == prepared_before_failure,
+            "Invalid chrome UTF-8 mutated the paragraph cache");
+    TextLabels small(engine, {3, 2048});
+    const auto retained = small.prepare(source, style);
+    for (int count = 0; count < 60; ++count) {
+        static_cast<void>(small.prepare("caption " + std::to_string(count), style));
+        require(small.statistics().entries <= 3 && small.statistics().accounted_bytes <= 2048,
+                "Chrome LRU exceeded its entry or byte bounds");
+    }
+    require(small.statistics().evicted > 0 && retained->text() == source,
+            "Chrome eviction invalidated a retained paragraph");
+    equal(*retained, engine.layout(source, style));
+    std::cout << "Chrome text: exact DPI/color keys, native Unicode pixels, grapheme elision, "
+                 "bounded display prefixes and retained LRU paragraphs: PASS\n";
 }
 
 void reuse(TextLayoutEngine& engine) {
@@ -717,6 +794,10 @@ void input_event_ownership() {
 int main(int argc, char* argv[]) {
     try {
         TextLayoutEngine engine;
+        if (argc == 2 && std::string_view(argv[1]) == "--labels") {
+            text_labels(engine);
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--editable") {
             editable_geometry(engine);
             editable_background(engine);
@@ -733,6 +814,7 @@ int main(int argc, char* argv[]) {
         editable_geometry(engine);
         editable_background(engine);
         input_event_ownership();
+        text_labels(engine);
         std::shared_ptr<const TextLayout> retained;
         {
             TextLayoutEngine temporary;

@@ -313,6 +313,34 @@ evidence of native runtime behavior. Independent native acceptance must include
 window startup, resize, DPI, minimize/restore, Unicode/IME/clipboard, actual GPU
 readback, device loss, shared-library loading and shutdown on each window system.
 
+## Chrome text and responsive controls
+
+Titles, filenames, row captions and status text use `TextLabels`. The component
+reuses the exact text/all-options paragraph cache through a one-row measured
+viewport, instead of stringifying floating-point font/DPI values. Default limits
+are 512 cached paragraphs / 2 MiB of accounted text/style. Paragraph handles stay
+valid across eviction. Resize and DPI events preserve the LRU; each reuse still
+certifies the current exact style, and width elision is measured afresh.
+
+Caption normalization scans a bounded 4096-byte source prefix, with up to one
+scalar of decoding lookahead. ASCII controls and Unicode line separators display
+as spaces. Longer captions conservatively omit the final potentially incomplete
+grapheme and append an ellipsis; combining/ZWJ continuations beyond the budget
+are not scanned. Width elision also uses complete grapheme prefixes and measures
+the final displayed paragraph. The original model text remains available to
+reads/actions. These plain, unwrapped captions do not interpret color spans.
+Preparation is synchronous and bounded; cache counts do not measure native
+font/paragraph/GPU heaps or establish constant frame latency.
+
+`WorkbenchLayout.command_center` owns both the drawn control and its pointer hit
+area; decorative header clicks do not invoke a command or select document text.
+Breadcrumbs and command-center titles elide instead of clipping an arbitrary
+text tail. A visible sidebar leaves at least 360 logical units for the editor
+and hides when its 180-unit minimum cannot fit. Visible tabs reserve at least
+96 logical units for distinct icon/caption/close targets; remaining slivers are
+accessed through overflow navigation. Navigation cells also stay inside tiny
+parent bounds, and the entire tab band clips its drawing.
+
 ## Document paragraph scheduling
 
 Document paragraphs use `DocumentViewport` and `LayoutJobs`. Cache hits and short

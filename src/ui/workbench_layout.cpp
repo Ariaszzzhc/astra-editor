@@ -164,7 +164,7 @@ WorkbenchLayout WorkbenchLayout::measure(float width,
     const auto logical_height = height / scale;
     // Keep the document usable when a narrow window cannot fit the requested sidebar.
     const auto activity_width = std::min(44.0F, logical_width);
-    const auto available = std::max(0.0F, logical_width - activity_width - 240.0F);
+    const auto available = std::max(0.0F, logical_width - activity_width - 360.0F);
     const auto side = sidebar && available >= 180.0F
                           ? std::min(std::clamp(sidebar_width, 180.0F, 480.0F), available)
                           : 0;
@@ -180,6 +180,11 @@ WorkbenchLayout WorkbenchLayout::measure(float width,
     result.scale = scale;
     result.sidebar_row_height = 24 * scale;
     result.header = box(0, 0, logical_width, top);
+    const auto command_width = std::min(480.0F, logical_width * 0.44F);
+    result.command_center = box((logical_width - command_width) / 2,
+                                std::min(5.0F, top),
+                                command_width,
+                                std::max(0.0F, std::min(22.0F, top - 10.0F)));
     result.activity = box(0, top, activity_width, status_top - top);
     result.sidebar = box(activity_width, top, side, status_top - top);
     result.tabs = box(left, top, logical_width - left, tab_bottom - top);
@@ -215,11 +220,13 @@ TabStrip TabStrip::measure(Box bounds,
                            std::size_t active,
                            bool reveal) {
     TabStrip result;
+    if (scale <= 0 || !std::isfinite(scale) || !std::isfinite(bounds.x) ||
+        !std::isfinite(bounds.y) || !std::isfinite(bounds.width) || !std::isfinite(bounds.height) ||
+        bounds.width < 0 || bounds.height < 0) {
+        throw std::invalid_argument("Invalid tab scale");
+    }
     if (labels.empty()) {
         return result;
-    }
-    if (scale <= 0 || !std::isfinite(scale)) {
-        throw std::invalid_argument("Invalid tab scale");
     }
     std::vector<float> widths;
     float total{};
@@ -231,7 +238,8 @@ TabStrip TabStrip::measure(Box bounds,
         total += widths.back();
     }
     const bool overflow = total > bounds.width;
-    const auto available = std::max(0.0F, bounds.width - (overflow ? 52 * scale : 0));
+    const auto navigation_width = overflow ? std::min(26 * scale, bounds.width / 2) : 0;
+    const auto available = std::max(0.0F, bounds.width - 2 * navigation_width);
     result.first = std::min(first, labels.size() - 1);
     active = std::min(active, labels.size() - 1);
     if (reveal) {
@@ -249,7 +257,9 @@ TabStrip TabStrip::measure(Box bounds,
     float x = bounds.x;
     for (auto i = result.first; i < labels.size() && x < bounds.x + available; ++i) {
         const auto width = std::min(widths[i], bounds.x + available - x);
-        if (width < 24 * scale) {
+        // Every visible tab reserves separate icon, caption and close targets.
+        // A sliver of the following tab belongs in overflow navigation instead.
+        if (width < 96 * scale) {
             break;
         }
         result.visible.push_back({i,
@@ -258,8 +268,10 @@ TabStrip TabStrip::measure(Box bounds,
         x += width;
     }
     if (overflow) {
-        result.previous = {bounds.right() - 52 * scale, bounds.y, 26 * scale, bounds.height};
-        result.next = {bounds.right() - 26 * scale, bounds.y, 26 * scale, bounds.height};
+        result.previous = {
+            bounds.right() - 2 * navigation_width, bounds.y, navigation_width, bounds.height};
+        result.next = {
+            bounds.right() - navigation_width, bounds.y, navigation_width, bounds.height};
     }
     return result;
 }
