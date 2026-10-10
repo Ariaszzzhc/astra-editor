@@ -24,16 +24,13 @@ export function registerNativeCommands() {
         ['outdent', 'Outdent lines', 'Shift+Tab'],
         ['insert_text', 'Insert text', '', false]
     ];
-    astra.configure({
-        workbench: {
-            commands: Object.fromEntries(
-                editing.map(([name, title, shortcut, palette = true]) => {
-                    const id = `editor.${name}`;
-                    return [id, { id, title, shortcut, palette }];
-                })
-            )
-        }
-    });
+    for (const [name, title, shortcut, palette = true] of editing) {
+        const id = `editor.${name}`;
+        ui.registerCommand(
+            { id, title, ...(shortcut ? { shortcut } : {}), palette },
+            (parameters) => ui.native(id, parameters)
+        );
+    }
     const commands = [
         ['ui.closeTab', 'Close active tab', 'Ctrl+W'],
         ['editor.undo', 'Undo', 'Ctrl+Z'],

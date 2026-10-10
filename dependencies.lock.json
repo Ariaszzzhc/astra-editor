@@ -17,5 +17,11 @@
     "libsdl3": "3.4.12",
     "re2": "2025.11.05",
     "abseil": "20260107.0"
+  },
+  "patches": {
+    "quickjs-ng-host-async-context": {
+      "path": "xmake/packages/astra-quickjs/host-async-context.patch",
+      "sha256": "97fe8762e74c107e912bc73f7bf023cd6fdb7f68aeeae3be8fae410272ae48e1"
+    }
   }
 }

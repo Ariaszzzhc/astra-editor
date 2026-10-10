@@ -40,6 +40,14 @@ recipe tree and keeps dependency caches in this checkout. First-time preparation
 and configuration need network access. Update reviewed manifests when upgrading;
 do not edit downloaded recipes or select moving branches.
 
+The script target uses `astra-quickjs` (aliased to `quickjs-ng`), based on upstream
+v0.15.1 with the hash-verified host async context patch under
+`xmake/packages/astra-quickjs/`. The patch digest participates in its cache
+identity. Configuration and package tests reject a missing extension rather than
+using an unmodified upstream binary. Its rationale and reproduction boundary are
+in that directory's README. Runtime preparation verifies the local patch and
+includes it, the recipe and README in distribution provenance.
+
 Windows libraries share `/MT` and `_ITERATOR_DEBUG_LEVEL=0` in both modes to match
 Skia/Dawn. Debug retains symbols and unoptimized application code. Keep the same
 CRT, STL ABI and graphics configuration across all linked targets.

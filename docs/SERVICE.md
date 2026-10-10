@@ -224,9 +224,12 @@ if (astra.context === 'client') {
 Client document calls use the same in-process/TCP protocol as other clients.
 `astra.ui.read(parameters, options)` captures the requested `id` (or active
 document) when invoked and asynchronously waits behind that document's preceding
-native input intents before returning retained metadata. Switching tabs during
+accepted platform input handlers before returning retained metadata. This includes
+JS `await` work before and after their native editing primitive. Switching tabs during
 the wait does not change its document or newline policy. A read is a boundary
-for prior native input, not a lock against future edits or another client.
+for prior accepted input, not a lock against future edits or another client.
+Inside a platform input handler, reads of its captured document fence only
+earlier handlers; they do not wait for themselves or later accepted input.
 `{immediate:true}` reads current retained presentation state without that wait;
 sidebar/tab controls and the command catalog use it. Reads accept `signal` and
 `timeoutMs`; cancellation drains/removes the read fence without cancelling edits.
@@ -251,11 +254,43 @@ cancellation/deadlines. Explicit revisions stay fixed; absent revisions are fill
 when the captured document's intent leaves the serial queue. Cancellation skips
 queued work and forwards cancellation to deferred operations; committed edits
 cannot be rolled back. At most 256 native edit futures may be pending.
+All default editing commands, including `editor.insert_text`, movement,
+word selection and deletion, are registered in the client command host.
+SDL text entry, editing shortcuts and double-click word selection invoke these
+JS handlers, so client overrides apply to actual input. Parameters carry the
+document `id` captured when input is accepted; movement also carries `extend`.
+Keep that identity when calling native primitives after an `await`:
+
+```js
+if (astra.context === 'client') {
+    astra.registerCommand('editor.insert_text', async (parameters) => {
+        await astra.sleep(0);
+        const {document} = await astra.ui.read({id: parameters.id});
+        return await astra.ui.native('editor.insert_text', {
+            ...parameters, id: document.id
+        });
+    });
+}
+```
+
+Native editor primitives from other JS workflows also wait behind earlier
+accepted input for their captured document. One platform handler runs per document;
+unrelated documents remain eligible while it awaits. The platform queue accepts
+at most 256 inputs and 8 MiB of aggregate serialized parameters/identities.
+Overflow is rejected visibly before publication; no accepted entry is truncated.
+Default vertical navigation resolves shaped visual targets when its native intent
+is dispatched, then awaits the shared `document.setSelections` dispatcher.
+Missing/stale shaping or a background document uses the service movement command.
+Explicit revision guards still reject stale targets before mutation.
 Input ordering is per document and continues until a deferred script operation
 actually completes, fails or is cancelled. Later mutations for that document
 wait; unrelated documents and viewport queries remain eligible. Saving does not
 hold this input gate while asynchronous filesystem work owns its snapshot.
 Remaining non-edit native workflow bridges still await their respective migration.
+QuickJS-NG uses the fixed, hash-verified host-context extension described in
+`xmake/packages/astra-quickjs/README.md`. Continuations retain the task in which
+they were registered, even when another command resolves a shared Promise.
+Retired/cancelled task continuations cannot issue new host RPC mutations.
 `astra.ui.input({title, value, placeholder}, {signal, timeoutMs})`
 returns entered text or `null` on dismissal. `astra.ui.confirm({title, detail,
 accept, items}, options)` returns `true` or `null`. Optional `items` are a

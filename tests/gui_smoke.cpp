@@ -258,13 +258,40 @@ int main(int argc, char* argv[]) {
         options.width = 1400;
         options.height = 860;
         options.user_script = R"js(if(astra.context==='client') {
+            let releaseClientInput;
+            astra.registerCommand('editor.insert_text', async parameters => {
+                if (parameters.text === 'A') {
+                    await astra.ui.update({ status: 'Client input suspended' });
+                    await new Promise(resolve => { releaseClientInput = resolve; });
+                } else await astra.sleep(20);
+                // The handler must read its captured document without waiting
+                // for itself or for later inputs already accepted by SDL.
+                const { document } = await astra.ui.read({ id: parameters.id });
+                if (document.id !== parameters.id)
+                    throw new Error('Client input changed documents across await');
+                return await astra.ui.native('editor.insert_text', parameters);
+            });
+            astra.registerCommand('acceptance.releaseClientInput', () => {
+                if (!releaseClientInput) throw new Error('Client input gate was not active');
+                releaseClientInput();
+                releaseClientInput = undefined;
+            });
+            astra.ui.registerCommand({ id: 'acceptance.nativeUndo', title: 'Direct native undo', palette: false },
+                () => astra.ui.native('editor.undo'));
+            astra.bind('Ctrl+Alt+U', 'acceptance.nativeUndo');
+            astra.registerCommand('editor.move_down', async parameters => {
+                await astra.sleep(0);
+                const result = await astra.ui.native('editor.move_down', parameters);
+                await astra.ui.update({ status: 'Client shaped navigation' });
+                return result;
+            });
             let unsavedReplacementId;
             astra.registerCommand('acceptance.prepareUnsavedReplacement', async () => {
                 const { document: original } = await astra.ui.read();
                 await astra.ui.execute('ui.new');
                 const { document } = await astra.ui.read();
                 unsavedReplacementId = document.id;
-                await astra.ui.native('editor.insert_text', {
+                await astra.ui.execute('editor.insert_text', {
                     id: document.id, baseRevision: document.revision, text: 'needle in unsaved'
                 });
                 await astra.ui.update({ activate: original.id });
@@ -354,11 +381,9 @@ int main(int argc, char* argv[]) {
         pump_until(
             window,
             [&] {
-                return call(host, "script.command", {{"name", "acceptance.inputState"}})
-                    .at("waiting")
-                    .get<bool>();
+                return window.status_text() == "Client input suspended";
             },
-            "The user editing policy did not reach its asynchronous gate");
+            "SDL input bypassed the asynchronous client editing override");
         window.execute_ui_command("acceptance.readInput");
         window.execute_ui_command("acceptance.cancelRead");
         pump_until(
@@ -396,6 +421,15 @@ int main(int argc, char* argv[]) {
         require(read_document(host, id).at("text") ==
                     "// GUI acceptance\nint main() { return 0; }\n",
                 "A later input bypassed the suspended command for the same document");
+        window.execute_ui_command("acceptance.releaseClientInput");
+        pump_until(
+            window,
+            [&] {
+                return call(host, "script.command", {{"name", "acceptance.inputState"}})
+                    .at("waiting")
+                    .get<bool>();
+            },
+            "The captured client input did not reach the shared service command override");
         require(call(host, "script.command", {{"name", "acceptance.releaseInput"}}) == true,
                 "Cannot release the editing policy gate");
         settle(window);
@@ -425,6 +459,26 @@ int main(int argc, char* argv[]) {
         require(read_document(host, id).at("text") ==
                     "// GUI acceptance\nint main() { return 0; }\n",
                 "Deferred editing history lost the original source");
+        key(window, SDLK_A, SDL_KMOD_CTRL);
+        const auto before_native_undo = read_document(host, id);
+        SDL_Event undo_input{};
+        undo_input.type = SDL_EVENT_TEXT_INPUT;
+        undo_input.text.text = "Native undo ordering";
+        undo_input.text.windowID = SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&undo_input), "Cannot enqueue client-delayed native undo input");
+        SDL_Event undo_key{};
+        undo_key.type = SDL_EVENT_KEY_DOWN;
+        undo_key.key.key = SDLK_U;
+        undo_key.key.mod = SDL_KMOD_CTRL | SDL_KMOD_ALT;
+        undo_key.key.down = true;
+        undo_key.key.windowID = SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&undo_key), "Cannot enqueue immediate native undo policy");
+        settle(window);
+        const auto after_native_undo = read_document(host, id);
+        require(after_native_undo.at("text") == before_native_undo.at("text") &&
+                    std::stoull(after_native_undo.at("revision").get<std::string>()) ==
+                        std::stoull(before_native_undo.at("revision").get<std::string>()) + 2,
+                "A direct native JS edit bypassed earlier client input awaiting its prelude");
         key(window, SDLK_A, SDL_KMOD_CTRL);
         SDL_Event saved_input{};
         saved_input.type = SDL_EVENT_TEXT_INPUT;
@@ -464,6 +518,18 @@ int main(int argc, char* argv[]) {
                 "Line copy read an old selection or relied on the stale native viewport");
         key(window, SDLK_A, SDL_KMOD_CTRL);
         text(window, "alpha\nbeta");
+        key(window, SDLK_HOME, SDL_KMOD_CTRL);
+        key(window, SDLK_RIGHT);
+        key(window, SDLK_RIGHT);
+        key(window, SDLK_DOWN, SDL_KMOD_SHIFT);
+        require(window.status_text() == "Client shaped navigation",
+                "Vertical SDL input bypassed the client JS override");
+        const auto vertical_selection = read_document(host, id).at("selections").at(0);
+        require(vertical_selection.at("anchor") == 2 && vertical_selection.at("head") == 8,
+                "Asynchronous shaped navigation lost its visual column or Shift extension");
+        key(window, SDLK_UP);
+        require(read_document(host, id).at("selections").at(0).at("head") == 2,
+                "Default upward movement lost the retained shaped column");
         key(window, SDLK_HOME, SDL_KMOD_CTRL);
         key(window, SDLK_DOWN, SDL_KMOD_CTRL | SDL_KMOD_ALT);
         require(read_document(host, id).at("selections").size() == 2,

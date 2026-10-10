@@ -100,12 +100,13 @@ struct Runtime::Impl {
     struct Abandoned {
         std::string method;
         std::future<Json> future;
+        TaskId owner{};
     };
 
     std::deque<Abandoned> abandoned;
     std::deque<Json> drain_reports;
     std::vector<Json> errors;
-    TaskId active_task{};
+    TaskId submitting_task{};
     std::uint64_t next_id{1};
 
     Impl(AsyncRequest incoming, Limits budget) : request(std::move(incoming)), limits(budget) {
@@ -267,8 +268,8 @@ struct Runtime::Impl {
             if (tasks.size() >= limits.max_tasks) {
                 throw ScriptError("Script event task capacity exceeded");
             }
-            const auto id = allocate_id();
-            active_task = id;
+            const auto id = create_task();
+            JS_SetHostAsyncContext(runtime, id);
             auto arg = argument.get();
             try {
                 Value result(context, JS_Call(context, callback->get(), JS_UNDEFINED, 1, &arg));
@@ -277,11 +278,11 @@ struct Runtime::Impl {
                 tasks.at(id).detached = true;
                 run_jobs();
             } catch (...) {
-                active_task = 0;
+                JS_SetHostAsyncContext(runtime, 0);
                 abandon_task(id);
                 throw;
             }
-            active_task = 0;
+            JS_SetHostAsyncContext(runtime, 0);
         }
     }
 
@@ -419,6 +420,20 @@ struct Runtime::Impl {
                 return JS_ThrowTypeError(context, "request requires a method string");
             }
             const auto method = text(context, argv[0]);
+            const auto task_owner = JS_GetHostAsyncContext(host.runtime);
+            const auto task = host.tasks.find(task_owner);
+            if (task_owner && (task == host.tasks.end() || task->second.cancelled)) {
+                Value failure(context, JS_NewError(context));
+                host.check(failure.get());
+                if (JS_SetPropertyStr(
+                        context, failure.get(), "name", JS_NewString(context, "AbortError")) < 0 ||
+                    JS_SetPropertyStr(context,
+                                      failure.get(),
+                                      "message",
+                                      JS_NewString(context, "Script task is no longer active")) < 0)
+                    host.throw_error();
+                return JS_Throw(context, JS_DupValue(context, failure.get()));
+            }
             const auto params = argc > 1 ? host.to_json(argv[1]) : Json::object();
             if (method.empty() || method.size() > 256 || !params.is_object()) {
                 return JS_ThrowTypeError(context, "request requires a method and parameter object");
@@ -465,7 +480,7 @@ struct Runtime::Impl {
             request->resolve = std::make_unique<Value>(context, functions[0]);
             request->reject = std::make_unique<Value>(context, functions[1]);
             request->signal = std::move(signal);
-            request->owner = host.active_task;
+            request->owner = JS_GetHostAsyncContext(host.runtime);
             request->raw = raw;
             request->expires = Clock::now() + duration;
             if (method == "_runtime.sleep") {
@@ -542,8 +557,8 @@ struct Runtime::Impl {
     }
 
     void settle(Pending& incoming, const Json& value, bool failure) {
-        const auto saved_owner = active_task;
-        active_task = incoming.owner;
+        const auto saved_owner = JS_GetHostAsyncContext(runtime);
+        JS_SetHostAsyncContext(runtime, incoming.owner);
         try {
             Value argument(context, failure ? JS_NewError(context) : from_json(value));
             check(argument.get());
@@ -565,19 +580,32 @@ struct Runtime::Impl {
             check(result.get());
             run_jobs();
         } catch (...) {
-            active_task = saved_owner;
+            JS_SetHostAsyncContext(runtime, saved_owner);
             throw;
         }
-        active_task = saved_owner;
+        JS_SetHostAsyncContext(runtime, saved_owner);
+    }
+
+    std::future<Json> submit(TaskId task_owner, std::string_view method, const Json& params) {
+        const auto previous = std::exchange(submitting_task, task_owner);
+        try {
+            auto future = request(method, params);
+            submitting_task = previous;
+            return future;
+        } catch (...) {
+            submitting_task = previous;
+            throw;
+        }
     }
 
     void request_cancel(Pending& incoming) {
         if (!incoming.operation.empty()) {
-            cancellations.push_back(request("operation.cancel", {{"id", incoming.operation}}));
+            cancellations.push_back(
+                submit(incoming.owner, "operation.cancel", {{"id", incoming.operation}}));
         } else if (incoming.future) {
             // An outstanding transport response may reveal an operation ID only
             // after cancellation. Retain it and cancel that operation on receipt.
-            abandoned.push_back({incoming.method, std::move(*incoming.future)});
+            abandoned.push_back({incoming.method, std::move(*incoming.future), incoming.owner});
             incoming.future.reset();
         }
     }
@@ -628,12 +656,14 @@ struct Runtime::Impl {
                     }
                 } else {
                     if (!incoming.future) {
-                        incoming.future.emplace(incoming.operation.empty()
-                                                    ? request(incoming.method, incoming.params)
-                                                    : request("operation.get",
-                                                              {{"id", incoming.operation},
-                                                               {"offset", incoming.offset},
-                                                               {"limit", 256}}));
+                        incoming.future.emplace(
+                            incoming.operation.empty()
+                                ? submit(incoming.owner, incoming.method, incoming.params)
+                                : submit(incoming.owner,
+                                         "operation.get",
+                                         {{"id", incoming.operation},
+                                          {"offset", incoming.offset},
+                                          {"limit", 256}}));
                     }
                     if (incoming.future->wait_for(std::chrono::seconds(0)) ==
                         std::future_status::ready) {
@@ -724,8 +754,8 @@ struct Runtime::Impl {
             try {
                 const auto reply = completed.future.get();
                 if (reply.is_object() && reply.contains("operationId")) {
-                    cancellations.push_back(
-                        request("operation.cancel", {{"id", reply.at("operationId")}}));
+                    cancellations.push_back(submit(
+                        completed.owner, "operation.cancel", {{"id", reply.at("operationId")}}));
                 }
             } catch (const protocol::RpcError& error) {
                 // A valid service rejection settles the already-cancelled
@@ -799,17 +829,19 @@ struct Runtime::Impl {
         });
     }
 
-    TaskId retain(JSValueConst value, TaskId id) {
+    TaskId create_task() {
         if (tasks.size() >= limits.max_tasks) {
             throw ScriptError("Script task capacity exceeded");
         }
-        tasks.emplace(id,
-                      Task{std::make_unique<Value>(context, JS_DupValue(context, value)),
-                           std::nullopt,
-                           Clock::now() + limits.task_timeout,
-                           false,
-                           false});
+        const auto id = allocate_id();
+        Task task;
+        task.expires = Clock::now() + limits.task_timeout;
+        tasks.emplace(id, std::move(task));
         return id;
+    }
+
+    void retain(JSValueConst value, TaskId id) {
+        tasks.at(id).value = std::make_unique<Value>(context, JS_DupValue(context, value));
     }
 
     void abandon_task(TaskId id) {
@@ -959,8 +991,8 @@ Runtime::TaskId Runtime::start_evaluation(std::string_view source, std::string_v
     if (impl_->tasks.size() >= impl_->limits.max_tasks) {
         throw ScriptError("Script task capacity exceeded");
     }
-    const auto id = impl_->allocate_id();
-    impl_->active_task = id;
+    const auto id = impl_->create_task();
+    JS_SetHostAsyncContext(impl_->runtime, id);
     try {
         Value result(impl_->context,
                      JS_Eval(impl_->context,
@@ -972,11 +1004,11 @@ Runtime::TaskId Runtime::start_evaluation(std::string_view source, std::string_v
         impl_->retain(result.get(), id);
         impl_->run_jobs();
     } catch (...) {
-        impl_->active_task = 0;
+        JS_SetHostAsyncContext(impl_->runtime, 0);
         impl_->abandon_task(id);
         throw;
     }
-    impl_->active_task = 0;
+    JS_SetHostAsyncContext(impl_->runtime, 0);
     return id;
 }
 
@@ -992,12 +1024,12 @@ Runtime::TaskId Runtime::start_command(std::string_view name, const Json& params
     if (impl_->tasks.size() >= impl_->limits.max_tasks) {
         throw ScriptError("Script task capacity exceeded");
     }
-    const auto id = impl_->allocate_id();
     Value callback(impl_->context, JS_DupValue(impl_->context, found->second));
     Value argument(impl_->context, impl_->from_json(params));
     impl_->check(argument.get());
     auto arg = argument.get();
-    impl_->active_task = id;
+    const auto id = impl_->create_task();
+    JS_SetHostAsyncContext(impl_->runtime, id);
     try {
         Value result(impl_->context,
                      JS_Call(impl_->context, callback.get(), JS_UNDEFINED, 1, &arg));
@@ -1005,11 +1037,11 @@ Runtime::TaskId Runtime::start_command(std::string_view name, const Json& params
         impl_->retain(result.get(), id);
         impl_->run_jobs();
     } catch (...) {
-        impl_->active_task = 0;
+        JS_SetHostAsyncContext(impl_->runtime, 0);
         impl_->abandon_task(id);
         throw;
     }
-    impl_->active_task = 0;
+    JS_SetHostAsyncContext(impl_->runtime, 0);
     return id;
 }
 
@@ -1060,6 +1092,11 @@ bool Runtime::idle() const {
     impl_->require_owner();
     return impl_->pending.empty() && impl_->tasks.empty() && impl_->cancellations.empty() &&
            impl_->abandoned.empty() && impl_->drain_reports.empty();
+}
+
+Runtime::TaskId Runtime::request_owner() const {
+    impl_->require_owner();
+    return impl_->submitting_task;
 }
 
 bool Runtime::waiting_only(std::string_view method) const {

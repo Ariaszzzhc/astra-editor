@@ -2,6 +2,8 @@
 *.cpp text eol=lf
 *.hpp text eol=lf
 *.lua text eol=lf
+# Unified diffs retain their required space marker on empty context lines.
+*.patch text eol=lf whitespace=-blank-at-eol
 *.js text eol=lf
 *.md text eol=lf
 *.ps1 text eol=crlf

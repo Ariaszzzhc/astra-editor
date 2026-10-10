@@ -1,4 +1,5 @@
 #include <astra/ui/workbench.hpp>
+#include <astra/ui/input_queue.hpp>
 #include <astra/ui/inline_form.hpp>
 #include <astra/ui/form_registry.hpp>
 #include <astra/ui/view_store.hpp>
@@ -860,6 +861,142 @@ TEST_CASE("workbench inline search reports service errors in the current compone
     CHECK_FALSE(host.form->busy());
     CHECK(host.form->message() == "Invalid expression");
     CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench platform input preserves per-document order and captured read fences") {
+    astra::ui::InputQueue queue;
+    const auto first =
+        queue.accept("one", "editor.insert_text", {{"id", "ignored"}, {"text", "A"}});
+    const auto second = queue.accept("one", "editor.move_right", Json::object());
+    const auto independent = queue.accept("two", "editor.insert_text", {{"text", "B"}});
+    CHECK(queue.at(first).parameters.at("id") == "one");
+    CHECK(queue.ready() == std::vector<astra::ui::InputQueue::Identity>{first, independent});
+    CHECK_THROWS_AS(queue.started(second, 12), std::logic_error);
+    queue.started(first, 11);
+    CHECK(queue.ready() == std::vector<astra::ui::InputQueue::Identity>{independent});
+    CHECK_THROWS_AS(queue.started(independent, 11), std::logic_error);
+    queue.started(independent, 13);
+    CHECK(queue.ready().empty());
+    const auto external = queue.fence("one", 0);
+    CHECK(queue.pending("one", external));
+    CHECK_FALSE(queue.pending("one", queue.fence("one", 11)));
+    CHECK_FALSE(queue.pending("two", queue.fence("two", 13)));
+    // Reading another document must still fence its earlier accepted inputs.
+    CHECK(queue.pending("one", queue.fence("one", 13)));
+    const auto later = queue.accept("one", "editor.move_left", Json::object());
+    queue.retire(first);
+    CHECK(queue.ready() == std::vector<astra::ui::InputQueue::Identity>{second});
+    queue.started(second, 12);
+    CHECK_FALSE(queue.pending("one", queue.fence("one", 12)));
+    queue.retire(second);
+    CHECK_FALSE(queue.pending("one", external));
+    CHECK(queue.pending("one", queue.fence("one", 0)));
+    CHECK(queue.ready() == std::vector<astra::ui::InputQueue::Identity>{later});
+    queue.retire(independent);
+    queue.retire(later);
+    queue.retire(first);
+    CHECK(queue.empty());
+}
+
+TEST_CASE("workbench platform input rejects invalid capacity atomically and releases bytes") {
+    astra::ui::InputQueue queue;
+    CHECK_THROWS_AS(static_cast<void>(queue.accept("", "editor.insert_text", Json::object())),
+                    astra::protocol::RpcError);
+    CHECK_THROWS_AS(static_cast<void>(queue.accept("one", "editor.insert_text", Json::array())),
+                    astra::protocol::RpcError);
+    CHECK(queue.empty());
+    for (unsigned i = 0; i < 256; ++i)
+        static_cast<void>(queue.accept("one", "editor.insert_text", {{"text", i}}));
+    const auto before = queue.fence("one", 0);
+    CHECK_THROWS_AS(static_cast<void>(queue.accept("one", "editor.insert_text", Json::object())),
+                    astra::protocol::RpcError);
+    CHECK(queue.fence("one", 0) == before);
+    queue.clear();
+    CHECK(queue.empty());
+    CHECK_FALSE(queue.pending("one", before));
+    const auto large =
+        queue.accept("one",
+                     "editor.insert_text",
+                     {{"text", std::string(astra::protocol::Dispatcher::max_body_bytes / 2, 'a')}});
+    CHECK_THROWS_AS(
+        static_cast<void>(queue.accept(
+            "one",
+            "editor.insert_text",
+            {{"text", std::string(astra::protocol::Dispatcher::max_body_bytes / 2, 'b')}})),
+        astra::protocol::RpcError);
+    CHECK(queue.ready() == std::vector<astra::ui::InputQueue::Identity>{large});
+    queue.retire(large);
+    const auto next =
+        queue.accept("two",
+                     "editor.insert_text",
+                     {{"text", std::string(astra::protocol::Dispatcher::max_body_bytes / 2, 'b')}});
+    CHECK(next > large);
+    CHECK(queue.at(next).document == "two");
+}
+
+TEST_CASE("workbench default client editing commands are registered and overridable") {
+    auto channel = std::make_shared<Channel>();
+    std::vector<Json> actions;
+    std::vector<astra::script::Runtime::TaskId> owners;
+    astra::ui::Workbench* owner{};
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.action.cancel")
+                return ready(nullptr);
+            CHECK(method == "_ui.action");
+            actions.push_back(params);
+            owners.push_back(owner->request_owner());
+            return ready(params.at("parameters"));
+        },
+        modules(),
+        R"js(
+            astra.registerCommand('editor.move_down', async parameters => {
+                await astra.sleep(0);
+                return await astra.ui.native('editor.move_up', parameters);
+            });
+            astra.registerCommand('nestedInput', async parameters => {
+                await astra.sleep(0);
+                return await astra.ui.execute('editor.insert_text', parameters);
+            });
+        )js");
+    owner = &workbench;
+    for (const auto* command : {"editor.insert_text",
+                                "editor.move_up",
+                                "editor.move_down",
+                                "editor.select_word",
+                                "editor.backspace",
+                                "editor.indent"})
+        CHECK(workbench.contains(command));
+    std::optional<astra::script::Runtime::Outcome> inserted, moved;
+    const auto input = workbench.execute(
+        "nestedInput", {{"id", "captured"}, {"text", "中🙂"}}, [&](const auto& result) {
+            inserted = result;
+        });
+    const auto movement = workbench.execute(
+        "editor.move_down", {{"id", "other"}, {"extend", true}}, [&](const auto& result) {
+            moved = result;
+        });
+    for (int tick = 0; tick < 12; ++tick)
+        workbench.poll();
+    REQUIRE(inserted);
+    REQUIRE(moved);
+    CHECK_FALSE(inserted->error);
+    CHECK_FALSE(moved->error);
+    CHECK(inserted->value == Json{{"id", "captured"}, {"text", "中🙂"}});
+    CHECK(moved->value == Json{{"id", "other"}, {"extend", true}});
+    REQUIRE(actions.size() == 2);
+    for (std::size_t i = 0; i < actions.size(); ++i) {
+        if (actions[i].at("command") == "editor.insert_text")
+            CHECK(owners[i] == input);
+        else {
+            CHECK(actions[i].at("command") == "editor.move_up");
+            CHECK(owners[i] == movement);
+        }
+    }
+    CHECK(workbench.request_owner() == 0);
+    CHECK(channel->requests.empty());
     CHECK(workbench.idle());
 }
 

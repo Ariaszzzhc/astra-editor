@@ -11,7 +11,18 @@ $windows = Get-Content (Join-Path $repo 'release/windows-tools.json') -Raw | Con
 $core = Get-Content (Join-Path $repo 'release/core-notices.json') -Raw | ConvertFrom-Json
 $graphics = Get-Content (Join-Path $repo 'release/graphics-notices.json') -Raw | ConvertFrom-Json
 $grammars = Get-Content (Join-Path $repo 'grammars/manifest.json') -Raw | ConvertFrom-Json
-$lockFiles = @('languages/manifest.json','release/windows-tools.json','release/core-notices.json','release/graphics-notices.json','grammars/manifest.json','dependencies.lock.json','release/THIRD-PARTY.md','scripts/prepare-windows-runtime.ps1','scripts/release-common.ps1')
+$lockFiles = @('languages/manifest.json','release/windows-tools.json','release/core-notices.json','release/graphics-notices.json','grammars/manifest.json','dependencies.lock.json','release/THIRD-PARTY.md','scripts/prepare-windows-runtime.ps1','scripts/release-common.ps1',
+    'xmake/packages/astra-quickjs/host-async-context.patch',
+    'xmake/packages/astra-quickjs/xmake.lua',
+    'xmake/packages/astra-quickjs/README.md')
+$dependencyLock = Get-Content (Join-Path $repo 'dependencies.lock.json') -Raw | ConvertFrom-Json
+foreach ($entry in $dependencyLock.patches.psobject.Properties) {
+    $patch = $entry.Value
+    $patchPath = Assert-ReleaseChild $repo (Join-Path $repo $patch.path)
+    if ((Get-ReleaseHash $patchPath) -cne $patch.sha256) {
+        throw "Dependency patch hash mismatch: $($entry.Name)"
+    }
+}
 $lockHashes = [ordered]@{}
 foreach ($file in $lockFiles) { $lockHashes[$file] = Get-ReleaseHash (Join-Path $repo $file) }
 $identityBytes = [Text.Encoding]::UTF8.GetBytes(($lockHashes | ConvertTo-Json -Compress))

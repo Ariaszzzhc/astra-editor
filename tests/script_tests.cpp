@@ -203,6 +203,141 @@ TEST_CASE("JavaScript requests are deferred promises and independent tasks stay 
     CHECK(runtime.idle());
 }
 
+TEST_CASE(
+    "QuickJS host requests preserve task identity across awaits and restore it after errors") {
+    Runtime* owner{};
+    std::vector<std::pair<std::string, Runtime::TaskId>> requests;
+    Runtime runtime(Runtime::AsyncRequest{[&](std::string_view method, const Json&) {
+        requests.emplace_back(method, owner->request_owner());
+        if (method == "fail")
+            throw astra::protocol::RpcError(-32001, "Expected rejection");
+        std::promise<Json> reply;
+        reply.set_value(42);
+        return reply.get_future();
+    }});
+    owner = &runtime;
+    static_cast<void>(runtime.evaluate(R"js(
+        astra.registerCommand('nested', () => astra.request('nested'));
+        astra.registerCommand('first', async () => {
+            await astra.sleep(0);
+            try { await astra.request('fail'); } catch (error) {
+                if (error.code !== -32001) throw error;
+            }
+            return await astra._invokeCommand('nested');
+        });
+    )js"));
+    const auto first = runtime.start_command("first");
+    const auto second = runtime.start_evaluation("astra.request('independent')");
+    CHECK(runtime.request_owner() == 0);
+    for (int tick = 0; tick < 12; ++tick) {
+        runtime.poll();
+        CHECK(runtime.request_owner() == 0);
+    }
+    CHECK(requests == std::vector<std::pair<std::string, Runtime::TaskId>>{
+                          {"independent", second}, {"fail", first}, {"nested", first}});
+    const auto result = runtime.take_result(first);
+    REQUIRE(result);
+    CHECK_FALSE(result->error);
+    CHECK(result->value == 42);
+    REQUIRE(runtime.take_result(second));
+    CHECK(runtime.idle());
+}
+
+TEST_CASE("QuickJS shared promises resume each registered task independently of the resolver") {
+    Runtime* owner{};
+    std::vector<std::pair<std::string, Runtime::TaskId>> requests;
+    Runtime runtime(Runtime::AsyncRequest{[&](std::string_view method, const Json&) {
+        requests.emplace_back(method, owner->request_owner());
+        std::promise<Json> reply;
+        reply.set_value(42);
+        return reply.get_future();
+    }});
+    owner = &runtime;
+    static_cast<void>(runtime.evaluate(R"js(
+        let resolveShared;
+        const shared = new Promise(resolve => { resolveShared = resolve; });
+        astra.registerCommand('shared', async parameters => {
+            await shared;
+            await Promise.resolve();
+            return await astra.request(parameters.method);
+        });
+        astra.registerCommand('release', () => { resolveShared(); return true; });
+    )js"));
+    const auto first = runtime.start_command("shared", {{"method", "first"}});
+    const auto second = runtime.start_command("shared", {{"method", "second"}});
+    runtime.poll();
+    CHECK(requests.empty());
+    const auto resolver = runtime.start_command("release");
+    for (int tick = 0; tick < 6; ++tick)
+        runtime.poll();
+    CHECK(requests == std::vector<std::pair<std::string, Runtime::TaskId>>{{"first", first},
+                                                                           {"second", second}});
+    for (const auto task : {first, second, resolver}) {
+        const auto result = runtime.take_result(task);
+        REQUIRE(result);
+        CHECK_FALSE(result->error);
+    }
+    CHECK(runtime.request_owner() == 0);
+    CHECK(runtime.idle());
+}
+
+TEST_CASE("QuickJS cancelled shared-promise continuations cannot issue late mutations") {
+    std::vector<std::string> requests;
+    Runtime runtime([&](std::string_view method, const Json&) -> Json {
+        requests.emplace_back(method);
+        return true;
+    });
+    static_cast<void>(runtime.evaluate(R"js(
+        let releaseCancelled, caughtCancellation = false;
+        const cancelledGate = new Promise(resolve => { releaseCancelled = resolve; });
+        astra.registerCommand('waitCancelled', async () => {
+            await cancelledGate;
+            try { await astra.request('mutate'); }
+            catch (error) { caughtCancellation = error.name === 'AbortError'; }
+        });
+        astra.registerCommand('releaseCancelled', () => { releaseCancelled(); return true; });
+    )js"));
+    const auto cancelled = runtime.start_command("waitCancelled");
+    runtime.cancel(cancelled);
+    const auto outcome = runtime.take_result(cancelled);
+    REQUIRE(outcome);
+    CHECK(outcome->error->at("name") == "AbortError");
+    runtime.poll();
+    CHECK(runtime.execute_command("releaseCancelled") == true);
+    runtime.poll();
+    CHECK(requests.empty());
+    CHECK(runtime.evaluate("caughtCancellation") == true);
+    CHECK(runtime.idle());
+}
+
+TEST_CASE("QuickJS late operation cancellation retains its originating request identity") {
+    Runtime* owner{};
+    std::promise<Json> delayed;
+    std::vector<Runtime::TaskId> owners;
+    Runtime runtime(Runtime::AsyncRequest{[&](std::string_view method, const Json& params) {
+        owners.push_back(owner->request_owner());
+        if (method == "slow")
+            return delayed.get_future();
+        CHECK(method == "operation.cancel");
+        CHECK(params.at("id") == "late");
+        std::promise<Json> reply;
+        reply.set_value(nullptr);
+        return reply.get_future();
+    }});
+    owner = &runtime;
+    const auto task = runtime.start_evaluation("astra.request('slow')");
+    runtime.poll();
+    runtime.cancel(task);
+    REQUIRE(runtime.take_result(task));
+    runtime.poll();
+    delayed.set_value({{"operationId", "late"}});
+    runtime.poll();
+    runtime.poll();
+    CHECK(owners == std::vector<Runtime::TaskId>{task, task});
+    CHECK(runtime.request_owner() == 0);
+    CHECK(runtime.idle());
+}
+
 TEST_CASE("JavaScript async commands preserve service error codes and can recover") {
     Runtime runtime([](std::string_view method, const Json&) -> Json {
         if (method == "fail") {

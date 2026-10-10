@@ -126,9 +126,15 @@ bool Workbench::contains(std::string_view command) const {
     return std::ranges::find(names, command) != names.end();
 }
 
-void Workbench::execute(std::string_view name, const Json& params, Completion complete) {
+script::Runtime::TaskId
+Workbench::execute(std::string_view name, const Json& params, Completion complete) {
     const auto task = impl_->runtime->start_command(name, params);
     impl_->commands.emplace(task, std::move(complete));
+    return task;
+}
+
+script::Runtime::TaskId Workbench::request_owner() const {
+    return impl_->runtime->request_owner();
 }
 
 void Workbench::poll() {

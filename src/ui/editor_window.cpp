@@ -9,6 +9,7 @@
 #include "astra/ui/decoration_indexes.hpp"
 #include "astra/ui/inline_form.hpp"
 #include "astra/core/utf8.hpp"
+#include "astra/ui/input_queue.hpp"
 #include "astra/ui/form_registry.hpp"
 #include "astra/io/file_store.hpp"
 
@@ -131,11 +132,13 @@ struct EditorWindow::Impl {
         std::promise<Json> completion;
         bool settled{}, cancelled{};
         std::string operation;
+        InputQueue::Identity input_fence{};
     };
 
     struct PendingRead {
         std::promise<Json> completion;
         bool settled{};
+        InputQueue::Identity input_fence{};
     };
 
     struct PendingFence {
@@ -227,6 +230,7 @@ struct EditorWindow::Impl {
     std::map<std::string, std::string> keybindings;
     Json service_commands = Json::array();
     std::unique_ptr<Workbench> workbench;
+    InputQueue policy_inputs;
     std::set<std::string> service_ui_commands;
     Json busy_views = Json::object();
     Json settings = Json::object();
@@ -739,6 +743,8 @@ struct EditorWindow::Impl {
     bool native_idle() const;
     void command(std::string_view name);
     void execute_policy(std::string_view name, const Json& params = Json::object());
+    void editor_policy(std::string name, Json parameters = Json::object());
+    void advance_policy_inputs();
     void native_command(std::string_view name);
     Json native_ui_request(std::string_view method, const Json& params);
     std::future<Json> begin_dialog(const Json& spec);
@@ -749,7 +755,8 @@ struct EditorWindow::Impl {
     void key(const SDL_KeyboardEvent& key);
     void point(float x, float y, bool extend, bool add);
     void scroll_to(float y);
-    void vertical(bool down, bool extend);
+    std::optional<Json>
+    vertical(std::string_view id, bool down, bool extend, std::optional<std::string> revision = {});
     void draw();
     void measure_layout();
     void draw_prompt(SkCanvas* canvas, float width, float height);
@@ -930,6 +937,14 @@ void EditorWindow::Impl::service_responses() {
         }
         const auto next =
             std::find_if(requests.begin(), requests.end(), [this](const Request& request) {
+                if (request.edit && request.edit->cancelled)
+                    return true;
+                if (request.read &&
+                    policy_inputs.pending(request.document, request.read->input_fence))
+                    return false;
+                if (request.edit &&
+                    policy_inputs.pending(request.document, request.edit->input_fence))
+                    return false;
                 return request.document.empty() || !ordered_inputs.contains(request.document) ||
                        request.method == "document.lines" || request.method == "document.syntax" ||
                        request.method == "language.diagnostics";
@@ -968,6 +983,23 @@ void EditorWindow::Impl::service_responses() {
             continue;
         }
         try {
+            if (request.method == "_ui.vertical") {
+                const auto& parameters = request.params.at("params");
+                const auto revision = parameters.contains("baseRevision")
+                                          ? std::optional<std::string>(
+                                                parameters.at("baseRevision").get<std::string>())
+                                          : std::nullopt;
+                auto selections = vertical(request.document,
+                                           request.params.at("name") == "editor.move_down",
+                                           parameters.value("extend", false),
+                                           revision);
+                if (selections) {
+                    request.method = "document.setSelections";
+                    request.params = std::move(*selections);
+                    request.inject_revision = false;
+                } else
+                    request.method = "script.command";
+            }
             if (request.build_params) {
                 request.params = request.build_params();
             }
@@ -1278,9 +1310,11 @@ std::future<Json> EditorWindow::Impl::begin_read(Json params) {
     const auto id = params.value("id", active_id);
     params["id"] = id;
     auto read = std::make_shared<PendingRead>();
+    read->input_fence = policy_inputs.fence(id, workbench ? workbench->request_owner() : 0);
     auto future = read->completion.get_future();
     if (params.value("immediate", false) || id.empty() ||
-        (!queued_for(id) && !ordered_inputs.contains(id))) {
+        (!queued_for(id) && !ordered_inputs.contains(id) &&
+         !policy_inputs.pending(id, read->input_fence))) {
         try {
             settle_read(read, native_ui_request("_ui.read", params));
         } catch (...) {
@@ -1320,6 +1354,7 @@ std::future<Json> EditorWindow::Impl::begin_edit(const Json& params) {
     if (!documents.contains(id))
         throw protocol::RpcError(-32001, "Editor action requires an open document");
     auto edit = std::make_shared<PendingEdit>();
+    edit->input_fence = policy_inputs.fence(id, workbench->request_owner());
     auto future = edit->completion.get_future();
     pending_edits.emplace(token, edit);
     try {
@@ -1376,7 +1411,9 @@ void EditorWindow::Impl::editor_command(std::string name,
     }
     const bool inject_revision = !extra.contains("baseRevision");
     extra["id"] = id;
-    enqueue({"script.command",
+    const auto method =
+        name == "editor.move_up" || name == "editor.move_down" ? "_ui.vertical" : "script.command";
+    enqueue({method,
              {{"name", name}, {"params", std::move(extra)}},
              id,
              inject_revision,
@@ -1495,7 +1532,7 @@ void EditorWindow::Impl::close_document(const std::string& id, bool discard) {
 bool EditorWindow::Impl::native_idle() const {
     return requests.empty() && !active_request && operations.empty() && pending_edits.empty() &&
            pending_reads.empty() && closing_pending.empty() && form_events.empty() &&
-           sidebar_views.idle();
+           sidebar_views.idle() && policy_inputs.empty();
 }
 
 void EditorWindow::Impl::emit_form(std::string_view event,
@@ -2053,9 +2090,68 @@ void EditorWindow::Impl::execute_policy(std::string_view name, const Json& param
     }
 }
 
+void EditorWindow::Impl::editor_policy(std::string name, Json parameters) {
+    if (active_id.empty())
+        return;
+    static_cast<void>(policy_inputs.accept(active_id, std::move(name), std::move(parameters)));
+    advance_policy_inputs();
+    const auto until = Clock::now() + std::chrono::milliseconds(4);
+    for (int tick = 0; tick < 8 && Clock::now() < until; ++tick) {
+        workbench->poll();
+        if (workbench->idle() || workbench->awaiting_input())
+            break;
+    }
+}
+
+void EditorWindow::Impl::advance_policy_inputs() {
+    const auto until = Clock::now() + std::chrono::milliseconds(4);
+    const auto ready = policy_inputs.ready();
+    for (const auto identity : ready) {
+        if (Clock::now() >= until)
+            break;
+        const auto& input = policy_inputs.at(identity);
+        if (!documents.contains(input.document)) {
+            policy_inputs.retire(identity);
+            error = "Document closed before the accepted input was dispatched";
+            status = "Action failed";
+            continue;
+        }
+        try {
+            const auto task = workbench->execute(
+                input.command,
+                input.parameters,
+                [this, identity, id = input.document](const script::Runtime::Outcome& outcome) {
+                    policy_inputs.retire(identity);
+                    if (outcome.error) {
+                        if (outcome.error->value("name", std::string{}) != "AbortError") {
+                            error = outcome.error->value("message",
+                                                         std::string("Editing policy failed"));
+                            status = "Action failed";
+                        }
+                    } else if (outcome.value.is_object() &&
+                               outcome.value.value("id", std::string{}) == id &&
+                               outcome.value.contains("revision") &&
+                               outcome.value.contains("sizeBytes")) {
+                        accept_metadata(outcome.value);
+                        if (active_id == id)
+                            reveal_caret();
+                    }
+                });
+            policy_inputs.started(identity, task);
+        } catch (...) {
+            policy_inputs.retire(identity);
+            throw;
+        }
+    }
+}
+
 void EditorWindow::Impl::command(std::string_view name) {
     prompt_select_all = false;
     if ((quit_requested || prompt == Prompt::policy_progress) && name != "ui.cancel") {
+        return;
+    }
+    if (name.starts_with("editor.")) {
+        editor_policy(std::string(name));
         return;
     }
     if (service_ui_commands.contains(std::string(name))) {
@@ -2212,15 +2308,15 @@ void EditorWindow::Impl::accept_prompt() {
     }
 }
 
-void EditorWindow::Impl::vertical(bool down, bool extend) {
+std::optional<Json> EditorWindow::Impl::vertical(std::string_view id,
+                                                 bool down,
+                                                 bool extend,
+                                                 std::optional<std::string> revision) {
     auto* document = current();
-    if (!document) {
-        return;
-    }
-    if (document->view_revision != document->metadata.at("revision").get<std::string>()) {
-        editor_command(down ? "editor.move_down" : "editor.move_up", {{"extend", extend}});
-        return;
-    }
+    if (!document || id != active_id ||
+        document->view_revision != document->metadata.at("revision").get<std::string>() ||
+        (revision && *revision != document->view_revision))
+        return std::nullopt;
     auto selections = Json::array();
     const auto& positions = document->metadata.contains("selectionPositions")
                                 ? document->metadata["selectionPositions"]
@@ -2235,8 +2331,7 @@ void EditorWindow::Impl::vertical(bool down, bool extend) {
         const auto target = document->lines.find(next);
         if (source == document->lines.end() || target == document->lines.end() ||
             !source->second.layout || !target->second.layout) {
-            editor_command(down ? "editor.move_down" : "editor.move_up", {{"extend", extend}});
-            return;
+            return std::nullopt;
         }
         const auto head = selection.at("head").get<std::size_t>();
         const auto x =
@@ -2253,7 +2348,9 @@ void EditorWindow::Impl::vertical(bool down, bool extend) {
             {{"anchor", extend ? selection.at("anchor").get<std::size_t>() : offset},
              {"head", offset}});
     }
-    set_selections(std::move(selections), document->view_revision);
+    return Json{{"id", id},
+                {"baseRevision", document->view_revision},
+                {"selections", std::move(selections)}};
 }
 
 void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
@@ -2453,10 +2550,8 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
         }
     }
     if (binding != keybindings.end()) {
-        if (binding->second == "editor.move_up" || binding->second == "editor.move_down") {
-            vertical(binding->second == "editor.move_down", shift);
-        } else if (binding->second.starts_with("editor.move_")) {
-            editor_command(binding->second, {{"extend", shift}});
+        if (binding->second.starts_with("editor.move_")) {
+            editor_policy(binding->second, {{"extend", shift}});
         } else {
             command(binding->second);
         }
@@ -2478,11 +2573,11 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
         editing = control ? "move_word_right" : "move_right";
         break;
     case SDLK_UP:
-        vertical(false, shift);
-        return;
+        editing = "move_up";
+        break;
     case SDLK_DOWN:
-        vertical(true, shift);
-        return;
+        editing = "move_down";
+        break;
     case SDLK_HOME:
         editing = control ? "move_document_start" : "move_home";
         break;
@@ -2521,7 +2616,7 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
     default:
         return;
     }
-    editor_command("editor." + editing, {{"extend", shift}});
+    editor_policy("editor." + editing, {{"extend", shift}});
 }
 
 bool EditorWindow::Impl::inline_key(const SDL_KeyboardEvent& input,
@@ -2762,7 +2857,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                 if (inline_form->edit(editing::Command::insert_text, input_options))
                     emit_form("ui.form.changed");
             } else
-                editor_command("editor.insert_text", {{"text", input.text.text}});
+                editor_policy("editor.insert_text", {{"text", input.text.text}});
         }
         break;
     case SDL_EVENT_MOUSE_MOTION:
@@ -3019,7 +3114,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             mouse_y <= content_bottom) {
             dragging = (modifiers & SDL_KMOD_ALT) == 0;
             if (input.button.clicks >= 2) {
-                editor_command("editor.select_word");
+                editor_policy("editor.select_word");
                 dragging = false;
             }
         }
@@ -4645,6 +4740,7 @@ bool EditorWindow::pump() {
             impl_->sidebar_views.cancel_all();
             impl_->workbench_shutdown_deadline = Clock::now() + std::chrono::seconds(5);
             impl_->workbench->shutdown();
+            impl_->policy_inputs.clear();
         }
         impl_->workbench->poll();
         if (impl_->workbench->idle()) {
@@ -4674,6 +4770,7 @@ bool EditorWindow::pump() {
             impl_->workbench->emit(event.first, event.second);
         }
         impl_->workbench->poll();
+        impl_->advance_policy_inputs();
         if (impl_->finish_fences())
             impl_->workbench->poll();
         if (impl_->quit_requested && impl_->workbench->idle() && impl_->native_idle()) {

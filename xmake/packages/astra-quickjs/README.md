@@ -1,0 +1,35 @@
+# QuickJS-NG host async context extension
+
+Astra builds QuickJS-NG **v0.15.1**, using the pinned upstream recipe and source
+SHA-256 `c4e813951b7c46845096a948e978c620b11ab4cf5fd622ca09c727ec31f42623`.
+The local patch SHA-256 is recorded in the recipe and `dependencies.lock.json`;
+`.gitattributes` preserves its LF bytes. The patch digest also participates in
+the package configuration/cache identity. Upstream copyright and license remain
+unchanged. The extension is used only by Astra's narrow script adapter.
+
+The unmodified engine's PromiseHook does not surround ordinary promise reaction
+jobs, including `await` resumption. This was verified in the fixed source and is
+also described in [upstream issue 1740](https://github.com/quickjs-ng/quickjs/issues/1740).
+Giving all microtasks the identity of the currently resolving RPC misattributes
+continuations resumed by a different command or shared Promise. Document input
+handlers can then wait on themselves, and cancellation can lose its owner.
+
+The extension stores one **numeric host token** on the runtime, each queued job,
+and each promise reaction. Reactions capture it when registered; ordinary jobs
+capture it when enqueued. `JS_ExecutePendingJob` enters that captured token and
+restores the previous token after the callback, including JS exception returns.
+This adds no JS references, host pointers, per-Promise map, or growing token
+registry. Both fulfilled and rejected reactions use the same path. Task ids stay
+monotonic; retired/cancelled contexts cannot issue new host RPC mutations.
+
+The recipe inherits the upstream installer and tests both extension symbols.
+When xmake's normal `git apply` skips paths because the cache is within Astra's
+Git checkout, the installer checks the patch hash again and applies it with Git
+discovery stopped above the extracted source. An absent patch fails installation;
+unmodified upstream binaries cannot satisfy the script target.
+
+`tests/script_tests.cpp` verifies independent/shared Promise continuations,
+nested commands, host errors, cancelled late mutations and delayed operation
+cancellation. Real GUI tests additionally suspend a client input handler, switch
+documents, read inside the original handler, serialize later input and save.
+Current Windows evidence and preserved failures are in `docs/STATUS.md`.

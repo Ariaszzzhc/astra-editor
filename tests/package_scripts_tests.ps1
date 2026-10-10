@@ -60,6 +60,20 @@ try {
     $checks++
     [IO.File]::WriteAllText($defaultCache, 'corrupt archive')
     Expect-Rejected { Get-ReleaseArchive $asset @() -Offline } 'SHA-256 mismatch'
+    # Exercise the production preparation entry point in an isolated checkout:
+    # a modified local dependency patch must fail before any downloads/staging.
+    $patchRoot = Join-Path $fixture 'patch-guard'
+    $inputs = @('scripts/prepare-windows-runtime.ps1', 'scripts/release-common.ps1',
+        'languages/manifest.json', 'release/windows-tools.json', 'release/core-notices.json',
+        'release/graphics-notices.json', 'grammars/manifest.json', 'dependencies.lock.json',
+        'xmake/packages/astra-quickjs/host-async-context.patch')
+    foreach ($inputFile in $inputs) {
+        $target = Join-Path $patchRoot $inputFile
+        [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
+        [IO.File]::Copy((Join-Path $ReleaseRepository $inputFile), $target)
+    }
+    [IO.File]::AppendAllText((Join-Path $patchRoot 'xmake/packages/astra-quickjs/host-async-context.patch'), 'modified')
+    Expect-Rejected { & (Join-Path $patchRoot 'scripts/prepare-windows-runtime.ps1') -Offline } 'Dependency patch hash mismatch'
     Write-Output "Windows package helper invariants: PASS ($checks checks)"
 } finally {
     if ($defaultCache -and (Test-Path -LiteralPath $defaultCache)) { Remove-Item -LiteralPath $defaultCache }

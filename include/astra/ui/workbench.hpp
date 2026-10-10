@@ -27,7 +27,9 @@ class Workbench final {
     Workbench(const Workbench&) = delete;
     Workbench& operator=(const Workbench&) = delete;
     [[nodiscard]] bool contains(std::string_view command) const;
-    void execute(std::string_view command, const Json& params, Completion complete);
+    script::Runtime::TaskId
+    execute(std::string_view command, const Json& params, Completion complete);
+    [[nodiscard]] script::Runtime::TaskId request_owner() const;
     void poll();
     void emit(std::string_view event, const Json& params);
     [[nodiscard]] bool idle() const;

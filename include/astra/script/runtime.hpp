@@ -75,6 +75,9 @@ class Runtime {
     void shutdown();
     [[nodiscard]] std::vector<Json> take_errors();
     [[nodiscard]] bool idle() const;
+    // Task submitting the current host adapter call; zero outside that call.
+    // Available to native input/read fences without evaluating JavaScript.
+    [[nodiscard]] TaskId request_owner() const;
     // True only when every outstanding task/request awaits this host method.
     [[nodiscard]] bool waiting_only(std::string_view method) const;
     [[nodiscard]] bool waiting_only(std::span<const std::string_view> methods) const;

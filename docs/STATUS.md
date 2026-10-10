@@ -9,6 +9,89 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### JS-overridable ordered platform editing (2026-10-10)
+
+All default editing commands now have client JS handlers, including text input,
+movement, word selection and deletion. SDL text entry, editing shortcuts and
+double-click word selection dispatch those handlers. The captured document id
+survives arbitrary JS awaits; one bounded platform handler runs per document while
+other documents remain eligible. At most 256 accepted inputs and 8 MiB of
+serialized parameters/identities may wait. Invalid/capacity failures leave the
+queue unchanged.
+
+Normal `ui.read` and native edit primitives fence prior accepted platform input,
+including its JS prelude and completion work. A handler reading/editing its own
+captured document excludes itself and later input from that fence, preventing a
+self-deadlock. Same-batch save, direct native undo and tab/window close therefore
+observe earlier input. Default vertical movement measures shaped targets when its
+native intent is dispatched and awaits the shared `document.setSelections`
+dispatcher; missing/stale shaping and background documents use service movement.
+Explicit revision guards retain their failure semantics.
+
+The first real GUI run found that a bare Promise resolved by another command
+resumed with the resolver's task identity. A handler's own read then waited on
+itself. The fixed QuickJS-NG v0.15.1 source does not emit PromiseHook BEFORE/AFTER
+around ordinary reaction jobs; [upstream issue 1740](https://github.com/quickjs-ng/quickjs/issues/1740)
+describes the same boundary. The verified local host-context extension captures
+one numeric token when reactions are registered and when ordinary jobs are
+enqueued, enters it for that job and restores the prior token after execution.
+There is no growing Promise/token registry. Retired/cancelled task continuations
+reject new host RPC requests, including a cancelled bare-Promise handler resumed
+after its result has already been collected.
+
+The dependency recipe asserts the patch hash/cache identity and both extension
+symbols. Installation initially failed those checks: xmake's `git apply` skipped
+every patch within this repository's ignored dependency cache. The installer now
+checks the local patch again and stops Git discovery above the extracted source
+before applying it. Runtime preparation includes the patch, recipe and rationale
+in provenance and refuses a changed patch before staging/downloads. The native
+runtime helper has corresponding source changes only; no macOS/Linux execution
+or validation is claimed.
+
+Initial validation also caught an MSVC variable-shadowing warning, a unit adapter
+that did not handle successful native action cleanup, and a GUI fixture command
+missing its required title. These were corrected before final acceptance. Failure
+logs, including the real Promise-context deadlock, remain in `build/input-policy-*.log`.
+The staged whitespace check also caught the unified diff's required space markers
+on empty context lines. Patch artifacts now disable that whitespace category in
+`.gitattributes`, while preserving their pinned LF bytes; C++/JS formatting gates
+remain unchanged.
+
+Final Windows Debug evidence:
+
+- `./scripts/format.ps1 -Check -Offline`: 126 C++ and 12 JS files passed.
+- `./scripts/xmake.ps1 f -c -m debug -y -vD`: passed with the verified extension;
+  `./scripts/xmake.ps1 build -y astra-tests astra astra-server gui-smoke
+  gui-presentation-smoke gui-recovery-smoke`: passed, including final resource
+  provenance staging after `./scripts/prepare-windows-runtime.ps1 -Offline`.
+- Focused platform/default-command/shared-Promise/context/cancellation checks:
+  7 cases / 89 assertions passed.
+- `./build/windows/x64/debug/astra-tests.exe --no-version`: 529 cases /
+  628,724 assertions passed, zero failures or skips.
+- `./build/windows/x64/debug/gui-smoke.exe` and the same binary with `--tcp`:
+  passed with the real SDL3/Skia Graphite/Dawn renderer. Fixtures suspend client
+  input before its native primitive, fence/cancel reads, continue editing another
+  tab, read inside the suspended original handler, then verify captured identity,
+  input/history order and service override dispatch. They additionally exercise
+  same-batch direct native undo, save/copy, JS-overridden Shift+Down shaped column
+  and default Up, as well as existing multicursor, search, close and shutdown.
+- `./tests/package_scripts_tests.ps1`: 12 checks passed, including rejection of
+  a modified dependency patch by the actual isolated preparation entry point.
+- The staged Debug provenance patch SHA-256 matches `dependencies.lock.json`.
+- `./build/windows/x64/debug/gui-presentation-smoke.exe`: passed with 1,505
+  indexed files, custom JS views, bounded publication, native focus/layout and
+  shutdown checks.
+- `./build/windows/x64/debug/gui-recovery-smoke.exe`: passed with the real GPU,
+  durable recovery storage and checkpoint failure retention/retry/confirmation.
+- `./tests/cli_smoke.ps1 -Mode debug`: passed with independent server/TCP
+  processes, Unicode arguments and asynchronous find/regex replace/undo/save.
+- `git diff --check`: passed.
+
+This increment does not complete the architecture/UI revision or
+establish new Release/package acceptance. Generic row keyboard navigation,
+contextual search output, streaming providers, incremental display/syntax work,
+large-snapshot latency/reclamation and native window extraction remain open.
+
 ### JS-owned mounted workspace search (2026-10-10)
 
 `astra/workspace-search` now owns workspace query/replacement input, options,

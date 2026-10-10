@@ -155,7 +155,12 @@ def main():
         raise RuntimeError("Prepare the pinned native graphics toolchain before the runtime")
     locks = ["release/native-tools.json", "languages/manifest.json", "release/core-notices.json", "release/graphics-notices.json",
              "grammars/manifest.json", "dependencies.lock.json", "release/THIRD-PARTY.md",
-             "scripts/native_release.py", "scripts/prepare-native-runtime.py"]
+             "scripts/native_release.py", "scripts/prepare-native-runtime.py",
+             "xmake/packages/astra-quickjs/host-async-context.patch",
+             "xmake/packages/astra-quickjs/xmake.lua", "xmake/packages/astra-quickjs/README.md"]
+    for name, patch in read_json(REPO / "dependencies.lock.json").get("patches", {}).items():
+        if sha256(child(REPO, REPO / patch["path"])) != patch["sha256"]:
+            raise RuntimeError("Dependency patch hash mismatch: " + name)
     hashes = {name: sha256(REPO / name) for name in locks}
     source_clangd = args.clangd_source or key not in manifest["clangd"]["assets"]
     identity = hashlib.sha256((key + json_text(hashes) + str(source_clangd) + sha256(graphics / "manifest.json")).encode()).hexdigest()

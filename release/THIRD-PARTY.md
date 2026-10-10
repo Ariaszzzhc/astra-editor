@@ -26,3 +26,8 @@ source obligations for the components they redistribute; the file inventory is
 an integrity record, not a replacement for those license terms.
 
 Astra loads system fonts through DirectWrite. No font files are redistributed.
+
+QuickJS-NG v0.15.1 includes Astra's host async context extension. Its verified
+patch, recipe and rationale are included under
+`provenance/xmake/packages/astra-quickjs/`; the source and patch hashes are recorded
+in `provenance/dependencies.lock.json`. The upstream MIT notice remains in `licenses/`.
