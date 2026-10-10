@@ -60,7 +60,7 @@ target("astra-tests")
               "tests/editor_config_tests.cpp", "tests/script_tests.cpp", "tests/tcp_tests.cpp", "tests/workspace_tests.cpp", "tests/editing_tests.cpp",
               "tests/application_tests.cpp", "tests/application_language_tests.cpp", "tests/application_recovery_tests.cpp", "tests/tcp_client_tests.cpp", "tests/syntax_tests.cpp",
               "tests/process_tests.cpp", "tests/lsp_tests.cpp", "tests/git_tests.cpp", "tests/recovery_tests.cpp",
-              "tests/file_monitor_tests.cpp", "tests/application_watch_tests.cpp", "tests/application_search_tests.cpp", "tests/workbench_tests.cpp", "tests/presentation_tests.cpp")
+              "tests/file_monitor_tests.cpp", "tests/application_watch_tests.cpp", "tests/application_search_tests.cpp", "tests/workbench_tests.cpp", "tests/presentation_tests.cpp", "tests/viewport_index_tests.cpp")
     set_exceptions("cxx")
     add_tests("unit", {runargs = {"--no-version", "--duration=true"}})
 
@@ -266,14 +266,24 @@ target("astra-ui")
     add_includedirs("include", {public = true})
     add_deps("astra-renderer", "astra-workbench", "astra-io")
     add_packages("nlohmann_json", {public = true})
-    add_files("src/ui/editor_window.cpp", "src/ui/icons.cpp")
+    add_files("src/ui/editor_window.cpp", "src/ui/icons.cpp", "src/ui/document_viewport.cpp")
+    set_exceptions("cxx")
+
+target("viewport-layout-tests")
+    set_kind("binary")
+    set_default(false)
+    set_rundir(os.projectdir())
+    add_deps("astra-ui")
+    add_packages("skia-graphite", "libsdl3")
+    add_rules("astra.graphics-runtime")
+    add_files("tests/viewport_layout_tests.cpp")
     set_exceptions("cxx")
 
 target("astra-workbench")
     set_kind("static")
     add_includedirs("include", {public = true})
     add_deps("astra-script", "astra-core", "astra-editing")
-    add_files("src/ui/workbench.cpp", "src/ui/input_queue.cpp", "src/ui/file_tree_index.cpp", "src/ui/workbench_layout.cpp", "src/ui/text_line_index.cpp", "src/ui/picker_index.cpp", "src/ui/decoration_indexes.cpp", "src/ui/inline_form.cpp", "src/ui/form_registry.cpp", "src/ui/view_index.cpp", "src/ui/view_store.cpp", "src/ui/view_retirement.cpp")
+    add_files("src/ui/workbench.cpp", "src/ui/input_queue.cpp", "src/ui/file_tree_index.cpp", "src/ui/workbench_layout.cpp", "src/ui/text_line_index.cpp", "src/ui/picker_index.cpp", "src/ui/decoration_indexes.cpp", "src/ui/inline_form.cpp", "src/ui/form_registry.cpp", "src/ui/view_index.cpp", "src/ui/view_store.cpp", "src/ui/view_retirement.cpp", "src/ui/viewport_index.cpp")
     set_exceptions("cxx")
 
 target("astra")

@@ -9,6 +9,76 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### Persistent document viewport and layout reuse (2026-10-10)
+
+`EditorWindow` now delegates published line storage and paragraph lifetime/reuse
+to `DocumentViewport`. Complete contiguous pages of at most 256 rows use measured
+persistent SumTrees. Publication validates UTF-8/extents/ordering before mutation
+and retains equal runs during local changes and overlapping scroll pages.
+Partially assembled long lines remain in the bounded-page transport builder and
+are only published after their full logical content arrives.
+
+Current input/hit handles are separated from an engine-bound LRU paragraph cache.
+Exact text and every `TextLayoutOptions` field certify reuse; hashes only select
+candidates. Relative UTF-8 color spans allow identical text/style to move to a
+different row/byte origin. Syntax/DPI changes invalidate current handles and
+resolve against the full new style instead of unconditionally rebuilding every
+paragraph. Known-old syntax revisions remain excluded. Failed publication or
+shaping preserves the current content/layout.
+
+The default per-document admission limits are 256 entries and 8 MiB of accounted
+text/style storage. Entry and byte limits independently evict least recently used
+entries. Oversize paragraphs still serve their current row without entering the
+cache. Current/external paragraph handles remain valid after eviction; accounting
+is not total SkParagraph/font/GPU heap usage. Page validation, text-key hashing,
+range-list publication, new paragraph shaping and long-line reshaping remain
+explicit costs. New shaping still runs on the UI thread; constant frame latency
+and incremental glyph shaping within a long line are not claimed.
+
+Windows focused Debug evidence:
+
+- `./build/windows/x64/debug/astra-tests.exe --no-version
+  '--source-file=*viewport_index_tests.cpp'`: 3 cases / 16,251 assertions passed.
+  Deterministic flat-reference edits/scrolling (seed `0xA57AD15`), summary identity
+  and associativity, immutable retained pages, actual overlap/prefix/suffix
+  sharing, empty/CRLF/Unicode rows, invalid input and page limits are exercised.
+- `./build/windows/x64/debug/viewport-layout-tests.exe`: passed with actual
+  Windows fonts/SkParagraph. Raster pixels, geometry, Unicode caret/hit and UTF-16
+  conversion are compared with independently fresh paragraphs. All ten style
+  fields are varied separately; 80 random publications (seed `0xA57AF07`) cover
+  bidi, combining text, tabs, wrapping and DPI. LRU entry/byte admission,
+  failed publication/style, oversize bypass and external lifetime also passed.
+- Local and `--tcp` `gui-smoke.exe` passed the actual SDL/Graphite/Dawn viewport
+  regression: cumulative layout constructions were 60 initially, 63 after a
+  three-row scroll, 65 after inserting one line, and 65 after undo. Unchanged
+  shifted code rows reuse exact-style paragraphs; document content/undo and the
+  existing 70 KiB Unicode/tab long-line edit/save remained correct. These counts
+  are engine layout calls for this fixture, not elapsed-time/GPU-frame metrics.
+  `build/graphics/viewport-cache-local.png` and `viewport-cache-tcp.png` were
+  visually inspected after the edit. They include an existing workspace-result
+  notice; notification presentation is not changed by this increment.
+
+Integrated Windows evidence:
+
+- `./scripts/test.ps1 -Mode all -Gui`: Debug and Release production/acceptance
+  targets built. The Debug suite passed all 550 cases / 1,101,309 assertions;
+  Release passed all 550 cases / 1,101,127 assertions. Both had zero failures/skips;
+  async polling changes assertion counts between configurations.
+- `./scripts/format.ps1 -Check -Offline`: all 135 C++ / 12 JS files passed;
+  `git diff --check` passed.
+- Both modes' CLI, actual D3D12/Graphite/Dawn pixel readback, native renderer,
+  Unicode text layout, viewport pixel/layout differential, local editing,
+  clangd/Git services, recovery, workspace and presentation checks passed.
+  TCP editing also passed in both modes, including the same 60/63/65/65 cache
+  regression counts. Packaging helpers passed 12 checks. This is not a new
+  distribution package or whole-project completion.
+
+The first native-test build failed on MSVC C4244 (integer ternary assigned to a
+float); explicit float constants fixed it. Artifact: `build/viewport-build-tests.log`.
+Passing builds/runs and final integrated evidence are under `build/viewport-*`.
+Further native component extraction, incremental long-line display work and final
+new-revision acceptance/packaging remain open.
+
 ### Incremental Markdown semantic indexes (2026-10-10)
 
 Markdown's two-stage syntax analysis now uses immutable measured semantic units

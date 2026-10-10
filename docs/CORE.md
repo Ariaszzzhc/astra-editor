@@ -75,3 +75,26 @@ sorts unordered input when needed; it is not a logarithmic whole-list update.
 Rendering queries cached summaries instead of scanning every JSON record for
 each visible row. Indexes reject negative/reversed coordinates, extent overflow
 and lists above 100,000 records without replacing the retained model.
+
+Document viewports publish complete contiguous pages of at most 256 lines into
+an immutable measured SumTree. Summaries compose row/UTF-8 text counts and document
+line/byte extents. Publication validates all rows first, then retains equal runs
+by document-line identity, including overlap between scrolled pages. Row seeks
+are logarithmic; complete-page validation/comparison still examines the bounded
+input. Partial long-line transport pages remain unpublished until assembled.
+
+`DocumentViewport` separates those immutable rows from current interaction handles
+and an engine-bound LRU paragraph cache. Exact text and all layout options certify
+reuse: colors use relative UTF-8 ranges, so a row can move to a different document
+line/byte origin without reshaping. Font, DPI, line height, tab/wrap, color, span
+order, direction, families and locale are part of identity. Hashes only select
+candidates. Syntax/DPI invalidation clears current handles, then exact-key lookup
+can restore previously computed layouts. Stale syntax revisions remain excluded.
+
+Each document retains at most 256 cached paragraphs and 8 MiB of accounted UTF-8
+text/style storage. Oversize paragraphs bypass admission while still serving the
+current line. Current and externally retained handles have their own lifetimes;
+the budget does not measure total SkParagraph/font/GPU heap usage. New paragraphs
+still shape on the UI thread, and an edit inside a long line can still rebuild
+that whole paragraph. This cache does not establish constant frame latency or
+incremental glyph shaping within a line.

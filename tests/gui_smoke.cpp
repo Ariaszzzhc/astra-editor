@@ -222,6 +222,11 @@ int main(int argc, char* argv[]) {
         }
         const auto long_line = std::string(70'000, 'a') + "\t中文🙂";
         {
+            std::ofstream file(workspace / "cache.cpp", std::ios::binary);
+            for (int i = 0; i < 80; ++i)
+                file << "int value" << i << " = " << i << "; // 中🙂é\n";
+        }
+        {
             std::ofstream file(workspace / "long.txt", std::ios::binary);
             file << long_line;
         }
@@ -1035,6 +1040,63 @@ int main(int argc, char* argv[]) {
         window.execute_ui_command("ui.closeTab");
         settle(window);
         key(window, SDLK_D);
+        window.open_path("cache.cpp");
+        settle(window);
+        const auto cache_id = window.active_document_id();
+        const auto initial_cache = window.view_state().document_viewport;
+        require(initial_cache.at("cached") > 10 && initial_cache.at("rows") <= 256,
+                "Document viewport did not publish bounded cached rows");
+        const auto scroll = [&](float delta) {
+            const auto geometry = window.layout();
+            int logical_width{}, logical_height{}, pixels_width{}, pixels_height{};
+            require(SDL_GetWindowSize(window.window(), &logical_width, &logical_height) &&
+                        SDL_GetWindowSizeInPixels(window.window(), &pixels_width, &pixels_height),
+                    "Cannot read viewport scroll dimensions");
+            SDL_Event wheel{};
+            wheel.type = SDL_EVENT_MOUSE_WHEEL;
+            wheel.wheel.windowID = SDL_GetWindowID(window.window());
+            wheel.wheel.y = delta;
+            wheel.wheel.mouse_x = (geometry.editor.x + 100 * geometry.scale) *
+                                  static_cast<float>(logical_width) /
+                                  static_cast<float>(pixels_width);
+            wheel.wheel.mouse_y = (geometry.editor.y + 100 * geometry.scale) *
+                                  static_cast<float>(logical_height) /
+                                  static_cast<float>(pixels_height);
+            require(SDL_PushEvent(&wheel), "Cannot enqueue viewport scrolling");
+            settle(window);
+        };
+        scroll(-1);
+        const auto after_scroll = window.view_state().document_viewport;
+        require(after_scroll.at("shaped").get<std::size_t>() <=
+                        initial_cache.at("shaped").get<std::size_t>() + 6 &&
+                    after_scroll.at("reused") > initial_cache.at("reused"),
+                "Small scroll reshaped unchanged viewport rows");
+        scroll(1);
+        const auto before_edit = window.view_state().document_viewport;
+        key(window, SDLK_HOME, SDL_KMOD_CTRL);
+        text(window, "// changed\n");
+        const auto after_edit = window.view_state().document_viewport;
+        require(after_edit.at("shaped").get<std::size_t>() <=
+                        before_edit.at("shaped").get<std::size_t>() + 6 &&
+                    after_edit.at("reused") > before_edit.at("reused"),
+                "One line insertion reshaped unchanged shifted code rows");
+        window.request_screenshot(std::filesystem::path("build/graphics") /
+                                  (remote ? "viewport-cache-tcp.png" : "viewport-cache-local.png"));
+        settle(window);
+        key(window, SDLK_Z, SDL_KMOD_CTRL);
+        require(read_document(host, cache_id).at("text") ==
+                    astra::io::read_file(workspace / "cache.cpp").text,
+                "Viewport reuse changed document undo behavior");
+        const auto after_undo = window.view_state().document_viewport;
+        require(after_undo.at("cached") <= 256 &&
+                    after_undo.at("accountedBytes") <= 8 * 1024 * 1024,
+                "GUI viewport layout cache exceeded its budgets");
+        std::cout << "GUI viewport scroll/edit cache: initial=" << initial_cache.at("shaped")
+                  << ", scroll=" << after_scroll.at("shaped")
+                  << ", edit=" << after_edit.at("shaped") << ", undo=" << after_undo.at("shaped")
+                  << ": PASS\n";
+        window.execute_ui_command("ui.closeTab");
+        settle(window);
         window.open_path("long.txt");
         settle(window);
         key(window, SDLK_END, SDL_KMOD_CTRL);

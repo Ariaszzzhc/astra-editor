@@ -1,6 +1,7 @@
 #include "astra/ui/editor_window.hpp"
 #include "astra/ui/renderer.hpp"
 #include "astra/ui/text_layout.hpp"
+#include "astra/ui/document_viewport.hpp"
 #include "astra/ui/workbench.hpp"
 #include "astra/ui/view_store.hpp"
 #include "astra/ui/icons.hpp"
@@ -93,23 +94,18 @@ struct SdlStringDeleter {
 } // namespace
 
 struct EditorWindow::Impl {
-    struct Line {
-        std::size_t number{};
-        std::size_t begin{};
-        std::size_t end{};
-        std::size_t next{};
-        bool complete{};
-        std::string text;
-        std::optional<TextLayout> layout;
-    };
+    using Line = ViewportLine;
 
     struct Document {
+        explicit Document(const TextLayoutEngine& fonts) : viewport(fonts) {
+        }
+
         Json metadata;
         std::string path;
         Json editor_config = Json::object();
         std::string encoding{"UTF-8"};
         std::string view_revision;
-        std::map<std::size_t, Line> lines;
+        DocumentViewport viewport;
         std::size_t first_line{};
         float horizontal{};
         bool needs_lines{true};
@@ -594,7 +590,7 @@ struct EditorWindow::Impl {
 
     void accept_metadata(const Json& metadata) {
         const auto id = metadata.at("id").get<std::string>();
-        auto [found, inserted] = documents.try_emplace(id);
+        auto [found, inserted] = documents.try_emplace(id, fonts);
         auto& document = found->second;
         if (inserted) {
             tabs.push_back(id);
@@ -1172,7 +1168,13 @@ void EditorWindow::Impl::fetch_lines_page(std::shared_ptr<ViewState> view,
                  fetch_lines_page(view, next);
                  return;
              }
-             document.lines = std::move(view->lines);
+             std::vector<Line> lines;
+             lines.reserve(view->lines.size());
+             for (auto& [number, line] : view->lines) {
+                 static_cast<void>(number);
+                 lines.push_back(std::move(line));
+             }
+             document.viewport.publish(std::move(lines));
              document.view_revision = view->revision;
              document.loading = false;
              const auto rows = static_cast<std::size_t>(
@@ -1189,7 +1191,7 @@ void EditorWindow::Impl::fetch_lines_page(std::shared_ptr<ViewState> view,
 void EditorWindow::Impl::fetch_syntax() {
     auto* document = current();
     if (!document || document->loading || document->needs_lines || !document->needs_syntax ||
-        document->syntax_loading || queued_for(active_id) || document->lines.empty()) {
+        document->syntax_loading || queued_for(active_id) || document->viewport.lines().empty()) {
         return;
     }
     const auto id = active_id;
@@ -1203,8 +1205,8 @@ void EditorWindow::Impl::fetch_syntax() {
     enqueue({"document.syntax",
              {{"id", id},
               {"baseRevision", revision},
-              {"begin", document->lines.begin()->second.begin},
-              {"end", document->lines.rbegin()->second.end},
+              {"begin", document->viewport.lines().summary().begin},
+              {"end", document->viewport.lines().summary().end},
               {"outlineBegin", outline_begin},
               {"outlineLimit", outline_limit},
               {"includeOutline", include_outline}},
@@ -1263,10 +1265,7 @@ void EditorWindow::Impl::fetch_syntax() {
                      want_outline != include_outline ||
                      (want_outline && (document.outline_scroll != document.outline_begin ||
                                        current_limit > outline_limit));
-                 for (auto& [number, line] : document.lines) {
-                     static_cast<void>(number);
-                     line.layout.reset();
-                 }
+                 document.viewport.invalidate_layouts();
              },
              {}});
 }
@@ -1408,13 +1407,11 @@ void EditorWindow::Impl::editor_command(std::string name,
                 if (config.at("end_of_line") == "crlf")
                     ending = "\r\n";
             } else
-                for (const auto& [number, line] : found->second.lines) {
-                    static_cast<void>(number);
+                found->second.viewport.lines().for_each([&](const Line& line) {
                     if (line.complete && line.next - line.end == 2) {
                         ending = "\r\n";
-                        break;
                     }
-                }
+                });
             extra["newline"] = std::move(ending);
         }
     }
@@ -1988,14 +1985,14 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             result["selectionLines"] = Json::array();
             for (const auto& position :
                  document->metadata.value("selectionPositions", Json::array())) {
-                const auto line = document->lines.find(position.value("line", std::size_t{0}));
-                if (line == document->lines.end() ||
-                    document->view_revision !=
-                        document->metadata.at("revision").get<std::string>()) {
+                const auto* line =
+                    document->viewport.lines().find(position.value("line", std::size_t{0}));
+                if (!line || document->view_revision !=
+                                 document->metadata.at("revision").get<std::string>()) {
                     result["selectionLines"].push_back(nullptr);
                 } else {
                     result["selectionLines"].push_back(
-                        {{"begin", line->second.begin}, {"next", line->second.next}});
+                        {{"begin", line->begin}, {"next", line->next}});
                 }
             }
         }
@@ -2397,16 +2394,15 @@ std::string EditorWindow::Impl::newline(const Document* document) const {
         }
         return "\n";
     }
-    for (const auto& [number, line] : document->lines) {
-        static_cast<void>(number);
-        if (line.complete && line.next - line.end == 2) {
-            return "\r\n";
+    std::string ending = "\n";
+    bool found_ending{};
+    document->viewport.lines().for_each([&](const Line& line) {
+        if (!found_ending && line.complete && line.next > line.end) {
+            ending = line.next - line.end == 2 ? "\r\n" : "\n";
+            found_ending = true;
         }
-        if (line.complete && line.next > line.end) {
-            return "\n";
-        }
-    }
-    return "\n";
+    });
+    return ending;
 }
 
 void EditorWindow::Impl::accept_prompt() {
@@ -2445,23 +2441,21 @@ std::optional<Json> EditorWindow::Impl::vertical(std::string_view id,
         const auto next =
             down ? std::min(number + 1, document->metadata.at("lineCount").get<std::size_t>() - 1)
                  : (number == 0 ? 0 : number - 1);
-        const auto source = document->lines.find(number);
-        const auto target = document->lines.find(next);
-        if (source == document->lines.end() || target == document->lines.end() ||
-            !source->second.layout || !target->second.layout) {
+        const auto* source = document->viewport.lines().find(number);
+        const auto* target = document->viewport.lines().find(next);
+        const auto* source_layout = document->viewport.layout(number);
+        const auto* target_layout = document->viewport.layout(next);
+        if (!source || !target || !source_layout || !target_layout) {
             return std::nullopt;
         }
         const auto head = selection.at("head").get<std::size_t>();
-        const auto x =
-            source->second.layout
-                ->caret(std::min(head - source->second.begin, source->second.text.size()))
-                .x;
+        const auto x = source_layout->caret(std::min(head - source->begin, source->text.size())).x;
         if (!vertical_column && document->metadata.at("selections").size() == 1) {
             vertical_column = x;
         }
-        const auto hit = target->second.layout->hit_test(vertical_column.value_or(x),
-                                                         target->second.layout->height() / 2);
-        const auto offset = target->second.begin + hit.byte_offset;
+        const auto hit =
+            target_layout->hit_test(vertical_column.value_or(x), target_layout->height() / 2);
+        const auto offset = target->begin + hit.byte_offset;
         selections.push_back(
             {{"anchor", extend ? selection.at("anchor").get<std::size_t>() : offset},
              {"head", offset}});
@@ -2934,15 +2928,16 @@ void EditorWindow::Impl::point(float x, float y, bool extend, bool add) {
     }
     const auto number =
         document->first_line + static_cast<std::size_t>((y - content_top) / row_height);
-    const auto found = document->lines.find(number);
-    if (found == document->lines.end() || !found->second.layout) {
+    const auto* found = document->viewport.lines().find(number);
+    const auto* shaped = document->viewport.layout(number);
+    if (!found || !shaped) {
         return;
     }
-    const auto hit = found->second.layout->hit_test(
+    const auto hit = shaped->hit_test(
         x - left - gutter + document->horizontal,
         std::max(0.0F,
                  y - content_top - static_cast<float>(number - document->first_line) * row_height));
-    const auto offset = found->second.begin + hit.byte_offset;
+    const auto offset = found->begin + hit.byte_offset;
     if (add) {
         const auto id = active_id;
         const auto revision = document->view_revision;
@@ -3404,10 +3399,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         for (auto& [id, document] : documents) {
             static_cast<void>(id);
             document.needs_lines = true;
-            for (auto& [number, line] : document.lines) {
-                static_cast<void>(number);
-                line.layout.reset();
-            }
+            document.viewport.invalidate_layouts();
         }
         break;
     default:
@@ -4452,16 +4444,18 @@ void EditorWindow::Impl::draw() {
             positions.empty() ? std::size_t{0} : positions.front().value("line", std::size_t{0});
         canvas->save();
         canvas->clipRect(SkRect::MakeLTRB(left, content_top, right, content_bottom));
-        for (auto& [number, line] : document->lines) {
+        document->viewport.lines().for_each([&](const Line& line) {
+            const auto number = line.number;
             if (number < document->first_line) {
-                continue;
+                return;
             }
             const auto y =
                 content_top + static_cast<float>(number - document->first_line) * row_height;
             if (y >= content_bottom) {
-                break;
+                return;
             }
-            if (!line.layout) {
+            auto* shaped = document->viewport.layout(number);
+            if (!shaped) {
                 TextLayoutOptions style;
                 style.font_size = options.font_size;
                 style.dpi_scale = scale;
@@ -4489,12 +4483,12 @@ void EditorWindow::Impl::draw() {
                                 {begin - line.begin, end - line.begin, color});
                         });
                 }
-                line.layout.emplace(fonts.layout(line.text, style));
+                shaped = &document->viewport.shape(number, style);
             }
             if (document->reveal_horizontal && number == active_line && !selections.empty()) {
                 const auto head = selections.front().at("head").get<std::size_t>();
                 if (head >= line.begin && head <= line.end) {
-                    const auto x = line.layout->caret(head - line.begin).x;
+                    const auto x = shaped->caret(head - line.begin).x;
                     const auto available = std::max(20 * scale, right - left - gutter - 25 * scale);
                     if (x < document->horizontal) {
                         document->horizontal = std::max(0.0F, x - 20 * scale);
@@ -4533,7 +4527,7 @@ void EditorWindow::Impl::draw() {
                 const auto end = std::min(std::max(anchor, head), line.end);
                 if (begin < end) {
                     for (const auto& box :
-                         line.layout->selection_rects(begin - line.begin, end - line.begin)) {
+                         shaped->selection_rects(begin - line.begin, end - line.begin)) {
                         rectangle(canvas,
                                   text_x + box.x,
                                   y + box.y,
@@ -4545,26 +4539,26 @@ void EditorWindow::Impl::draw() {
                 if (std::min(anchor, head) <= line.end && std::max(anchor, head) > line.end &&
                     line.complete) {
                     rectangle(canvas,
-                              text_x + line.layout->width(),
+                              text_x + shaped->width(),
                               y,
                               8 * scale,
                               row_height,
                               selection_color);
                 }
             }
-            line.layout->draw(canvas, text_x, y);
+            shaped->draw(canvas, text_x, y);
             document->decorations.diagnostics.intersect(
                 number, number + 1, [&](const auto& diagnostic) {
                     const auto begin =
                         number == diagnostic.begin
-                            ? line.layout->byte_offset_from_utf16(diagnostic.value.start_utf16)
+                            ? shaped->byte_offset_from_utf16(diagnostic.value.start_utf16)
                             : 0;
                     const auto end =
                         number == diagnostic.end - 1
-                            ? line.layout->byte_offset_from_utf16(diagnostic.value.end_utf16)
+                            ? shaped->byte_offset_from_utf16(diagnostic.value.end_utf16)
                             : line.text.size();
                     const auto color = diagnostic.value.severity == 1 ? error_color : warning_color;
-                    for (const auto& box : line.layout->selection_rects(begin, end)) {
+                    for (const auto& box : shaped->selection_rects(begin, end)) {
                         rectangle(canvas,
                                   text_x + box.x,
                                   y + box.y + box.height - 2 * scale,
@@ -4578,7 +4572,7 @@ void EditorWindow::Impl::draw() {
                 if (head < line.begin || head > line.end) {
                     continue;
                 }
-                const auto caret = line.layout->caret(head - line.begin);
+                const auto caret = shaped->caret(head - line.begin);
                 const auto cursor_x = text_x + caret.x;
                 const auto cursor_y = y + caret.y;
                 if (!editor_settings.value("cursorBlink", true) ||
@@ -4625,13 +4619,13 @@ void EditorWindow::Impl::draw() {
             if (!line.complete) {
                 label(canvas,
                       "  … loading long line",
-                      text_x + line.layout->width(),
+                      text_x + shaped->width(),
                       y + 3 * scale,
                       12,
                       muted);
             }
             canvas->restore();
-        }
+        });
         canvas->restore();
         const auto lines = document->metadata.at("lineCount").get<std::size_t>();
         const auto rows = std::max(1.0F, (content_bottom - content_top) / row_height);
@@ -4747,16 +4741,16 @@ void EditorWindow::Impl::draw() {
         if (document->editor_config.contains("tab_width"))
             tab_size = static_cast<unsigned>(
                 std::stoul(document->editor_config.at("tab_width").get<std::string>()));
-        const auto found = document->lines.find(line);
-        if (found != document->lines.end() && found->second.layout) {
+        const auto* found = document->viewport.lines().find(line);
+        const auto* shaped = document->viewport.layout(line);
+        if (found && shaped) {
             const auto head =
                 document->metadata.at("selections").front().at("head").get<std::size_t>();
-            if (head >= found->second.begin && head <= found->second.end) {
-                const auto advance =
-                    found->second.layout->tab_stop_width() / static_cast<float>(tab_size);
+            if (head >= found->begin && head <= found->end) {
+                const auto advance = shaped->tab_stop_width() / static_cast<float>(tab_size);
                 if (advance > 0) {
-                    column = static_cast<std::size_t>(std::round(
-                        found->second.layout->caret(head - found->second.begin).x / advance));
+                    column = static_cast<std::size_t>(
+                        std::round(shaped->caret(head - found->begin).x / advance));
                     unit = "Col ";
                 }
             }
@@ -4919,6 +4913,18 @@ WorkbenchViewState EditorWindow::view_state() const {
         result.sidebar_form["message"] = form->message();
     }
     if (const auto* document = impl_->current()) {
+        const auto cache = document->viewport.statistics();
+        const auto& summary = document->viewport.lines().summary();
+        result.document_viewport = {
+            {"rows", summary.rows},
+            {"bytes", summary.utf8_bytes},
+            {"firstLine", summary.rows ? Json(summary.first_line) : Json(nullptr)},
+            {"lastLine", summary.rows ? Json(summary.last_line) : Json(nullptr)},
+            {"cached", cache.entries},
+            {"accountedBytes", cache.accounted_bytes},
+            {"shaped", cache.shaped},
+            {"reused", cache.reused},
+            {"evicted", cache.evicted}};
         result.outline_first = document->outline_begin;
         result.outline_total = document->outline_total;
         result.visible_outline_rows = document->outline.size();

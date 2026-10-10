@@ -19,6 +19,7 @@ struct TextColorSpan {
     std::size_t begin{};
     std::size_t end{};
     std::uint32_t color{};
+    friend bool operator==(const TextColorSpan&, const TextColorSpan&) = default;
 };
 
 struct TextLayoutOptions {
@@ -35,6 +36,7 @@ struct TextLayoutOptions {
     TextDirection direction{TextDirection::left_to_right};
     std::vector<std::string> font_families;
     std::string locale{"en"};
+    friend bool operator==(const TextLayoutOptions&, const TextLayoutOptions&) = default;
 };
 
 struct TextRect {
