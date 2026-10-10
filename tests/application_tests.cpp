@@ -387,6 +387,11 @@ TEST_CASE("application tree pagination is complete and search replace refreshes 
     const auto document = app.done("workspace.open", {{"path", "file0.txt"}});
     const auto search = app.call("workspace.search", {{"query", "needle"}});
     CHECK(app.wait(search)["result"]["matches"].size() == 24);
+    CHECK(app.wait(search)["result"]["fileCount"] == 12);
+    CHECK(app.call("operation.get",
+                   {{"id", search["operationId"]},
+                    {"offset", 5},
+                    {"limit", 2}})["result"]["fileCount"] == 12);
     const auto replaced =
         app.done("workspace.replace",
                  {{"searchId", search["operationId"]}, {"replacement", "\xE4\xB8\xAD"}});

@@ -880,15 +880,19 @@ Json ApplicationService::search_disk(const Json& params) {
         [](const auto& operation) {
             const auto& search_result = *operation->search;
             auto matches = Json::array();
+            std::set<std::string> matched_files;
             for (const auto& match : search_result.matches) {
-                matches.push_back({{"path", path_text(match.relative_path)},
+                const auto label = path_text(match.relative_path);
+                matches.push_back({{"path", label},
                                    {"begin", match.begin.value},
                                    {"end", match.end.value},
                                    {"line", match.start_position.line},
                                    {"utf16Column", match.start_position.utf16_column}});
+                matched_files.insert(label);
             }
             return Json{{"query", search_result.query},
                         {"matches", std::move(matches)},
+                        {"fileCount", matched_files.size()},
                         {"issues", issues_json(search_result.issues)},
                         {"truncated", search_result.truncated},
                         {"cancelled", search_result.cancelled},

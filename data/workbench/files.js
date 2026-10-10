@@ -62,15 +62,7 @@ export function registerFiles() {
     });
     ui.registerView(
         { id: 'explorer', title: 'Explorer', icon: 'files', order: 0, outline: true },
-        async (_, options) => {
-            const entries = [];
-            let truncated = false;
-            for await (const page of astra.operationPages('workspace.tree', {}, options)) {
-                entries.push(...page.entries);
-                truncated ||= page.truncated;
-            }
-            return { entries, truncated };
-        },
+        (_, options) => ({ pages: astra.operationPages('workspace.tree', {}, options) }),
         {
             show: () => ui.execute('ui.explorer'),
             async activate({ path }) {
@@ -78,35 +70,50 @@ export function registerFiles() {
                 await ui.execute('workbench.open', { path });
                 if (focus.focused) await ui.views.blur({ id: focus.id, focus: focus.focus });
             },
-            async project(model, options) {
-                const rows = [];
-                for (const entry of model.entries) {
-                    const path = entry.path.replaceAll('\\', '/');
-                    const extension = path.slice(path.lastIndexOf('.'));
-                    rows.push({
-                        id: path,
-                        label: path.slice(path.lastIndexOf('/') + 1),
-                        depth: path.split('/').length - 1,
-                        group: entry.directory,
-                        icon: entry.directory
-                            ? 'folder'
-                            : ['.cpp', '.hpp', '.h', '.c'].includes(extension)
-                              ? 'code'
-                              : ['.js', '.ts', '.json'].includes(extension)
-                                ? 'braces'
-                                : 'document',
-                        data: { path: entry.path }
-                    });
-                    if (rows.length % 128 === 0) await astra.sleep(0, options);
+            project(model, options) {
+                let truncated = false,
+                    issues = 0;
+                async function* rows() {
+                    for await (const page of model.pages ?? [model]) {
+                        options.signal?.throwIfAborted();
+                        if (page.cancelled)
+                            throw Object.assign(new Error('File tree cancelled'), {
+                                name: 'AbortError'
+                            });
+                        truncated ||= page.truncated;
+                        issues = Math.max(issues, page.issues?.length ?? 0);
+                        for (const entry of page.entries) {
+                            const path = entry.path.replaceAll('\\', '/');
+                            const extension = path.slice(path.lastIndexOf('.'));
+                            yield {
+                                id: path,
+                                label: path.slice(path.lastIndexOf('/') + 1),
+                                depth: path.split('/').length - 1,
+                                group: entry.directory,
+                                icon: entry.directory
+                                    ? 'folder'
+                                    : ['.cpp', '.hpp', '.h', '.c'].includes(extension)
+                                      ? 'code'
+                                      : ['.js', '.ts', '.json'].includes(extension)
+                                        ? 'braces'
+                                        : 'document',
+                                data: { path: entry.path }
+                            };
+                        }
+                    }
                 }
                 return {
-                    rows,
+                    rows: rows(),
                     empty: 'No files in this workspace',
-                    update: {
-                        status: model.truncated
-                            ? 'File tree reached its configured limit'
-                            : 'Workspace ready'
-                    }
+                    complete: () => ({
+                        update: {
+                            status: truncated
+                                ? 'File tree reached its configured limit'
+                                : issues
+                                  ? 'Some workspace directories could not be read'
+                                  : 'Workspace ready'
+                        }
+                    })
                 };
             }
         }

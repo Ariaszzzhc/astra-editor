@@ -203,20 +203,42 @@ export const ui = {
             const presentation = view.handlers.project
                 ? await view.handlers.project(model, options)
                 : model;
-            if (!Array.isArray(presentation.rows))
-                throw new TypeError('View providers must supply rows');
+            const rows = presentation?.rows ?? presentation;
+            if (
+                !rows ||
+                typeof rows === 'string' ||
+                (typeof rows[Symbol.asyncIterator] !== 'function' &&
+                    typeof rows[Symbol.iterator] !== 'function')
+            )
+                throw new TypeError('View providers must supply iterable rows');
             let page = [],
-                bytes = 2;
-            for (const row of presentation.rows) {
-                const length = astra.utf8ByteLength(JSON.stringify(row)) + 1;
+                bytes = 2,
+                totalBytes = 0,
+                count = 0;
+            for await (const row of rows) {
+                options.signal?.throwIfAborted();
+                const serialized = JSON.stringify(row);
+                if (typeof serialized !== 'string')
+                    throw new TypeError('View rows must be JSON objects');
+                const length = astra.utf8ByteLength(serialized) + 1;
+                if (length + 2 > 60000 || ++count > 100000)
+                    throw new RangeError('View row or total row capacity exceeded');
                 if (page.length && (page.length === 128 || bytes + length > 60000)) {
                     if (!(await request('_ui.view.append', { id, version, rows: page }, options)))
                         return false;
+                    totalBytes += bytes;
                     page = [];
                     bytes = 2;
                     await astra.sleep(0, options);
                 }
-                page.push(row);
+                if (totalBytes + bytes + length > 32 * 1024 * 1024)
+                    throw new RangeError('View byte capacity exceeded');
+                // A generator may reuse its row object. Retain only this bounded
+                // page of JSON snapshots, not references it can mutate later.
+                const prepared = JSON.parse(serialized);
+                if (!prepared || typeof prepared !== 'object' || Array.isArray(prepared))
+                    throw new TypeError('View rows must be JSON objects');
+                page.push(prepared);
                 bytes += length;
             }
             if (
@@ -224,20 +246,36 @@ export const ui = {
                 !(await request('_ui.view.append', { id, version, rows: page }, options))
             )
                 return false;
+            options.signal?.throwIfAborted();
+            let metadata = presentation;
+            if (typeof presentation.complete === 'function') {
+                const summary = await presentation.complete(options);
+                if (
+                    !summary ||
+                    typeof summary !== 'object' ||
+                    Array.isArray(summary) ||
+                    Object.keys(summary).some(
+                        (field) => !['subtitle', 'empty', 'update'].includes(field)
+                    )
+                )
+                    throw new TypeError('Invalid view completion metadata');
+                metadata = { ...presentation, ...summary };
+            }
+            options.signal?.throwIfAborted();
             const published = await request(
                 '_ui.view.commit',
                 {
                     id,
                     version,
-                    subtitle: presentation.subtitle || '',
-                    empty: presentation.empty || 'No items'
+                    subtitle: metadata.subtitle || '',
+                    empty: metadata.empty || 'No items'
                 },
                 options
             );
             if (!published) return false;
             publishedViews.set(id, version);
-            if (presentation.update)
-                await ui.update({ ...presentation.update, view: id, viewVersion: version });
+            if (metadata.update)
+                await ui.update({ ...metadata.update, view: id, viewVersion: version });
             return true;
         } finally {
             options.signal?.removeEventListener('abort', abort);

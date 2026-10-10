@@ -649,6 +649,7 @@ TEST_CASE(
     REQUIRE(found["state"] == "completed");
     const auto& matches = found["result"]["matches"];
     CHECK(matches.size() == 3);
+    CHECK(found["result"]["fileCount"] == 3);
     CHECK(std::count_if(matches.begin(), matches.end(), [](const auto& match) {
               return match.value("source", "") == "buffer";
           }) == 2);
@@ -669,6 +670,7 @@ TEST_CASE(
     const auto disk = host.done("workspace.search", {{"query", "needle"}, {"scope", "disk"}});
     CHECK(disk["scope"] == "disk");
     CHECK(disk["matches"].size() == 1);
+    CHECK(disk["fileCount"] == 1);
 }
 
 TEST_CASE("application buffer regex replacement supports captures and adjacent empty matches") {

@@ -26,44 +26,86 @@ function query(values) {
 function abortError(message) {
     return Object.assign(new Error(message), { name: 'AbortError' });
 }
-async function fetchSearch(parameters, options = {}) {
-    // Receive the identity even if input changes while the service starts work.
-    const started = await astra.request('workspace.search', parameters, { raw: true });
-    let offset = 0;
-    let complete = false;
-    const model = { matches: [], issues: [], truncated: false, operationId: started.operationId };
-    try {
-        for (;;) {
-            options.signal?.throwIfAborted();
-            const page = await astra.request(
-                'operation.get',
-                { id: model.operationId, offset, limit: 256 },
-                options
-            );
-            if (page.state === 'pending') {
-                await astra.sleep(8, options);
-                continue;
+function fetchSearch(parameters, options = {}) {
+    const model = { count: 0, fileCount: 0, paths: [], issues: [], truncated: false };
+    model.matches = matches();
+    return model;
+    async function* matches() {
+        // Receive the identity even if input changes while the service starts work.
+        const started = await astra.request('workspace.search', parameters, { raw: true });
+        model.operationId = started.operationId;
+        let offset = 0;
+        let complete = false;
+        let total;
+        let paginated;
+        const paths = new Set();
+        try {
+            for (;;) {
+                options.signal?.throwIfAborted();
+                const page = await astra.request(
+                    'operation.get',
+                    { id: model.operationId, offset, limit: 256 },
+                    options
+                );
+                if (page.state === 'pending') {
+                    await astra.sleep(8, options);
+                    continue;
+                }
+                if (page.state !== 'completed') {
+                    if (page.state === 'cancelled') throw abortError('Search cancelled');
+                    throw new Error(page.error?.message ?? 'Workspace search failed');
+                }
+                if (page.result.cancelled)
+                    throw abortError('Search cancelled; search again before replacing');
+                if (!Array.isArray(page.result.matches) || !Array.isArray(page.result.issues))
+                    throw new Error('Invalid search result collections');
+                if (!offset) {
+                    model.issues = page.result.issues;
+                    model.fileCount = page.result.fileCount;
+                    if (!Number.isInteger(model.fileCount) || model.fileCount < 0)
+                        throw new Error('Invalid search file count');
+                    paginated = !!page.page;
+                    total = page.page?.total ?? page.result.matches.length;
+                }
+                if (
+                    page.result.fileCount !== model.fileCount ||
+                    !!page.page !== paginated ||
+                    (page.page &&
+                        (!Number.isInteger(page.page.total) ||
+                            page.page.total !== total ||
+                            page.page.offset !== offset ||
+                            page.page.nextOffset !== offset + page.result.matches.length ||
+                            page.page.nextOffset > total))
+                )
+                    throw new Error('Search page metadata changed or did not advance');
+                model.truncated ||= page.result.truncated;
+                for (const match of page.result.matches) {
+                    if (paths.size < 200 && !paths.has(match.path)) {
+                        paths.add(match.path);
+                        model.paths.push(match.path);
+                    }
+                    ++model.count;
+                    yield match;
+                }
+                if (!page.page || page.page.nextOffset >= page.page.total) {
+                    if (
+                        model.count !== total ||
+                        model.fileCount > model.count ||
+                        model.paths.length > model.fileCount ||
+                        (model.paths.length < 200 && model.paths.length !== model.fileCount)
+                    )
+                        throw new Error('Search totals do not match the received rows');
+                    complete = true;
+                    return;
+                }
+                if (!Number.isInteger(page.page.nextOffset) || page.page.nextOffset <= offset)
+                    throw new Error('Search page did not advance');
+                offset = page.page.nextOffset;
             }
-            if (page.state !== 'completed') {
-                if (page.state === 'cancelled') throw abortError('Search cancelled');
-                throw new Error(page.error?.message ?? 'Workspace search failed');
-            }
-            if (page.result.cancelled)
-                throw abortError('Search cancelled; search again before replacing');
-            model.matches.push(...page.result.matches);
-            if (!offset) model.issues.push(...(page.result.issues ?? []));
-            model.truncated ||= page.result.truncated;
-            if (!page.page || page.page.nextOffset >= page.page.total) {
-                complete = true;
-                return model;
-            }
-            if (!Number.isInteger(page.page.nextOffset) || page.page.nextOffset <= offset)
-                throw new Error('Search page did not advance');
-            offset = page.page.nextOffset;
+        } finally {
+            if (!complete)
+                await astra.request('operation.cancel', { id: model.operationId }, { raw: true });
         }
-    } finally {
-        if (!complete)
-            await astra.request('operation.cancel', { id: model.operationId }, { raw: true });
     }
 }
 async function live(snapshot) {
@@ -141,7 +183,7 @@ async function run(snapshot, replace = false, preview = false) {
             return false;
         }
         await ui.forms.update({ ...snapshot, busy: true, message: 'Searching…', error: false });
-        const model = await fetchSearch({ ...scope, ...query(snapshot.values) }, options);
+        const model = fetchSearch({ ...scope, ...query(snapshot.values) }, options);
         if (!(await live(snapshot))) return false;
         if (!(await ui.renderView('search', model, options))) return false;
         const unsafe = model.truncated || model.issues.length;
@@ -149,10 +191,17 @@ async function run(snapshot, replace = false, preview = false) {
             ? model.truncated
                 ? 'Search limit reached; refine query'
                 : 'Some files could not be read'
-            : `${model.matches.length} match(es)`;
+            : `${model.count} match(es)`;
         await ui.forms.update({ ...snapshot, busy: false, message, error: !!unsafe });
-        if (!replace || unsafe || !model.matches.length) return model;
-        const paths = [...new Set(model.matches.map((match) => match.path))];
+        if (!replace || unsafe || !model.count)
+            return {
+                operationId: model.operationId,
+                matchCount: model.count,
+                fileCount: model.fileCount,
+                paths: model.paths,
+                truncated: model.truncated,
+                issues: model.issues
+            };
         const confirmation = `workspace-replace-${++identity}`;
         record.confirmation = confirmation;
         let accepted;
@@ -160,9 +209,9 @@ async function run(snapshot, replace = false, preview = false) {
             accepted = await ui.confirm(
                 {
                     id: confirmation,
-                    title: `Replace ${model.matches.length} match(es)?`,
-                    detail: `Replace with ${JSON.stringify(snapshot.values.replacement)} in ${paths.length} file(s). Unsaved buffers remain unsaved and undoable.`,
-                    items: paths.slice(0, 200),
+                    title: `Replace ${model.count} match(es)?`,
+                    detail: `Replace with ${JSON.stringify(snapshot.values.replacement)} in ${model.fileCount} file(s). Unsaved buffers remain unsaved and undoable.`,
+                    items: model.paths,
                     accept: 'Replace all',
                     cancel: 'Cancel'
                 },
@@ -285,29 +334,33 @@ export function registerWorkspaceSearch() {
             const state = await openForm();
             return await run(state);
         },
-        async project(model, options) {
-            const rows = [];
-            for (const match of model.matches) {
-                rows.push({
-                    id: `${rows.length}`,
-                    label: `${match.path.split(/[\\/]/).pop()}:${match.line + 1}`,
-                    icon: 'document',
-                    data: match
-                });
-                if (rows.length % 128 === 0) await astra.sleep(0, options);
+        project(model, options) {
+            let count = 0;
+            async function* rows() {
+                for await (const match of model.matches) {
+                    options.signal?.throwIfAborted();
+                    yield {
+                        id: `${count++}`,
+                        label: `${match.path.split(/[\\/]/).pop()}:${match.line + 1}`,
+                        icon: 'document',
+                        data: match
+                    };
+                }
             }
             return {
-                rows,
-                subtitle: `${rows.length} matches`,
+                rows: rows(),
                 empty: 'No search results',
-                update: {
-                    status: `${rows.length} workspace match(es)`,
-                    error: model.truncated
-                        ? 'Search reached its limit; refine the query before replacing'
-                        : model.issues.length
-                          ? 'Search could not read some files; refine the scope before replacing'
-                          : ''
-                }
+                complete: () => ({
+                    subtitle: `${count} matches`,
+                    update: {
+                        status: `${count} workspace match(es)`,
+                        error: model.truncated
+                            ? 'Search reached its limit; refine the query before replacing'
+                            : model.issues.length
+                              ? 'Search could not read some files; refine the scope before replacing'
+                              : ''
+                    }
+                })
             };
         },
         async activate(match) {

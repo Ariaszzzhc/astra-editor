@@ -129,6 +129,14 @@ void run(const fs::path& workspace) {
                 const accepted = await astra.ui.views.blur({id: capturedFocus.id, focus: capturedFocus.focus});
                 if (accepted) throw Error('Stale focus return was accepted');
             });
+            let rowGate, releaseRows;
+            astra.registerCommand('acceptance.pauseRows', () => {
+                rowGate = new Promise(resolve => { releaseRows = resolve; });
+            });
+            astra.registerCommand('acceptance.releaseRows', () => {
+                releaseRows();
+                rowGate = undefined;
+            });
             let capturedBody;
             astra.registerCommand('acceptance.captureBody',async()=>{
                 const {document}=await astra.ui.read();
@@ -142,14 +150,22 @@ void run(const fs::path& workspace) {
                 await astra.ui.update({status:'Sidebar text isolated'});
             });
             astra.ui.registerView({id:'acceptance-view',title:'Custom 中🙂',icon:'symbol',order:3},
-                async () => ({rows:[
-                    {id:'group',label:'Custom group',group:true,icon:'folder'},
-                    ...Array.from({length:600},(_,index) => ({
-                        id:String(index),label:'Custom row '+index+' 中🙂',depth:1,
-                        icon:'symbol',data:{index}
-                    })),
-                    {id:'tail',label:'Final row',data:{index:600}}
-                ],subtitle:'Registered by JavaScript'}), {
+                (_, options) => ({
+                    rows: (async function* () {
+                        yield {id:'group',label:'Custom group',group:true,icon:'folder'};
+                        for (let index=0; index<600; ++index) {
+                            if (index===256 && rowGate) {
+                                await astra.ui.update({status:'Stream waiting'});
+                                await rowGate;
+                                options.signal.throwIfAborted();
+                            }
+                            yield {id:String(index),label:'Custom row '+index+' 中🙂',depth:1,
+                                icon:'symbol',data:{index}};
+                        }
+                        yield {id:'tail',label:'Final row',data:{index:600}};
+                    })(),
+                    complete: () => ({subtitle:'Registered by JavaScript'})
+                }), {
                     activate:async ({index}) => {
                         if(waitInView) await astra.ui.waitForIdle();
                         await astra.ui.update({status:'Custom row '+index+' 中🙂'});
@@ -530,11 +546,37 @@ void run(const fs::path& workspace) {
         require(window.view_state().sidebar.at("row").at("id") == "group",
                 "Left did not seek the current row's parent");
         key(window, SDLK_RIGHT);
-        const auto before_refresh = window.view_state().sidebar.at("row").at("id");
-        window.execute_ui_command("acceptance.refreshView");
+        const auto before_refresh = window.view_state().sidebar.at("version");
+        window.execute_ui_command("acceptance.pauseRows");
         settle(window);
-        require(window.view_state().sidebar.at("row").at("id") == before_refresh,
+        window.execute_ui_command("acceptance.refreshView");
+        const auto pump_stream_until = [&](auto predicate) {
+            const auto deadline = Clock::now() + std::chrono::seconds(10);
+            while (!predicate()) {
+                require(window.pump(), "Window closed during streaming view input");
+                require(window.last_error().empty(), window.last_error());
+                require(Clock::now() < deadline, "Streaming view did not accept input");
+                SDL_Delay(1);
+            }
+        };
+        pump_stream_until([&] {
+            return window.status_text() == "Stream waiting";
+        });
+        require(window.view_state().sidebar.at("version") == before_refresh &&
+                    window.view_state().sidebar.at("total") == 602,
+                "A partial stream replaced the still interactive published view");
+        enqueue_key(window, SDLK_DOWN);
+        pump_stream_until([&] {
+            return window.view_state().sidebar.at("row").at("id") == "1";
+        });
+        require(window.view_state().sidebar.at("version") == before_refresh,
+                "Streaming publication did not preserve the old view while navigating");
+        window.execute_ui_command("acceptance.releaseRows");
+        settle(window);
+        require(window.view_state().sidebar.at("row").at("id") == "1",
                 "Refresh lost the stable row cursor");
+        key(window, SDLK_HOME);
+        key(window, SDLK_RIGHT);
         window.execute_ui_command("acceptance.holdNext");
         settle(window);
         window.execute_ui_command("acceptance.captureFocus");

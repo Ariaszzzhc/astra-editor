@@ -132,6 +132,9 @@ error. Tree/search results support `offset` and `limit` pagination with
   explicitly searches disk only. Results identify `source:"disk"` or
   `source:"buffer"`; buffer matches carry `documentId` and `revision` so clients
   can reject stale navigation. Byte ranges always refer to the searched text.
+  Results include `fileCount`, the number of distinct matching paths (including
+  untitled-buffer labels) in the complete retained result. Every paged response
+  repeats this same global count; `page.total` counts matches, not files.
   Regex uses bounded RE2 syntax with Unicode case folding and word boundaries;
   captures support `$0` through `$99`, `${name}` and `$$` in replacements.
   Invalid patterns/references fail explicitly. Backslashes in replacement text
@@ -373,8 +376,10 @@ At most 16 views may be presented. Activity icons are `files`, `search`, `branch
 `braces` or `symbol`. The default Explorer, Search and Source Control use the same
 native row renderer and publication path as custom views.
 
-The async provider receives `(parameters, {signal})` and returns
-`{rows, subtitle?, empty?}`. Each row has stable `id`, single-line `label`, optional
+The provider receives `(parameters, {signal})` and may return a value or Promise
+for `{rows, subtitle?, empty?, update?, complete?}`, or a row iterable directly.
+`rows` accepts arrays, synchronous iterables and asynchronous iterables. Each row
+has stable `id`, single-line `label`, optional
 `icon`, `badge`, `tone`, `depth`, `group`, `selected` and JSON `data`.
 Group descendants follow their parent in preorder; depth may increase only one
 level after a group. Depth is 0..64. Native group folding uses the measured index.
@@ -417,11 +422,18 @@ editor content, tabs, or a retained form transfers focus away from the row widge
 `handlers.activate(data, row)` is awaited for leaf activation; late events from
 replaced view generations are discarded. `handlers.show()` can customize showing
 a view. `handlers.refresh()` can read current retained controls when the view's
-refresh command is invoked. Built-in providers use an async `handlers.project(model, options)` to
-translate service data into these rows; extensions normally return rows directly.
+refresh command is invoked. Built-in providers use `handlers.project(model, options)`
+to translate service data into these rows; this callback may also return a Promise.
+Extensions normally return rows directly.
 Projected presentations may include `update` with generic UI fields such as
 `status`, `error` or `branch`. These updates are guarded by the published view
 version; native rendering does not interpret provider-specific service models.
+Optional `complete(options)` runs after the row iterator finishes and may return
+a Promise for `{subtitle?, empty?, update?}`. Only these metadata fields are
+accepted. This lets generators calculate final counts without retaining all rows.
+Completion failure rejects publication and retains the old view. Providers,
+iterators and completion callbacks must honor `options.signal` during external
+awaits; cancellation does not forcibly interrupt an arbitrary unrelated Promise.
 
 `await astra.ui.showView(id)` selects a registered view, refreshing its first
 presentation. `await astra.ui.refresh(id, parameters)` cancels older refreshes;
@@ -431,7 +443,13 @@ refresh cancellation may return undefined. `astra.ui.cancel(id)` signals the
 current provider locally. Providers must honor their signal for external work.
 
 Publication uses owner-local begin/append/commit/abort identities. The JS wrapper
-sends at most 128 rows and 60,000 UTF-8 bytes per page, yielding between pages;
+sends at most 128 rows and 60,000 UTF-8 bytes per page, yielding between pages.
+It awaits each page acknowledgement before requesting further rows, retaining
+one bounded page plus one candidate row. Rows are snapshotted as JSON when
+yielded, so a generator may reuse an object without changing earlier rows.
+Failure, cancellation or supersession closes an active iterator and aborts its
+unpublished builder. JS also enforces the total row and byte limits before
+publication;
 the native boundary rejects more than 256 rows or 64 KiB per page, 100,000 total
 rows or 32 MiB of serialized pages. Row ids/labels are at most 4 KiB and row data
 at most 8 KiB. Malformed rows, duplicate ids, invalid hierarchy and invalid UTF-8
@@ -453,6 +471,29 @@ astra.ui.registerView(
     { activate: ({ path }) => astra.ui.execute('workbench.open', { path }) }
 );
 await astra.ui.showView('favorites');
+```
+
+The default Explorer, Search and Source Control consume service pages through
+async row generators instead of concatenating complete service/projection arrays
+in JS. Service operations still retain completed immutable results and replacement
+plans in C++; these are paged after completion, not progressive worker results.
+Native source/index reclamation remains a separate latency concern.
+
+```javascript
+astra.ui.registerView({ id: 'streamed-files', title: 'Files' }, (_, options) => {
+    let count = 0;
+    return {
+        rows: (async function* () {
+            for await (const page of astra.operationPages('workspace.tree', {}, options)) {
+                for (const entry of page.entries) {
+                    ++count;
+                    yield { id: entry.path, label: entry.path, data: { path: entry.path } };
+                }
+            }
+        })(),
+        complete: () => ({ subtitle: `${count} entries` })
+    };
+});
 ```
 
 `astra.ui.forms.open(spec)` returns a Promise for a retained nonmodal input form.
@@ -514,7 +555,14 @@ owns match-case/regex/whole-word options, a cancellable 200 ms preview debounce,
 service pagination, row projection/navigation and replacement confirmation.
 `await astra.ui.execute('workbench.search', parameters)` updates these controls
 and searches; it accepts query/options plus the service's `scope`, `maxMatches`
-and `includeIgnored` bounds. Input changes never initiate writes. Replace all
+and `includeIgnored` bounds. Successful searches return
+`{operationId, matchCount, fileCount, paths, truncated, issues}`. `paths` is a
+sample of at most 200 distinct labels, not an exhaustive affected-file list;
+the command no longer returns a complete JS `matches` array. Use the retained
+operation identity with paged `operation.get` to inspect full results before
+that operation expires. Cancelled, superseded or failed commands return false.
+Search validates stable file counts and pagination before publishing rows or
+offering replacement confirmation. Input changes never initiate writes. Replace all
 searches afresh, refuses truncated/unreadable previews, confirms affected files,
 then rechecks the native input version before submitting `workspace.replace`.
 Completed reports publish both disk counts and modified unsaved-buffer metadata.

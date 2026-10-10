@@ -68,7 +68,7 @@ export function registerGit() {
     );
     ui.registerView(
         { id: 'git', title: 'Source Control', icon: 'branch', order: 2 },
-        (_, options) => request('git.status', {}, options),
+        (_, options) => ({ pages: astra.operationPages('git.status', {}, options) }),
         {
             show: () => ui.execute('ui.gitStatus'),
             activate: (entry) =>
@@ -76,25 +76,35 @@ export function registerGit() {
                     path: entry.path,
                     staged: entry.unstaged === 'unchanged'
                 }),
-            async project(model, options) {
-                const rows = [];
-                for (const entry of model.entries) {
-                    const change = entry.unstaged !== 'unchanged' ? entry.unstaged : entry.staged;
-                    rows.push({
-                        id: entry.path,
-                        label: entry.path.split(/[\\/]/).pop(),
-                        icon: 'document',
-                        badge: change === 'untracked' ? 'U' : change.slice(0, 1).toUpperCase(),
-                        tone: entry.conflict ? 'error' : 'added',
-                        data: entry
-                    });
-                    if (rows.length % 128 === 0) await astra.sleep(0, options);
+            project(model, options) {
+                let branch = model.branch ?? '';
+                async function* rows() {
+                    for await (const page of model.pages ?? [model]) {
+                        options.signal?.throwIfAborted();
+                        if (page.cancelled)
+                            throw Object.assign(new Error('Git status cancelled'), {
+                                name: 'AbortError'
+                            });
+                        branch = page.branch ?? branch;
+                        for (const entry of page.entries) {
+                            const change =
+                                entry.unstaged !== 'unchanged' ? entry.unstaged : entry.staged;
+                            yield {
+                                id: entry.path,
+                                label: entry.path.split(/[\\/]/).pop(),
+                                icon: 'document',
+                                badge:
+                                    change === 'untracked' ? 'U' : change.slice(0, 1).toUpperCase(),
+                                tone: entry.conflict ? 'error' : 'added',
+                                data: entry
+                            };
+                        }
+                    }
                 }
                 return {
-                    rows,
-                    subtitle: model.branch,
+                    rows: rows(),
                     empty: 'No changes',
-                    update: { branch: model.branch }
+                    complete: () => ({ subtitle: branch, update: { branch } })
                 };
             }
         }

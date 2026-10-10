@@ -9,6 +9,84 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### Backpressured asynchronous view providers (2026-10-10)
+
+View publication now consumes arrays, synchronous iterables and asynchronous
+iterables, including a direct iterable provider result. The wrapper retains one
+bounded JSON page plus one candidate row and awaits native acknowledgement before
+pulling further rows. Each yielded row is snapshotted, so reusing/mutating a source
+object cannot change already prepared rows. JS stops infinite sources at 100,000
+rows or 32 MiB and retains the 128-row / 60,000-byte page limits. Native validation
+and the measured source/projection remain the publication boundary.
+
+Optional async `complete(options)` supplies final subtitle/empty/UI metadata only
+after the iterator finishes. Iterator exceptions, malformed hierarchy, oversized
+rows, metadata failures and supersession abort the unpublished builder and retain
+the old interactive snapshot. Signal-aware stalled generators and completion
+callbacks drain on cancellation. External provider awaits must honor the signal;
+an arbitrary unrelated Promise is not forcibly interrupted.
+
+Default Explorer and Source Control refreshes transform `operationPages` directly
+into rows. Workspace Search similarly transforms each completed result page,
+validates stable global file/match counts and pagination, and retains at most 200
+distinct labels for confirmation. A successful `workbench.search` now returns a
+bounded summary rather than a complete JS match array; full matches remain
+available through its retained operation identity. Service search results add
+the same global `fileCount` on every page, including dirty and untitled buffers.
+Missing/changed pagination, malformed collections, nonadvancing pages and
+inconsistent final file totals preserve the old view, acknowledge operation
+cancellation, report an error and cannot offer replacement confirmation.
+
+Windows Debug evidence:
+
+- `./scripts/format.ps1 -Check -Offline`: 126 C++ / 12 JS files passed;
+  `git diff --check` passed.
+- `./scripts/xmake.ps1 build -y astra-tests astra astra-server gui-smoke
+  gui-presentation-smoke gui-workspace-smoke gui-services-smoke gui-recovery-smoke`:
+  final source/staged runtime build passed.
+- `./build/windows/x64/debug/astra-tests.exe --no-version`: 538 cases /
+  1,083,348 assertions, zero failures/skips. The focused final
+  `--test-case=workbench*,application search overlays*,application tree pagination*`
+  run passed 69 cases / 4,584 assertions. This covers backpressure while a page
+  acknowledgement is withheld, reused row objects, iterator cleanup, old snapshot
+  retention, cancellation during row/metadata awaits, bounded infinite sources,
+  530 search rows across three pages with a 200-label sample, malformed pages and
+  real disk/dirty/untitled file counts. Capacity-only adapters isolate the JS
+  failure path; they do not establish native acceptance of oversized row labels.
+- `gui-presentation-smoke.exe`: the real 602-row custom view now uses an async
+  generator. While it waits after row 256, Down still navigates the old published
+  view without changing its version. Releasing the producer atomically publishes
+  the replacement and preserves that cursor. Existing 1,505-file Explorer,
+  scrolling/folding, focus, stale guards and shutdown checks also passed. The
+  real `build/graphics/gui-custom-view.png` capture was visually inspected.
+- `gui-smoke.exe` and `gui-smoke.exe --tcp`: actual SDL editing through JS policy
+  and the shared dispatcher, Unicode, multicursor undo, document/workspace search,
+  replacement and save/dirty close passed.
+- `gui-workspace-smoke.exe`: streamed dirty/untitled navigation, retained input
+  options, replacement confirmation, atomic undo, external conflicts and guarded
+  concurrent reload passed.
+- `gui-services-smoke.exe`: streamed Source Control activation, real clangd
+  completion/navigation/hover/references/rename/formatting and real Git diff,
+  stage/unstage/commit/discard passed.
+- `gui-recovery-smoke.exe`: real Unicode recovery, durable exit and failure
+  retention/retry/confirmation passed.
+- `./tests/cli_smoke.ps1 -Mode debug`: production server/TCP CLI and Unicode
+  asynchronous find/replace/undo/save passed.
+
+The initial focused run incorrectly checked `Workbench::awaiting` for an
+intrinsic sleep, whose native wait uses a timer rather than a transport future.
+That fixture now waits for an observable UI marker issued after starting the
+signal-aware timer; row and completion cancellation both pass. The original
+failure is retained in `build/stream-views-focused-initial.log`. Final build/unit/
+affected/presentation logs use the `build/stream-views-` prefix.
+
+This completes the JS provider streaming path, not end-to-end progressive search:
+C++ still retains completed service results and native replacement plans, and Git
+mutation commands still receive bounded status results. Large native source/index
+reclamation, latency measurements, contextual search display, incremental display/
+syntax work and native window extraction remain open. Current Release/package
+acceptance and overall architecture/UI completion are not established.
+
 ### Indexed keyboard focus for JS views (2026-10-10)
 
 Sidebar rows now have a retained cursor separate from the provider's active-file

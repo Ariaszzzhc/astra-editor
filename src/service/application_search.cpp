@@ -119,9 +119,11 @@ Json ApplicationService::search(const Json& params) {
         return search_disk(disk_params);
     }
     auto wire_matches = std::make_shared<Json>(Json::array());
+    auto matched_files = std::make_shared<std::set<std::string>>();
     return start_operation(
         "search",
-        [workspace = workspace_, options, buffers, wire_matches](const auto& operation) {
+        [workspace = workspace_, options, buffers, wire_matches, matched_files](
+            const auto& operation) {
             workspace::SearchPattern pattern(options);
             auto disk_options = options;
             std::size_t bytes = 0;
@@ -168,6 +170,7 @@ Json ApplicationService::search(const Json& params) {
                                              {"end", match.end.value},
                                              {"line", position.line},
                                              {"utf16Column", position.utf16_column}});
+                    matched_files->insert(label);
                     buffer.matches.push_back(std::move(match));
                 }
                 disk_options.max_matches = options.max_matches - wire_matches->size();
@@ -180,20 +183,23 @@ Json ApplicationService::search(const Json& params) {
             result->cancelled = result->cancelled || cancelled;
             result->issues.insert(result->issues.end(), issues.begin(), issues.end());
             for (const auto& match : result->matches) {
-                wire_matches->push_back({{"path", path_text(match.relative_path)},
+                const auto label = path_text(match.relative_path);
+                wire_matches->push_back({{"path", label},
                                          {"source", "disk"},
                                          {"begin", match.begin.value},
                                          {"end", match.end.value},
                                          {"line", match.start_position.line},
                                          {"utf16Column", match.start_position.utf16_column}});
+                matched_files->insert(label);
             }
             operation->search = std::move(result);
             operation->search_buffers = buffers;
         },
-        [wire_matches](const auto& operation) {
+        [wire_matches, matched_files](const auto& operation) {
             const auto& result = *operation->search;
             return Json{{"query", result.query},
                         {"matches", std::move(*wire_matches)},
+                        {"fileCount", matched_files->size()},
                         {"scope", "workspace"},
                         {"issues", issues_json(result.issues)},
                         {"truncated", result.truncated},

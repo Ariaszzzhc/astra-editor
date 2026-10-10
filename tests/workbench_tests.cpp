@@ -234,6 +234,7 @@ Json workspace_matches(bool truncated = false, bool issues = false) {
         {"result",
          {{"matches", Json::array({{{"path", "a.txt"}, {"line", 0}, {"begin", 0}, {"end", 4}}})},
           {"truncated", truncated},
+          {"fileCount", 1},
           {"issues",
            issues ? Json::array({{{"path", "b.txt"}, {"message", "unreadable"}}})
                   : Json::array()}}}};
@@ -280,6 +281,9 @@ TEST_CASE("workbench workspace search owns mounted inputs and guarded generic vi
     reply_workspace_search(*channel, host, workbench);
     REQUIRE(outcome);
     CHECK_FALSE(outcome->error);
+    CHECK(outcome->value.at("matchCount") == 1);
+    CHECK(outcome->value.at("fileCount") == 1);
+    CHECK(outcome->value.at("paths") == Json::array({"a.txt"}));
     CHECK(host.view.views.at("search").index.size() == 1);
     CHECK(host.forms.mounted("search")->message() == "1 match(es)");
     CHECK_FALSE(host.confirmation);
@@ -1355,6 +1359,481 @@ TEST_CASE("workbench async view controls share commands and guard activation ver
     CHECK(result->value.at("stale").is_null());
     CHECK(result->value.at("override").at("row").at("id") == "25");
     CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench streamed rows honor backpressure and snapshot reused objects") {
+    auto channel = std::make_shared<Channel>();
+    ViewHost host;
+    const Json spec{{"id", "stream"}, {"title", "Stream"}};
+    const auto old = host.views.begin(spec);
+    REQUIRE(host.views.append("stream", old, Json::array({{{"id", "old"}, {"label", "Old"}}})));
+    auto initial = host.views.commit("stream", old, "", "Empty");
+    host.views.poll();
+    REQUIRE(initial.get().get<bool>());
+    const auto retained = host.views.at("stream").index.snapshot();
+    std::promise<Json> acknowledgement;
+    bool paused = false;
+    const auto source = R"js(
+        let produced = 0, closed = 0, completed = 0;
+        astra.ui.registerView({id:'stream',title:'Stream'}, () => ({
+            rows: (async function* () {
+                const row = {id:'',label:'中🙂',data:{index:0}};
+                try {
+                    for (let index = 0; index < 600; ++index) {
+                        row.id = String(index);
+                        row.data.index = index;
+                        ++produced;
+                        yield row;
+                    }
+                } finally { ++closed; }
+            })(),
+            complete: async () => {
+                ++completed;
+                return {subtitle:produced+' streamed rows'};
+            }
+        }));
+        astra.registerCommand('publishStream', () => astra.ui.refresh('stream'));
+        astra.registerCommand('inspectStream', () => ({produced,closed,completed}));
+    )js";
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.view.append" && !paused) {
+                paused = true;
+                REQUIRE(host(method, params).get().get<bool>());
+                return acknowledgement.get_future();
+            }
+            return host(method, params);
+        },
+        modules(),
+        source);
+    std::optional<astra::script::Runtime::Outcome> published, inspection;
+    workbench.execute("publishStream", Json::object(), [&](const auto& result) {
+        published = result;
+    });
+    for (int tick = 0; tick < 200 && !paused; ++tick)
+        workbench.poll();
+    REQUIRE(paused);
+    CHECK_FALSE(published);
+    REQUIRE(host.pages.size() == 1);
+    CHECK(host.pages.front().size() == 128);
+    workbench.execute("inspectStream", Json::object(), [&](const auto& result) {
+        inspection = result;
+    });
+    for (int tick = 0; tick < 20 && !inspection; ++tick)
+        workbench.poll();
+    REQUIRE(inspection);
+    REQUIRE_FALSE(inspection->error);
+    CHECK(inspection->value.at("produced") == 129);
+    CHECK(inspection->value.at("closed") == 0);
+    CHECK(inspection->value.at("completed") == 0);
+    CHECK(host.views.at("stream").version == old);
+    CHECK(host.views.navigate("stream", "last", 5).at("row").at("id") == "old");
+    acknowledgement.set_value(true);
+    for (int tick = 0; tick < 500 && !published; ++tick) {
+        host.views.poll();
+        workbench.poll();
+    }
+    REQUIRE(published);
+    REQUIRE_FALSE(published->error);
+    CHECK(published->value == true);
+    CHECK(host.views.at("stream").subtitle == "600 streamed rows");
+    CHECK(host.views.at("stream").index.size() == 600);
+    CHECK(host.views.at("stream").index.at(0).value->at("data").at("index") == 0);
+    CHECK(host.views.at("stream").index.at(599).value->at("data").at("index") == 599);
+    CHECK(retained.size() == 1);
+    CHECK(retained.at(0).value->at("id") == "old");
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench streamed view failures retain the published snapshot and close iterators") {
+    for (const auto* mode : {"throw", "invalid", "oversized", "metadataThrow", "metadataShape"}) {
+        CAPTURE(std::string(mode));
+        auto channel = std::make_shared<Channel>();
+        ViewHost host;
+        const Json spec{{"id", "failure"}, {"title", "Failure"}};
+        const auto old = host.views.begin(spec);
+        REQUIRE(
+            host.views.append("failure", old, Json::array({{{"id", "old"}, {"label", "Old"}}})));
+        auto initial = host.views.commit("failure", old, "", "Empty");
+        host.views.poll();
+        REQUIRE(initial.get().get<bool>());
+        const auto source = R"js(
+            let closed = 0;
+            astra.ui.registerView({id:'failure',title:'Failure'}, ({mode}) => ({
+                rows: (async function* () {
+                    try {
+                        for (let index = 0; index < 400; ++index) {
+                            if (index === 130 && mode === 'throw') throw Error('Producer failed');
+                            yield {id:String(index),
+                                label:index === 130 && mode === 'oversized' ? '🙂'.repeat(20000) : 'Row',
+                                depth:index === 130 && mode === 'invalid' ? 1 : 0};
+                        }
+                    } finally { ++closed; }
+                })(),
+                complete: () => {
+                    if (mode === 'metadataThrow') throw Error('Metadata failed');
+                    if (mode === 'metadataShape') return {rows:[]};
+                    return {};
+                }
+            }));
+            astra.registerCommand('failStream', parameters => astra.ui.refresh('failure',parameters));
+            astra.registerCommand('closedStream', () => closed);
+        )js";
+        astra::ui::Workbench workbench(
+            channel,
+            [&](std::string_view method, const Json& params) {
+                return host(method, params);
+            },
+            modules(),
+            source);
+        std::optional<astra::script::Runtime::Outcome> result, closed;
+        workbench.execute("failStream", {{"mode", mode}}, [&](const auto& value) {
+            result = value;
+        });
+        for (int tick = 0; tick < 500 && !result; ++tick) {
+            host.views.poll();
+            workbench.poll();
+        }
+        REQUIRE(result);
+        REQUIRE(result->error);
+        CHECK(host.views.at("failure").version == old);
+        CHECK(host.views.at("failure").index.size() == 1);
+        CHECK(host.views.at("failure").index.at(0).value->at("id") == "old");
+        CHECK(host.views.idle());
+        workbench.execute("closedStream", Json::object(), [&](const auto& value) {
+            closed = value;
+        });
+        for (int tick = 0; tick < 20 && !closed; ++tick)
+            workbench.poll();
+        REQUIRE(closed);
+        CHECK(closed->value == 1);
+        CHECK(workbench.idle());
+    }
+}
+
+TEST_CASE("workbench cancellation closes stalled row and completion producers") {
+    for (const auto* phase : {"rows", "complete"}) {
+        CAPTURE(std::string(phase));
+        auto channel = std::make_shared<Channel>();
+        ViewHost host;
+        bool waiting = false;
+        const auto source = R"js(
+            let closed = 0;
+            astra.ui.registerView({id:'cancelled',title:'Cancelled'}, ({phase},options) => ({
+                rows: (async function* () {
+                    try {
+                        for (let index=0; index<400; ++index) {
+                            if(index===130 && phase==='rows') {
+                                const pending = astra.sleep(200000,options);
+                                await astra.ui.update({status:'blocked producer'});
+                                await pending;
+                            }
+                            yield {id:String(index),label:'Row'};
+                        }
+                    } finally { ++closed; }
+                })(),
+                complete: async () => {
+                    if(phase==='complete') {
+                        const pending = astra.sleep(200000,options);
+                        await astra.ui.update({status:'blocked producer'});
+                        await pending;
+                    }
+                    return {};
+                }
+            }));
+            astra.registerCommand('cancelStream', () => astra.ui.cancel('cancelled'));
+            astra.registerCommand('startStream', parameters => astra.ui.refresh('cancelled',parameters));
+            astra.registerCommand('closedStream', () => closed);
+        )js";
+        astra::ui::Workbench workbench(
+            channel,
+            [&](std::string_view method, const Json& params) {
+                if (method == "_ui.update" &&
+                    params.value("status", std::string{}) == "blocked producer")
+                    waiting = true;
+                return host(method, params);
+            },
+            modules(),
+            source);
+        std::optional<astra::script::Runtime::Outcome> result, closed;
+        workbench.execute("startStream", {{"phase", phase}}, [&](const auto& value) {
+            result = value;
+        });
+        for (int tick = 0; tick < 500 && !waiting; ++tick) {
+            host.views.poll();
+            workbench.poll();
+        }
+        REQUIRE(waiting);
+        CHECK_FALSE(result);
+        workbench.execute("cancelStream", Json::object(), {});
+        for (int tick = 0; tick < 40 && !result; ++tick) {
+            host.views.poll();
+            workbench.poll();
+        }
+        REQUIRE(result);
+        CHECK_FALSE(result->error);
+        CHECK(host.views.at("cancelled").version.empty());
+        CHECK(host.views.at("cancelled").index.size() == 0);
+        CHECK(host.views.idle());
+        workbench.execute("closedStream", Json::object(), [&](const auto& value) {
+            closed = value;
+        });
+        for (int tick = 0; tick < 20 && !closed; ++tick)
+            workbench.poll();
+        REQUIRE(closed);
+        CHECK(closed->value == 1);
+        CHECK(workbench.idle());
+    }
+}
+
+TEST_CASE("workbench view providers accept direct synchronous and asynchronous iterables") {
+    for (const auto* kind : {"sync", "async"}) {
+        CAPTURE(std::string(kind));
+        auto channel = std::make_shared<Channel>();
+        ViewHost host;
+        const auto source = R"js(
+            astra.ui.registerView({id:'direct',title:'Direct'}, ({kind}) => kind==='sync'
+                ? (function* () { yield {id:'sync',label:'中🙂'}; })()
+                : (async function* () { yield {id:'async',label:'中🙂'}; })());
+            astra.registerCommand('directRows', parameters => astra.ui.refresh('direct',parameters));
+        )js";
+        astra::ui::Workbench workbench(
+            channel,
+            [&](std::string_view method, const Json& params) {
+                return host(method, params);
+            },
+            modules(),
+            source);
+        std::optional<astra::script::Runtime::Outcome> result;
+        workbench.execute("directRows", {{"kind", kind}}, [&](const auto& value) {
+            result = value;
+        });
+        for (int tick = 0; tick < 40 && !result; ++tick) {
+            host.views.poll();
+            workbench.poll();
+        }
+        REQUIRE(result);
+        REQUIRE_FALSE(result->error);
+        CHECK(result->value == true);
+        CHECK(host.views.at("direct").index.at(0).value->at("id") == kind);
+        CHECK(host.views.at("direct").index.at(0).value->at("label") == "中🙂");
+        CHECK(workbench.idle());
+    }
+}
+
+TEST_CASE("workbench streamed workspace search publishes complete totals with bounded samples") {
+    auto channel = std::make_shared<Channel>();
+    MountedHost host;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            return host(method, params);
+        },
+        modules());
+    std::optional<astra::script::Runtime::Outcome> result;
+    workbench.execute("workbench.search", {{"query", "needle"}}, [&](const auto& value) {
+        result = value;
+    });
+    host.poll(workbench);
+    REQUIRE(channel->requests.size() == 1);
+    REQUIRE(channel->requests.front().body.at("method") == "workspace.search");
+    channel->reply({{"operationId", "pages"}});
+    for (std::size_t offset = 0; offset < 530; offset += 256) {
+        host.poll(workbench);
+        REQUIRE(channel->requests.size() == 1);
+        REQUIRE(channel->requests.front().body.at("method") == "operation.get");
+        CHECK(channel->requests.front().body.at("params").at("offset") == offset);
+        const auto end = std::min(offset + 256, std::size_t{530});
+        Json matches = Json::array();
+        for (auto index = offset; index < end; ++index)
+            matches.push_back({{"path", "file" + std::to_string(index % 210) + ".txt"},
+                               {"line", index},
+                               {"begin", index},
+                               {"end", index + 1}});
+        channel->reply({{"state", "completed"},
+                        {"page", {{"offset", offset}, {"nextOffset", end}, {"total", 530}}},
+                        {"result",
+                         {{"matches", std::move(matches)},
+                          {"fileCount", 210},
+                          {"issues", Json::array()},
+                          {"truncated", false}}}});
+    }
+    for (int tick = 0; tick < 200 && !result; ++tick)
+        host.poll(workbench);
+    REQUIRE(result);
+    REQUIRE_FALSE(result->error);
+    CHECK(result->value.at("matchCount") == 530);
+    CHECK(result->value.at("fileCount") == 210);
+    CHECK(result->value.at("paths").size() == 200);
+    CHECK_FALSE(result->value.contains("matches"));
+    CHECK(host.view.views.at("search").index.size() == 530);
+    CHECK(host.view.views.at("search").index.at(529).value->at("data").at("line") == 529);
+    CHECK(host.view.views.at("search").subtitle == "530 matches");
+    CHECK(host.forms.mounted("search")->message() == "530 match(es)");
+    CHECK(channel->requests.empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench malformed search pages retain the view and refuse replacement") {
+    for (const auto* mode : {"fileCount",
+                             "total",
+                             "offset",
+                             "nextOffset",
+                             "emptyPage",
+                             "missingPage",
+                             "collections",
+                             "fileTotals"}) {
+        CAPTURE(std::string(mode));
+        auto channel = std::make_shared<Channel>();
+        MountedHost host;
+        astra::ui::Workbench workbench(
+            channel,
+            [&](auto method, const auto& params) {
+                return host(method, params);
+            },
+            modules());
+        workbench.execute("workbench.search", {{"query", "find"}, {"replacement", "replace"}}, {});
+        host.poll(workbench);
+        reply_workspace_search(*channel, host, workbench);
+        const auto version = host.view.views.at("search").version;
+        const auto retained = host.view.views.at("search").index.snapshot();
+        auto state = host.forms.mounted("search")->state();
+        state["action"] = "replaceAll";
+        workbench.emit("ui.form.action", state);
+        host.poll(workbench);
+        REQUIRE(channel->requests.size() == 1);
+        REQUIRE(channel->requests.front().body.at("method") == "workspace.search");
+        channel->reply({{"operationId", "malformed"}});
+        host.poll(workbench);
+        REQUIRE(channel->requests.size() == 1);
+        REQUIRE(channel->requests.front().body.at("method") == "operation.get");
+        Json matches = Json::array();
+        for (std::size_t index = 0; index < 130; ++index)
+            matches.push_back(
+                {{"path", "a.txt"}, {"line", index}, {"begin", index}, {"end", index + 1}});
+        auto first = workspace_matches();
+        first["result"]["matches"] = std::move(matches);
+        first["page"] = {{"offset", 0}, {"nextOffset", 130}, {"total", 131}};
+        if (std::string_view(mode) == "fileTotals")
+            first["result"]["fileCount"] = 2;
+        channel->reply(first);
+        host.poll(workbench);
+        REQUIRE(channel->requests.size() == 1);
+        REQUIRE(channel->requests.front().body.at("method") == "operation.get");
+        CHECK(channel->requests.front().body.at("params").at("offset") == 130);
+        CHECK(host.view.views.at("search").version == version);
+        auto last = workspace_matches();
+        last["page"] = {{"offset", 130}, {"nextOffset", 131}, {"total", 131}};
+        const std::string_view kind(mode);
+        if (kind == "fileCount")
+            last["result"]["fileCount"] = 3;
+        else if (kind == "total")
+            last["page"]["total"] = 132;
+        else if (kind == "offset")
+            last["page"]["offset"] = 129;
+        else if (kind == "nextOffset")
+            last["page"]["nextOffset"] = 132;
+        else if (kind == "emptyPage") {
+            last["result"]["matches"] = Json::array();
+            last["page"]["nextOffset"] = 130;
+        } else if (kind == "missingPage")
+            last.erase("page");
+        else if (kind == "collections")
+            last["result"]["matches"] = Json::object();
+        else if (kind == "fileTotals")
+            last["result"]["fileCount"] = 2;
+        channel->reply(last);
+        host.poll(workbench);
+        REQUIRE(channel->requests.size() == 1);
+        REQUIRE(channel->requests.front().body.at("method") == "operation.cancel");
+        CHECK(channel->requests.front().body.at("params").at("id") == "malformed");
+        CHECK_FALSE(host.confirmation);
+        channel->reply({{"cancelRequested", true}});
+        host.poll(workbench);
+        CHECK(host.view.views.at("search").version == version);
+        CHECK(host.view.views.at("search").index.size() == 1);
+        CHECK(retained.size() == 1);
+        CHECK(host.forms.mounted("search")->error());
+        CHECK_FALSE(host.forms.mounted("search")->busy());
+        CHECK_FALSE(host.confirmation);
+        CHECK(host.view.views.idle());
+        CHECK(channel->requests.empty());
+        CHECK(workbench.take_errors().empty());
+        CHECK(workbench.idle());
+    }
+}
+
+TEST_CASE("workbench infinite row streams fail bounded capacities before publication") {
+    for (const auto* mode : {"rows", "bytes"}) {
+        CAPTURE(std::string(mode));
+        auto channel = std::make_shared<Channel>();
+        std::size_t appended = 0, pages = 0, largest = 0, commits = 0, aborts = 0;
+        const auto source = R"js(
+            let produced = 0, closed = 0;
+            astra.ui.registerView({id:'capacity',title:'Capacity'}, ({mode}) => ({
+                rows: (async function* () {
+                    const label = mode==='bytes' ? '🙂'.repeat(12000) : 'Row';
+                    try {
+                        for (let index=0;;++index) {
+                            ++produced;
+                            yield {id:String(index),label};
+                        }
+                    } finally { ++closed; }
+                })()
+            }));
+            astra.registerCommand('capacity', parameters => astra.ui.refresh('capacity',parameters));
+            astra.registerCommand('inspectCapacity', () => ({produced,closed}));
+        )js";
+        astra::ui::Workbench workbench(
+            channel,
+            [&](std::string_view method, const Json& params) {
+                if (method == "_ui.view.begin")
+                    return ready("capacity-1");
+                if (method == "_ui.view.append") {
+                    const auto& rows = params.at("rows");
+                    CHECK(rows.size() <= 128);
+                    CHECK(rows.dump().size() <= 60000);
+                    appended += rows.size();
+                    ++pages;
+                    largest = std::max(largest, rows.dump().size());
+                    return ready(true);
+                }
+                if (method == "_ui.view.commit")
+                    ++commits;
+                if (method == "_ui.view.abort")
+                    ++aborts;
+                return ready(nullptr);
+            },
+            modules(),
+            source);
+        std::optional<astra::script::Runtime::Outcome> result, inspection;
+        workbench.execute("capacity", {{"mode", mode}}, [&](const auto& value) {
+            result = value;
+        });
+        for (int tick = 0; tick < 5000 && !result; ++tick)
+            workbench.poll();
+        REQUIRE(result);
+        REQUIRE(result->error);
+        CHECK(result->error->at("name") == "RangeError");
+        CHECK(commits == 0);
+        CHECK(aborts == 1);
+        CHECK(pages > 10);
+        CHECK(largest <= 60000);
+        CHECK(appended <= 100000);
+        workbench.execute("inspectCapacity", Json::object(), [&](const auto& value) {
+            inspection = value;
+        });
+        for (int tick = 0; tick < 20 && !inspection; ++tick)
+            workbench.poll();
+        REQUIRE(inspection);
+        CHECK(inspection->value.at("closed") == 1);
+        if (std::string_view(mode) == "rows")
+            CHECK(inspection->value.at("produced") == 100001);
+        else
+            CHECK(inspection->value.at("produced").get<std::size_t>() < 1000);
+        CHECK(workbench.idle());
+    }
 }
 
 TEST_CASE("workbench view cancellation releases an unresolved native publication fence") {
