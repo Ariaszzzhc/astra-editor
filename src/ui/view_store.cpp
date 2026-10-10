@@ -319,6 +319,31 @@ bool ViewStore::select(std::string_view id, std::string_view row, std::size_t pa
     return true;
 }
 
+bool ViewStore::reveal(std::string_view id, std::string_view row, std::size_t page) {
+    if (page == 0 || page > 256)
+        throw protocol::RpcError(-32602, "View page must be 1..256 rows");
+    auto& view = at(id);
+    auto next_cursor = std::optional(std::string(row));
+    if (!view.index.position(row)) {
+        if (!view.index.position(row, true))
+            return false;
+        if (view.fold_generation == std::numeric_limits<std::uint64_t>::max())
+            throw protocol::RpcError(-32004, "View fold identity exhausted");
+        auto ownership = retirement_.reserve();
+        ownership.charge(view.index.source_bytes());
+        auto prepared = view.index.revealing(row);
+        ViewRetirement::Payload payload;
+        payload.projection.emplace(std::move(view.index));
+        view.index = std::move(*prepared);
+        retirement_.retire(std::move(ownership), std::move(payload));
+        ++view.fold_generation;
+    }
+    view.cursor = std::move(next_cursor);
+    view.expanded = true;
+    reveal(id, page);
+    return true;
+}
+
 Json ViewStore::navigate(std::string_view id, std::string_view action, std::size_t page) {
     if (page == 0 || page > 256)
         throw protocol::RpcError(-32602, "View page must be 1..256 rows");

@@ -155,6 +155,8 @@ struct ViewHost {
     std::vector<Json> pages;
 
     std::future<Json> operator()(std::string_view method, const Json& params) {
+        if (method == "_ui.read")
+            return ready({{"document", nullptr}});
         if (method == "_ui.view.begin")
             return ready(views.begin(params.at("spec")));
         if (method == "_ui.view.append") {
@@ -1631,6 +1633,162 @@ TEST_CASE("workbench cancelling a document read drains its native fence") {
     CHECK(outcome->error->at("name") == "AbortError");
     CHECK(cancellations == 1);
     CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench Explorer reveal cancels obsolete requests and respects preferences") {
+    auto channel = std::make_shared<Channel>();
+    Json state{{"activity", "1"}, {"document", {{"id", "first"}, {"path", "src\\中🙂.cpp"}}}};
+    std::vector<Json> reveals, updates;
+    std::optional<std::promise<Json>> delayed;
+    bool hold = true;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.read") {
+                CHECK(params.at("preferences") == Json::array({"explorer"}));
+                return ready(state);
+            }
+            if (method == "_ui.view.read") {
+                CHECK(params.at("id") == "explorer");
+                if (hold) {
+                    REQUIRE_FALSE(delayed);
+                    delayed.emplace();
+                    return delayed->get_future();
+                }
+                return ready({{"version", "9"}});
+            }
+            if (method == "_ui.view.reveal") {
+                reveals.push_back(params);
+                return ready({{"row", {{"id", params.at("row")}}}});
+            }
+            if (method == "_ui.update") {
+                updates.push_back(params);
+                return ready(true);
+            }
+            CHECK(method == "_ui.view.focus");
+            return ready(true);
+        },
+        modules());
+    const auto poll = [&] {
+        for (int tick = 0; tick < 32; ++tick)
+            workbench.poll();
+    };
+    workbench.emit("ui.document.activated", {{"activity", "1"}});
+    poll();
+    REQUIRE(delayed);
+    CHECK(reveals.empty());
+    state["activity"] = "2";
+    state["document"] = {{"id", "second"}, {"path", "lib\\second.cpp"}};
+    hold = false;
+    workbench.emit("ui.document.activated", {{"activity", "2"}});
+    poll();
+    REQUIRE(reveals.size() == 1);
+    CHECK(reveals.front().at("row") == "lib/second.cpp");
+    CHECK(reveals.front().at("activity") == "2");
+    CHECK(reveals.front().at("version") == "9");
+    CHECK(updates.empty());
+    delayed->set_value({{"version", "8"}});
+    delayed.reset();
+    poll();
+    CHECK(reveals.size() == 1);
+    CHECK(workbench.idle());
+    CHECK(workbench.take_errors().empty());
+    workbench.emit("ui.document.activated", {{"activity", "1"}});
+    poll();
+    CHECK(reveals.size() == 1);
+    state["preferences"] = {{"explorer", {{"autoReveal", false}}}};
+    state["activity"] = "3";
+    workbench.emit("ui.document.activated", {{"activity", "3"}});
+    poll();
+    CHECK(reveals.size() == 1);
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.revealActiveFile", Json::object(), [&](const auto& result) {
+        outcome = result;
+    });
+    poll();
+    REQUIRE(outcome);
+    CHECK_FALSE(outcome->error);
+    REQUIRE(reveals.size() == 2);
+    CHECK(reveals.back().at("activity") == "3");
+    REQUIRE(updates.size() == 1);
+    CHECK(updates.front().at("sidebar") == "explorer");
+    CHECK(updates.front().at("sidebarVisible") == true);
+    state["document"] = {{"id", "untitled"}, {"path", ""}};
+    state["activity"] = "4";
+    state["preferences"] = {{"explorer", {{"autoReveal", true}}}};
+    workbench.emit("ui.document.activated", {{"activity", "4"}});
+    poll();
+    CHECK(reveals.size() == 2);
+    CHECK(workbench.idle());
+    CHECK(channel->requests.empty());
+    CHECK(workbench.take_errors().empty());
+}
+
+TEST_CASE("workbench cancelled completion metadata cannot invoke a published hook") {
+    auto channel = std::make_shared<Channel>();
+    ViewHost host;
+    std::optional<std::promise<Json>> metadata;
+    bool hold = true;
+    std::vector<Json> callbacks;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.update" && params.contains("status") && hold) {
+                REQUIRE_FALSE(metadata);
+                metadata.emplace();
+                return metadata->get_future();
+            }
+            if (method == "_ui.action") {
+                callbacks.push_back(params);
+                return ready(true);
+            }
+            return host(method, params);
+        },
+        modules(),
+        R"js(
+            astra.ui.registerView({id:'published',title:'Published'}, () => ({
+                rows: [{id:'row',label:'Row'}], update: {status:'Published'}
+            }), { published: ({version}, options) =>
+                astra.request('_ui.action', {command:'published',version}, options)
+            });
+            astra.registerCommand('publish', () => astra.ui.refresh('published'));
+            astra.registerCommand('cancelPublication', () => astra.ui.cancel('published'));
+        )js");
+    const auto poll = [&] {
+        for (int tick = 0; tick < 32; ++tick) {
+            host.views.poll();
+            workbench.poll();
+        }
+    };
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("publish", Json::object(), [&](const auto& result) {
+        outcome = result;
+    });
+    poll();
+    REQUIRE(metadata);
+    REQUIRE(host.views.at("published").index.size() == 1);
+    CHECK(callbacks.empty());
+    workbench.execute("cancelPublication", Json::object(), {});
+    poll();
+    metadata->set_value(true);
+    metadata.reset();
+    poll();
+    REQUIRE(outcome);
+    CHECK_FALSE(outcome->error);
+    CHECK(callbacks.empty());
+    CHECK(host.views.at("published").index.at(0).value->at("id") == "row");
+    hold = false;
+    outcome.reset();
+    workbench.execute("publish", Json::object(), [&](const auto& result) {
+        outcome = result;
+    });
+    poll();
+    REQUIRE(outcome);
+    CHECK_FALSE(outcome->error);
+    REQUIRE(callbacks.size() == 1);
+    CHECK(callbacks.front().at("version") == host.views.at("published").version);
+    CHECK(workbench.idle());
+    CHECK(workbench.take_errors().empty());
 }
 
 TEST_CASE("workbench provider generation prevents older results replacing newer views") {

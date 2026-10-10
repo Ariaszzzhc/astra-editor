@@ -20,6 +20,77 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### JS Explorer reveal and retained selection (2026-10-11)
+
+Explorer automatic reveal is now JS policy, enabled by the declarative
+`explorer.autoReveal` default. Activation and successful provider publication
+capture the active document and native view version through Promise APIs.
+Superseded requests are cancelled; native activity/version fences reject stale
+continuations, including A-to-B-to-A. The activity identity also changes when
+the active path changes or the active document closes. Automatic reveal leaves
+sidebar visibility, active view and keyboard focus unchanged. Explicit
+`ui.revealActiveFile` shows/focuses Explorer even when automatic reveal is off.
+Merged service preferences and explicit client overrides are read through a
+bounded generic preference-section API.
+
+The generic native row-reveal primitive expands only ancestors and preserves
+the target's own fold and unrelated folds. It prepares a persistent projection
+before publication, replaces only the outermost hidden subtree, and retires the
+old projection off the input loop. Work is bounded by depth 64, 4,096 retained
+folds and measured tree seeks; it does not flatten the full row source. Missing
+identities, invalid pages and retirement backpressure leave fold/cursor/scroll
+state intact. Fold generation changes invalidate a pending refresh projection.
+Optional async `handlers.published` callbacks run after successful publication
+and guarded completion metadata; cancelled completion cannot invoke the hook.
+
+Actual screenshot inspection exposed a presentation defect: a retained cursor
+was only highlighted while focused. Native rows now retain selection after
+focus leaves the widget. JS theme role `inactiveSelection` supplies the weaker
+background; focused selection and its focus accent retain their separate roles.
+
+Windows evidence:
+
+- Initial `./scripts/xmake.ps1 build -y -j 2 astra-tests gui-presentation-smoke astra`
+  rejected the GUI fixture's two-argument call to the name-only
+  `execute_ui_command` interface. Replaced it with the existing JS `ui.closeTab`
+  command; no production interface was widened. Failure retained in
+  `build/explorer-reveal-build-debug.log`.
+- Before the final selection-paint correction,
+  `./scripts/test.ps1 -Mode all -Gui` exited 0: Debug 600 cases / 2,355,579
+  assertions; Release 600 / 2,355,466, zero failed/skipped. Native renderer,
+  font/worker/viewport checks, GUI editing/services/recovery/workspace/workbench,
+  TCP editing, 12 package-helper and seven shaping-provenance checks passed.
+  `build/explorer-reveal-acceptance-all.log`. This precedes the paint correction;
+  the final affected checks below establish that correction's acceptance.
+- Final `./scripts/xmake.ps1 build -y -j 2 astra-tests gui-presentation-smoke astra`
+  passed in both configurations. Then
+  `./build/windows/x64/{debug,release}/astra-tests.exe --no-version` passed:
+  Debug 600 / 2,355,513; Release 600 / 2,355,501, zero failed/skipped.
+  `build/explorer-reveal-visual-build-{debug,release}.log` and
+  `build/explorer-reveal-visual-unit-{debug,release}.log`.
+  Coverage includes 400 tree fold/reveal differential rounds (seed `0xA57A93`),
+  immutable retained snapshots, all 64 ancestors, unrelated/target folds,
+  publication invalidation, retirement backpressure, obsolete async reads,
+  disabled/manual policy and cancelled publication hooks.
+- Final `./build/windows/x64/{debug,release}/gui-presentation-smoke.exe` exited 0
+  in both modes. The real 5,005-row workspace verifies hidden-folder expansion,
+  hidden-sidebar/focus preservation, refresh, native activity/version rejection,
+  A-to-B-to-A, disabled automatic policy, explicit reveal and close fallback.
+  It also decodes actual GPU PNGs and checks the target row's exact RGBA pixels
+  against the focused and inactive JS theme roles.
+  `build/explorer-reveal-visual-gui-{debug,release}.log`;
+  `build/graphics/gui-explorer-focused-reveal.png` and
+  `build/graphics/gui-explorer-auto-reveal.png` were visually inspected.
+- Debug restored with `./scripts/xmake.ps1 f -m debug -y` before the final
+  Debug build/tests; `build/explorer-reveal-restore-debug.log`. Source/runtime
+  resources stayed unchanged throughout each build/test execution.
+- `./scripts/format.ps1 -Check -Offline` passed 172 C++ / 13 JS files;
+  `build/explorer-reveal-commit-format-check.log`. `git diff --check` passed.
+
+Native sidebar component extraction, cohesive whole-product visual acceptance,
+same-text selection metadata ordering, physical installed-IME interaction and
+a new distribution remain incomplete. This increment claims Windows only.
+
 ### Persistent local glyph splicing and font identity (2026-10-11)
 
 Native logical glyphs now live in a measured persistent `GlyphSequence`, with

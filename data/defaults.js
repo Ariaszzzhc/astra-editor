@@ -1,6 +1,7 @@
 // Astra's complete default policy. User configuration runs afterwards and can
 // merge settings, replace one binding, or replace a named command independently.
 astra.configure({
+    explorer: { autoReveal: true },
     editor: {
         fontSize: 16,
         fontFamilies: ['Cascadia Code', 'Consolas', 'monospace'],
@@ -20,6 +21,7 @@ astra.configure({
         activeTab: '#1F1F1F',
         border: '#2B2B2B',
         selection: '#264F78',
+        inactiveSelection: '#37373D',
         accent: '#0078D4',
         status: '#181818',
         muted: '#9D9D9D',

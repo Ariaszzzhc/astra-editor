@@ -15,6 +15,7 @@ struct WorkbenchStyle {
     struct Colors {
         std::uint32_t background{}, foreground{}, sidebar{}, activity{}, tabs{}, panel{};
         std::uint32_t active_tab{}, border{}, selection{}, accent{}, status{}, muted{};
+        std::uint32_t inactive_selection{};
         std::uint32_t status_foreground{}, hover{}, current_line{}, input{}, cursor{}, scrollbar{};
         std::uint32_t folder{}, code_icon{}, script_icon{}, added{}, changed{};
         std::uint32_t notice_background{}, recovery_background{}, error_background{}, error{},

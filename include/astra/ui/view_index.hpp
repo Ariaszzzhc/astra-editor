@@ -91,6 +91,9 @@ class ViewIndex final {
 
     // Return the old projection so the owner can reclaim it off the input loop.
     [[nodiscard]] ViewSnapshot toggle(std::size_t index);
+    // Prepare an ancestor-expanded projection without changing this snapshot.
+    // Only the outermost hidden subtree is replaced; unrelated folds survive.
+    [[nodiscard]] std::optional<ViewIndex> revealing(std::string_view id) const;
     [[nodiscard]] std::optional<std::size_t> position(std::string_view id,
                                                       bool visible_ancestor = false) const;
     [[nodiscard]] std::optional<std::size_t> parent(std::size_t index) const;

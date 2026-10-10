@@ -241,4 +241,40 @@ ViewSnapshot ViewIndex::toggle(std::size_t index) {
         return retired;
     }
 }
+
+std::optional<ViewIndex> ViewIndex::revealing(std::string_view id) const {
+    if (!source_ || !ready())
+        return std::nullopt;
+    const auto found = source_->positions.find(std::string(id));
+    if (found == source_->positions.end())
+        return std::nullopt;
+    ViewIndex prepared(source_, collapsed());
+    prepared.visible_ = visible_;
+    prepared.cursor_ = cursor_;
+    std::optional<std::size_t> outermost;
+    auto parent = source_->rows.at(found->second).parent;
+    while (parent) {
+        const auto& row = source_->rows.at(*parent);
+        if (prepared.collapsed_->erase(row.value->at("id").get<std::string>()))
+            outermost = row.ordinal;
+        parent = row.parent;
+    }
+    if (outermost) {
+        const auto& row = source_->rows.at(*outermost);
+        const auto position = this->position(row.value->at("id").get<std::string>());
+        if (!position)
+            throw std::logic_error("Outermost collapsed ancestor must be visible");
+        const auto end = subtree_end(row);
+        const auto last = visible_
+                              .seek_prefix([&](const ViewSummary& prefix) {
+                                  return prefix.last_source > end;
+                              })
+                              .index;
+        auto before = visible_.split(*position + 1).first;
+        auto after = visible_.split(last).second;
+        prepared.visible_ =
+            before.concat(prepared.filtered_range(row.ordinal + 1, end, {})).concat(after);
+    }
+    return prepared;
+}
 } // namespace astra::ui

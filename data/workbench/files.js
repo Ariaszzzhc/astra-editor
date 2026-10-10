@@ -1,5 +1,14 @@
 import { ui, request } from 'astra/ui';
 export function registerFiles() {
+    astra.on('ui.document.activated', ({ activity }) => revealActiveFile({ activity }));
+    ui.registerCommand(
+        { id: 'ui.revealActiveFile', title: 'Reveal active file in Explorer' },
+        async (parameters = {}) => {
+            parameters.signal?.throwIfAborted();
+            await ui.execute('ui.explorer');
+            return await revealActiveFile({ manual: true }, parameters);
+        }
+    );
     ui.registerCommand(
         { id: 'ui.quickOpen', title: 'Quick open workspace file', shortcut: 'Ctrl+P' },
         quickOpen
@@ -64,6 +73,7 @@ export function registerFiles() {
         (_, options) => ({ pages: astra.operationPages('workspace.tree', {}, options) }),
         {
             show: () => ui.execute('ui.explorer'),
+            published: ({ version }, options) => revealActiveFile({ version }, options),
             async activate({ path }) {
                 const focus = await ui.views.read('explorer');
                 await ui.execute('workbench.open', { path });
@@ -180,6 +190,37 @@ export function registerFiles() {
                 await ui.update({ scrollLine: { id: state.document.id, line } });
             }
         );
+    }
+}
+let activeReveal;
+async function revealActiveFile({ activity, version, manual = false } = {}, options = {}) {
+    activeReveal?.abort();
+    const control = new AbortController();
+    activeReveal = control;
+    const abort = () => control.abort();
+    options.signal?.addEventListener('abort', abort);
+    if (options.signal?.aborted) abort();
+    try {
+        const requestOptions = { signal: control.signal };
+        const state = await ui.read({ immediate: true, preferences: ['explorer'] }, requestOptions);
+        if (activity !== undefined && state.activity !== activity) return null;
+        const preferences = astra.settings().explorer ?? state.preferences?.explorer;
+        if (!manual && preferences?.autoReveal === false) return null;
+        if (!state.document?.path || state.activity === undefined) return null;
+        const view = await ui.views.read('explorer', requestOptions);
+        if (!view?.version || (version !== undefined && view.version !== version)) return null;
+        return await ui.views.reveal(
+            'explorer',
+            state.document.path.replaceAll('\\', '/'),
+            { activity: state.activity, version: view.version },
+            requestOptions
+        );
+    } catch (error) {
+        if (error.name !== 'AbortError') throw error;
+        return null;
+    } finally {
+        options.signal?.removeEventListener('abort', abort);
+        if (activeReveal === control) activeReveal = undefined;
     }
 }
 async function quickOpen(parameters = {}) {

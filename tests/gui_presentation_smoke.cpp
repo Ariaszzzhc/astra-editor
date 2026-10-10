@@ -6,6 +6,9 @@
 #include "support/temporary_directory.hpp"
 
 #include <SDL3/SDL.h>
+#include "include/codec/SkCodec.h"
+#include "include/core/SkData.h"
+#include "include/core/SkImageInfo.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
@@ -14,6 +17,8 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <cstdint>
+#include <vector>
 #include <stdexcept>
 
 namespace {
@@ -36,6 +41,40 @@ void settle(Window& window) {
         SDL_Delay(1);
     } while (Clock::now() < until);
     throw std::runtime_error("Presentation workbench did not settle");
+}
+
+void verify_selected_row(Window& window, const fs::path& path, const char* role) {
+    const auto state = window.view_state();
+    const auto index = state.sidebar.at("index").get<std::size_t>();
+    const auto first = state.sidebar.at("scroll").get<std::size_t>();
+    require(index >= first, "Selected row is above the rendered viewport");
+    const auto& layout = state.layout;
+    const auto x = static_cast<int>(std::floor(layout.sidebar_rows.right() - 6 * layout.scale));
+    const auto y = static_cast<int>(
+        std::floor(layout.sidebar_rows.y +
+                   (static_cast<float>(index - first) + 0.5F) * layout.sidebar_row_height));
+    const auto expected =
+        std::stoul(state.style.at("theme").at(role).get<std::string>().substr(1), nullptr, 16);
+    window.request_screenshot(path);
+    settle(window);
+    auto data = SkData::MakeFromFileName(path.string().c_str());
+    require(data != nullptr, "Selection screenshot is missing");
+    auto codec = SkCodec::MakeFromData(std::move(data));
+    require(codec != nullptr, "Selection screenshot is not a decodable PNG");
+    const auto size = codec->dimensions();
+    require(x >= 0 && x < size.width() && y >= 0 && y < size.height(),
+            "Selection pixel is outside the screenshot");
+    const auto info =
+        SkImageInfo::Make(size.width(), size.height(), kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+    std::vector<std::uint8_t> pixels(info.computeMinByteSize());
+    require(codec->getPixels(info, pixels.data(), info.minRowBytes()) == SkCodec::kSuccess,
+            "Selection screenshot decoding failed");
+    const auto offset =
+        static_cast<std::size_t>(y) * info.minRowBytes() + static_cast<std::size_t>(x) * 4;
+    require(pixels.at(offset) == ((expected >> 16) & 255) &&
+                pixels.at(offset + 1) == ((expected >> 8) & 255) &&
+                pixels.at(offset + 2) == (expected & 255) && pixels.at(offset + 3) == 255,
+            std::string("Selected row pixels do not follow theme role ") + role);
 }
 
 void enqueue_mouse(Window& window, Uint32 type, float x, float y) {
@@ -179,6 +218,34 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         options.user_script = R"js(if(astra.context==='client') {
             astra.bind('Ctrl+Shift+Tab', 'ui.previousTab');
             astra.configure({workbench: {uiFontSize: 13}});
+            let revealCapture;
+            astra.registerCommand('acceptance.reveal.capture', async () => {
+                revealCapture = {
+                    state: await astra.ui.read({immediate: true}),
+                    view: await astra.ui.views.read('explorer')
+                };
+            });
+            astra.registerCommand('acceptance.reveal.fold', async () => {
+                await astra.ui.views.select('explorer', 'generated');
+                await astra.ui.views.navigate('explorer', 'left');
+            });
+            astra.registerCommand('acceptance.reveal.hide', () =>
+                astra.ui.update({sidebarVisible: false}));
+            astra.registerCommand('acceptance.reveal.disable', () =>
+                astra.configure({explorer: {autoReveal: false}}));
+            astra.registerCommand('acceptance.reveal.enable', () =>
+                astra.configure({explorer: {autoReveal: true}}));
+            astra.registerCommand('acceptance.reveal.rejectStale', async () => {
+                const current = await astra.ui.views.read('explorer');
+                const activity = revealCapture.state.activity;
+                const row = revealCapture.state.document.path;
+                if (await astra.ui.views.reveal('explorer', row, {
+                    activity, version: current.version
+                })) throw new Error('Obsolete document activity changed Explorer');
+                if (await astra.ui.views.reveal('explorer', row, {
+                    version: current.version + '-obsolete'
+                })) throw new Error('Obsolete view version changed Explorer');
+            });
             let originalStyle;
             let originalIcons;
             astra.registerCommand('acceptance.icons.update', async () => {
@@ -706,6 +773,63 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
               original.layout.sidebar_rows.y + original.layout.sidebar_row_height / 2);
         require(window.view_state().visible_file_rows == original.visible_file_rows,
                 "Folder expansion did not restore its indexed descendants");
+        window.execute_ui_command("acceptance.reveal.capture");
+        settle(window);
+        window.execute_ui_command("acceptance.reveal.fold");
+        settle(window);
+        require(window.view_state().visible_file_rows == 5,
+                "Reveal fixture did not hide the generated subtree");
+        window.execute_ui_command("acceptance.reveal.hide");
+        settle(window);
+        window.open_path("generated/item0.txt");
+        settle(window);
+        const auto generated = window.active_document_id();
+        require(generated != one && window.view_state().visible_file_rows == files + 5 &&
+                    window.view_state().sidebar.at("row").at("id") == "generated/item0.txt" &&
+                    window.view_state().sidebar.at("focused") == false &&
+                    window.layout().sidebar.width == 0,
+                "Automatic reveal failed or changed sidebar visibility/focus");
+        window.execute_ui_command("acceptance.reveal.fold");
+        settle(window);
+        window.execute_ui_command("ui.refreshTree");
+        settle(window);
+        require(window.view_state().visible_file_rows == files + 5 &&
+                    window.view_state().sidebar.at("row").at("id") == "generated/item0.txt",
+                "Refresh publication did not reveal the active path");
+        window.open_path("one.cpp");
+        settle(window);
+        window.execute_ui_command("acceptance.reveal.rejectStale");
+        settle(window);
+        require(window.view_state().sidebar.at("row").at("id") == "one.cpp",
+                "An obsolete A-to-B-to-A continuation changed the current cursor");
+        window.execute_ui_command("acceptance.reveal.fold");
+        settle(window);
+        window.execute_ui_command("acceptance.reveal.disable");
+        settle(window);
+        window.open_path("generated/item0.txt");
+        settle(window);
+        require(window.view_state().visible_file_rows == 5 &&
+                    window.view_state().sidebar.at("row").at("id") == "generated",
+                "Disabled automatic reveal changed the retained fold/cursor");
+        window.execute_ui_command("ui.revealActiveFile");
+        settle(window);
+        require(window.view_state().visible_file_rows == files + 5 &&
+                    window.view_state().sidebar.at("row").at("id") == "generated/item0.txt" &&
+                    window.view_state().sidebar.at("focused") == true &&
+                    window.layout().sidebar.width > 0,
+                "Explicit reveal did not override automatic policy and focus Explorer");
+        verify_selected_row(window, "build/graphics/gui-explorer-focused-reveal.png", "selection");
+        key(window, SDLK_ESCAPE);
+        window.execute_ui_command("acceptance.reveal.enable");
+        settle(window);
+        window.execute_ui_command("ui.closeTab");
+        settle(window);
+        require(window.active_document_id() == one &&
+                    window.view_state().sidebar.at("row").at("id") == "one.cpp" &&
+                    window.view_state().sidebar.at("focused") == false,
+                "Closing the active file did not reveal the fallback document");
+        verify_selected_row(
+            window, "build/graphics/gui-explorer-auto-reveal.png", "inactiveSelection");
         const auto handle = window.layout().sidebar_handle;
         mouse(window,
               SDL_EVENT_MOUSE_BUTTON_DOWN,

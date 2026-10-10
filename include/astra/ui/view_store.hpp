@@ -64,6 +64,7 @@ class ViewStore final {
     [[nodiscard]] protocol::Json
     navigate(std::string_view id, std::string_view action, std::size_t page);
     void reveal(std::string_view id, std::size_t page);
+    [[nodiscard]] bool reveal(std::string_view id, std::string_view row, std::size_t page);
 
   private:
     struct Pending {

@@ -16,6 +16,8 @@ export const ui = {
             request('_ui.view.focus', { ...guards, editor: true }, options),
         select: (id, row, guards = {}, options) =>
             request('_ui.view.select', { ...guards, id, row }, options),
+        reveal: (id, row, guards = {}, options) =>
+            request('_ui.view.reveal', { ...guards, id, row }, options),
         async navigate(id, action, guards = {}, options) {
             const result = await request('_ui.view.navigate', { ...guards, id, action }, options);
             if (result?.activate) await activateView(result);
@@ -291,6 +293,13 @@ export const ui = {
             publishedViews.set(id, version);
             if (metadata.update)
                 await ui.update({ ...metadata.update, view: id, viewVersion: version });
+            if (
+                !options.signal?.aborted &&
+                providers.get(id) === view &&
+                publishedViews.get(id) === version &&
+                view.handlers.published
+            )
+                await view.handlers.published({ id, version }, options);
             return true;
         } finally {
             options.signal?.removeEventListener('abort', abort);

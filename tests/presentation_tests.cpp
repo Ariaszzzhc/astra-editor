@@ -54,6 +54,7 @@ TEST_CASE("presentation style derives every UI text role from JS defaults") {
         const auto style = WorkbenchStyle::compile(settings);
         CHECK(style.colors.background == 0xFF1F1F1FU);
         CHECK(style.colors.panel == 0xFF252526U);
+        CHECK(style.colors.inactive_selection == 0xFF37373DU);
         CHECK(style.colors.tabs == 0xFF181818U);
         CHECK(style.syntax.at("error") == 0xFFF44747U);
         for (const float reference : {12.0F, 13.0F, 14.0F, 16.0F}) {
@@ -490,6 +491,208 @@ TEST_CASE("presentation cursor navigates hierarchy and survives reordered refres
     publish(Json::array());
     CHECK(store.navigate("navigation", "next", 2).at("row").is_null());
     CHECK_FALSE(store.cursor("navigation"));
+}
+
+TEST_CASE("presentation reveal expands only ancestors and preserves retained snapshots") {
+    using Json = astra::protocol::Json;
+    Json rows = Json::array();
+    for (int group = 0; group < 100; ++group) {
+        const auto root = "g" + std::to_string(group);
+        rows.push_back({{"id", root}, {"label", root}, {"group", true}});
+        for (int nested = 0; nested < 4; ++nested) {
+            const auto name = root + "/n" + std::to_string(nested);
+            rows.push_back({{"id", name}, {"label", name}, {"group", true}, {"depth", 1}});
+            rows.push_back({{"id", name + "/中🙂"}, {"label", "中🙂"}, {"depth", 2}});
+        }
+    }
+    astra::ui::ViewBuilder builder;
+    for (std::size_t first = 0; first < rows.size(); first += 100)
+        builder.append(
+            Json::array_t(rows.begin() + first, rows.begin() + std::min(first + 100, rows.size())));
+    auto source = std::move(builder).finish();
+    astra::ui::ViewIndex index(source);
+    REQUIRE(index.filter_step());
+    std::mt19937 random(0xA57A93);
+    std::set<std::string> folded;
+    for (int round = 0; round < 400; ++round) {
+        const auto old = index.snapshot();
+        const auto old_folds = folded;
+        std::vector<std::string> old_ids;
+        old.for_each_range(0, old.size(), [&](const auto& row) {
+            old_ids.push_back(row.value->at("id").template get<std::string>());
+        });
+        if (round % 2 == 0) {
+            std::vector<std::size_t> groups;
+            for (std::size_t i = 0; i < index.size(); ++i)
+                if (index.at(i).group)
+                    groups.push_back(i);
+            const auto position = groups.at(random() % groups.size());
+            const auto id = index.at(position).value->at("id").get<std::string>();
+            if (!folded.erase(id))
+                folded.insert(id);
+            static_cast<void>(index.toggle(position));
+        } else {
+            const auto group = "g" + std::to_string(random() % 100);
+            const auto nested = group + "/n" + std::to_string(random() % 4);
+            const auto target = nested + "/中🙂";
+            auto prepared = index.revealing(target);
+            REQUIRE(prepared);
+            CHECK(index.collapsed() == old_folds);
+            folded.erase(group);
+            folded.erase(nested);
+            index = std::move(*prepared);
+            REQUIRE(index.position(target));
+        }
+        CHECK(index.collapsed() == folded);
+        std::vector<std::string> expected;
+        std::optional<std::size_t> hidden_depth;
+        for (const auto& row : rows) {
+            const auto depth = row.value("depth", std::size_t{});
+            if (hidden_depth && depth > *hidden_depth)
+                continue;
+            hidden_depth.reset();
+            const auto id = row.at("id").get<std::string>();
+            expected.push_back(id);
+            if (folded.contains(id))
+                hidden_depth = depth;
+        }
+        REQUIRE(index.size() == expected.size());
+        for (std::size_t i = 0; i < expected.size(); ++i)
+            CHECK(index.at(i).value->at("id") == expected.at(i));
+        CHECK(old.validate());
+        std::size_t retained_position{};
+        old.for_each_range(0, old.size(), [&](const auto& row) {
+            CHECK(row.value->at("id") == old_ids.at(retained_position++));
+        });
+        CHECK(index.snapshot().validate());
+    }
+    const auto before = index.snapshot();
+    const auto before_folds = index.collapsed();
+    CHECK_FALSE(index.revealing("absent"));
+    CHECK(index.collapsed() == before_folds);
+    CHECK(index.size() == before.size());
+}
+
+TEST_CASE("presentation reveal supports maximum depth and retains target and sibling folds") {
+    using Json = astra::protocol::Json;
+    Json rows = Json::array();
+    std::set<std::string> folded{"leaf", "unrelated"};
+    for (std::size_t depth = 0; depth < 64; ++depth) {
+        const auto name = "g" + std::to_string(depth);
+        rows.push_back({{"id", name}, {"label", name}, {"depth", depth}, {"group", true}});
+        folded.insert(name);
+    }
+    rows.push_back({{"id", "leaf"}, {"label", "Leaf"}, {"depth", 64}, {"group", true}});
+    rows.push_back({{"id", "unrelated"}, {"label", "Other"}, {"group", true}});
+    rows.push_back({{"id", "unrelated/leaf"}, {"label", "Other leaf"}, {"depth", 1}});
+    astra::ui::ViewBuilder builder;
+    builder.append(rows);
+    astra::ui::ViewIndex index(std::move(builder).finish(), folded);
+    while (!index.ready())
+        static_cast<void>(index.filter_step(1));
+    REQUIRE(index.size() == 2);
+    auto prepared = index.revealing("leaf");
+    REQUIRE(prepared);
+    REQUIRE(prepared->size() == 66);
+    CHECK(prepared->position("leaf") == 64);
+    CHECK(prepared->collapsed() == std::set<std::string>{"leaf", "unrelated"});
+    CHECK(index.collapsed() == folded);
+    CHECK(index.size() == 2);
+    CHECK_FALSE(prepared->position("unrelated/leaf"));
+    CHECK(prepared->snapshot().validate());
+}
+
+TEST_CASE("presentation reveal invalidates a refresh projection without losing its cursor") {
+    using Json = astra::protocol::Json;
+    astra::ui::ViewStore store;
+    const Json spec{{"id", "reveal"}, {"title", "Reveal"}};
+    const auto fill = [&](const std::string& version) {
+        for (int group = 0; group < 200; ++group) {
+            const auto name = "g" + std::to_string(group);
+            REQUIRE(store.append(
+                "reveal",
+                version,
+                Json::array({{{"id", name}, {"label", name}, {"group", true}},
+                             {{"id", name + "/leaf"}, {"label", "Leaf"}, {"depth", 1}}})));
+        }
+    };
+    const auto first = store.begin(spec);
+    fill(first);
+    auto initial = store.commit("reveal", first, "", "Empty");
+    store.poll();
+    REQUIRE(initial.get().get<bool>());
+    store.toggle("reveal", 0);
+    const auto next = store.begin(spec);
+    fill(next);
+    auto completion = store.commit("reveal", next, "", "Empty");
+    store.poll();
+    REQUIRE(completion.wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
+    REQUIRE(store.reveal("reveal", "g0/leaf", 3));
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!store.idle()) {
+        REQUIRE(std::chrono::steady_clock::now() < until);
+        store.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(completion.get().get<bool>());
+    CHECK(store.at("reveal").version == next);
+    CHECK_FALSE(store.at("reveal").index.collapsed("g0"));
+    CHECK(store.state("reveal").at("row").at("id") == "g0/leaf");
+    CHECK(store.at("reveal").index.size() == 400);
+}
+
+TEST_CASE("presentation reveal is atomic under retirement backpressure and refresh") {
+    using Json = astra::protocol::Json;
+    astra::ui::ViewStore store(2);
+    const Json spec{{"id", "reveal"}, {"title", "Reveal"}};
+    const auto fill = [&](const std::string& version) {
+        for (int group = 0; group < 200; ++group) {
+            const auto name = "g" + std::to_string(group);
+            REQUIRE(store.append(
+                "reveal",
+                version,
+                Json::array({{{"id", name}, {"label", name}, {"group", true}},
+                             {{"id", name + "/leaf"}, {"label", "Leaf"}, {"depth", 1}}})));
+        }
+    };
+    const auto first = store.begin(spec);
+    fill(first);
+    auto initial = store.commit("reveal", first, "", "Empty");
+    store.poll();
+    REQUIRE(initial.get().get<bool>());
+    store.toggle("reveal", 0);
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!store.quiescent()) {
+        REQUIRE(std::chrono::steady_clock::now() < until);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const auto retained = store.at("reveal").index.snapshot();
+    const auto refresh = store.begin(spec);
+    fill(refresh);
+    auto completion = store.commit("reveal", refresh, "", "Empty");
+    store.poll();
+    REQUIRE(completion.wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
+    const auto state = store.state("reveal");
+    const auto generation = store.at("reveal").fold_generation;
+    CHECK_THROWS(static_cast<void>(store.reveal("reveal", "g0/leaf", 3)));
+    CHECK_THROWS(static_cast<void>(store.reveal("reveal", "g0/leaf", 0)));
+    CHECK_FALSE(store.reveal("reveal", "missing", 3));
+    CHECK(store.state("reveal") == state);
+    CHECK(store.at("reveal").fold_generation == generation);
+    REQUIRE(store.abort("reveal", refresh));
+    CHECK_FALSE(completion.get().get<bool>());
+    while (!store.quiescent()) {
+        REQUIRE(std::chrono::steady_clock::now() < until);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(store.reveal("reveal", "g0/leaf", 3));
+    CHECK(store.state("reveal").at("row").at("id") == "g0/leaf");
+    CHECK_FALSE(store.at("reveal").index.collapsed("g0"));
+    CHECK(store.at("reveal").fold_generation == generation + 1);
+    CHECK(retained.size() == 399);
+    CHECK(retained.at(1).value->at("id") == "g1");
+    CHECK(store.reveal("reveal", "g199/leaf", 3));
+    CHECK(store.state("reveal").at("scroll") == 397);
 }
 
 TEST_CASE("presentation inline inputs preserve graphemes history and result generations") {

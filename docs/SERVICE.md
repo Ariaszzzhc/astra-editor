@@ -647,11 +647,36 @@ require a read/select round trip. Actions are `next`, `previous`, `first`, `last
 Optional `{version, focus}` guards come from a read/focus result. A stale guard
 returns null without changing the view. Selecting a missing or hidden row also
 returns null. Invalid actions reject.
+`await astra.ui.views.reveal(id, rowId, guards?, options?)` also accepts hidden
+rows: it expands only their ancestors, selects the target and scrolls it into
+the viewport. Unrelated folders and the target's own fold remain unchanged.
+It does not show the sidebar, switch views or change keyboard focus. Missing
+rows and stale guards return null; retirement backpressure rejects before any
+fold, cursor or scroll changes. Old projections are reclaimed off the input loop.
+Reveal accepts `{version, focus, activity}` guards. `activity` comes from
+`await astra.ui.read({immediate:true})`; it changes on active-document switches,
+active path changes and closing the active document, including A-to-B-to-A.
+The coalesced `ui.document.activated` event carries the latest `{activity}`.
+`ui.read({immediate:true, preferences:['explorer']})` additionally reads merged
+preference sections (at most 16 names, each at most 128 bytes); absent sections
+are null. Explicit client JS settings override retained service preferences.
+The bundled Explorer uses `explorer.autoReveal` (default true) after activation
+and successful refresh. `ui.revealActiveFile` explicitly shows/focuses Explorer
+and reveals the current path even when automatic reveal is disabled.
+Retained selections remain visible after focus leaves the view: JS theme role
+`inactiveSelection` supplies their background, while `selection` supplies the
+focused background. The focus accent remains exclusive to the focused cursor.
 Left collapses an expanded group or selects its parent; Right expands a group or
 enters its first child. Activate toggles groups and awaits the JS leaf handler.
 Toggle changes groups only. Page navigation uses the visible viewport, and cursor
 changes reveal the row. Refreshes retain cursor identity across reordering; hidden
 cursors move to a visible ancestor and removed cursors to the nearest old index.
+An optional `handlers.published({id, version}, options)` runs after successful
+native publication and guarded completion metadata. It may return a Promise;
+obsolete/cancelled publications do not invoke it. Any further native action
+should retain the supplied version guard because another refresh can run while
+the handler awaits. Handler failure rejects the refresh while preserving its
+already-published source.
 
 SDL row navigation dispatches overridable `ui.view.<action>` JS commands, with
 captured view/version/focus guards, through a bounded FIFO per view. The limits

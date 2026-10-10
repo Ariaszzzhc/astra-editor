@@ -77,6 +77,7 @@ WorkbenchStyle WorkbenchStyle::compile(const Json& settings) {
         {"activeTab", &Colors::active_tab},
         {"border", &Colors::border},
         {"selection", &Colors::selection},
+        {"inactiveSelection", &Colors::inactive_selection},
         {"accent", &Colors::accent},
         {"status", &Colors::status},
         {"muted", &Colors::muted},

@@ -263,6 +263,8 @@ struct EditorWindow::Impl {
     std::string active_view{"explorer"};
     std::optional<std::string> focused_view;
     std::uint64_t view_focus_sequence{};
+    std::uint64_t document_activity{};
+    bool pending_document_activity{};
     std::string focused_view_version;
     std::map<std::string, std::string> workspace_notices;
     std::string watch_error;
@@ -545,6 +547,8 @@ struct EditorWindow::Impl {
         }
         if (metadata.contains("path")) {
             const auto path = metadata["path"].get<std::string>();
+            if (path != document.path && active_id == id)
+                change_document_activity();
             if (path != document.path && !path.empty()) {
                 document.language_active = true;
                 document.diagnostics_after = {};
@@ -575,8 +579,10 @@ struct EditorWindow::Impl {
         if (!documents.contains(id)) {
             return;
         }
-        if (active_id != id)
+        if (active_id != id) {
+            change_document_activity();
             static_cast<void>(close_inline_form());
+        }
         active_id = id;
         tab_bar.reveal();
         documents.at(id).needs_lines = true;
@@ -585,6 +591,8 @@ struct EditorWindow::Impl {
     }
 
     void remove_document(const std::string& id) {
+        if (active_id == id)
+            change_document_activity();
         tabs.erase(id);
         documents.erase(id);
         workspace_notices.erase(id);
@@ -597,6 +605,13 @@ struct EditorWindow::Impl {
 
     void new_document() {
         execute_policy("ui.new");
+    }
+
+    void change_document_activity() {
+        if (document_activity == std::numeric_limits<std::uint64_t>::max())
+            throw protocol::RpcError(-32004, "Document activity identity exhausted");
+        ++document_activity;
+        pending_document_activity = true;
     }
 
     void start_operation(std::string method,
@@ -1557,8 +1572,9 @@ bool EditorWindow::Impl::native_idle(bool waiting_inputs) const {
     }
     return requests.empty() && !active_request && operations.empty() && pending_edits.empty() &&
            pending_reads.empty() && closing_pending.empty() && form_events.empty() &&
-           sidebar_views.quiescent() && inputs_idle && layout_jobs->idle() && !input_point &&
-           input_events.size() == 0 && pending_styles.empty() && !document_composition.pending();
+           !pending_document_activity && sidebar_views.quiescent() && inputs_idle &&
+           layout_jobs->idle() && !input_point && input_events.size() == 0 &&
+           pending_styles.empty() && !document_composition.pending();
 }
 
 void EditorWindow::Impl::emit_form(std::string_view event,
@@ -2404,10 +2420,13 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         result["focus"] = std::to_string(view_focus_sequence);
         return result;
     }
-    if (method == "_ui.view.read" || method == "_ui.view.navigate" || method == "_ui.view.select") {
+    if (method == "_ui.view.read" || method == "_ui.view.navigate" || method == "_ui.view.select" ||
+        method == "_ui.view.reveal") {
         const auto id = params.value("id", active_view);
         const auto& view = sidebar_views.at(id);
-        if ((params.contains("version") && params.at("version") != view.version) ||
+        if ((params.contains("activity") &&
+             params.at("activity") != std::to_string(document_activity)) ||
+            (params.contains("version") && params.at("version") != view.version) ||
             (params.contains("focus") &&
              (!focused_view || *focused_view != id ||
               params.at("focus") != std::to_string(view_focus_sequence))))
@@ -2417,6 +2436,9 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         if (method == "_ui.view.select" &&
             !sidebar_views.select(id, params.at("row").get<std::string>(), view_page()))
             return nullptr;
+        if (method == "_ui.view.reveal" &&
+            !sidebar_views.reveal(id, params.at("row").get<std::string>(), view_page()))
+            return nullptr;
         auto result = sidebar_views.state(id);
         result["focused"] = focused_view == id;
         result["focus"] = std::to_string(view_focus_sequence);
@@ -2424,10 +2446,23 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
     }
     if (method == "_ui.read") {
         Json result{{"sidebarVisible", show_sidebar},
+                    {"activity", std::to_string(document_activity)},
                     {"sidebar", active_view},
                     {"outlineVisible", show_outline},
                     {"tabs", tabs.ids()}};
         result["fileIcons"] = file_icons.state();
+        if (params.contains("preferences")) {
+            const auto& sections = params.at("preferences");
+            if (!sections.is_array() || sections.size() > 16)
+                throw protocol::RpcError(-32602, "Preference read accepts at most 16 sections");
+            result["preferences"] = Json::object();
+            for (const auto& section : sections) {
+                if (!section.is_string() || section.get_ref<const std::string&>().size() > 128)
+                    throw protocol::RpcError(-32602, "Invalid preference section");
+                const auto name = section.get<std::string>();
+                result["preferences"][name] = settings.value(name, Json(nullptr));
+            }
+        }
         result["tabLayout"] = {{"count", tabs.size()},
                                {"pending", tabs.pending()},
                                {"measurements", tabs.measurements()},
@@ -4670,15 +4705,16 @@ void EditorWindow::Impl::draw() {
             const auto y = geometry.sidebar_rows.y +
                            static_cast<float>(index - view.scroll) * geometry.sidebar_row_height;
             const auto x = sx + (8 + 12 * static_cast<float>(row.depth)) * scale;
-            const bool focused_row =
-                focused_view == active_view && view.cursor == item.at("id").get<std::string>();
-            if (item.value("selected", false) || focused_row)
+            const bool selected_row = view.cursor == item.at("id").get<std::string>();
+            const bool focused_row = focused_view == active_view && selected_row;
+            if (item.value("selected", false) || selected_row)
                 rectangle(canvas,
                           sx,
                           y,
                           geometry.sidebar.width,
                           geometry.sidebar_row_height,
-                          ui_style.colors.selection);
+                          focused_view == active_view ? ui_style.colors.selection
+                                                      : ui_style.colors.inactive_selection);
             else if (geometry.sidebar_rows.contains(mouse_x, mouse_y) && mouse_y >= y &&
                      mouse_y < y + geometry.sidebar_row_height)
                 rectangle(canvas,
@@ -5486,6 +5522,11 @@ bool EditorWindow::pump() {
             }
         }
         const auto form_deadline = Clock::now() + std::chrono::milliseconds(4);
+        if (impl_->pending_document_activity) {
+            impl_->pending_document_activity = false;
+            impl_->workbench->emit("ui.document.activated",
+                                   {{"activity", std::to_string(impl_->document_activity)}});
+        }
         for (int count = 0;
              count < 8 && !impl_->form_events.empty() && Clock::now() < form_deadline;
              ++count) {
