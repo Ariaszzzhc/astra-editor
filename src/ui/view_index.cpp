@@ -24,14 +24,15 @@ ViewRow parse(const Json& value, std::size_t ordinal) {
     for (const auto& [key, unused] : value.items()) {
         static_cast<void>(unused);
         if (key != "id" && key != "label" && key != "description" && key != "badge" &&
-            key != "icon" && key != "tone" && key != "depth" && key != "group" &&
-            key != "selected" && key != "data")
+            key != "icon" && key != "iconPath" && key != "tone" && key != "depth" &&
+            key != "group" && key != "selected" && key != "data")
             throw protocol::RpcError(-32602, "Unknown view row field");
     }
     if (field(value, "id", 4096).empty() || field(value, "label", 4096).empty())
         throw protocol::RpcError(-32602, "View row identity and label required");
     static_cast<void>(field(value, "description", 1024));
     static_cast<void>(field(value, "badge", 64));
+    static_cast<void>(field(value, "iconPath", 4096));
     const auto icon = field(value, "icon", 32), tone = field(value, "tone", 32);
     if (!icon.empty() && icon != "files" && icon != "search" && icon != "branch" &&
         icon != "folder" && icon != "document" && icon != "code" && icon != "braces" &&

@@ -84,19 +84,12 @@ export function registerFiles() {
                         issues = Math.max(issues, page.issues?.length ?? 0);
                         for (const entry of page.entries) {
                             const path = entry.path.replaceAll('\\', '/');
-                            const extension = path.slice(path.lastIndexOf('.'));
                             yield {
                                 id: path,
                                 label: path.slice(path.lastIndexOf('/') + 1),
                                 depth: path.split('/').length - 1,
                                 group: entry.directory,
-                                icon: entry.directory
-                                    ? 'folder'
-                                    : ['.cpp', '.hpp', '.h', '.c'].includes(extension)
-                                      ? 'code'
-                                      : ['.js', '.ts', '.json'].includes(extension)
-                                        ? 'braces'
-                                        : 'document',
+                                iconPath: path,
                                 data: { path: entry.path }
                             };
                         }

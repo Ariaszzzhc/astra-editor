@@ -1,8 +1,10 @@
+import { fileIcons } from 'astra/icons';
 const request = (method, params = {}, options) => astra.request(method, params, options);
 export const ui = {
     read: (parameters = {}, options) => read(parameters, options),
     update: (model) => request('_ui.update', model),
     selectObject,
+    icons: fileIcons,
     style: {
         read: (options) => request('_ui.style.read', {}, options),
         update: (patch, options) => updateStyle(patch, options)

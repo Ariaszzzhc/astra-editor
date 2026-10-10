@@ -49,6 +49,7 @@ std::map<std::string, std::string> modules() {
     result["astra/defaults"] = astra::io::read_file("data/defaults.js").text;
     for (const auto& [name, file] :
          std::map<std::string, std::string>{{"astra/ui", "api.js"},
+                                            {"astra/icons", "icons.js"},
                                             {"astra/files", "files.js"},
                                             {"astra/git", "git.js"},
                                             {"astra/search", "search.js"},
@@ -2132,6 +2133,229 @@ TEST_CASE("workbench copy obtains revision checked line bounds when the native v
         CHECK(channel->requests.empty());
         CHECK(workbench.idle());
     }
+}
+
+TEST_CASE("workbench file icons use JS associations and async theme updates") {
+    auto channel = std::make_shared<Channel>();
+    Json theme;
+    unsigned generation = 1, writes = 0;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.icons.read") {
+                return ready({{"theme", theme}, {"generation", std::to_string(generation)}});
+            }
+            if (method == "_ui.icons.update") {
+                ++writes;
+                if (params.at("generation") != std::to_string(generation)) {
+                    throw astra::protocol::RpcError(-32001, "Stale icon theme");
+                }
+                theme = params.at("theme");
+                return ready({{"theme", theme}, {"generation", std::to_string(++generation)}});
+            }
+            return ready(nullptr);
+        },
+        modules(),
+        R"js(
+            let savedIcons;
+            astra.registerCommand('test.icons', async () => {
+                const resolving = astra.ui.icons.resolve([
+                    {path: 'src\\MAIN.CPP', directory: false},
+                    {path: 'package.json', directory: false},
+                    {path: '.git', directory: true},
+                    {path: 'thing.unknown', directory: false},
+                    {path: '中🙂.ts', directory: false}
+                ]);
+                if (typeof resolving.then !== 'function') throw new Error('API is not async');
+                return await resolving;
+            });
+            astra.registerCommand('test.icons.custom', async () => {
+                savedIcons = await astra.ui.icons.read();
+                await astra.ui.icons.update({extensions: {
+                    '.d.ts': {glyph: 'symbol', tone: '#123456'},
+                    '.cpp': {glyph: 'warning', tone: 'error'}
+                }});
+                return await astra.ui.icons.resolve([
+                    {path: 'source.D.TS', directory: false},
+                    {path: 'a.cpp', directory: false}
+                ]);
+            });
+            astra.registerCommand('test.icons.invalid', async () => {
+                const before = await astra.ui.icons.read();
+                for (const patch of [
+                    {extensions: {'.bad': {glyph: 'missing', tone: 'muted'}}},
+                    {extensions: {'.bad': {glyph: 'code', tone: 'missing'}}},
+                    {filenames: {'../escape': {glyph: 'code', tone: 'muted'}}},
+                    {extensions: {'.CPP': {glyph: 'code', tone: 'muted'}}},
+                    {folder: null},
+                    {unexpected: true},
+                    {fallback: undefined},
+                    {fallback: new Date()},
+                    {fallback: {tone: () => 'error'}},
+                    JSON.parse('{"__proto__":{"polluted":true}}')
+                ]) {
+                    let rejected = false;
+                    try { await astra.ui.icons.update(patch); }
+                    catch (_) { rejected = true; }
+                    if (!rejected) throw new Error('Invalid theme accepted');
+                }
+                if (JSON.stringify(before) !== JSON.stringify(await astra.ui.icons.read())) {
+                    throw new Error('Invalid patch changed theme');
+                }
+                return true;
+            });
+            astra.registerCommand('test.icons.delete', async () => {
+                await astra.ui.icons.update({extensions: {'.cpp': null}});
+                return await astra.ui.icons.resolve([{path: 'a.cpp', directory: false}]);
+            });
+            astra.registerCommand('test.icons.long', async () => {
+                const paths = [
+                    {path: 'a'.repeat(32764) + '.cpp', directory: false},
+                    {path: '中'.repeat(10920) + '.cpp', directory: false},
+                    {path: '.'.repeat(32764) + '.cpp', directory: false}
+                ];
+                const result = await astra.ui.icons.resolve(paths);
+                let rejected = false;
+                try {
+                    await astra.ui.icons.resolve([
+                        {path: '中'.repeat(10923), directory: false}
+                    ]);
+                } catch (_) { rejected = true; }
+                if (!rejected) throw new Error('Oversized UTF-8 path accepted');
+                return result.items.map(item => item.icon.glyph);
+            });
+            astra.registerCommand('test.icons.restore', async () => {
+                await astra.ui.icons.replace(savedIcons.theme);
+                return await astra.ui.icons.resolve([
+                    {path: 'source.d.ts', directory: false},
+                    {path: 'source.cpp', directory: false}
+                ]);
+            });
+        )js");
+    theme = workbench.default_settings().at("fileIcons");
+    const auto run = [&](const char* command) {
+        std::optional<astra::script::Runtime::Outcome> outcome;
+        workbench.execute(command, Json::object(), [&](const auto& result) {
+            outcome = result;
+        });
+        for (int tick = 0; tick < 30 && !outcome; ++tick)
+            workbench.poll();
+        REQUIRE(outcome);
+        REQUIRE_FALSE(outcome->error);
+        return outcome->value;
+    };
+    const auto initial = run("test.icons");
+    CHECK(initial.at("items")[0].at("icon") == Json{{"glyph", "code"}, {"tone", "codeIcon"}});
+    CHECK(initial.at("items")[1].at("icon").at("tone") == "added");
+    CHECK(initial.at("items")[2].at("icon").at("glyph") == "branch");
+    CHECK(initial.at("items")[3].at("icon").at("glyph") == "document");
+    CHECK(initial.at("items")[4].at("icon").at("tone") == "codeIcon");
+    CHECK(run("test.icons.long") == Json::array({"code", "code", "code"}));
+    const auto custom = run("test.icons.custom");
+    CHECK(custom.at("generation") == "2");
+    CHECK(custom.at("items")[0].at("icon").at("glyph") == "symbol");
+    CHECK(custom.at("items")[1].at("icon").at("tone") == "error");
+    CHECK(run("test.icons.invalid") == true);
+    CHECK(writes == 1);
+    const auto deleted = run("test.icons.delete");
+    CHECK(deleted.at("items")[0].at("icon").at("glyph") == "document");
+    const auto restored = run("test.icons.restore");
+    CHECK(restored.at("items")[0].at("icon").at("glyph") == "braces");
+    CHECK(restored.at("items")[1].at("icon").at("glyph") == "code");
+    CHECK(channel->requests.empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench file icons capture input and reject racing updates") {
+    auto channel = std::make_shared<Channel>();
+    Json theme;
+    std::promise<Json> delayed;
+    unsigned reads = 0, writes = 0;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.icons.read") {
+                if (++reads == 1)
+                    return delayed.get_future();
+                return ready({{"theme", theme}, {"generation", "2"}});
+            }
+            if (method == "_ui.icons.update") {
+                ++writes;
+                CHECK(params.at("generation") == "1");
+                throw astra::protocol::RpcError(-32001, "Theme changed while awaiting update");
+            }
+            return ready(nullptr);
+        },
+        modules(),
+        R"js(
+            astra.registerCommand('test.icons.capture', async () => {
+                const paths = [{path: 'captured.cpp', directory: false}];
+                const reading = astra.ui.icons.resolve(paths);
+                paths[0].path = 'changed.json';
+                return await reading;
+            });
+            astra.registerCommand('test.icons.race', async () => {
+                try { await astra.ui.icons.update({fallback: {tone: 'error'}}); }
+                catch (error) { return error.code; }
+                throw new Error('Racing update accepted');
+            });
+            astra.registerCommand('test.icons.cancel', async () => {
+                const control = new AbortController();
+                const updating = astra.ui.icons.update({fallback: {tone: 'error'}}, {
+                    signal: control.signal
+                });
+                control.abort();
+                try { await updating; }
+                catch (error) { return error.name; }
+                throw new Error('Cancelled update accepted');
+            });
+        )js");
+    theme = workbench.default_settings().at("fileIcons");
+    SUBCASE("mutable paths are captured before read") {
+        std::optional<astra::script::Runtime::Outcome> outcome;
+        workbench.execute("test.icons.capture", Json::object(), [&](const auto& result) {
+            outcome = result;
+        });
+        workbench.poll();
+        CHECK_FALSE(outcome);
+        delayed.set_value({{"theme", theme}, {"generation", "1"}});
+        for (int tick = 0; tick < 20; ++tick)
+            workbench.poll();
+        REQUIRE(outcome);
+        REQUIRE_FALSE(outcome->error);
+        CHECK(outcome->value.at("items")[0].at("path") == "captured.cpp");
+        CHECK(outcome->value.at("items")[0].at("icon").at("glyph") == "code");
+    }
+    SUBCASE("concurrent theme publication rejects stale generation") {
+        std::optional<astra::script::Runtime::Outcome> outcome;
+        workbench.execute("test.icons.race", Json::object(), [&](const auto& result) {
+            outcome = result;
+        });
+        workbench.poll();
+        delayed.set_value({{"theme", theme}, {"generation", "1"}});
+        for (int tick = 0; tick < 20; ++tick)
+            workbench.poll();
+        REQUIRE(outcome);
+        REQUIRE_FALSE(outcome->error);
+        CHECK(outcome->value == -32001);
+        CHECK(writes == 1);
+    }
+    SUBCASE("cancelled theme read cannot publish a later update") {
+        std::optional<astra::script::Runtime::Outcome> outcome;
+        workbench.execute("test.icons.cancel", Json::object(), [&](const auto& result) {
+            outcome = result;
+        });
+        workbench.poll();
+        delayed.set_value({{"theme", theme}, {"generation", "1"}});
+        for (int tick = 0; tick < 20; ++tick)
+            workbench.poll();
+        REQUIRE(outcome);
+        REQUIRE_FALSE(outcome->error);
+        CHECK(outcome->value == "AbortError");
+        CHECK(writes == 0);
+    }
+    CHECK(channel->requests.empty());
+    CHECK(workbench.idle());
 }
 
 TEST_CASE("workbench paste captures document identity and normalizes CRLF") {

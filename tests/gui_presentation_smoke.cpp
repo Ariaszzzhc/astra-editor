@@ -1,6 +1,7 @@
 #include <astra/io/file_store.hpp>
 #include <astra/service/service_host.hpp>
 #include <astra/ui/editor_window.hpp>
+#include <astra/ui/icons.hpp>
 #include <astra/ui/text_layout.hpp>
 #include "support/temporary_directory.hpp"
 
@@ -171,6 +172,22 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
             astra.bind('Ctrl+Shift+Tab', 'ui.previousTab');
             astra.configure({workbench: {uiFontSize: 13}});
             let originalStyle;
+            let originalIcons;
+            astra.registerCommand('acceptance.icons.update', async () => {
+                originalIcons = await astra.ui.icons.read();
+                await astra.ui.icons.update({extensions: {
+                    '.cpp': {glyph: 'warning', tone: '#F3C96B'}
+                }});
+                const resolved = await astra.ui.icons.resolve([
+                    {path: 'one.cpp', directory: false}
+                ]);
+                if (resolved.items[0].icon.glyph !== 'warning') {
+                    throw new Error('Icon theme was not published');
+                }
+            });
+            astra.registerCommand('acceptance.icons.restore', async () => {
+                await astra.ui.icons.replace(originalIcons.theme);
+            });
             astra.registerCommand('acceptance.style.large', async () => {
                 originalStyle = await astra.ui.style.read();
                 const updated = await astra.ui.style.update({
@@ -520,6 +537,46 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         require(original.style.at("workbench").at("uiFontSize") == 13 &&
                     original.style.at("workbench").at("sidebarWidth") == 270,
                 "Service style preferences or explicit same-value client preference were lost");
+        window.execute_ui_command("acceptance.icons.update");
+        settle(window);
+        const auto custom_icons = window.view_state();
+        const auto classified = custom_icons.file_icons.at("resolutions").get<std::size_t>() -
+                                original.file_icons.at("resolutions").get<std::size_t>();
+        require(custom_icons.file_icons.at("generation") != original.file_icons.at("generation") &&
+                    classified > 0 && classified < 128 &&
+                    custom_icons.file_icons.at("pending") == 0 &&
+                    custom_icons.sidebar.at("version") == original.sidebar.at("version") &&
+                    custom_icons.document_viewport.at("shaped") ==
+                        original.document_viewport.at("shaped"),
+                "Icon theme update scanned the tree, rebuilt its source or reshaped the document");
+        window.request_screenshot("build/graphics/gui-file-icons-custom.png");
+        settle(window);
+        for (int repaint = 0; repaint < 8; ++repaint) {
+            require(window.pump(), "Window closed during warm icon repaint");
+        }
+        require(window.view_state().file_icons.at("resolutions") ==
+                    custom_icons.file_icons.at("resolutions"),
+                "Warm icon repaint reran JS association policy");
+        window.execute_ui_command("ui.explorer");
+        settle(window);
+        key(window, SDLK_END);
+        const auto end_icons = window.view_state();
+        bool found_cpp_icon{};
+        for (const auto& item : end_icons.file_icons.at("visibleRows")) {
+            if (item.at("path") == "one.cpp" || item.at("path") == "two_with_a_long_name.cpp") {
+                require(item.at("glyph") == static_cast<int>(astra::ui::Icon::warning) &&
+                            item.at("tone") == "#F3C96B",
+                        "Newly visible Explorer icons did not follow the JS theme");
+                found_cpp_icon = true;
+            }
+        }
+        require(found_cpp_icon, "Explorer did not draw the expected C++ file icons");
+        window.request_screenshot("build/graphics/gui-file-icons-explorer.png");
+        settle(window);
+        key(window, SDLK_HOME);
+        key(window, SDLK_ESCAPE);
+        window.execute_ui_command("acceptance.icons.restore");
+        settle(window);
         window.execute_ui_command("acceptance.captureBody");
         settle(window);
         const auto check_styled_input = [&](const char* command, float size, const char* capture) {

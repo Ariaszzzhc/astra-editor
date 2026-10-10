@@ -216,6 +216,57 @@ before an update publishes. Modal input may remain open. Cancellation removes
 unpublished updates; shutdown settles pending native futures without publication.
 The queue has a 30-second native deadline in addition to the request timeout.
 
+`astra.ui.icons.read(options)`, `resolve(paths, options)`, `update(patch, options)`
+and `replace(theme, options)` return Promises. They operate on this window's
+effective file icon theme, independently of document content and service state.
+Startup preferences use `astra.configure({fileIcons: {...}})`. A live icon update
+survives a later startup-service preference reply; it does not persist to disk.
+
+```javascript
+const previous = await astra.ui.icons.read();
+await astra.ui.icons.update({
+    extensions: { '.d.ts': { glyph: 'symbol', tone: '#75BEFF' } },
+    filenames: { 'package.json': { glyph: 'braces', tone: 'added' } }
+}, { signal, timeoutMs: 30000 });
+const icons = await astra.ui.icons.resolve([
+    { path: 'src/index.d.ts', directory: false },
+    { path: '.git', directory: true }
+]);
+await astra.ui.icons.replace(previous.theme);
+```
+
+Reads/updates return `{theme, generation}`; resolution returns
+`{generation, items: [{path, directory, icon: {glyph, tone}}]}`. Themes require
+`fallback`, `folder`, `filenames`, `extensions` and `directories`. Filename and
+directory-name matches ignore case. Exact filename rules take precedence over
+the longest matching compound extension; directories use their own name table.
+Partial updates use JSON merge-patch semantics: `null` removes an association.
+`replace` restores the complete captured theme, including removal of subsequently
+added rules. Concurrent stale updates reject with `-32001` before publication.
+Invalid candidates reject before changing the theme. Cancelling an outstanding
+read prevents later publication; cancellation cannot undo an accepted update.
+
+Drawing glyphs are `files`, `search`, `branch`, `settings`, `folder`, `document`,
+`code`, `braces`, `symbol`, `function`, `refresh` and `warning`. Tones are
+`muted`, `foreground`, `folder`, `codeIcon`, `scriptIcon`, `accent`, `added`,
+`changed`, `error`, `warning`, or a literal `#RRGGBB`. Palette role colors follow
+the current UI theme without rerunning filename associations. Association tables
+admit at most 256 entries each; keys admit 128 UTF-8 bytes. Resolution admits
+256 paths, at most 32 KiB UTF-8 per path and 256 KiB in total. Long-path validation
+yields after bounded chunks and checks cancellation. Themes/patches admit at most
+65,536 serialized JavaScript string units; the native copy is capped at 256 KiB.
+
+Visible tabs and Explorer rows share a native descriptor cache. It admits 2,048
+entries and 4 MiB of accounted identity bytes (map/list/queue storage adds bounded
+overhead), queues at most 256 identities and runs one batch of at most 32 paths /
+64 KiB. C++ translates glyph/color values and draws; JS alone owns associations.
+Changing icon themes preserves previous descriptors while refreshing visible
+paths, discards obsolete replies, and does not rescan the filesystem or invalidate
+document paragraphs. Failed batches preserve old descriptors, report the error
+and suppress repaint retries until the theme generation changes. Custom view rows
+can opt into the same policy with `iconPath` and `group` (directory); ordinary
+`icon` rows retain their existing explicit glyph semantics.
+
 `astra.ui.selectObject(kind, parameters = {}, options = {})` is an asynchronous
 client workflow. Kinds are `function`, `class`, `comment`, `string`, `block`,
 `parameter` and `heading`; parameters accept `id`, `baseRevision`, `inner` and

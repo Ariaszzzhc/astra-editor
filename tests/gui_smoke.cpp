@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -179,7 +180,34 @@ class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
             held_find->reply.set_value(held_find->future->get());
             held_find.reset();
         }
-        return channel_->take_notifications();
+        if (defer_notifications_) {
+            defer_notifications_ = false;
+            ++notification_deferrals;
+            return {};
+        }
+        auto notifications = channel_->take_notifications();
+        for (const auto& body : notifications) {
+            const auto event = Json::parse(body);
+            const auto method = event.value("method", std::string{});
+            if (method == "document.changed" || method == "document.created") {
+                const auto& metadata = event.at("params");
+                observed_[metadata.at("id").get<std::string>()] = metadata;
+            } else if (method == "document.closed") {
+                observed_.erase(event.at("params").at("id").get<std::string>());
+            }
+        }
+        return notifications;
+    }
+
+    bool observed_selection(const Json& expected) const {
+        const auto found = observed_.find(expected.at("id").get<std::string>());
+        return found != observed_.end() &&
+               found->second.at("revision") == expected.at("revision") &&
+               found->second.at("selections") == expected.at("selections");
+    }
+
+    void defer_notifications_once() {
+        defer_notifications_ = true;
     }
 
     void release_find() {
@@ -190,6 +218,7 @@ class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
     bool changed{};
     bool hold_next_find{};
     unsigned find_requests{}, preview_requests{}, replace_requests{}, text_downloads{};
+    unsigned notification_deferrals{};
 
   private:
     struct HeldFind {
@@ -199,6 +228,8 @@ class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
     };
 
     std::optional<HeldFind> held_find;
+    std::map<std::string, Json> observed_;
+    bool defer_notifications_{};
     std::shared_ptr<astra::ui::EditorChannel> channel_;
     std::shared_ptr<astra::service::ServiceHost> host_;
 };
@@ -969,6 +1000,7 @@ int main(int argc, char* argv[]) {
         for (unsigned i = 0; i < 4; ++i) {
             key(window, SDLK_DOWN);
         }
+        std::cerr << "GUI syntax objects: selecting function\n";
         window.execute_ui_command("ui.selectFunction");
         settle(window);
         const auto selected_function =
@@ -979,13 +1011,25 @@ int main(int argc, char* argv[]) {
         const auto before_objects = read_document(host, object_id);
         const auto object_source = before_objects.at("text").get<std::string>();
         const auto select_object_at = [&](const char* command, std::size_t offset) {
-            static_cast<void>(
+            const auto deferred_before = concurrent->notification_deferrals;
+            concurrent->defer_notifications_once();
+            const auto positioned =
                 call(host,
                      "document.setSelections",
                      {{"id", object_id},
                       {"baseRevision", before_objects.at("revision")},
-                      {"selections", Json::array({{{"anchor", offset}, {"head", offset}}})}}));
-            settle(window);
+                      {"selections", Json::array({{{"anchor", offset}, {"head", offset}}})}});
+            // This mutation uses another client. Native idle cannot prove that
+            // its TCP notification has arrived at the GUI connection.
+            pump_until(
+                window,
+                [&] {
+                    return concurrent->observed_selection(positioned) && window.idle();
+                },
+                std::string("GUI did not observe external selection before ") + command);
+            require(concurrent->notification_deferrals == deferred_before + 1,
+                    "External selection test did not exercise delayed notification delivery");
+            std::cerr << "GUI syntax objects: observed external selection for " << command << '\n';
             window.execute_ui_command(command);
             settle(window);
             const auto selected = read_document(host, object_id);

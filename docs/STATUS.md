@@ -2,7 +2,7 @@
 
 Product contract: `EditorDoc.md`. Product name: Astra (confirmed by the user).
 
-## Working-tree formatting check (2026-10-10)
+## Historical draft-only formatting check (2026-10-10)
 
 The new, uncommitted `layout_jobs.hpp` and `layout_jobs.cpp` drafts contained
 compressed control flow before formatting. Ran `./scripts/format.ps1 -Offline`,
@@ -17,6 +17,87 @@ The previous Windows acceptance below covers the earlier implementation. It does
 not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
+The entries below record tested increments. Newer entries at the top supersede
+older remaining-work lists without replacing their acceptance or failure evidence.
+
+### JS file icon policy and bounded descriptors (2026-10-10)
+
+Shipped `fileIcons` preferences now own filename, longest compound-extension and
+directory-name associations in JS. Visible tabs and Explorer rows share the same
+resolver; duplicate C++/Explorer extension tables were removed. C++ translates
+validated glyph/color descriptors into drawing primitives. Palette roles use the
+current UI colors without rerunning associations. Custom view rows can request
+file policy with `iconPath` and their directory `group` flag.
+
+Async `astra.ui.icons.read/resolve/update/replace` expose effective theme snapshots,
+bounded resolution, merge patches and complete replacement. Invalid candidates
+and stale concurrent generations reject before publication. Paths and patches are
+captured before awaiting; cancellation of a read prevents a later update. Complete
+replacement also removes rules introduced after the saved snapshot. Live overrides
+survive a later service-startup preference reply and do not persist to disk.
+
+The native LRU holds at most 2,048 descriptors and 4 MiB of accounted identity bytes;
+map/list/queue storage adds bounded overhead. At most 256 identities wait for one
+active batch, capped at 32 paths / 64 KiB. Theme changes retain old drawing data,
+refresh visible paths lazily, and discard obsolete replies without filesystem
+rescanning or document paragraph invalidation. Malformed replies publish no new
+descriptors. Failed batches report errors and suppress repaint retries until the
+generation changes. Long-path validation processes small chunks and yields after
+4,096 JavaScript string units, retaining the existing 8 ms execution budget.
+
+Windows evidence:
+
+- First build failed on a missing namespace closing brace in `file_icons.cpp`;
+  corrected. Log: `build/file-icons-build-debug.log`. A following rebuild ended
+  with unexplained xmake exit `-1073741816`; its log contains no further native
+  diagnostic (`build/file-icons-build-debug-fixed.log`). Retrying with `-j 2`
+  exposed `[[nodiscard]]` warnings in the new failure fixture; corrected explicit
+  discarded values. Log: `build/file-icons-build-debug-retry.log`.
+- The first long-path focused run hit `InternalError: interrupted` in synchronous
+  UTF-8 validation. Log: `build/file-icons-final-unit-debug.log`. Bounded chunk
+  validation and yielding fixed valid long ASCII/CJK paths and an adversarial
+  dotted name; oversized UTF-8 paths still reject. The execution budget was not
+  increased.
+- `./scripts/xmake.ps1 build -y -j 2 astra-tests gui-presentation-smoke astra`
+  passed in Debug (`build/file-icons-final-build-debug.log`). Final focused
+  `astra-tests.exe --no-version '--test-case=presentation file icons*,workbench file icons*'`
+  passed 5 cases / 30,282 assertions; 577 unrelated cases were filtered out.
+  Log: `build/file-icons-final-unit-debug-async.log`. Coverage includes warm reuse,
+  stale generations, atomic malformed-reply preservation, eviction/admission,
+  count/byte batch limits, actual JS defaults, case/compound precedence, Unicode,
+  invalid/colliding rules, captured inputs, racing updates, cancellation, deletion
+  and full-theme restoration.
+- First `./scripts/test.ps1 -Mode all -Gui` passed both 582-case unit suites and
+  native workbench checks but failed Release TCP syntax selection. The fixture
+  changed selections through another client and treated local GUI idle as proof
+  that its notification had arrived. Log: `build/file-icons-acceptance-all.log`.
+  The fixture now waits for the actual GUI connection's matching revision and
+  selections, and deliberately defers one notification poll per external change.
+  The service's stale-selection rejection remains unchanged. Release rebuild and
+  `gui-smoke.exe --tcp` passed: `build/file-icons-tcp-fixture-build-release.log`
+  and `build/file-icons-tcp-fixture-release.log`. This does not establish a general
+  solution to every same-text-revision metadata reordering scenario.
+- Final `./scripts/test.ps1 -Mode all -Gui` completed with exit code 0, with
+  unchanged code/resources while running. Debug: 582 cases / 1,617,057 assertions;
+  Release: 582 cases / 1,616,763 assertions. Zero failed/skipped in both modes.
+  Renderer/font/viewport/input checks, all editing/service/recovery/workspace/
+  presentation GUI workflows, TCP editing and 12 package-helper invariants passed.
+  Log: `build/file-icons-acceptance-all-final.log`.
+- Real GUI checks verify deferred visible icon resolution, zero additional warm
+  resolutions, unchanged Explorer source version and document shape count, then
+  scroll to previously hidden C++ rows and verify their new descriptors. Actual
+  GPU captures `build/graphics/gui-file-icons-custom.png` and
+  `build/graphics/gui-file-icons-explorer.png` were inspected: the tab and file
+  rows draw the same custom glyph/color. These are icon component checks, not
+  whole-product visual acceptance. The 640-tab pressure checks also passed.
+- After acceptance exited, `./scripts/xmake.ps1 f -m debug -y` restored Debug;
+  log: `build/file-icons-restore-debug.log`. Final
+  `./scripts/format.ps1 -Check -Offline` passed 157 C++ / 13 JS files and
+  `git diff --check` passed; log: `build/file-icons-final-check.log`.
+
+Further component extraction, document IME preparation, row-internal incremental
+glyph layout, whole-product visual acceptance and a new distribution remain
+incomplete. No new package or non-Windows validation is claimed.
 
 ### Persistent measured tabs and JS exit batching (2026-10-10)
 

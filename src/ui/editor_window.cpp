@@ -6,6 +6,7 @@
 #include "astra/ui/workbench_style.hpp"
 #include "astra/ui/view_store.hpp"
 #include "astra/ui/icons.hpp"
+#include "astra/ui/file_icons.hpp"
 #include "astra/ui/text_line_index.hpp"
 #include "astra/ui/text_panel.hpp"
 #include "astra/ui/text_surface.hpp"
@@ -254,6 +255,8 @@ struct EditorWindow::Impl {
     Json settings = Json::object();
     Json editor_settings = Json::object();
     WorkbenchStyle ui_style;
+    FileIcons file_icons;
+    bool file_icons_override{};
     ViewStore sidebar_views;
     std::string active_view{"explorer"};
     std::optional<std::string> focused_view;
@@ -367,6 +370,7 @@ struct EditorWindow::Impl {
             io::read_file(options.resource_directory / "data" / "defaults.js", 1024 * 1024).text);
         for (const auto& [name, file] :
              std::map<std::string, std::string>{{"astra/ui", "api.js"},
+                                                {"astra/icons", "icons.js"},
                                                 {"astra/files", "files.js"},
                                                 {"astra/git", "git.js"},
                                                 {"astra/search", "search.js"},
@@ -2057,6 +2061,9 @@ void EditorWindow::Impl::finish_styles() {
 }
 
 void EditorWindow::Impl::apply_settings(Json candidate) {
+    if (file_icons_override) {
+        candidate["fileIcons"] = settings.at("fileIcons");
+    }
     auto prepared = WorkbenchStyle::compile(candidate);
     auto editor = candidate.at("editor");
     const auto font_size = editor.at("fontSize").get<float>();
@@ -2068,6 +2075,9 @@ void EditorWindow::Impl::apply_settings(Json candidate) {
                                         ui_style.colors.foreground != prepared.colors.foreground ||
                                         ui_style.syntax != prepared.syntax;
     candidate["workbench"]["sidebarWidth"] = prepared.sidebar_width;
+    if (settings.value("fileIcons", Json::object()) != candidate.at("fileIcons")) {
+        file_icons.invalidate();
+    }
     settings.swap(candidate);
     editor_settings.swap(editor);
     std::swap(ui_style, prepared);
@@ -2094,6 +2104,31 @@ Json EditorWindow::Impl::style_model() const {
 }
 
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
+    if (method == "_ui.icons.read") {
+        return {{"theme", settings.at("fileIcons")}, {"generation", file_icons.generation()}};
+    }
+    if (method == "_ui.icons.update") {
+        if (params.at("generation") != file_icons.generation()) {
+            throw protocol::RpcError(-32001, "File icon theme changed before publication");
+        }
+        const auto& theme = params.at("theme");
+        if (!theme.is_object() || theme.dump().size() > 256 * 1024) {
+            throw protocol::RpcError(-32602, "Invalid or oversized file icon preferences");
+        }
+        auto candidate = settings;
+        candidate["fileIcons"] = theme;
+        auto reply = Json{{"theme", theme}, {"generation", ""}};
+        // Prepare allocations before changing the live generation/configuration.
+        const auto next = std::stoull(file_icons.generation());
+        if (next == std::numeric_limits<std::uint64_t>::max()) {
+            throw protocol::RpcError(-32004, "File icon generation exhausted");
+        }
+        reply["generation"] = std::to_string(next + 1);
+        file_icons.invalidate();
+        settings.swap(candidate);
+        file_icons_override = true;
+        return reply;
+    }
     if (method == "_ui.style.cancel") {
         const auto id = params.at("id").get<std::string>();
         const auto found = std::ranges::find(pending_styles, id, &PendingStyle::id);
@@ -2338,6 +2373,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
                     {"sidebar", active_view},
                     {"outlineVisible", show_outline},
                     {"tabs", tabs.ids()}};
+        result["fileIcons"] = file_icons.state();
         result["tabLayout"] = {{"count", tabs.size()},
                                {"pending", tabs.pending()},
                                {"measurements", tabs.measurements()},
@@ -4425,19 +4461,8 @@ void EditorWindow::Impl::draw() {
         rectangle(canvas, box.x, box.y, box.width, box.height, color);
     };
     const auto file_icon = [&](std::string_view path, float x, float y, float size) {
-        const auto dot = path.find_last_of('.');
-        const auto extension =
-            dot == std::string_view::npos ? std::string_view{} : path.substr(dot);
-        const bool code =
-            extension == ".cpp" || extension == ".hpp" || extension == ".c" || extension == ".h";
-        const bool script = extension == ".js" || extension == ".ts" || extension == ".json";
-        draw_icon(canvas,
-                  code ? Icon::code : (script ? Icon::braces : Icon::document),
-                  x,
-                  y,
-                  size,
-                  code ? ui_style.colors.code_icon
-                       : (script ? ui_style.colors.script_icon : ui_style.colors.muted));
+        const auto icon = file_icons.lookup(path, false);
+        draw_icon(canvas, icon.glyph, x, y, size, icon.color(ui_style.colors));
     };
     fill(geometry.header, ui_style.colors.activity);
     rectangle(canvas, 0, geometry.header.bottom() - scale, width, scale, ui_style.colors.border);
@@ -4599,12 +4624,22 @@ void EditorWindow::Impl::draw() {
                           y + 4 * scale,
                           16 * scale,
                           ui_style.colors.muted);
-            const auto icon = view_icon(item.value("icon", std::string{}));
+            const auto projected = item.contains("iconPath")
+                                       ? std::optional<FileIcon>(file_icons.lookup(
+                                             item.at("iconPath").get<std::string>(), row.group))
+                                       : std::nullopt;
+            const auto icon =
+                projected ? projected->glyph : view_icon(item.value("icon", std::string{}));
             const auto icon_color = icon == Icon::folder   ? ui_style.colors.folder
                                     : icon == Icon::code   ? ui_style.colors.code_icon
                                     : icon == Icon::braces ? ui_style.colors.script_icon
                                                            : ui_style.colors.muted;
-            draw_icon(canvas, icon, x + 18 * scale, y + 4 * scale, 16 * scale, icon_color);
+            draw_icon(canvas,
+                      icon,
+                      x + 18 * scale,
+                      y + 4 * scale,
+                      16 * scale,
+                      projected ? projected->color(ui_style.colors) : icon_color);
             const auto tone = item.value("tone", std::string{});
             const auto color = tone == "error"     ? ui_style.colors.error
                                : tone == "added"   ? ui_style.colors.added
@@ -5161,8 +5196,8 @@ std::string EditorWindow::active_document_id() const {
 
 bool EditorWindow::idle() const noexcept {
     const auto* document = impl_->current();
-    return !impl_->quit_requested && impl_->tabs.pending() == 0 && impl_->pending_fences.empty() &&
-           impl_->native_idle(impl_->dialog.has_value()) &&
+    return !impl_->quit_requested && impl_->tabs.pending() == 0 && impl_->file_icons.idle() &&
+           impl_->pending_fences.empty() && impl_->native_idle(impl_->dialog.has_value()) &&
            (impl_->workbench->idle() || (impl_->dialog && impl_->workbench->awaiting_input())) &&
            (!document || (!document->needs_lines && !document->loading && !document->needs_syntax &&
                           !document->syntax_loading));
@@ -5193,6 +5228,23 @@ WorkbenchViewState EditorWindow::view_state() const {
                               impl_->sidebar_views.at("explorer").index.size()};
     const auto& sidebar = impl_->sidebar_views.at(impl_->active_view);
     result.style = impl_->style_model();
+    result.file_icons = impl_->file_icons.state();
+    auto visible_icons = Json::array();
+    const auto first_icon = std::min(sidebar.scroll, sidebar.index.size());
+    sidebar.index.for_each_range(
+        first_icon,
+        std::min(sidebar.index.size(), first_icon + impl_->view_page()),
+        [&](std::size_t, const ViewRow& row) {
+            if (!row.value->contains("iconPath"))
+                return;
+            const auto path = row.value->at("iconPath").get<std::string>();
+            if (const auto icon = impl_->file_icons.peek(path, row.group)) {
+                visible_icons.push_back({{"path", path},
+                                         {"glyph", static_cast<int>(icon->glyph)},
+                                         {"tone", icon->tone}});
+            }
+        });
+    result.file_icons["visibleRows"] = std::move(visible_icons);
     result.tab_layout = {{"count", impl_->tabs.size()},
                          {"pending", impl_->tabs.pending()},
                          {"measurements", impl_->tabs.measurements()},
@@ -5386,6 +5438,28 @@ bool EditorWindow::pump() {
         }
         impl_->workbench->poll();
         impl_->finish_styles();
+        if (const auto batch = impl_->file_icons.begin()) {
+            try {
+                impl_->workbench->execute(
+                    "workbench.resolveIcons",
+                    *batch,
+                    [this, batch = *batch](const script::Runtime::Outcome& outcome) {
+                        try {
+                            impl_->file_icons.finish(batch,
+                                                     outcome.error ? nullptr : &outcome.value);
+                            if (outcome.error) {
+                                impl_->error = outcome.error->value(
+                                    "message", std::string("File icon resolution failed"));
+                            }
+                        } catch (const std::exception& error) {
+                            impl_->error = error.what();
+                        }
+                    });
+            } catch (...) {
+                impl_->file_icons.finish(*batch, nullptr);
+                throw;
+            }
+        }
         impl_->advance_policy_inputs();
         impl_->advance_view_inputs();
         if (impl_->finish_fences())
