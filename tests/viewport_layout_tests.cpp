@@ -4,6 +4,7 @@
 #include <astra/ui/input_events.hpp>
 #include <astra/ui/text_labels.hpp>
 #include <astra/ui/text_field.hpp>
+#include <astra/ui/tab_bar.hpp>
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkImageInfo.h"
@@ -14,6 +15,7 @@
 #include <chrono>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -961,9 +963,168 @@ void input_event_ownership() {
                  "event/byte bounds and atomic admission failure: PASS\n";
 }
 
+void tab_bars(TextLayoutEngine& engine) {
+    WorkbenchStyle theme;
+    theme.font_size = 13;
+    theme.font_families = {"Segoe UI"};
+    theme.monospace_families = {"Cascadia Code"};
+    theme.colors.tabs = 0xFF21252C;
+    theme.colors.active_tab = 0xFF101722;
+    theme.colors.accent = 0xFF3399FF;
+    theme.colors.foreground = 0xFFE2E5EC;
+    theme.colors.muted = 0xFF9AABBC;
+    theme.colors.border = 0xFF41454C;
+    TextLabels labels(engine);
+    TabBar bar(labels);
+    TabIndex tabs;
+    for (unsigned index = 0; index < 64; ++index) {
+        tabs.append(std::to_string(index),
+                    "source-" + std::to_string(index) + "-中🙂e\xCC\x81.cpp");
+    }
+    const auto prepare = [&](TabBar& target,
+                             TabIndex& model,
+                             Box bounds,
+                             float dpi,
+                             std::size_t active,
+                             const WorkbenchStyle& style) {
+        target.reveal();
+        for (unsigned frame = 0; frame < 256; ++frame) {
+            target.measure(bounds, dpi, model, active, style, true);
+            if (model.pending() == 0) {
+                return;
+            }
+        }
+        throw std::runtime_error("Tab bar did not finish bounded caption preparation");
+    };
+    const auto render = [&](TabBar& target,
+                            const TabIndex& model,
+                            std::size_t active,
+                            const WorkbenchStyle& style) {
+        const auto info = SkImageInfo::MakeN32Premul(640, 180);
+        auto surface = SkSurfaces::Raster(info);
+        require(surface != nullptr, "Cannot create tab bar pixel surface");
+        auto* canvas = surface->getCanvas();
+        canvas->clear(0xFF101010);
+        std::size_t decorations{};
+        const auto saves = canvas->getSaveCount();
+        target.paint(canvas, model, active, style, [&](std::size_t index) {
+            ++decorations;
+            require(index < model.size(), "Tab decoration referenced an absent identity");
+            return TabBar::Decoration{Icon::code, 0xFF42BEEF, index != active};
+        });
+        require(decorations == target.geometry().visible.size() && canvas->getSaveCount() == saves,
+                "Tab painter visited offscreen metadata or changed canvas ownership");
+        std::vector<std::uint32_t> result(640 * 180);
+        require(surface->readPixels(info, result.data(), 640 * sizeof(std::uint32_t), 0, 0),
+                "Cannot read tab bar pixels");
+        return result;
+    };
+    for (const auto dpi : {1.0F, 1.5F, 2.0F}) {
+        const Box bounds{20, 12, 580, 38 * dpi};
+        constexpr std::size_t active = 31;
+        prepare(bar, tabs, bounds, dpi, active, theme);
+        const auto before = render(bar, tabs, active, theme);
+        const auto shaped = labels.statistics().shaped;
+        const auto measured = tabs.measurements();
+        for (unsigned frame = 0; frame < 8; ++frame) {
+            bar.measure(bounds, dpi, tabs, active, theme, true);
+            require(render(bar, tabs, active, theme) == before, "Warm tab pixels changed");
+        }
+        require(labels.statistics().shaped == shaped && tabs.measurements() == measured &&
+                    bar.max_measured_pass() <= 8,
+                "Warm tab paints prepared captions or exceeded the admission bound");
+        for (std::size_t y = 0; y < 180; ++y) {
+            for (std::size_t x = 0; x < 640; ++x) {
+                if (!bounds.contains(static_cast<float>(x) + 0.5F, static_cast<float>(y) + 0.5F)) {
+                    require(before[y * 640 + x] == 0xFF101010, "Tab pixels escaped their bounds");
+                }
+            }
+        }
+        for (const auto& box : bar.geometry().visible) {
+            const auto caption = bar.hit(box.bounds.x + 10 * dpi, box.bounds.y + bounds.height / 2);
+            const auto close =
+                bar.hit(box.close.x + box.close.width / 2, box.close.y + bounds.height / 2);
+            require(caption && caption->target == TabBar::Target::caption &&
+                        caption->index == box.index && close &&
+                        close->target == TabBar::Target::close && close->index == box.index,
+                    "Drawn caption/close targets did not resolve the same identity");
+        }
+        const auto previous = bar.geometry().previous;
+        const auto next = bar.geometry().next;
+        const auto previous_hit = bar.hit(previous.x + previous.width / 2, previous.y + 1);
+        const auto next_hit = bar.hit(next.x + next.width / 2, next.y + 1);
+        require(previous_hit && previous_hit->target == TabBar::Target::previous && next_hit &&
+                    next_hit->target == TabBar::Target::next &&
+                    !bar.hit(bounds.right(), bounds.y) && !bar.hit(bounds.x, bounds.bottom()) &&
+                    !bar.hit(std::numeric_limits<float>::quiet_NaN(), bounds.y),
+                "Tab overflow/boundary hit testing was ambiguous");
+        const auto generation = tabs.generation();
+        auto recolored = theme;
+        recolored.colors.foreground = 0xFFFFB040;
+        bar.measure(bounds, dpi, tabs, active, recolored, false);
+        require(tabs.measurements() == measured && tabs.generation() == generation &&
+                    render(bar, tabs, active, recolored) != before,
+                "Palette change remeasured captions or retained obsolete foreground pixels");
+        TextLabels fresh_labels(engine);
+        TabBar fresh(fresh_labels);
+        auto fresh_tabs = tabs;
+        fresh.scroll(static_cast<int>(bar.geometry().first), fresh_tabs.size());
+        prepare(fresh, fresh_tabs, bounds, dpi, active, recolored);
+        require(render(fresh, fresh_tabs, active, recolored) ==
+                    render(bar, tabs, active, recolored),
+                "Retained tab style pixels disagreed with a cold independent presentation");
+        bool rejected{};
+        try {
+            auto invalid = bounds;
+            invalid.width = std::numeric_limits<float>::quiet_NaN();
+            bar.measure(invalid, dpi, tabs, active, theme, true);
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        require(rejected && tabs.generation() == generation &&
+                    render(bar, tabs, active, recolored) ==
+                        render(fresh, fresh_tabs, active, recolored),
+                "Invalid tab bounds changed the retained model or drawing");
+        bar.scroll(std::numeric_limits<int>::max(), tabs.size());
+        bar.measure(bounds, dpi, tabs, active, recolored, false);
+        require(bar.geometry().first == tabs.size() - 1 && tabs.measurements() == measured,
+                "Pointer overflow navigation shaped captions or exceeded the sequence");
+        bar.scroll(std::numeric_limits<int>::min(), tabs.size());
+        bar.measure(bounds, dpi, tabs, active, recolored, false);
+        require(bar.geometry().first == 0, "Tab previous navigation underflowed");
+
+        const auto info = SkImageInfo::MakeN32Premul(640, 180);
+        auto surface = SkSurfaces::Raster(info);
+        require(surface != nullptr, "Cannot create tab exception surface");
+        auto* canvas = surface->getCanvas();
+        canvas->translate(3, 4);
+        const auto saves = canvas->getSaveCount();
+        const auto matrix = canvas->getTotalMatrix();
+        const auto clip = canvas->getDeviceClipBounds();
+        rejected = false;
+        try {
+            bar.paint(canvas, tabs, active, recolored, [](std::size_t) -> TabBar::Decoration {
+                throw std::runtime_error("Rejected tab metadata fixture");
+            });
+        } catch (const std::runtime_error&) {
+            rejected = true;
+        }
+        require(rejected && canvas->getSaveCount() == saves && canvas->getTotalMatrix() == matrix &&
+                    canvas->getDeviceClipBounds() == clip,
+                "Failed tab drawing leaked canvas clipping or transforms");
+    }
+    std::cout
+        << "Native tab bar: Unicode/DPI pixels, bounded preparation, warm reuse, palette "
+           "invalidation, caption/close/overflow identity and canvas failure ownership: PASS\n";
+}
+
 int main(int argc, char* argv[]) {
     try {
         TextLayoutEngine engine;
+        if (argc == 2 && std::string_view(argv[1]) == "--tabs") {
+            tab_bars(engine);
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--fields") {
             text_fields(engine);
             return 0;
@@ -990,6 +1151,7 @@ int main(int argc, char* argv[]) {
         input_event_ownership();
         text_labels(engine);
         text_fields(engine);
+        tab_bars(engine);
         std::shared_ptr<const TextLayout> retained;
         {
             TextLayoutEngine temporary;

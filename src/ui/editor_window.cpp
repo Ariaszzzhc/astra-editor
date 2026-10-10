@@ -13,6 +13,7 @@
 #include "astra/ui/text_field.hpp"
 #include "astra/ui/text_input_layout.hpp"
 #include "astra/ui/text_labels.hpp"
+#include "astra/ui/tab_bar.hpp"
 #include "astra/ui/picker_index.hpp"
 #include "astra/ui/decoration_indexes.hpp"
 #include "astra/ui/inline_form.hpp"
@@ -226,9 +227,6 @@ struct EditorWindow::Impl {
     std::uint32_t document_composition_color{};
     std::map<std::string, Document> documents;
     TabIndex tabs;
-    std::optional<TextLayoutOptions> tab_measure_style;
-    std::size_t tab_max_measured_pass{};
-    std::size_t first_tab{};
     std::string active_id;
     std::deque<Request> requests;
     std::optional<ActiveRequest> active_request;
@@ -271,6 +269,7 @@ struct EditorWindow::Impl {
     std::string replace_notice;
     std::string workspace_branch{"Astra"};
     TextLabels labels{fonts};
+    TabBar tab_bar{labels};
     float scale{1};
     float row_height{26};
     float left{};
@@ -283,8 +282,6 @@ struct EditorWindow::Impl {
     float sidebar_width{248};
 
     WorkbenchLayout geometry;
-    TabStrip tab_strip;
-    bool reveal_tab{true};
     bool dragging_sidebar{};
     std::string dragging_tab;
     float tab_drag_start{};
@@ -581,7 +578,7 @@ struct EditorWindow::Impl {
         if (active_id != id)
             static_cast<void>(close_inline_form());
         active_id = id;
-        reveal_tab = true;
+        tab_bar.reveal();
         documents.at(id).needs_lines = true;
         clear_preedit();
         vertical_column.reset();
@@ -2091,7 +2088,7 @@ void EditorWindow::Impl::apply_settings(Json candidate) {
     std::swap(ui_style, prepared);
     options.font_size = font_size;
     sidebar_width = ui_style.sidebar_width;
-    reveal_tab = true;
+    tab_bar.reveal();
     if (document_style_changed) {
         for (auto& [id, document] : documents) {
             static_cast<void>(id);
@@ -3486,15 +3483,12 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             sidebar_width =
                 std::clamp((mouse_x - geometry.activity.right()) / scale, 180.0F, 480.0F);
         } else if (!dragging_tab.empty() && std::abs(mouse_x - tab_drag_start) > 8 * scale) {
-            for (const auto& tab : tab_strip.visible) {
-                if (!tab.bounds.contains(mouse_x, mouse_y)) {
-                    continue;
-                }
-                if (tabs.position(dragging_tab) && tabs.id_at(tab.index) != dragging_tab) {
-                    tabs.move(dragging_tab, tab.index);
-                    reveal_tab = true;
-                }
-                break;
+            if (const auto hit = tab_bar.hit(mouse_x, mouse_y);
+                hit &&
+                (hit->target == TabBar::Target::caption || hit->target == TabBar::Target::close) &&
+                tabs.position(dragging_tab) && tabs.id_at(hit->index) != dragging_tab) {
+                tabs.move(dragging_tab, hit->index);
+                tab_bar.reveal();
             }
         } else if (dragging_form_field && inline_form && dragging_form_id == inline_form->id()) {
             const auto index = *dragging_form_field;
@@ -3717,28 +3711,21 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             break;
         }
         if (geometry.tabs.contains(mouse_x, mouse_y)) {
-            if (tab_strip.previous.contains(mouse_x, mouse_y)) {
-                if (first_tab)
-                    --first_tab;
-                reveal_tab = false;
-            } else if (tab_strip.next.contains(mouse_x, mouse_y)) {
-                if (first_tab + 1 < tabs.size())
-                    ++first_tab;
-                reveal_tab = false;
-            } else
-                for (const auto& tab : tab_strip.visible) {
-                    if (!tab.bounds.contains(mouse_x, mouse_y))
-                        continue;
-                    const auto id = tabs.id_at(tab.index);
+            if (const auto hit = tab_bar.hit(mouse_x, mouse_y)) {
+                if (hit->target == TabBar::Target::previous ||
+                    hit->target == TabBar::Target::next) {
+                    tab_bar.scroll(hit->target == TabBar::Target::previous ? -1 : 1, tabs.size());
+                } else {
+                    const auto id = tabs.id_at(hit->index);
                     activate(id);
-                    if (tab.close.contains(mouse_x, mouse_y)) {
+                    if (hit->target == TabBar::Target::close) {
                         close_document(id);
                     } else {
                         dragging_tab = id;
                         tab_drag_start = mouse_x;
                     }
-                    break;
                 }
+            }
             break;
         }
         if (mouse_x >= right - 12 * scale && mouse_x < right && mouse_y >= content_top &&
@@ -3787,11 +3774,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         }
         if (geometry.tabs.contains(mouse_x, mouse_y)) {
             const auto direction_step = input.wheel.y * direction < 0 ? 1 : -1;
-            first_tab = static_cast<std::size_t>(
-                std::clamp(static_cast<long long>(first_tab) + direction_step,
-                           0LL,
-                           static_cast<long long>(tabs.empty() ? 0 : tabs.size() - 1)));
-            reveal_tab = false;
+            tab_bar.scroll(direction_step, tabs.size());
         } else if (geometry.outline_rows.contains(mouse_x, mouse_y)) {
             if (auto* document = current()) {
                 const auto shift =
@@ -3911,49 +3894,8 @@ void EditorWindow::Impl::measure_layout(bool prepare_tabs) {
     right = geometry.editor.right();
     content_top = geometry.editor.y;
     content_bottom = geometry.editor.bottom();
-    auto style = label_style(13, ui_style.colors.foreground);
-    style.color = 0;
-    if (!tab_measure_style || *tab_measure_style != style) {
-        tabs.invalidate();
-        tab_measure_style = style;
-    }
-    const auto index = tabs.position(active_id).value_or(0);
-    auto strip =
-        TabStrip::measure(geometry.tabs, scale, tabs.snapshot(), first_tab, index, reveal_tab);
-    if (!prepare_tabs) {
-        tab_strip = std::move(strip);
-        return;
-    }
-    const auto until = Clock::now() + std::chrono::milliseconds(4);
-    std::size_t measured{};
-    const auto prepare = [&](std::size_t position) {
-        if (!tabs.prepared(position) && measured < 8 && Clock::now() < until) {
-            const auto width =
-                label_layout(tabs.at(position).label, 13, ui_style.colors.foreground)->width();
-            tabs.measured(position, width, scale);
-            ++measured;
-        }
-    };
-    for (const auto& tab : strip.visible) {
-        prepare(tab.index);
-    }
-    while (measured < 8 && Clock::now() < until) {
-        const auto pending = tabs.next_pending();
-        if (!pending) {
-            break;
-        }
-        prepare(*pending);
-    }
-    const auto keep_active =
-        reveal_tab || std::ranges::any_of(strip.visible, [&](const TabBox& tab) {
-            return tab.index == index;
-        });
-    tab_strip = measured ? TabStrip::measure(
-                               geometry.tabs, scale, tabs.snapshot(), first_tab, index, keep_active)
-                         : std::move(strip);
-    first_tab = tab_strip.first;
-    tab_max_measured_pass = std::max(tab_max_measured_pass, measured);
-    reveal_tab = false;
+    tab_bar.measure(
+        geometry.tabs, scale, tabs, tabs.position(active_id).value_or(0), ui_style, prepare_tabs);
 }
 
 void EditorWindow::Impl::draw_inline_form(SkCanvas* canvas) {
@@ -4522,10 +4464,6 @@ void EditorWindow::Impl::draw() {
     const auto fill = [&](const Box& box, SkColor color) {
         rectangle(canvas, box.x, box.y, box.width, box.height, color);
     };
-    const auto file_icon = [&](std::string_view path, float x, float y, float size) {
-        const auto icon = file_icons.lookup(path, false);
-        draw_icon(canvas, icon.glyph, x, y, size, icon.color(ui_style.colors));
-    };
     fill(geometry.header, ui_style.colors.activity);
     rectangle(canvas, 0, geometry.header.bottom() - scale, width, scale, ui_style.colors.border);
     const auto search = geometry.command_center;
@@ -4757,72 +4695,13 @@ void EditorWindow::Impl::draw() {
                   geometry.sidebar.height,
                   ui_style.colors.border);
     }
-    fill(geometry.tabs, ui_style.colors.tabs);
-    canvas->save();
-    canvas->clipRect(SkRect::MakeXYWH(
-        geometry.tabs.x, geometry.tabs.y, geometry.tabs.width, geometry.tabs.height));
-    for (const auto& tab : tab_strip.visible) {
-        const auto& document = documents.at(tabs.id_at(tab.index));
-        const bool active = tabs.id_at(tab.index) == active_id;
-        if (active) {
-            fill(tab.bounds, ui_style.colors.active_tab);
-            rectangle(canvas,
-                      tab.bounds.x,
-                      tab.bounds.y,
-                      tab.bounds.width,
-                      2 * scale,
-                      ui_style.colors.accent);
-        }
-        rectangle(canvas,
-                  tab.bounds.right() - scale,
-                  tab.bounds.y,
-                  scale,
-                  tab.bounds.height,
-                  ui_style.colors.border);
-        file_icon(document.path, tab.bounds.x + 12 * scale, tab.bounds.y + 9 * scale, 16 * scale);
-        canvas->save();
-        canvas->clipRect(SkRect::MakeXYWH(tab.bounds.x + 34 * scale,
-                                          tab.bounds.y,
-                                          tab.bounds.width - 62 * scale,
-                                          tab.bounds.height));
-        elided_label(canvas,
-                     document.path.empty() ? "Untitled" : basename(document.path),
-                     tab.bounds.x + 34 * scale,
-                     tab.bounds.y + 10 * scale,
-                     13,
-                     tab.bounds.width - 62 * scale,
-                     active ? ui_style.colors.foreground : ui_style.colors.muted);
-        canvas->restore();
-        if (document.metadata.value("dirty", false)) {
-            SkPaint dirty;
-            dirty.setColor(active ? ui_style.colors.foreground : ui_style.colors.muted);
-            dirty.setAntiAlias(true);
-            canvas->drawCircle(
-                tab.close.x + 13 * scale, tab.close.y + 17 * scale, 3 * scale, dirty);
-        } else
-            draw_icon(canvas,
-                      Icon::close,
-                      tab.close.x + 6 * scale,
-                      tab.close.y + 10 * scale,
-                      14 * scale,
-                      ui_style.colors.muted);
-    }
-    if (tab_strip.previous.width > 0) {
-        fill(tab_strip.previous, ui_style.colors.tabs);
-        fill(tab_strip.next, ui_style.colors.tabs);
-        canvas->save();
-        canvas->translate(tab_strip.previous.x + 18 * scale, tab_strip.previous.y + 10 * scale);
-        canvas->scale(-1, 1);
-        draw_icon(canvas, Icon::chevron_right, 0, 0, 14 * scale, ui_style.colors.muted);
-        canvas->restore();
-        draw_icon(canvas,
-                  Icon::chevron_right,
-                  tab_strip.next.x + 6 * scale,
-                  tab_strip.next.y + 10 * scale,
-                  14 * scale,
-                  ui_style.colors.muted);
-    }
-    canvas->restore();
+    tab_bar.paint(
+        canvas, tabs, tabs.position(active_id).value_or(0), ui_style, [&](std::size_t index) {
+            const auto& document = documents.at(tabs.id_at(index));
+            const auto icon = file_icons.lookup(document.path, false);
+            return TabBar::Decoration{
+                icon.glyph, icon.color(ui_style.colors), document.metadata.value("dirty", false)};
+        });
     fill(geometry.breadcrumb, ui_style.colors.background);
     if (const auto* document = current()) {
         canvas->save();
@@ -5306,7 +5185,7 @@ WorkbenchViewState EditorWindow::view_state() const {
     const auto retired = impl_->sidebar_views.retirement_stats();
     const auto label_stats = impl_->labels.statistics();
     WorkbenchViewState result{impl_->geometry,
-                              impl_->tab_strip,
+                              impl_->tab_bar.geometry(),
                               impl_->tabs.ids(),
                               impl_->sidebar_views.at("explorer").index.size()};
     const auto& sidebar = impl_->sidebar_views.at(impl_->active_view);
@@ -5333,7 +5212,7 @@ WorkbenchViewState EditorWindow::view_state() const {
                          {"measurements", impl_->tabs.measurements()},
                          {"generation", std::to_string(impl_->tabs.generation())},
                          {"relabels", impl_->tabs.relabels()},
-                         {"maxMeasuredPass", impl_->tab_max_measured_pass},
+                         {"maxMeasuredPass", impl_->tab_bar.max_measured_pass()},
                          {"height", impl_->tabs.snapshot().height()}};
     result.file_first = sidebar.scroll;
     result.text_labels = {{"entries", label_stats.entries},

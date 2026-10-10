@@ -1587,8 +1587,64 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         settle(window);
         window.request_screenshot("build/graphics/gui-tabs-indexed.png");
         settle(window);
+        const auto navigation = window.view_state();
+        const auto navigation_active = window.active_document_id();
+        require(navigation.tab_strip.first > 0 && navigation.tab_strip.previous.width > 0,
+                "Tab navigation acceptance needs visible overflow controls");
+        const auto previous = navigation.tab_strip.previous;
+        click(window, previous.x + previous.width / 2, previous.y + previous.height / 2);
+        require(window.view_state().tab_strip.first + 1 == navigation.tab_strip.first &&
+                    window.active_document_id() == navigation_active,
+                "Previous tab overflow changed activation or skipped an identity");
+        const auto next = window.view_state().tab_strip.next;
+        click(window, next.x + next.width / 2, next.y + next.height / 2);
+        require(window.view_state().tab_strip.first == navigation.tab_strip.first &&
+                    window.view_state().tab_layout.at("measurements") ==
+                        navigation.tab_layout.at("measurements"),
+                "Tab overflow did not restore the viewport or remeasured captions");
+        const auto drag_state = window.view_state();
+        require(drag_state.tab_strip.visible.size() >= 2,
+                "Tab drag acceptance needs two complete caption targets");
+        const auto from = drag_state.tab_strip.visible[0];
+        const auto to = drag_state.tab_strip.visible[1];
+        const auto dragged_id = drag_state.tabs.at(from.index);
+        auto reordered = drag_state.tabs;
+        reordered.erase(reordered.begin() + static_cast<std::ptrdiff_t>(from.index));
+        reordered.insert(reordered.begin() + static_cast<std::ptrdiff_t>(to.index), dragged_id);
+        mouse(window,
+              SDL_EVENT_MOUSE_BUTTON_DOWN,
+              from.bounds.x + 40 * window.layout().scale,
+              from.bounds.y + from.bounds.height / 2);
+        require(window.active_document_id() == dragged_id,
+                "Native tab caption did not activate its document identity");
+        mouse(window,
+              SDL_EVENT_MOUSE_MOTION,
+              to.bounds.x + 40 * window.layout().scale,
+              to.bounds.y + to.bounds.height / 2);
+        mouse(window,
+              SDL_EVENT_MOUSE_BUTTON_UP,
+              to.bounds.x + 40 * window.layout().scale,
+              to.bounds.y + to.bounds.height / 2);
+        require(window.view_state().tabs == reordered && window.active_document_id() == dragged_id,
+                "Native tab drag changed identity or failed to reorder the measured sequence");
+        window.request_screenshot("build/graphics/gui-tabs-component.png");
+        settle(window);
+        const auto close_state = window.view_state();
+        const auto closing = std::find_if(close_state.tab_strip.visible.begin(),
+                                          close_state.tab_strip.visible.end(),
+                                          [&](const auto& box) {
+                                              return close_state.tabs.at(box.index) == dragged_id;
+                                          });
+        require(closing != close_state.tab_strip.visible.end(),
+                "Dragged active tab was not kept visible for native close");
+        click(window,
+              closing->close.x + closing->close.width / 2,
+              closing->close.y + closing->close.height / 2);
+        reordered.erase(std::find(reordered.begin(), reordered.end(), dragged_id));
+        require(window.view_state().tabs == reordered && window.active_document_id() != dragged_id,
+                "Native tab close targeted another identity after reordering");
         std::cout << "640 real file tabs: cached measured widths, bounded font refresh, "
-                     "active reveal and warm repaint reuse: PASS\n";
+                     "active reveal, warm repaint reuse, overflow, drag and close identity: PASS\n";
         window.execute_ui_command("acceptance.backgroundOpen");
         window.execute_ui_command("ui.closeWindow");
         const auto deadline = Clock::now() + std::chrono::seconds(20);

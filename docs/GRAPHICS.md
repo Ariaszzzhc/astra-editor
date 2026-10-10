@@ -341,6 +341,21 @@ and hides when its 180-unit minimum cannot fit. Visible tabs reserve at least
 accessed through overflow navigation. Navigation cells also stay inside tiny
 parent bounds, and the entire tab band clips its drawing.
 
+`TabBar` owns the native tab band's preparation, painting, overflow position,
+active reveal and caption/close/navigation hit geometry. Its caller keeps the
+document identities and dirty state in `TabIndex` and supplies visible icon
+descriptors from the asynchronous JS policy cache. The component has no document,
+filesystem, service or JS command workflow. It borrows the shared `TextLabels`
+cache, which must outlive it. The caller keeps the model stable during a pass.
+Visible labels have measurement priority; each preparation pass admits at most
+eight caption measurements and checks a four-millisecond budget between calls.
+This is a dispatch budget, not a hard frame deadline. Pointer layout never
+prepares new captions. Font/DPI changes invalidate the measured model generation;
+foreground-only changes update pixels without remeasuring widths. Paint, including
+exceptional metadata callbacks, restores borrowed canvas clipping/transforms by
+RAII. The window handles activation and close through its existing action paths
+and applies drag reorder to its caller-owned presentation index.
+
 ## Document paragraph scheduling
 
 Document paragraphs use `DocumentViewport` and `LayoutJobs`. Cache hits and short

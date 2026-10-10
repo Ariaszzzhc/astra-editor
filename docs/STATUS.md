@@ -20,6 +20,64 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### Shared native tab bar presentation (2026-10-11)
+
+`TabBar` now owns tab caption preparation, font-generation tracking, overflow
+scroll/reveal, painting and caption/close/navigation hit testing. Window code
+supplies the persistent `TabIndex`, dirty state and already classified icon
+descriptors, then invokes the existing activation/reorder/close workflows. The
+component contains no document, filesystem or service policy. Theme and file-icon
+associations remain JS-owned. Pointer dispatch and painting use the same measured
+geometry; pointer dispatch performs no new caption measurement. The existing
+eight-measurement / four-millisecond dispatch budget and visible-caption priority
+remain. Palette-only changes update colors without invalidating measured widths.
+Borrowed canvas state is restored by RAII, including callback failures.
+
+Windows evidence:
+
+- `./scripts/xmake.ps1 build -y -j 2 viewport-layout-tests gui-presentation-smoke gui-smoke astra`
+  passed in Debug; log: `build/tab-bar-build-debug.log`.
+- First `viewport-layout-tests.exe --tabs` rejected the new fixture with
+  `Invalid UI text geometry`: its `WorkbenchStyle` supplied the UI font list but
+  omitted the required monospace font list. Corrected the fixture without
+  weakening production style validation. Log: `build/tab-bar-viewport-debug.log`.
+- `./scripts/format.ps1 -Offline` and
+  `./scripts/xmake.ps1 build -y -j 2 viewport-layout-tests gui-presentation-smoke`
+  passed; logs: `build/tab-bar-final-format.log` and
+  `build/tab-bar-final-build-debug.log`. Focused
+  `./build/windows/x64/debug/viewport-layout-tests.exe --tabs` passed actual native
+  fonts at DPI 1 / 1.5 / 2: clipped Unicode/emoji/combining pixels, eight warm
+  repaints with zero additional preparation, bounded measurement, separate caption/
+  close/overflow identities, foreground changes without generation invalidation,
+  cold independent-presentation pixel parity, atomic invalid bounds, extreme
+  scroll steps without overflow and canvas save/clip/transform preservation on
+  callback failure. Log: `build/tab-bar-final-viewport-debug.log`.
+- `./build/windows/x64/debug/gui-presentation-smoke.exe` passed actual Windows
+  SDL3 / Graphite / Dawn workbench checks, including 640 real opened files,
+  bounded font refresh and warm reuse. New pointer checks navigate one identity
+  back/forward without activation or new measurement, activate a caption, drag
+  reorder against a flat identity oracle and close the dragged active identity.
+  Log: `build/tab-bar-gui-debug.log`. Actual GPU capture
+  `build/graphics/gui-tabs-component.png` was inspected: the reordered active
+  caption and overflow controls remain visible with separate close targets.
+  This is component verification, not whole-product visual acceptance.
+- `./scripts/test.ps1 -Mode all -Gui` completed with exit code 0 using unchanged
+  native source/resources. Debug: 582 cases / 1,616,777 assertions; Release:
+  582 cases / 1,616,761 assertions, zero failed/skipped. Both configurations ran
+  the new native tab-bar pixel/identity/failure checks through the default viewport
+  entry point and passed the 640-tab pointer workflow. All renderer/font/viewport/
+  input/editing/service/recovery/workspace/presentation GUI workflows and TCP
+  editing passed, as did 12 package-helper invariants.
+  Log: `build/tab-bar-acceptance-all.log`.
+- After acceptance exited, `./scripts/xmake.ps1 f -m debug -y` restored Debug
+  configuration; log: `build/tab-bar-restore-debug.log`.
+- Final `./scripts/format.ps1 -Check -Offline` passed 159 C++ / 13 JS files and
+  `git diff --check` passed; log: `build/tab-bar-final-check.log`.
+
+Further native component extraction, row-internal incremental glyph layout,
+whole-product visual acceptance and a new distribution remain incomplete.
+No non-Windows validation is claimed.
+
 ### Cached asynchronous document IME preparation (2026-10-11)
 
 Document preedit now uses the existing shared `TextInputLayout` / libuv layout
