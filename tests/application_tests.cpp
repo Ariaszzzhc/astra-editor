@@ -683,6 +683,52 @@ TEST_CASE("application syntax pages indexed outlines beyond the default result l
               .at("code") == -32602);
 }
 
+TEST_CASE("application syntax serves Markdown pages and inline objects after local edits") {
+    AppFiles files;
+    std::string source;
+    for (int i = 0; i < 80; ++i)
+        source += "# Heading " + std::to_string(i) + "\n\nParagraph `old` and **bold 中🙂**.\n\n";
+    files.write("document.md", source);
+    LiveApp app(files.root());
+    const auto document = app.done("workspace.open", {{"path", "document.md"}});
+    const auto id = document.at("id");
+    auto syntax = app.call("document.syntax", {{"id", id}, {"baseRevision", "0"}});
+    REQUIRE(app.wait(syntax).at("state") == "completed");
+    const auto begin = source.find("old", source.find("Heading 40\n"));
+    static_cast<void>(app.call(
+        "document.edit",
+        {{"id", id},
+         {"baseRevision", "0"},
+         {"edits", Json::array({{{"begin", begin}, {"end", begin + 3}, {"text", "new"}}})}}));
+    syntax = app.call("document.syntax", {{"id", id}, {"baseRevision", "1"}});
+    REQUIRE(app.wait(syntax).at("state") == "completed");
+    syntax = app.call("document.syntax",
+                      {{"id", id},
+                       {"baseRevision", "1"},
+                       {"begin", begin},
+                       {"end", begin + 3},
+                       {"outlineBegin", 75},
+                       {"outlineLimit", 5}});
+    REQUIRE(syntax.at("state") == "ready");
+    CHECK(syntax.at("language") == "markdown");
+    CHECK(syntax.at("incremental").get<bool>());
+    REQUIRE(syntax.at("highlights").size() == 1);
+    CHECK(syntax.at("highlights").front().at("kind") == "string");
+    REQUIRE(syntax.at("outline").size() == 5);
+    CHECK(syntax.at("outline").front().at("name") == "Heading 75");
+    CHECK(syntax.at("outline").back().at("name") == "Heading 79");
+    CHECK(syntax.at("outlinePage").at("total") == 80);
+    static_cast<void>(
+        app.call("document.setSelections",
+                 {{"id", id},
+                  {"baseRevision", "1"},
+                  {"selections", Json::array({{{"anchor", begin}, {"head", begin}}})}}));
+    const auto selection =
+        app.call("document.selectObject", {{"id", id}, {"baseRevision", "1"}, {"kind", "string"}});
+    CHECK(selection.at("selections").front().at("anchor") == begin - 1);
+    CHECK(selection.at("selections").front().at("head") == begin + 4);
+}
+
 TEST_CASE("application editing policy is shared by direct and scripted commands") {
     AppFiles files;
     files.write(".editorconfig",

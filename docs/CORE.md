@@ -45,8 +45,21 @@ semantic cache publication; those latter traversals are explicit costs.
 Enclosing-object lookup uses the containing byte partition. Full-vector adapters
 materialize once on demand. `ParseOptions::incremental_analysis=false` preserves an
 independent full-traversal oracle for differential tests. Error recovery reparses
-from scratch to preserve canonical Tree-sitter results. Markdown block/inline
-analysis has not yet migrated to these persistent semantic partitions.
+from scratch to preserve canonical Tree-sitter results.
+
+Markdown uses the same measured semantic hierarchy. Each paragraph or table-cell
+inline range group remains one grammar context, including continuation exclusions;
+delimiters cannot cross independent groups. Changed contexts parse canonically
+from scratch, and unchanged units reuse relative inline highlights/textobjects.
+The external block scanner can replace unchanged node identities, so units of at
+most 1024 bytes also use exact length-tagged text and a complete relative block
+shape (symbols, ranges, fields, error flags and lexer columns) as a cache key.
+This shape validation is counted separately from semantic visits. Long inline
+contexts remain indivisible and can still require full parsing after an edit.
+Cache publication and wide-parent traversal also remain explicit linear costs;
+this is not a logarithmic whole-parser update claim. Bounded outline reads remain
+measured seeks. The lazy textobject adapter preserves the original two-stage
+ordering: block objects first, then inline objects.
 
 Native decorations use separate measured range indexes for UTF-8 highlight bytes
 and document-line diagnostic/Git ranges. Diagnostic columns remain UTF-16 until

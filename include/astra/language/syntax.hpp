@@ -114,7 +114,10 @@ struct ParseOptions {
 };
 
 struct AnalysisStatistics {
+    // Semantic visits and exact Markdown context validation are counted
+    // separately; inline_parses counts physical second-stage parser calls.
     std::size_t visited_nodes{}, rebuilt_units{}, reused_units{}, reused_bytes{};
+    std::size_t inline_parses{}, context_nodes{};
 };
 
 class ParseCancelled final : public std::runtime_error {

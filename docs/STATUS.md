@@ -9,6 +9,73 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### Incremental Markdown semantic indexes (2026-10-10)
+
+Markdown's two-stage syntax analysis now uses immutable measured semantic units
+for highlights, Outline and textobjects. Each inline paragraph/table-cell group
+retains its continuation exclusions as one grammar context. Changed groups parse
+fresh for canonical recovery; unchanged groups reuse derived relative indexes.
+The cached path no longer copies, edits or reparses every retained inline AST.
+The separate full-traversal option remains the differential oracle.
+
+The Markdown block scanner can recreate otherwise unchanged node identities.
+Units of at most 1024 bytes therefore also match exact length-tagged UTF-8 text
+and complete relative block shape, including field names, symbols, lexer columns
+and error flags. Shape checks have their own node limit/counter, cancellation and
+deadline checks. Large inline groups remain indivisible. Whole update cost still
+includes shape validation, block parsing, cache publication and direct-child
+enumeration; a logarithmic whole-parser update is not claimed. Lazy textobject
+materialization preserves the API's block-then-inline ordering.
+
+Initial new differential tests failed because scanner-created identities prevented
+reuse and partition collection changed textobject ordering. After both fixes,
+the 400-section local-edit case reused 400 units / 38,497 bytes, analyzed 44
+semantic nodes and invoked the inline parser once. Exact block-context validation
+still visited 9,240 nodes. The independent complete analysis visited 18,801 nodes
+and invoked the inline parser 800 times. Shared highlight prefix/suffix each cover
+more than one-third of the retained source. These are deterministic operation
+counts for this fixture, not elapsed-time or frame-latency measurements.
+
+New tests also cover large quoted paragraphs, independent table/paragraph
+delimiters, paragraph splitting/merging, 64 random Unicode edits (seed `0xA57A4D`),
+retained snapshots, cache limits/cancellation, parallel workers and transitions
+between cached/full modes. A real service test edits Markdown, then reads bounded
+Outline/highlight pages and selects the updated inline textobject.
+
+Windows Debug evidence:
+
+- `./scripts/format.ps1 -Check -Offline`: 129 C++ / 12 JS files passed;
+  `git diff --check` passed.
+- `./scripts/xmake.ps1 build -y astra-tests astra astra-server gui-smoke
+  gui-services-smoke gui-workspace-smoke gui-presentation-smoke
+  gui-recovery-smoke`: passed.
+- `./build/windows/x64/debug/astra-tests.exe --no-version
+  '--test-case=*Markdown*,application syntax*'`: 12 cases / 1,740 assertions
+  passed. `./build/windows/x64/debug/astra-tests.exe --no-version`: all 547
+  cases / 1,084,919 assertions passed, zero failures/skips.
+- Actual `gui-smoke.exe` (local and `--tcp`), `gui-workspace-smoke.exe`,
+  `gui-presentation-smoke.exe`, `gui-services-smoke.exe` and
+  `gui-recovery-smoke.exe` all passed with SDL3/Skia Graphite/Dawn. The runs
+  exercised real editing/syntax/Outline, script-dispatched views, actual clangd/Git,
+  workspace replacement/conflict handling and durable recovery/exit.
+
+Windows Release evidence:
+
+- `./scripts/test.ps1 -Mode release -Gui` built the production service/GUI and
+  all acceptance targets with the pinned xmake/toolchain. The complete suite
+  passed all 547 cases / 1,084,845 assertions, zero failures/skips. Async polling
+  accounts for variable assertion totals between Debug and Release.
+- CLI, D3D12/Graphite/Dawn pixels, renderer lifecycle and Unicode text layout
+  passed. Local/TCP `gui-smoke`, services, recovery, workspace and presentation
+  GUI targets all passed; packaging helpers passed 12 checks. These checks do
+  not produce a new distributable package.
+
+Failure artifacts remain in `build/markdown-semantic-affected.log` and
+`build/markdown-semantic-corrected.log`; corrected passing focused runs are in
+`build/markdown-semantic-context.log` and `build/markdown-semantic-service.log`.
+Incremental display layout, native component extraction and final new-revision
+acceptance/packaging remain open.
+
 ### Bounded native view retirement (2026-10-10)
 
 Published sources, cancelled/superseded builders, old fold projections and
@@ -1197,8 +1264,8 @@ mutation revision errors intact. Final local/TCP GUI runs pass with this actual
 concurrent-client regression, including the existing stale-edit rejection check.
 
 Remaining work includes the rest of the public UI/provider contract,
-native component extraction, incremental display layout, incremental
-Markdown syntax indexes, final acceptance and packaging of the
+native component extraction, incremental display layout,
+final acceptance and packaging of the
 new revision. Historical M0-M8 states below are not completion claims for this
 active revision.
 

@@ -719,6 +719,223 @@ TEST_CASE(
     }
 }
 
+TEST_CASE("Markdown semantic units retain unchanged inline parses and measured ranges") {
+    std::string source;
+    for (std::size_t i = 0; i < 400; ++i)
+        source += "# Section " + std::to_string(i) + "\n\nParagraph `code" + std::to_string(i) +
+                  "` with **bold**, [link](https://example.com), 中🙂 and é.\n\n";
+    astra::Document document({1}, source);
+    SyntaxParser parser(LanguageId::markdown), reference(LanguageId::markdown);
+    auto options = relaxed(), full_options = options;
+    full_options.incremental_analysis = false;
+    const auto old = parser.parse(document.snapshot(), options);
+    const auto original = reference.parse(document.snapshot(), full_options);
+    check_same_analysis(old, original);
+    const auto begin = source.find("code200") + 4;
+    auto edits = transaction(document, {edit(begin, begin + 3, "999")});
+    REQUIRE(document.apply(edits));
+    const auto updated =
+        parser.update(old, edits, document.revision(), document.content_identity(), options);
+    const auto full = reference.parse(document.snapshot(), full_options);
+    check_same_analysis(updated, full);
+    const auto stats = updated.analysis_statistics();
+    INFO("visited ",
+         stats.visited_nodes,
+         ", inline parses ",
+         stats.inline_parses,
+         ", reused units ",
+         stats.reused_units,
+         ", reused bytes ",
+         stats.reused_bytes);
+    MESSAGE("Markdown semantic visits=",
+            stats.visited_nodes,
+            ", context visits=",
+            stats.context_nodes,
+            ", inline parses=",
+            stats.inline_parses,
+            ", reused units=",
+            stats.reused_units,
+            ", reused bytes=",
+            stats.reused_bytes,
+            ", full semantic visits=",
+            full.analysis_statistics().visited_nodes);
+    CHECK(stats.reused_units > 300);
+    CHECK(stats.reused_bytes > source.size() * 3 / 4);
+    CHECK(stats.visited_nodes < full.analysis_statistics().visited_nodes / 4);
+    CHECK(stats.context_nodes > 0);
+    CHECK(stats.visited_nodes + stats.context_nodes < full.analysis_statistics().visited_nodes / 2);
+    CHECK(stats.inline_parses <= 4);
+    CHECK(full.analysis_statistics().inline_parses == 800);
+    CHECK(updated.highlights().shared_prefix_bytes(old.highlights()) > source.size() / 3);
+    CHECK(updated.highlights().shared_suffix_bytes(old.highlights()) > source.size() / 3);
+    REQUIRE(updated.outline_size() == 400);
+    CHECK(updated.outline_range(390, 400) ==
+          std::vector<OutlineItem>(full.outline().begin() + 390, full.outline().end()));
+    for (const auto caret :
+         {source.find("Section 1\n"), source.find("code200"), source.find("code399")})
+        for (const auto kind : {TextObjectKind::heading, TextObjectKind::string})
+            CHECK(updated.enclosing_object(bytes(caret, caret), kind) ==
+                  full.enclosing_object(bytes(caret, caret), kind));
+    check_same_analysis(old, original);
+}
+
+TEST_CASE("Markdown partitions preserve independent inline contexts in large blocks") {
+    std::string source = "# Title\n\n> A long `quoted\n";
+    for (int i = 0; i < 100; ++i)
+        source += "> continuation 中🙂 " + std::to_string(i) + "\n";
+    source += "> code` and **bold**.\n\n";
+    for (int i = 0; i < 40; ++i)
+        source += "| `cell" + std::to_string(i) + " | cell` |\n";
+    source += "\n- **A list\n  continuation** with [link](target).\n\n";
+    source += "Unclosed `delimiter in one paragraph.\n\nA closing delimiter` in another.\n";
+    astra::Document document({1}, source);
+    SyntaxParser parser(LanguageId::markdown), reference(LanguageId::markdown);
+    auto options = relaxed(), full_options = options;
+    full_options.incremental_analysis = false;
+    auto syntax = parser.parse(document.snapshot(), options);
+    check_same_analysis(syntax, reference.parse(document.snapshot(), full_options));
+    for (const auto& replacement : {std::string("中🙂\n> new `span`"),
+                                    std::string("\n\n"),
+                                    std::string("**"),
+                                    std::string("# Heading\n\n")}) {
+        const auto previous = syntax;
+        const auto text = document.text().str();
+        const auto begin = text.find("continuation");
+        auto edits = transaction(document, {edit(begin, begin + 12, replacement)});
+        REQUIRE(document.apply(edits));
+        syntax =
+            parser.update(syntax, edits, document.revision(), document.content_identity(), options);
+        const auto full = reference.parse(document.snapshot(), full_options);
+        check_same_analysis(syntax, full);
+        check_same_analysis(reference.parse(document.snapshot(), options), full);
+        CHECK(previous.highlights().validate());
+    }
+}
+
+TEST_CASE("Markdown incremental semantics match independent traversal after Unicode edits") {
+    constexpr unsigned int seed = 0xA57A4D;
+    INFO(seed);
+    std::mt19937 random(seed);
+    std::string source;
+    for (int i = 0; i < 40; ++i)
+        source += "## Heading " + std::to_string(i) +
+                  "\n\nA `code` and **bold 中🙂** with é and [link](target).\n\n"
+                  "> quoted *emphasis*\n> continued 中🙂\n\n"
+                  "| left `one` | right *two* |\n| --- | --- |\n| data | cell |\n\n";
+    astra::Document document({1}, source);
+    SyntaxParser parser(LanguageId::markdown), reference(LanguageId::markdown);
+    auto options = relaxed(), full_options = options;
+    full_options.incremental_analysis = false;
+    auto syntax = parser.parse(document.snapshot(), options);
+    check_same_analysis(syntax, reference.parse(document.snapshot(), full_options));
+    std::vector<std::pair<SyntaxSnapshot, SyntaxSnapshot>> retained;
+    const std::array<std::string, 10> replacements{
+        "中🙂", "`", "**", "~~", "\n\n", "# ", "|", "é", "", "```\n"};
+    for (int iteration = 0; iteration < 64; ++iteration) {
+        INFO(iteration);
+        const auto& rope = document.text();
+        auto begin = static_cast<std::size_t>(random() % (rope.size_bytes() + 1));
+        while (!rope.is_boundary(begin))
+            --begin;
+        auto end = std::min(rope.size_bytes(), begin + random() % 9);
+        while (!rope.is_boundary(end))
+            ++end;
+        if (iteration % 16 == 0)
+            retained.emplace_back(syntax, reference.parse(document.snapshot(), full_options));
+        auto edits =
+            transaction(document, {edit(begin, end, replacements[random() % replacements.size()])});
+        if (!document.apply(edits))
+            continue;
+        const auto previous = syntax;
+        syntax =
+            parser.update(syntax, edits, document.revision(), document.content_identity(), options);
+        const auto full = reference.parse(document.snapshot(), full_options);
+        check_same_analysis(syntax, full);
+        check_same_analysis(reference.parse(document.snapshot(), options), full);
+        check_same_analysis(
+            reference.update(
+                previous, edits, document.revision(), document.content_identity(), full_options),
+            full);
+        for (const auto kind :
+             {TextObjectKind::heading, TextObjectKind::string, TextObjectKind::block})
+            CHECK(syntax.enclosing_object(bytes(begin, begin), kind) ==
+                  full.enclosing_object(bytes(begin, begin), kind));
+    }
+    for (const auto& [snapshot, full] : retained)
+        check_same_analysis(snapshot, full);
+}
+
+TEST_CASE("Markdown cached inline captures still enforce limits and cancellation") {
+    std::string source;
+    for (int i = 0; i < 80; ++i)
+        source += "# Heading\n\nA `code` and **bold** with [link](target).\n\n";
+    astra::Document document({1}, source);
+    SyntaxParser parser(LanguageId::markdown);
+    const auto original = parser.parse(document.snapshot(), relaxed());
+    const auto update = [&](ParseOptions options) {
+        return parser.update(original,
+                             {original.revision(), {}, std::nullopt},
+                             {original.revision().value + 1},
+                             document.content_identity(),
+                             options);
+    };
+    for (int limit = 0; limit < 4; ++limit) {
+        auto options = relaxed();
+        if (limit == 0)
+            options.max_nodes = 1;
+        else if (limit == 1)
+            options.max_spans = 1;
+        else if (limit == 2)
+            options.max_outline_items = 1;
+        else
+            options.max_text_objects = 1;
+        CHECK_THROWS_AS((void)update(options), std::length_error);
+    }
+    auto options = relaxed();
+    std::stop_source stop;
+    stop.request_stop();
+    options.stop = stop.get_token();
+    CHECK_THROWS_AS((void)update(options), ParseCancelled);
+    options = relaxed();
+    options.timeout = std::chrono::milliseconds::zero();
+    CHECK_THROWS_AS((void)update(options), std::invalid_argument);
+    const auto cached = update(relaxed());
+    CHECK(cached.analysis_statistics().inline_parses == 0);
+    check_same_analysis(cached, original);
+    CHECK(original.matches(document.snapshot()));
+}
+
+TEST_CASE("independent Markdown workers preserve shared snapshots and analysis mode transitions") {
+    std::string source;
+    for (int i = 0; i < 80; ++i)
+        source += "# Heading " + std::to_string(i) + "\n\nText `old` and **bold 中🙂**.\n\n";
+    astra::Document document({1}, source);
+    SyntaxParser parser(LanguageId::markdown), reference(LanguageId::markdown);
+    auto options = relaxed(), full_options = options;
+    full_options.incremental_analysis = false;
+    const auto cached = parser.parse(document.snapshot(), options);
+    const auto full = reference.parse(document.snapshot(), full_options);
+    const auto begin = source.find("old");
+    const auto worker = [begin](SyntaxSnapshot previous, ParseOptions settings, std::string text) {
+        SyntaxParser parser(LanguageId::markdown);
+        return parser.update(previous,
+                             {previous.revision(), {edit(begin, begin + 3, text)}, {}},
+                             {previous.revision().value + 1},
+                             {1},
+                             settings);
+    };
+    auto first = std::async(std::launch::async, worker, cached, options, "one");
+    auto second = std::async(std::launch::async, worker, cached, options, "two");
+    const auto one = first.get(), two = second.get();
+    astra::Document first_document({1}, one.text().str()), second_document({1}, two.text().str());
+    check_same_analysis(one, reference.parse(first_document.snapshot(), full_options));
+    check_same_analysis(two, reference.parse(second_document.snapshot(), full_options));
+    check_same_analysis(worker(cached, full_options, "one"), one);
+    check_same_analysis(worker(full, options, "one"), one);
+    check_same_analysis(cached, full);
+    CHECK(cached.text().str() == source);
+}
+
 TEST_CASE("randomized incremental syntax matches fresh parsing after every edit") {
     constexpr unsigned int seed = 0x53594e54U;
     INFO("seed = ", seed);

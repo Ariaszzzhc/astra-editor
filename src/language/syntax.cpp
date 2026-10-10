@@ -786,6 +786,7 @@ struct SemanticUnit {
     HighlightIndex highlights;
     std::vector<OutlineItem> outline;
     std::vector<TextObject> objects;
+    std::size_t block_objects{};
     SemanticPieces children;
     bool errors{};
     std::vector<ChildStamp> stamps;
@@ -803,6 +804,56 @@ SyntaxRange relative(SyntaxRange value, std::size_t origin) {
 
 SyntaxRange absolute(SyntaxRange value, std::size_t origin) {
     return {{value.begin.value + origin}, {value.end.value + origin}};
+}
+
+// Markdown's external block scanner can replace node identities for unchanged
+// paragraphs. Bounded Markdown units can instead use exact text and a complete
+// relative block shape. Inline parsing is local to their included ranges; columns
+// are retained because the lexer can inspect indentation.
+std::string markdown_context_key(TSNode root,
+                                 const Rope& text,
+                                 Budget& budget,
+                                 AnalysisStatistics& statistics) {
+    const auto origin = ts_node_start_byte(root);
+    const auto length = ts_node_end_byte(root) - origin;
+    auto key = std::to_string(length) + ':' + text.slice(origin, ts_node_end_byte(root));
+    key.push_back('\0');
+    Cursor cursor(root);
+    bool more = true;
+    while (more) {
+        budget.check();
+        if (++statistics.context_nodes > budget.options.max_nodes)
+            throw std::length_error("syntax context node limit exceeded");
+        const auto node = ts_tree_cursor_current_node(cursor.get());
+        const auto start = ts_node_start_point(node), end = ts_node_end_point(node);
+        const auto field = ts_tree_cursor_current_field_name(cursor.get());
+        for (const auto value :
+             {static_cast<std::size_t>(ts_node_symbol(node)),
+              static_cast<std::size_t>(ts_node_grammar_symbol(node)),
+              static_cast<std::size_t>(ts_tree_cursor_current_depth(cursor.get())),
+              static_cast<std::size_t>(ts_node_start_byte(node) - origin),
+              static_cast<std::size_t>(ts_node_end_byte(node) - origin),
+              static_cast<std::size_t>(start.column),
+              static_cast<std::size_t>(end.column),
+              static_cast<std::size_t>(end.row - start.row),
+              static_cast<std::size_t>(ts_node_is_named(node)),
+              static_cast<std::size_t>(ts_node_is_missing(node)),
+              static_cast<std::size_t>(ts_node_has_error(node))}) {
+            key += std::to_string(value);
+            key.push_back(':');
+        }
+        key += field ? field : "";
+        key.push_back('\0');
+        if (ts_tree_cursor_goto_first_child(cursor.get()))
+            continue;
+        while (!ts_tree_cursor_goto_next_sibling(cursor.get())) {
+            if (!ts_tree_cursor_goto_parent(cursor.get())) {
+                more = false;
+                break;
+            }
+        }
+    }
+    return key;
 }
 
 void semantic_limits(const SemanticUnit& unit, const ParseOptions& options) {
@@ -827,7 +878,8 @@ std::shared_ptr<const SemanticUnit> build_semantic(TSNode node,
                                                    const GapCache* previous_gaps,
                                                    GapCache& gaps,
                                                    Budget& budget,
-                                                   AnalysisStatistics& statistics) {
+                                                   AnalysisStatistics& statistics,
+                                                   TSParser* inline_parser) {
     budget.check();
     const auto node_range = range(node);
     const auto bytes = node_range.end.value - node_range.begin.value;
@@ -838,7 +890,10 @@ std::shared_ptr<const SemanticUnit> build_semantic(TSNode node,
     };
     // A node's slot can move when a sibling changes. The first visible child
     // selects a candidate; child stamps and an unchanged Rope range certify it.
-    const auto literal = ts_node_child_count(node) == 0 && bytes <= 1024;
+    const auto inline_group =
+        inline_parser && one_of(ts_node_type(node), {"inline", "pipe_table_cell"});
+    const auto bounded_markdown = inline_parser && bytes <= 1024;
+    const auto literal = (ts_node_child_count(node) == 0 && bytes <= 1024) || bounded_markdown;
     const auto anchor =
         literal ? nullptr : (ts_node_child_count(node) ? ts_node_child(node, 0).id : node.id);
     // Short leaves have no retained child array. Exact bounded text plus their
@@ -849,8 +904,9 @@ std::shared_ptr<const SemanticUnit> build_semantic(TSNode node,
                           code(own_color),
                           code(own_object),
                           depth,
-                          literal ? text.slice(node_range.begin.value, node_range.end.value)
-                                  : std::string{}};
+                          bounded_markdown ? markdown_context_key(node, text, budget, statistics)
+                          : literal ? text.slice(node_range.begin.value, node_range.end.value)
+                                    : std::string{}};
     if (literal) {
         if (const auto found = built.find(key); found != built.end()) {
             semantic_limits(*found->second.unit, budget.options);
@@ -883,10 +939,28 @@ std::shared_ptr<const SemanticUnit> build_semantic(TSNode node,
     unit->stamps = child_stamps(node);
     ++statistics.rebuilt_units;
     constexpr std::size_t leaf_bytes = 1024, maximum_depth = 128;
-    const auto split = bytes > leaf_bytes && ts_node_child_count(node) > 0 && depth < maximum_depth;
+    // An inline range group is one grammar context. Keep it in one leaf even
+    // when a long paragraph has continuation children; partitioning that group
+    // could incorrectly let delimiters span independent paragraphs/table cells.
+    const auto split = !inline_group && (inline_parser || bytes > leaf_bytes) &&
+                       ts_node_child_count(node) > 0 && depth < maximum_depth;
     Analysis local;
     const auto visited = budget.nodes;
     analyze_node(node, text, local, budget, false, split);
+    unit->block_objects = local.objects.size();
+    if (inline_parser && !split) {
+        for (const auto& group : local.inline_groups) {
+            budget.check();
+            if (!ts_parser_set_included_ranges(inline_parser, group.data(), narrow(group.size())))
+                throw std::runtime_error("Markdown inline ranges overlap");
+            // Changed units parse fresh for canonical inline error recovery.
+            // Unchanged semantic units return above, without parsing/traversal.
+            auto tree = parse_tree(inline_parser, text, nullptr, budget);
+            ++statistics.inline_parses;
+            unit->errors = unit->errors || ts_node_has_error(ts_tree_root_node(tree.get()));
+            analyze(tree.get(), text, local, budget, true);
+        }
+    }
     unit->summary = {bytes,
                      local.outline.size(),
                      local.objects.size(),
@@ -948,7 +1022,9 @@ std::shared_ptr<const SemanticUnit> build_semantic(TSNode node,
                                              previous_gaps,
                                              gaps,
                                              budget,
-                                             statistics);
+                                             statistics,
+                                             inline_parser);
+            unit->errors = unit->errors || child_unit->errors;
             unit->highlights = unit->highlights.concat(child_unit->highlights);
             pieces.push_back({child_unit->summary.bytes, std::move(child_unit)});
             position = child_range.end.value;
@@ -1020,8 +1096,12 @@ void collect_outline(const SemanticUnit& unit,
 
 void collect_objects(const SemanticUnit& unit,
                      std::size_t origin,
-                     std::vector<TextObject>& result) {
-    for (auto item : unit.objects) {
+                     std::vector<TextObject>& result,
+                     std::optional<bool> inline_only = std::nullopt) {
+    const auto begin = inline_only.value_or(false) ? unit.block_objects : 0;
+    const auto end = inline_only && !*inline_only ? unit.block_objects : unit.objects.size();
+    for (auto index = begin; index < end; ++index) {
+        auto item = unit.objects[index];
         item.outer = absolute(item.outer, origin);
         item.inner = absolute(item.inner, origin);
         result.push_back(std::move(item));
@@ -1029,7 +1109,7 @@ void collect_objects(const SemanticUnit& unit,
     auto offset = origin;
     unit.children.for_each_range(0, unit.children.size(), [&](const SemanticPiece& piece) {
         if (piece.unit)
-            collect_objects(*piece.unit, offset, result);
+            collect_objects(*piece.unit, offset, result, inline_only);
         offset += piece.bytes;
     });
 }
@@ -1095,7 +1175,7 @@ struct SyntaxSnapshot::State {
     bool incremental{};
     mutable std::mutex copy_mutex;
 
-    void index_semantics(const State* previous, Budget& budget) {
+    void index_semantics(const State* previous, Budget& budget, TSParser* inline_parser) {
         const auto root = ts_tree_root_node(tree.get());
         semantic_origin = ts_node_start_byte(root);
         const auto extent = previous ? previous->text.changed_extent(text) : RopeChangedExtent{};
@@ -1109,7 +1189,8 @@ struct SyntaxSnapshot::State {
                                   previous ? &previous->gap_cache : nullptr,
                                   gap_cache,
                                   budget,
-                                  statistics);
+                                  statistics,
+                                  inline_parser);
         if (semantic_origin)
             highlights = HighlightIndex({{semantic_origin, std::nullopt}});
         highlights = highlights.concat(semantic->highlights);
@@ -1121,7 +1202,7 @@ struct SyntaxSnapshot::State {
             throw std::length_error("syntax index limit exceeded");
         collect_cache(semantic, semantic_origin, semantic_cache, budget);
         statistics.visited_nodes = budget.nodes;
-        errors = ts_node_has_error(root);
+        errors = ts_node_has_error(root) || semantic->errors;
     }
 };
 
@@ -1352,7 +1433,13 @@ const std::vector<TextObject>& SyntaxSnapshot::text_objects() const {
         std::call_once(state_->objects_once, [&] {
             std::vector<TextObject> result;
             result.reserve(state_->semantic->summary.objects);
-            collect_objects(*state_->semantic, state_->semantic_origin, result);
+            if (state_->language == LanguageId::markdown) {
+                // Preserve the public two-stage order: all block objects first,
+                // followed by inline objects in grammar-context order.
+                collect_objects(*state_->semantic, state_->semantic_origin, result, false);
+                collect_objects(*state_->semantic, state_->semantic_origin, result, true);
+            } else
+                collect_objects(*state_->semantic, state_->semantic_origin, result);
             state_->objects = std::move(result);
         });
     return state_->objects;
@@ -1435,8 +1522,8 @@ SyntaxSnapshot SyntaxParser::parse(const DocumentSnapshot& document, const Parse
     state->language = impl_->language;
     state->text = document.text;
     state->tree = parse_tree(impl_->parser.get(), state->text, nullptr, budget);
-    if (!impl_->inline_parser && options.incremental_analysis)
-        state->index_semantics(nullptr, budget);
+    if (options.incremental_analysis)
+        state->index_semantics(nullptr, budget, impl_->inline_parser.get());
     else {
         Analysis analysis;
         analyze(state->tree.get(), state->text, analysis, budget);
@@ -1448,6 +1535,7 @@ SyntaxSnapshot SyntaxParser::parse(const DocumentSnapshot& document, const Parse
                     throw std::runtime_error("Markdown inline ranges overlap");
                 }
                 auto tree = parse_tree(impl_->inline_parser.get(), state->text, nullptr, budget);
+                ++state->statistics.inline_parses;
                 state->errors = state->errors || ts_node_has_error(ts_tree_root_node(tree.get()));
                 analyze(tree.get(), state->text, analysis, budget, true);
                 state->inline_trees.push_back(std::move(tree));
@@ -1523,9 +1611,9 @@ SyntaxSnapshot SyntaxParser::update(const SyntaxSnapshot& previous,
     {
         const std::lock_guard lock(previous.state_->copy_mutex);
         old_tree.reset(ts_tree_copy(previous.state_->tree.get()));
-        for (const auto& tree : previous.state_->inline_trees) {
-            old_inline.emplace_back(ts_tree_copy(tree.get()));
-        }
+        if (!options.incremental_analysis)
+            for (const auto& tree : previous.state_->inline_trees)
+                old_inline.emplace_back(ts_tree_copy(tree.get()));
     }
     if (!old_tree) {
         throw std::bad_alloc();
@@ -1559,8 +1647,8 @@ SyntaxSnapshot SyntaxParser::update(const SyntaxSnapshot& previous,
         state->tree = parse_tree(impl_->parser.get(), state->text, nullptr, budget);
         old_inline.clear();
     }
-    if (!impl_->inline_parser && options.incremental_analysis)
-        state->index_semantics(previous.state_.get(), budget);
+    if (options.incremental_analysis)
+        state->index_semantics(previous.state_.get(), budget, impl_->inline_parser.get());
     else {
         Analysis analysis;
         analyze(state->tree.get(), state->text, analysis, budget);
@@ -1577,6 +1665,7 @@ SyntaxSnapshot SyntaxParser::update(const SyntaxSnapshot& previous,
                                state->text,
                                index < old_inline.size() ? old_inline[index].get() : nullptr,
                                budget);
+                ++state->statistics.inline_parses;
                 state->errors = state->errors || ts_node_has_error(ts_tree_root_node(tree.get()));
                 analyze(tree.get(), state->text, analysis, budget, true);
                 state->inline_trees.push_back(std::move(tree));
