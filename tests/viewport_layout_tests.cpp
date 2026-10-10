@@ -6,6 +6,7 @@
 #include <astra/ui/text_field.hpp>
 #include <astra/ui/tab_bar.hpp>
 #include <astra/ui/view_rows.hpp>
+#include <astra/ui/workbench_chrome.hpp>
 #include "../src/ui/glyph_cache.hpp"
 
 #include "include/core/SkCanvas.h"
@@ -208,6 +209,111 @@ void view_row_surfaces(TextLayoutEngine& engine) {
     std::cout
         << "Native indexed view rows: Unicode elision, viewport-only access, partial rows, "
            "focus/hover/descriptor pixels, DPI, warm reuse and canvas failure ownership: PASS\n";
+}
+
+void workbench_chrome(TextLayoutEngine& engine) {
+    constexpr std::uint32_t untouched = 0xFF102030;
+    WorkbenchStyle theme;
+    theme.font_families = {"Segoe UI", "Microsoft YaHei UI", "Segoe UI Emoji"};
+    theme.monospace_families = theme.font_families;
+    theme.colors.foreground = 0xFFF0F0F0;
+    theme.colors.muted = 0xFF82ABCD;
+    theme.colors.sidebar = 0xFF182027;
+    theme.colors.activity = 0xFF151515;
+    theme.colors.input = 0xFF283C50;
+    theme.colors.border = 0xFF525C66;
+    theme.colors.accent = 0xFF348AFF;
+    theme.colors.hover = 0xFF283040;
+    TextLabels labels(engine);
+    WorkbenchChrome chrome(labels);
+    const auto long_caption = "Unicode 中🙂e\xCC\x81 " + std::string(100, 'x');
+    for (const auto size : {9.0F, 13.0F, 16.0F}) {
+        theme.font_size = size;
+        for (const auto scale : {0.75F, 1.0F, 1.5F, 2.0F}) {
+            const auto geometry = WorkbenchLayout::measure(
+                1000 * scale, 360 * scale, scale, true, 248, true, true, size);
+            const auto width = static_cast<int>(std::ceil(1000 * scale + 8));
+            const auto height = static_cast<int>(std::ceil(360 * scale + 8));
+            const auto info = SkImageInfo::MakeN32Premul(width, height);
+            const auto render = [&](bool empty_title, bool busy, bool hovered) {
+                auto surface = SkSurfaces::Raster(info);
+                require(surface != nullptr, "Cannot create chrome pixel surface");
+                auto* canvas = surface->getCanvas();
+                canvas->clear(untouched);
+                chrome.paint_header(
+                    canvas, geometry, theme, {"Astra", long_caption, "Ctrl+Shift+P"});
+                const auto refresh = geometry.sidebar_refresh;
+                chrome.paint_sidebar(canvas,
+                                     geometry,
+                                     theme,
+                                     {empty_title ? std::string_view{} : long_caption,
+                                      long_caption,
+                                      "Symbols 中🙂",
+                                      true,
+                                      busy,
+                                      true,
+                                      hovered ? refresh.x + refresh.width / 2 : 0,
+                                      hovered ? refresh.y + refresh.height / 2 : 0});
+                std::vector<std::uint32_t> result(static_cast<std::size_t>(width * height));
+                require(
+                    surface->readPixels(info, result.data(), width * sizeof(std::uint32_t), 0, 0),
+                    "Cannot read chrome pixels");
+                return result;
+            };
+            const auto first = render(false, false, false);
+            const auto shaped = labels.statistics().shaped;
+            require(render(false, false, false) == first && labels.statistics().shaped == shaped,
+                    "Warm chrome reshaped text or changed pixels");
+            const auto without_title = render(true, false, false);
+            const auto refresh = geometry.sidebar_refresh;
+            bool caption_visible = false;
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
+                    const auto offset = static_cast<std::size_t>(y * width + x);
+                    if (refresh.contains(static_cast<float>(x) + 0.5F,
+                                         static_cast<float>(y) + 0.5F))
+                        require(first[offset] == without_title[offset],
+                                "Long view caption overwrote its refresh control");
+                    if (first[offset] != without_title[offset])
+                        caption_visible = true;
+                    if (geometry.sidebar_rows.contains(static_cast<float>(x) + 0.5F,
+                                                       static_cast<float>(y) + 0.5F) &&
+                        static_cast<float>(x) < geometry.sidebar.right() - 2 * scale)
+                        require(first[offset] == untouched,
+                                "Chrome escaped into indexed row content");
+                }
+            }
+            require(caption_visible, "View caption did not produce native font pixels");
+            require(render(false, false, true) != first,
+                    "Refresh hover did not change chrome pixels");
+            require(render(false, false, true) != render(false, true, true),
+                    "Busy hover did not expose the cancel glyph/tone");
+            require(first.back() == untouched, "Chrome escaped the window bounds");
+        }
+    }
+    auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(1000, 360));
+    require(surface != nullptr, "Cannot create chrome failure surface");
+    auto* canvas = surface->getCanvas();
+    theme.font_size = 13;
+    const auto geometry = WorkbenchLayout::measure(1000, 360, 1, true, 248, true, true);
+    const auto saves = canvas->getSaveCount();
+    const auto matrix = canvas->getTotalMatrix();
+    const auto clip = canvas->getDeviceClipBounds();
+    bool failed = false;
+    try {
+        chrome.paint_sidebar(canvas, geometry, theme, {"\xFF", "Workspace", "Symbols"});
+    } catch (const std::invalid_argument&) {
+        failed = true;
+    }
+    require(failed && canvas->getSaveCount() == saves && canvas->getTotalMatrix() == matrix &&
+                canvas->getDeviceClipBounds() == clip,
+            "Chrome failure leaked canvas ownership");
+    const auto shaped = labels.statistics().shaped;
+    const auto hidden = WorkbenchLayout::measure(260, 360, 1, true, 248, true, true);
+    chrome.paint_sidebar(canvas, hidden, theme, {"Hidden", "Hidden", "Hidden"});
+    require(labels.statistics().shaped == shaped, "Hidden sidebar prepared captions");
+    std::cout << "Native workbench chrome: Unicode elision, control separation, font/DPI pixels, "
+                 "hover/cancel, warm reuse and canvas failure ownership: PASS\n";
 }
 
 void text_fields(TextLayoutEngine& engine) {
@@ -1319,6 +1425,10 @@ void tab_bars(TextLayoutEngine& engine) {
 int main(int argc, char* argv[]) {
     try {
         TextLayoutEngine engine;
+        if (argc == 2 && std::string_view(argv[1]) == "--chrome") {
+            workbench_chrome(engine);
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--rows") {
             view_row_surfaces(engine);
             return 0;
@@ -1359,6 +1469,7 @@ int main(int argc, char* argv[]) {
         text_fields(engine);
         tab_bars(engine);
         view_row_surfaces(engine);
+        workbench_chrome(engine);
         std::shared_ptr<const TextLayout> retained;
         {
             TextLayoutEngine temporary;

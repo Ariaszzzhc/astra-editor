@@ -36,6 +36,8 @@ void ViewStore::register_spec(const Json& spec) {
     const auto id = spec.at("id").get<std::string>(), title = spec.at("title").get<std::string>();
     text(id, 128);
     text(title, 128);
+    const auto outline_title = spec.value("outlineTitle", std::string("Outline"));
+    text(outline_title, 128);
     if (id.empty() || title.empty())
         throw protocol::RpcError(-32602, "View identity and title required");
     const auto icon = spec.value("icon", std::string("files"));
@@ -51,7 +53,8 @@ void ViewStore::register_spec(const Json& spec) {
                   {"title", title},
                   {"icon", icon},
                   {"order", order},
-                  {"outline", spec.value("outline", false)}};
+                  {"outline", spec.value("outline", false)},
+                  {"outlineTitle", outline_title}};
     if (auto found = views_.find(id); found != views_.end())
         found->second.spec = std::move(prepared);
     else {
@@ -280,6 +283,9 @@ std::optional<std::size_t> ViewStore::cursor(std::string_view id) const {
 Json ViewStore::state(std::string_view id) const {
     const auto& view = at(id);
     Json result{{"id", id},
+                {"title", view.spec.at("title")},
+                {"outlineTitle", view.spec.at("outlineTitle")},
+                {"expanded", view.expanded},
                 {"version", view.version},
                 {"total", view.index.size()},
                 {"scroll", view.scroll},

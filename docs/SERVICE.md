@@ -659,7 +659,11 @@ semantic index and rejects obsolete pages for pointer selection.
 
 `astra.ui.registerView(spec, provider, handlers = {})` registers a sidebar view.
 The activity bar uses a snapshot of the registered `id`, `title`, `icon`, `order` (0..31) and
-optional `outline` flag. Registration installs local policy; it performs no I/O.
+optional `outline` flag. `outlineTitle` supplies the associated Outline header;
+the JS API defaults it to `Outline`. Native registration retains the same fallback
+for older direct specifications. Captions are single-line UTF-8, at most 128 bytes;
+invalid captions reject before changing the registered view. Registration installs
+local policy; it performs no I/O.
 At most 16 views may be presented. Activity icons are `files`, `search`, `branch`,
 `braces` or `symbol`. The default Explorer, Search and Source Control use the same
 native row renderer and publication path as custom views.
@@ -671,8 +675,10 @@ has stable `id`, single-line `label`, optional
 `icon`, `badge`, `tone`, `depth`, `group`, `selected` and JSON `data`.
 Group descendants follow their parent in preorder; depth may increase only one
 level after a group. Depth is 0..64. Native group folding uses the measured index.
-`await astra.ui.views.read(id?)` returns the current `{id, version, row, index,
-total, scroll, focused, focus}` state; `row` and `index` are null for an empty or
+`await astra.ui.views.read(id?)` returns the current `{id, title, outlineTitle,
+expanded, version, row, index, total, scroll, focused, focus}` state. Captions retain
+their original text even when native presentation elides them. `expanded` reports
+the view's root section fold. `row` and `index` are null for an empty or
 unselected view. `await astra.ui.views.focus(id?)` focuses the visible view's rows,
 retaining its cursor or selecting the first row. Focusing a hidden view or focusing
 while modal input is active is rejected. `await astra.ui.views.blur()` returns

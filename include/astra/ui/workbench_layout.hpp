@@ -23,7 +23,10 @@ struct Box {
 };
 
 struct WorkbenchLayout {
+    // Physical pixel dimensions/edges; UI font size is in logical units.
+    // Shared snapped edges keep caption clipping and pointer dispatch aligned.
     Box header, command_center, activity, sidebar, sidebar_rows, outline_header, outline_rows;
+    Box sidebar_heading, sidebar_refresh, sidebar_section;
     Box tabs, breadcrumb, editor, status, sidebar_handle;
     float scale{1};
     float sidebar_row_height{24};
@@ -33,7 +36,8 @@ struct WorkbenchLayout {
                                    bool sidebar,
                                    float sidebar_width,
                                    bool outline,
-                                   bool explorer);
+                                   bool explorer,
+                                   float ui_font_size = 13);
 };
 
 struct ConfirmationLayout {

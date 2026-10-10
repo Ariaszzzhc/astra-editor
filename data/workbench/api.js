@@ -184,7 +184,8 @@ export const ui = {
             title: spec.title,
             icon: spec.icon ?? 'files',
             order: spec.order ?? 0,
-            outline: spec.outline ?? false
+            outline: spec.outline ?? false,
+            outlineTitle: spec.outlineTitle ?? 'Outline'
         });
         const callbacks = Object.freeze({ ...handlers });
         astra.configure({ workbench: { views: { [specification.id]: specification } } });

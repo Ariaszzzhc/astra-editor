@@ -15,6 +15,7 @@
 #include "astra/ui/text_labels.hpp"
 #include "astra/ui/tab_bar.hpp"
 #include "astra/ui/view_rows.hpp"
+#include "astra/ui/workbench_chrome.hpp"
 #include "astra/ui/document_metadata.hpp"
 #include "astra/ui/picker_index.hpp"
 #include "astra/ui/decoration_indexes.hpp"
@@ -260,6 +261,7 @@ struct EditorWindow::Impl {
     TextLabels labels{fonts};
     TabBar tab_bar{labels};
     ViewRows view_rows{labels};
+    WorkbenchChrome chrome{labels};
     std::size_t painted_view_rows{};
     float scale{1};
     float row_height{26};
@@ -3761,20 +3763,16 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             }
             break;
         }
-        if (geometry.outline_header.contains(mouse_x, mouse_y)) {
-            command("ui.toggleOutline");
-            break;
-        }
-        if (geometry.sidebar.contains(mouse_x, mouse_y) && mouse_y < geometry.sidebar_rows.y) {
-            const Box refresh{
-                left - 34 * scale, geometry.sidebar.y + 5 * scale, 28 * scale, 26 * scale};
-            if (refresh.contains(mouse_x, mouse_y)) {
+        if (const auto target = WorkbenchChrome::hit_sidebar(geometry, mouse_x, mouse_y)) {
+            if (*target == WorkbenchChrome::Target::outline) {
+                command("ui.toggleOutline");
+            } else if (*target == WorkbenchChrome::Target::refresh) {
                 const auto& view = active_view;
                 if (busy_views.value(view, false))
                     execute_policy("workbench.cancelView", {{"id", view}});
                 else
                     execute_policy("workbench.refreshView", {{"id", view}});
-            } else if (mouse_y >= geometry.sidebar.y + 32 * scale) {
+            } else if (*target == WorkbenchChrome::Target::section) {
                 auto& view = sidebar_views.at(active_view);
                 view.expanded = !view.expanded;
                 view.scroll = 0;
@@ -3991,11 +3989,8 @@ void EditorWindow::Impl::measure_layout(bool prepare_tabs) {
                                         show_sidebar,
                                         sidebar_width,
                                         show_outline,
-                                        sidebar_views.at(active_view).spec.value("outline", false));
-    const auto row_style = ui_style.text(13, scale, ui_style.colors.foreground);
-    geometry.sidebar_row_height =
-        std::max(geometry.sidebar_row_height,
-                 std::ceil(row_style.font_size * scale * row_style.line_height + 8 * scale));
+                                        sidebar_views.at(active_view).spec.value("outline", false),
+                                        ui_style.font_size);
     if (const auto* form = forms.mounted(active_view); form && show_sidebar) {
         const auto panel = form_layout(*form).panel;
         const auto bottom = geometry.sidebar_rows.bottom();
@@ -4595,48 +4590,10 @@ void EditorWindow::Impl::draw() {
     const auto fill = [&](const Box& box, SkColor color) {
         rectangle(canvas, box.x, box.y, box.width, box.height, color);
     };
-    fill(geometry.header, ui_style.colors.activity);
-    rectangle(canvas, 0, geometry.header.bottom() - scale, width, scale, ui_style.colors.border);
-    const auto search = geometry.command_center;
-    if (search.x >= 72 * scale) {
-        label(canvas, "Astra", 14 * scale, 8 * scale, 12, ui_style.colors.muted);
-    }
-    SkPaint search_paint;
-    search_paint.setColor(ui_style.colors.input);
-    search_paint.setAntiAlias(true);
-    const auto search_rect = SkRect::MakeXYWH(search.x, search.y, search.width, search.height);
-    canvas->drawRoundRect(search_rect, 4 * scale, 4 * scale, search_paint);
-    search_paint.setStyle(SkPaint::kStroke_Style);
-    search_paint.setStrokeWidth(scale);
-    search_paint.setColor(search.contains(mouse_x, mouse_y) ? ui_style.colors.accent
-                                                            : ui_style.colors.border);
-    canvas->drawRoundRect(search_rect, 4 * scale, 4 * scale, search_paint);
-    canvas->save();
-    canvas->clipRect(search_rect);
-    draw_icon(canvas,
-              Icon::search,
-              search.x + 9 * scale,
-              search.y + 3 * scale,
-              15 * scale,
-              ui_style.colors.muted);
-    const bool show_hint = search.width > 260 * scale;
-    elided_label(canvas,
-                 options.workspace_name,
-                 search.x + 31 * scale,
-                 search.y + 3 * scale,
-                 12,
-                 search.width - (show_hint ? 126 : 39) * scale,
-                 ui_style.colors.foreground);
-    if (show_hint) {
-        elided_label(canvas,
-                     "Ctrl+Shift+P",
-                     search.right() - 85 * scale,
-                     search.y + 4 * scale,
-                     10,
-                     77 * scale,
-                     ui_style.colors.muted);
-    }
-    canvas->restore();
+    chrome.paint_header(canvas,
+                        geometry,
+                        ui_style,
+                        {"Astra", options.workspace_name, "Ctrl+Shift+P", mouse_x, mouse_y});
     fill(geometry.activity, ui_style.colors.activity);
     const auto activity_views = sidebar_views.ordered();
     canvas->save();
@@ -4673,42 +4630,8 @@ void EditorWindow::Impl::draw() {
     painted_view_rows = 0;
     if (geometry.sidebar.width > 0) {
         fill(geometry.sidebar, ui_style.colors.sidebar);
-        const auto sx = geometry.sidebar.x;
         auto& view = sidebar_views.at(active_view);
-        label(canvas,
-              view.spec.at("title").get<std::string>(),
-              sx + 16 * scale,
-              geometry.sidebar.y + 12 * scale,
-              11,
-              ui_style.colors.foreground);
         const auto busy = busy_views.value(active_view, false);
-        const Box refresh{
-            left - 34 * scale, geometry.sidebar.y + 5 * scale, 28 * scale, 26 * scale};
-        draw_icon(canvas,
-                  busy && refresh.contains(mouse_x, mouse_y) ? Icon::close : Icon::refresh,
-                  left - 29 * scale,
-                  geometry.sidebar.y + 9 * scale,
-                  16 * scale,
-                  busy ? ui_style.colors.accent : ui_style.colors.muted);
-        rectangle(canvas,
-                  sx,
-                  geometry.sidebar.y + 32 * scale,
-                  geometry.sidebar.width,
-                  24 * scale,
-                  ui_style.colors.sidebar);
-        draw_icon(canvas,
-                  view.expanded ? Icon::chevron_down : Icon::chevron_right,
-                  sx + 6 * scale,
-                  geometry.sidebar.y + 36 * scale,
-                  16 * scale,
-                  ui_style.colors.muted);
-        elided_label(canvas,
-                     view.subtitle.empty() ? options.workspace_name : view.subtitle,
-                     sx + 24 * scale,
-                     geometry.sidebar.y + 37 * scale,
-                     12,
-                     geometry.sidebar.width - 30 * scale,
-                     ui_style.colors.foreground);
         const auto rows = view_rows_layout();
         view.scroll = rows.first();
         painted_view_rows = view_rows.paint(
@@ -4729,27 +4652,17 @@ void EditorWindow::Impl::draw() {
                     row.value->at("iconPath").get_ref<const std::string&>(), row.group);
                 return ViewRows::Decoration{icon.glyph, icon.color(ui_style.colors)};
             });
-        if (geometry.outline_header.height > 0) {
-            fill(geometry.outline_header, ui_style.colors.sidebar);
-            draw_icon(canvas,
-                      show_outline ? Icon::chevron_down : Icon::chevron_right,
-                      sx + 6 * scale,
-                      geometry.outline_header.y + 5 * scale,
-                      16 * scale,
-                      ui_style.colors.muted);
-            label(canvas,
-                  "OUTLINE",
-                  sx + 27 * scale,
-                  geometry.outline_header.y + 7 * scale,
-                  11,
-                  ui_style.colors.foreground);
-        }
-        rectangle(canvas,
-                  left - scale,
-                  geometry.sidebar.y,
-                  scale,
-                  geometry.sidebar.height,
-                  ui_style.colors.border);
+        chrome.paint_sidebar(canvas,
+                             geometry,
+                             ui_style,
+                             {view.spec.at("title").get_ref<const std::string&>(),
+                              view.subtitle.empty() ? options.workspace_name : view.subtitle,
+                              view.spec.at("outlineTitle").get_ref<const std::string&>(),
+                              view.expanded,
+                              busy,
+                              show_outline,
+                              mouse_x,
+                              mouse_y});
     }
     tab_bar.paint(
         canvas, tabs, tabs.position(active_id).value_or(0), ui_style, [&](std::size_t index) {

@@ -69,7 +69,14 @@ export function registerFiles() {
         });
     });
     ui.registerView(
-        { id: 'explorer', title: 'Explorer', icon: 'files', order: 0, outline: true },
+        {
+            id: 'explorer',
+            title: 'Explorer',
+            icon: 'files',
+            order: 0,
+            outline: true,
+            outlineTitle: 'Outline'
+        },
         (_, options) => ({ pages: astra.operationPages('workspace.tree', {}, options) }),
         {
             show: () => ui.execute('ui.explorer'),

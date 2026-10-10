@@ -1795,9 +1795,10 @@ TEST_CASE("workbench provider generation prevents older results replacing newer 
     auto channel = std::make_shared<Channel>();
     astra::ui::ViewStore views;
     std::size_t publications = 0;
-    const auto source =
-        "astra.ui.registerView({id:'explorer',title:'Files'},(p,o)=>astra.request('files',p,o)); "
-        "astra.registerCommand('refresh',p=>astra.ui.refresh('explorer',p));";
+    const auto source = "astra.ui.registerView({id:'explorer',title:'Files',outline:true,"
+                        "outlineTitle:'Symbols 中🙂'},"
+                        "(p,o)=>astra.request('files',p,o)); "
+                        "astra.registerCommand('refresh',p=>astra.ui.refresh('explorer',p));";
     astra::ui::Workbench workbench(
         channel,
         [&](std::string_view method, const Json& params) -> std::future<Json> {
@@ -1838,6 +1839,8 @@ TEST_CASE("workbench provider generation prevents older results replacing newer 
     REQUIRE(publications == 1);
     REQUIRE(views.at("explorer").index.size() == 1);
     CHECK(views.at("explorer").index.at(0).value->at("id") == "new");
+    CHECK(views.state("explorer").at("outlineTitle") == "Symbols 中🙂");
+    CHECK(views.state("explorer").at("title") == "Files");
     CHECK(views.idle());
     CHECK(workbench.idle());
 }

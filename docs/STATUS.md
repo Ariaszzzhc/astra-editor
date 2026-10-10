@@ -20,6 +20,85 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### Shared workbench header and sidebar chrome (2026-10-11)
+
+`WorkbenchChrome` now presents the root command center and sidebar headings,
+refresh/cancel control, root section and Outline heading. It borrows the shared
+native `TextLabels` cache; it owns no documents, services or command workflows.
+JS specifications supply view captions, including optional `outlineTitle` with
+the public default `Outline`. Native registration retains that fallback for older
+direct specifications and validates captions before changing state. Async view
+reads expose original `title`, `outlineTitle` and root `expanded` state; native
+elision never changes their identity. Existing JS refresh/cancel and Outline
+commands remain the action path.
+
+Caption painting centers text vertically, measures command hint width and reserves
+the refresh rectangle before grapheme-aware elision. A busy hovered refresh shows
+the cancel glyph. Font-aware `WorkbenchLayout` takes the configured 9..16-unit UI
+font, keeps default 13-unit band dimensions, grows relevant bands for line metrics,
+snaps shared edges to physical pixels and clips them to the frame. It rejects
+non-finite input/derived geometry. Paint and hit testing use the same heading,
+refresh, section and Outline boxes. Canvas state restores on text failure, and
+hidden sidebar captions are not prepared. The production SDL3/Skia Graphite/Dawn
+stack, indexed row source and JS provider publication remain in place.
+
+Windows evidence and retained failures:
+
+- Initial targeted build failed with MSVC LNK2019 for `hit_sidebar` in
+  `astra-tests` (`build/workbench-chrome-build-debug.log`): pure geometry tests
+  must not link the drawing library. The pure hit function is now inline in its
+  public header; drawing remains in `astra-ui`. The next targeted build passed
+  (`workbench-chrome-build-fixed-debug.log`).
+- The first native pixel run rejected chrome painting into indexed row content
+  (`build/workbench-chrome-native-debug.log`). Fractional Outline boundaries
+  were rounded differently by paint clipping and float geometry. Shared layout
+  edges now snap to the pixel grid; the original separation assertion remains.
+  The corrected build and native run passed (`workbench-chrome-build-pixels-debug.log`,
+  `workbench-chrome-native-pixels-debug.log`).
+- Final `./scripts/format.ps1 -Offline` and
+  `./scripts/xmake.ps1 build -y -j 2 astra-tests viewport-layout-tests
+  gui-presentation-smoke astra` passed (`workbench-chrome-format-final.log`,
+  `workbench-chrome-build-final-debug.log`).
+  `./build/windows/x64/debug/astra-tests.exe
+  '--test-case=presentation chrome*,presentation workbench layout*,workbench provider generation*'
+  --no-version` passed three cases / 33,537 assertions, with 606 unrelated cases
+  filtered out (`workbench-chrome-focused-final-debug.log`). Coverage includes
+  2,000 geometry rounds (seed `0xA57A98`), bounded/shared control edges, invalid
+  font and extreme DPI rejection, atomic caption validation and real JS caption
+  registration without changing provider-generation checks.
+- `./build/windows/x64/debug/viewport-layout-tests.exe --chrome` passed
+  (`workbench-chrome-native-accepted-debug.log`). Actual native-font pixels at
+  sizes 9/13/16 and DPI 0.75/1/1.5/2 cover Unicode elision, visible captions,
+  refresh/title separation, indexed-row separation, warm reuse, hover/cancel,
+  hidden views and canvas ownership after malformed UTF-8 failure.
+- `./build/windows/x64/debug/gui-presentation-smoke.exe` exited 0
+  (`workbench-chrome-gui-debug.log`). Its 602-row custom JS view retains original
+  long Unicode captions through native elision. Actual mouse input collapses and
+  re-expands the section, refreshes a pending provider and cancels a large builder
+  without replacing published rows. Existing version, keyboard cursor and
+  retirement checks remain. The generated `build/graphics/gui-long-sidebar-heading.png`
+  was inspected: long captions elide before the refresh button, Unicode glyphs
+  display and the custom Outline heading retains its caption. Later matrix stages
+  overwrite this path; this is not whole-product visual acceptance.
+- Final `./scripts/test.ps1 -Mode all -Gui` exited 0, with source/runtime resources
+  unchanged throughout execution (`build/workbench-chrome-acceptance-all.log`).
+  Debug: 609 cases / 2,582,120 assertions; Release: 609 / 2,582,012, zero
+  failed/skipped. Both modes passed real renderer/fonts/worker/viewport,
+  editing/service/recovery/workspace/workbench GUI and TCP flows. The new native
+  chrome and actual GUI control checks passed in both modes, together with
+  12 package-helper and seven shaping-provenance checks. No new distribution was
+  produced.
+- Restored Debug with `./scripts/xmake.ps1 f -m debug -y`
+  (`build/workbench-chrome-restore-debug.log`). Final
+  `./scripts/format.ps1 -Check -Offline` passed 182 C++ / 13 JS files
+  (`workbench-chrome-final-format-check.log`); `git diff --check` passed.
+
+Header/sidebar-heading extraction is accepted for these checks. Remaining work
+includes activity-bar and breadcrumb/status components, Outline content/provider/
+action ownership, complete font adaptation, native Windows title-bar theme
+integration, whole-product visual acceptance, physical installed-IME acceptance
+and a new distribution. The requested architecture/UI revision remains in progress.
+
 ### Closed-buffer metadata lifetime fencing (2026-10-11)
 
 The GUI now retains closed service IDs independently of its live documents.

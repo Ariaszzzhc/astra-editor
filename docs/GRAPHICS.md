@@ -369,6 +369,28 @@ and hides when its 180-unit minimum cannot fit. Visible tabs reserve at least
 accessed through overflow navigation. Navigation cells also stay inside tiny
 parent bounds, and the entire tab band clips its drawing.
 
+`WorkbenchChrome` paints the root command center and sidebar headings/controls.
+It borrows `TextLabels`; the cache must outlive the component. JS view
+specifications supply the title and optional `outlineTitle`, and the controller
+supplies current expansion, loading and pointer state. The component owns no
+documents, services or command workflows. Refresh/cancel and Outline input
+targets return to the existing controller and JS dispatcher.
+
+Header captions center vertically and elide at grapheme boundaries. The command
+center reserves the hint's measured width; sidebar titles reserve the refresh
+control before elision. Busy hover shows cancellation without replacing the
+published indexed rows. Paint and input use the same `WorkbenchLayout` heading,
+refresh, section and Outline rectangles. Layout accepts the configured 9..16
+logical-unit UI font size, grows relevant bands for its line metrics, snaps shared
+edges to physical pixels and clips them to the frame. Non-finite derived geometry
+rejects. The component clips captions/icons and restores canvas state on failure;
+hidden sidebar captions are not prepared. Native-font pixel checks cover three
+font sizes and four DPI scales, including warm reuse and control separation.
+
+Activity-bar, breadcrumb/status painting and Outline content/provider/action
+ownership remain separate controller work. Native Windows title-bar theme
+integration and whole-product visual acceptance remain outstanding.
+
 `TabBar` owns the native tab band's preparation, painting, overflow position,
 active reveal and caption/close/navigation hit geometry. Its caller keeps the
 document identities and dirty state in `TabIndex` and supplies visible icon
@@ -540,8 +562,9 @@ and skips caption preparation for collapsed, zero-area and fully clipped views.
 Native-font pixel checks cover four DPI values; real SDL/GPU tests cover a
 602-row custom JS view and font updates. Agent sidebar `viewport.painted` reports
 the most recent completed frame, while `first`, `end` and `page` describe current
-geometry. Sidebar headers, outer chrome and Outline remain separate components;
-this evidence does not establish whole-product visual acceptance.
+geometry. `WorkbenchChrome` owns sidebar headings and their control geometry;
+Outline content and the remaining outer components retain separate controller
+paths. This evidence does not establish whole-product visual acceptance.
 
 Quick Open and user-provided asynchronous pickers share `PickerLayout`, native
 editable text geometry and the persistent `PickerIndex`. Painting and pointer

@@ -155,55 +155,85 @@ WorkbenchLayout WorkbenchLayout::measure(float width,
                                          bool sidebar,
                                          float sidebar_width,
                                          bool outline,
-                                         bool explorer) {
+                                         bool explorer,
+                                         float ui_font_size) {
     if (!std::isfinite(width) || !std::isfinite(height) || !std::isfinite(scale) ||
-        !std::isfinite(sidebar_width) || width <= 0 || height <= 0 || scale <= 0) {
+        !std::isfinite(sidebar_width) || !std::isfinite(ui_font_size) || width <= 0 ||
+        height <= 0 || scale <= 0 || ui_font_size < 9 || ui_font_size > 16) {
         throw std::invalid_argument("Invalid workbench dimensions");
     }
     const auto logical_width = width / scale;
     const auto logical_height = height / scale;
+    if (!std::isfinite(logical_width) || !std::isfinite(logical_height))
+        throw std::invalid_argument("Workbench logical dimensions exceed finite range");
     // Keep the document usable when a narrow window cannot fit the requested sidebar.
     const auto activity_width = std::min(44.0F, logical_width);
     const auto available = std::max(0.0F, logical_width - activity_width - 360.0F);
     const auto side = sidebar && available >= 180.0F
                           ? std::min(std::clamp(sidebar_width, 180.0F, 480.0F), available)
                           : 0;
-    const auto top = std::min(32.0F, logical_height);
-    const auto status_top = std::max(top, logical_height - 24.0F);
-    const auto tab_bottom = std::min(status_top, top + 34.0F);
-    const auto text_top = std::min(status_top, tab_bottom + 24.0F);
+    const auto line_height = ui_font_size * 1.15F;
+    const auto physical_row_height =
+        std::max(24 * scale, std::ceil(line_height * scale + 8 * scale));
+    if (!std::isfinite(physical_row_height))
+        throw std::invalid_argument("Workbench font geometry exceeds finite range");
+    const auto heading_height = std::max(32.0F, std::ceil(line_height * 12 / 13 + 16));
+    const auto section_height = std::max(24.0F, std::ceil(line_height * 12 / 13 + 8));
+    const auto outline_height = std::max(26.0F, std::ceil(line_height * 11 / 13 + 8));
+    const auto top = std::min(heading_height, logical_height);
+    const auto status_top =
+        std::max(top, logical_height - std::max(24.0F, std::ceil(line_height * 11 / 13 + 10)));
+    const auto tab_bottom =
+        std::min(status_top, top + std::max(34.0F, std::ceil(line_height + 16)));
+    const auto text_top = std::min(status_top, tab_bottom + section_height);
     const auto left = activity_width + side;
-    const auto box = [scale](float x, float y, float w, float h) {
-        return Box{x * scale, y * scale, std::max(0.0F, w) * scale, std::max(0.0F, h) * scale};
+    const auto box = [scale, width, height](float x, float y, float w, float h) {
+        // Allocate shared edges on the actual pixel grid. Paint clips and pointer
+        // hit tests must agree even at fractional DPI and partial final regions.
+        const auto left = std::clamp(std::round(x * scale), 0.0F, width);
+        const auto top = std::clamp(std::round(y * scale), 0.0F, height);
+        const auto right = std::clamp(std::round((x + std::max(0.0F, w)) * scale), left, width);
+        const auto bottom = std::clamp(std::round((y + std::max(0.0F, h)) * scale), top, height);
+        return Box{left, top, right - left, bottom - top};
     };
     WorkbenchLayout result;
     result.scale = scale;
-    result.sidebar_row_height = 24 * scale;
+    result.sidebar_row_height = physical_row_height;
     result.header = box(0, 0, logical_width, top);
     const auto command_width = std::min(480.0F, logical_width * 0.44F);
     result.command_center = box((logical_width - command_width) / 2,
                                 std::min(5.0F, top),
                                 command_width,
-                                std::max(0.0F, std::min(22.0F, top - 10.0F)));
+                                std::max(0.0F, top - 10.0F));
     result.activity = box(0, top, activity_width, status_top - top);
     result.sidebar = box(activity_width, top, side, status_top - top);
+    const auto heading_bottom = std::min(status_top, top + heading_height);
+    const auto section_bottom = std::min(status_top, heading_bottom + section_height);
+    result.sidebar_heading = box(activity_width, top, side, heading_bottom - top);
+    const auto refresh_height = std::min(26.0F, heading_bottom - top);
+    result.sidebar_refresh = box(side > 0 ? left - 34 : left,
+                                 top + (heading_bottom - top - refresh_height) / 2,
+                                 side > 0 ? 28.0F : 0,
+                                 side > 0 ? refresh_height : 0);
+    result.sidebar_section =
+        box(activity_width, heading_bottom, side, section_bottom - heading_bottom);
     result.tabs = box(left, top, logical_width - left, tab_bottom - top);
     result.breadcrumb = box(left, tab_bottom, logical_width - left, text_top - tab_bottom);
     result.editor = box(left, text_top, logical_width - left, status_top - text_top);
     result.status = box(0, status_top, logical_width, logical_height - status_top);
     const auto outline_header =
         explorer && side > 0
-            ? std::max(std::min(top + 56.0F, status_top),
-                       status_top - (outline ? std::min(220.0F, (status_top - top) * 0.4F) : 26.0F))
+            ? std::max(section_bottom,
+                       status_top -
+                           (outline ? std::min(220.0F, (status_top - top) * 0.4F) : outline_height))
             : status_top;
-    result.sidebar_rows = box(activity_width,
-                              std::min(top + 56.0F, status_top),
-                              side,
-                              outline_header - std::min(top + 56.0F, status_top));
-    result.outline_header = box(activity_width,
-                                outline_header,
-                                side,
-                                explorer ? std::min(26.0F, status_top - outline_header) : 0);
+    result.sidebar_rows =
+        box(activity_width, section_bottom, side, outline_header - section_bottom);
+    result.outline_header =
+        box(activity_width,
+            outline_header,
+            side,
+            explorer ? std::min(outline_height, status_top - outline_header) : 0);
     result.outline_rows =
         box(activity_width,
             result.outline_header.bottom() / scale,

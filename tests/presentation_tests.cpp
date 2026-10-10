@@ -9,6 +9,7 @@
 #include <astra/ui/view_store.hpp>
 #include <astra/ui/view_rows_layout.hpp>
 #include <astra/ui/document_metadata.hpp>
+#include <astra/ui/workbench_chrome.hpp>
 #include <astra/ui/workbench_style.hpp>
 #include <astra/script/runtime.hpp>
 #include <astra/io/file_store.hpp>
@@ -1653,6 +1654,75 @@ TEST_CASE("presentation workbench layout stays bounded across DPI and narrow win
     CHECK(closed.sidebar.width == 0);
     CHECK_THROWS_AS((void)astra::ui::WorkbenchLayout::measure(0, 900, 1, true, 300, true, true),
                     std::invalid_argument);
+}
+
+TEST_CASE("presentation chrome shares font-aware bounded heading and action geometry") {
+    using astra::ui::WorkbenchChrome;
+    using astra::ui::WorkbenchLayout;
+    const auto baseline = WorkbenchLayout::measure(1440, 900, 1, true, 248, false, true);
+    CHECK(baseline.header.height == 32);
+    CHECK(baseline.status.height == 24);
+    CHECK(baseline.sidebar_heading.height == 32);
+    CHECK(baseline.sidebar_section.height == 24);
+    std::mt19937 random(0xA57A98);
+    for (int round = 0; round < 2000; ++round) {
+        const float scale = 0.75F + static_cast<float>(random() % 151) / 100;
+        const float width = 1 + static_cast<float>(random() % 1800);
+        const float height = 1 + static_cast<float>(random() % 1100);
+        const float font = 9 + static_cast<float>(random() % 701) / 100;
+        const auto layout = WorkbenchLayout::measure(
+            width * scale, height * scale, scale, true, 248, round % 2, round % 3, font);
+        CHECK(layout.header.bottom() <= height * scale + 0.001F);
+        CHECK(layout.sidebar_heading.bottom() == doctest::Approx(layout.sidebar_section.y));
+        CHECK(layout.sidebar_section.bottom() == doctest::Approx(layout.sidebar_rows.y));
+        CHECK(layout.sidebar_rows.bottom() == doctest::Approx(layout.outline_header.y));
+        CHECK(layout.outline_header.bottom() == doctest::Approx(layout.outline_rows.y));
+        CHECK(layout.editor.bottom() == doctest::Approx(layout.status.y));
+        CHECK(layout.sidebar_row_height >= 24 * scale);
+        CHECK(layout.sidebar_heading.height >= 0);
+        CHECK(layout.sidebar_section.height >= 0);
+        CHECK(layout.sidebar_refresh.height >= 0);
+        CHECK(layout.sidebar_refresh.bottom() <= layout.sidebar_heading.bottom() + 0.001F);
+        for (const auto [box, expected] :
+             {std::pair{layout.sidebar_heading, WorkbenchChrome::Target::heading},
+              std::pair{layout.sidebar_refresh, WorkbenchChrome::Target::refresh},
+              std::pair{layout.sidebar_section, WorkbenchChrome::Target::section},
+              std::pair{layout.outline_header, WorkbenchChrome::Target::outline}}) {
+            if (box.width <= 0 || box.height <= 0)
+                continue;
+            const auto x = expected == WorkbenchChrome::Target::heading ? box.x + 2 * scale
+                                                                        : box.x + box.width / 2;
+            const auto y = box.y + box.height / 2;
+            CAPTURE(round);
+            REQUIRE(box.contains(x, y));
+            CHECK(WorkbenchChrome::hit_sidebar(layout, x, y) == expected);
+        }
+        CHECK_FALSE(WorkbenchChrome::hit_sidebar(layout, layout.sidebar.right(), layout.sidebar.y));
+    }
+    for (const auto font : {0.0F, 8.0F, 17.0F, std::numeric_limits<float>::quiet_NaN()})
+        CHECK_THROWS(
+            static_cast<void>(WorkbenchLayout::measure(1440, 900, 1, true, 248, true, true, font)));
+    CHECK_THROWS(static_cast<void>(WorkbenchLayout::measure(
+        1, 1, std::numeric_limits<float>::denorm_min(), true, 248, true, true)));
+    CHECK_THROWS(static_cast<void>(
+        WorkbenchLayout::measure(1, 1, std::numeric_limits<float>::max(), true, 248, true, true)));
+    astra::ui::ViewStore store;
+    store.register_spec({{"id", "custom"},
+                         {"title", "Long custom title 中🙂"},
+                         {"outline", true},
+                         {"outlineTitle", "Symbols 中🙂"}});
+    const auto before = store.at("custom").spec;
+    CHECK(before.at("outlineTitle") == "Symbols 中🙂");
+    for (const auto bad : {"Bad\nCaption", "Bad\rCaption"}) {
+        auto candidate = before;
+        candidate["outlineTitle"] = bad;
+        CHECK_THROWS(store.register_spec(candidate));
+        CHECK(store.at("custom").spec == before);
+    }
+    auto too_long = before;
+    too_long["outlineTitle"] = std::string(129, 'x');
+    CHECK_THROWS(store.register_spec(too_long));
+    CHECK(store.at("custom").spec == before);
 }
 
 TEST_CASE("presentation tabs use measured labels reveal active tabs and expose close hits") {

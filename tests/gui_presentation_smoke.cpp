@@ -449,7 +449,8 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
                     throw Error('Sidebar input mutated document state');
                 await astra.ui.update({status:'Sidebar text isolated'});
             });
-            astra.ui.registerView({id:'acceptance-view',title:'Custom 中🙂',icon:'symbol',order:3},
+            astra.ui.registerView({id:'acceptance-view',title:'Custom 中🙂 '+ 'wide heading '.repeat(6),
+                icon:'symbol',order:3,outline:true,outlineTitle:'Symbols 中🙂'},
                 ({large,pause}, options) => ({
                     rows: (async function* () {
                         yield {id:'group',label:'Custom group',group:true,icon:'folder'};
@@ -1598,6 +1599,22 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         auto custom = window.view_state();
         require(custom.sidebar.at("id") == "acceptance-view" && custom.sidebar.at("total") == 602,
                 "Registered custom view was not presented");
+        const std::string expected_caption = "Custom 中🙂 wide heading wide heading wide heading "
+                                             "wide heading wide heading wide heading ";
+        require(custom.sidebar.at("title") == expected_caption &&
+                    custom.sidebar.at("outlineTitle") == "Symbols 中🙂",
+                "JS chrome captions did not retain their original identity");
+        const auto section = custom.layout.sidebar_section;
+        click(window, section.x + section.width / 2, section.y + section.height / 2);
+        require(window.view_state().sidebar.at("expanded") == false &&
+                    window.view_state().sidebar.at("viewport").at("painted") == 0,
+                "Shared section geometry did not collapse the indexed view");
+        click(window, section.x + section.width / 2, section.y + section.height / 2);
+        custom = window.view_state();
+        require(custom.sidebar.at("expanded") == true && custom.sidebar.at("total") == 602,
+                "Section re-expansion lost its source rows");
+        window.request_screenshot("build/graphics/gui-long-sidebar-heading.png");
+        settle(window);
         const auto& viewport = custom.sidebar.at("viewport");
         require(viewport.at("painted") == viewport.at("end").get<std::size_t>() -
                                               viewport.at("first").get<std::size_t>() &&
@@ -1677,7 +1694,15 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         const auto before_refresh = window.view_state().sidebar.at("version");
         window.execute_ui_command("acceptance.pauseRows");
         settle(window);
-        window.execute_ui_command("acceptance.refreshView");
+        const auto refresh_control = window.view_state().layout.sidebar_refresh;
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_DOWN,
+                      refresh_control.x + refresh_control.width / 2,
+                      refresh_control.y + refresh_control.height / 2);
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_UP,
+                      refresh_control.x + refresh_control.width / 2,
+                      refresh_control.y + refresh_control.height / 2);
         const auto pump_stream_until = [&](auto predicate) {
             const auto deadline = Clock::now() + std::chrono::seconds(10);
             while (!predicate()) {
@@ -1693,6 +1718,10 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         require(window.view_state().sidebar.at("version") == before_refresh &&
                     window.view_state().sidebar.at("total") == 602,
                 "A partial stream replaced the still interactive published view");
+        window.execute_ui_command("acceptance.focusView");
+        pump_stream_until([&] {
+            return window.view_state().sidebar.at("focused") == true;
+        });
         enqueue_key(window, SDLK_DOWN);
         pump_stream_until([&] {
             return window.view_state().sidebar.at("row").at("id") == "1";
@@ -1791,7 +1820,18 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         require(window.view_state().sidebar.at("version") == small_version,
                 "An unfinished large builder replaced the published source");
         enqueue_key(window, SDLK_HOME);
-        window.execute_ui_command("acceptance.cancelLarge");
+        pump_stream_until([&] {
+            return window.view_state().sidebar.at("row").at("id") == "group";
+        });
+        const auto cancel_control = window.view_state().layout.sidebar_refresh;
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_DOWN,
+                      cancel_control.x + cancel_control.width / 2,
+                      cancel_control.y + cancel_control.height / 2);
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_UP,
+                      cancel_control.x + cancel_control.width / 2,
+                      cancel_control.y + cancel_control.height / 2);
         settle(window);
         require(window.view_state().sidebar.at("version") == small_version &&
                     window.view_state().sidebar.at("total") == 602 &&
@@ -1799,6 +1839,8 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
                 "Large cancellation blocked input or changed the old snapshot");
         require(window.view_state().view_retirement.at("queued") == 0,
                 "Cancelled large builder was still retained after idle");
+        std::cout << "GUI workbench chrome: original JS Unicode captions, native collapse/expand, "
+                     "refresh and busy cancel hit identity with retained indexed rows: PASS\n";
         window.execute_ui_command("ui.explorer");
         settle(window);
         require(window.view_state().sidebar.at("focused") == true,
