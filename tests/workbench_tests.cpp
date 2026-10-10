@@ -1,5 +1,6 @@
 #include <astra/ui/workbench.hpp>
 #include <astra/ui/inline_form.hpp>
+#include <astra/ui/view_store.hpp>
 #include <astra/io/file_store.hpp>
 #include <doctest/doctest.h>
 
@@ -93,6 +94,31 @@ struct InlineHost {
             return ready(nullptr);
         }
         CHECK(method == "_ui.action");
+        return ready(nullptr);
+    }
+};
+
+struct ViewHost {
+    astra::ui::ViewStore views;
+    std::vector<Json> pages;
+
+    std::future<Json> operator()(std::string_view method, const Json& params) {
+        if (method == "_ui.view.begin")
+            return ready(views.begin(params.at("spec")));
+        if (method == "_ui.view.append") {
+            pages.push_back(params.at("rows"));
+            return ready(views.append(params.at("id").get<std::string>(),
+                                      params.at("version").get<std::string>(),
+                                      params.at("rows")));
+        }
+        if (method == "_ui.view.abort")
+            return ready(views.abort(params.at("id").get<std::string>(),
+                                     params.at("version").get<std::string>()));
+        if (method == "_ui.view.commit")
+            return views.commit(params.at("id").get<std::string>(),
+                                params.at("version").get<std::string>(),
+                                params.value("subtitle", std::string{}),
+                                params.value("empty", std::string{}));
         return ready(nullptr);
     }
 };
@@ -662,15 +688,29 @@ TEST_CASE("workbench cancelling a document read drains its native fence") {
 
 TEST_CASE("workbench provider generation prevents older results replacing newer views") {
     auto channel = std::make_shared<Channel>();
-    std::vector<Json> models;
+    astra::ui::ViewStore views;
+    std::size_t publications = 0;
     const auto source =
         "astra.ui.registerView({id:'explorer',title:'Files'},(p,o)=>astra.request('files',p,o)); "
         "astra.registerCommand('refresh',p=>astra.ui.refresh('explorer',p));";
     astra::ui::Workbench workbench(
         channel,
-        [&](std::string_view, const Json& params) {
-            if (params.contains("model")) {
-                models.push_back(params.at("model"));
+        [&](std::string_view method, const Json& params) -> std::future<Json> {
+            if (method == "_ui.view.begin")
+                return ready(views.begin(params.at("spec")));
+            if (method == "_ui.view.append")
+                return ready(views.append(params.at("id").get<std::string>(),
+                                          params.at("version").get<std::string>(),
+                                          params.at("rows")));
+            if (method == "_ui.view.abort")
+                return ready(views.abort(params.at("id").get<std::string>(),
+                                         params.at("version").get<std::string>()));
+            if (method == "_ui.view.commit") {
+                ++publications;
+                return views.commit(params.at("id").get<std::string>(),
+                                    params.at("version").get<std::string>(),
+                                    "",
+                                    "Empty");
             }
             return ready(nullptr);
         },
@@ -684,13 +724,126 @@ TEST_CASE("workbench provider generation prevents older results replacing newer 
     workbench.poll();
     workbench.poll();
     REQUIRE(channel->requests.size() == 2);
-    channel->reply({{"entries", Json::array({"old"})}});
-    channel->reply({{"entries", Json::array({"new"})}});
-    for (int tick = 0; tick < 8; ++tick) {
+    channel->reply({{"rows", Json::array({{{"id", "old"}, {"label", "Old"}}})}});
+    channel->reply({{"rows", Json::array({{{"id", "new"}, {"label", "New"}}})}});
+    for (int tick = 0; tick < 30; ++tick) {
+        views.poll();
         workbench.poll();
     }
-    REQUIRE(models.size() == 1);
-    CHECK(models[0]["entries"] == Json::array({"new"}));
+    REQUIRE(publications == 1);
+    REQUIRE(views.at("explorer").index.size() == 1);
+    CHECK(views.at("explorer").index.at(0).value->at("id") == "new");
+    CHECK(views.idle());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench custom views publish bounded Unicode pages and guard row action versions") {
+    auto channel = std::make_shared<Channel>();
+    ViewHost host;
+    const auto source = R"js(
+        const descriptor = {id:'custom',title:'Custom',icon:'symbol'};
+        astra.ui.registerView(descriptor, async () => ({
+            rows:Array.from({length:500}, (_,i) => ({
+                id:String(i), label:'中🙂'.repeat(100), data:{value:i}
+            }))
+        }), {activate:data => astra.request('edit',data)});
+        descriptor.id = 'mutated-after-registration';
+        descriptor.title = '';
+        astra.registerCommand('publish', () => astra.ui.refresh('custom'));
+        astra.registerCommand('invalid', async () => {
+            try {
+                await astra.ui.renderView('custom',{rows:[{id:'bad',label:'Bad',depth:1}]});
+            } catch (error) { return true; }
+            return false;
+        });
+    )js";
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            return host(method, params);
+        },
+        modules(),
+        source);
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("publish", Json::object(), [&](const auto& result) {
+        outcome = result;
+    });
+    for (int tick = 0; tick < 300 && !outcome; ++tick) {
+        host.views.poll();
+        workbench.poll();
+    }
+    REQUIRE(outcome);
+    REQUIRE_FALSE(outcome->error);
+    CHECK(outcome->value.get<bool>());
+    REQUIRE(host.views.at("custom").index.size() == 500);
+    REQUIRE(host.pages.size() > 5);
+    for (const auto& page : host.pages) {
+        CHECK(page.size() <= 128);
+        CHECK(page.dump().size() <= 60000);
+    }
+    const auto version = host.views.at("custom").version;
+    const auto row = *host.views.at("custom").index.at(17).value;
+    workbench.emit("ui.view.action", {{"id", "custom"}, {"version", "obsolete"}, {"row", row}});
+    for (int tick = 0; tick < 10; ++tick)
+        workbench.poll();
+    CHECK(channel->requests.empty());
+    workbench.emit("ui.view.action", {{"id", "custom"}, {"version", version}, {"row", row}});
+    for (int tick = 0; tick < 10; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "edit");
+    CHECK(channel->requests.front().body.at("params").at("value") == 17);
+    channel->reply(nullptr);
+    outcome.reset();
+    workbench.execute("invalid", Json::object(), [&](const auto& result) {
+        outcome = result;
+    });
+    for (int tick = 0; tick < 100 && !outcome; ++tick) {
+        host.views.poll();
+        workbench.poll();
+    }
+    REQUIRE(outcome);
+    REQUIRE_FALSE(outcome->error);
+    CHECK(outcome->value.get<bool>());
+    CHECK(host.views.at("custom").version == version);
+    CHECK(host.views.at("custom").index.size() == 500);
+    CHECK(host.views.idle());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench view cancellation releases an unresolved native publication fence") {
+    auto channel = std::make_shared<Channel>();
+    ViewHost host;
+    const auto source = R"js(
+        astra.ui.registerView({id:'custom',title:'Custom'}, async () => ({
+            rows:[{id:'row',label:'Row'}]
+        }));
+        astra.registerCommand('publish',() => astra.ui.refresh('custom'));
+        astra.registerCommand('cancel',() => astra.ui.cancel('custom'));
+    )js";
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            return host(method, params);
+        },
+        modules(),
+        source);
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("publish", Json::object(), [&](const auto& result) {
+        outcome = result;
+    });
+    for (int tick = 0; tick < 30; ++tick)
+        workbench.poll();
+    REQUIRE_FALSE(outcome);
+    REQUIRE_FALSE(host.views.idle());
+    REQUIRE(host.views.at("custom").index.size() == 0);
+    workbench.execute("cancel", Json::object(), {});
+    for (int tick = 0; tick < 100 && !workbench.idle(); ++tick)
+        workbench.poll();
+    REQUIRE(outcome);
+    CHECK_FALSE(outcome->error);
+    CHECK(host.views.idle());
+    CHECK(host.views.at("custom").index.size() == 0);
     CHECK(workbench.idle());
 }
 
@@ -1806,16 +1959,17 @@ TEST_CASE(
 TEST_CASE("workbench Git discard awaits confirmation and retains its exact preview") {
     auto channel = std::make_shared<Channel>();
     std::promise<Json> confirmation;
+    ViewHost views;
     astra::ui::Workbench workbench(
         channel,
-        [&](std::string_view method, const Json&) {
+        [&](std::string_view method, const Json& params) {
             if (method == "_ui.read")
                 return ready({{"gitPath", "file.cpp"},
                               {"gitStaged", false},
                               {"gitPreview", "captured-preview"}});
             if (method == "_ui.dialog")
                 return confirmation.get_future();
-            return ready(nullptr);
+            return views(method, params);
         },
         modules());
     workbench.execute("ui.gitDiscard", Json::object(), {});
@@ -1830,13 +1984,17 @@ TEST_CASE("workbench Git discard awaits confirmation and retains its exact previ
     CHECK(channel->requests.front().body.at("method") == "git.discard");
     CHECK(channel->requests.front().body.at("params").at("previewId") == "captured-preview");
     channel->reply({{"entries", Json::array()}});
-    for (int tick = 0; tick < 4; ++tick)
+    for (int tick = 0; tick < 50 && channel->requests.empty(); ++tick) {
+        views.views.poll();
         workbench.poll();
+    }
     REQUIRE(channel->requests.size() == 1);
     CHECK(channel->requests.front().body.at("method") == "workspace.tree");
     channel->reply({{"entries", Json::array()}});
-    for (int tick = 0; tick < 6; ++tick)
+    for (int tick = 0; tick < 50; ++tick) {
+        views.views.poll();
         workbench.poll();
+    }
     CHECK(workbench.idle());
 }
 

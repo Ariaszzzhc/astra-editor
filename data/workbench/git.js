@@ -30,7 +30,6 @@ export function registerGit() {
     });
     ui.registerCommand({ id: 'ui.gitCommit', title: 'Commit staged changes' }, async () => {
         const model = await request('git.status');
-        await ui.update({ view: 'git', model });
         if (
             !model.entries.some(
                 (entry) => entry.staged !== 'unchanged' && entry.staged !== 'untracked'
@@ -39,6 +38,7 @@ export function registerGit() {
             await ui.update({ status: 'No staged changes to commit' });
             return;
         }
+        await ui.renderView('git', model);
         const message = await ui.input({ title: 'COMMIT STAGED CHANGES — COMMIT MESSAGE' });
         if (!message) return;
         await request('git.commit', { message });
@@ -61,13 +61,43 @@ export function registerGit() {
             )
                 return;
             const model = await request('git.discard', { previewId });
-            await ui.update({ view: 'git', model });
+            await ui.renderView('git', model);
             await ui.refresh('explorer');
             await ui.update({ status: 'Working tree change discarded' });
         }
     );
-    ui.registerView({ id: 'git', title: 'Source Control', icon: 'branch' }, (_, options) =>
-        request('git.status', {}, options)
+    ui.registerView(
+        { id: 'git', title: 'Source Control', icon: 'branch', order: 2 },
+        (_, options) => request('git.status', {}, options),
+        {
+            show: () => ui.execute('ui.gitStatus'),
+            activate: (entry) =>
+                ui.execute('workbench.gitDiff', {
+                    path: entry.path,
+                    staged: entry.unstaged === 'unchanged'
+                }),
+            async project(model, options) {
+                const rows = [];
+                for (const entry of model.entries) {
+                    const change = entry.unstaged !== 'unchanged' ? entry.unstaged : entry.staged;
+                    rows.push({
+                        id: entry.path,
+                        label: entry.path.split(/[\\/]/).pop(),
+                        icon: 'document',
+                        badge: change === 'untracked' ? 'U' : change.slice(0, 1).toUpperCase(),
+                        tone: entry.conflict ? 'error' : 'added',
+                        data: entry
+                    });
+                    if (rows.length % 128 === 0) await astra.sleep(0, options);
+                }
+                return {
+                    rows,
+                    subtitle: model.branch,
+                    empty: 'No changes',
+                    metadata: { branch: model.branch }
+                };
+            }
+        }
     );
     ui.registerCommand(
         { id: 'ui.gitStatus', title: 'Source control: refresh changes', shortcut: 'Ctrl+Shift+G' },
@@ -87,9 +117,8 @@ export function registerGit() {
                     path = state.gitPath || state.document?.path;
                 if (!path) return;
                 const model = await request(method, { paths: [path] });
+                await ui.renderView('git', model);
                 await ui.update({
-                    view: 'git',
-                    model,
                     status: 'Git index updated',
                     dismissPrompt: true
                 });

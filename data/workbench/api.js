@@ -136,23 +136,110 @@ export const ui = {
         astra.registerCommand(spec.id, handler);
         if (spec.shortcut) astra.bind(spec.shortcut, spec.id);
     },
-    registerView(spec, provider) {
-        if (!spec?.id || !spec?.title || typeof provider !== 'function')
+    registerView(spec, provider, handlers = {}) {
+        if (
+            typeof spec?.id !== 'string' ||
+            !spec.id ||
+            typeof spec?.title !== 'string' ||
+            !spec.title ||
+            typeof provider !== 'function'
+        )
             throw new TypeError('Invalid view provider');
-        providers.set(spec.id, provider);
-        astra.configure({ workbench: { views: { [spec.id]: spec } } });
+        if (!handlers || typeof handlers !== 'object') throw new TypeError('Invalid view handlers');
+        const specification = Object.freeze({
+            id: spec.id,
+            title: spec.title,
+            icon: spec.icon ?? 'files',
+            order: spec.order ?? 0,
+            outline: spec.outline ?? false
+        });
+        const callbacks = Object.freeze({ ...handlers });
+        astra.configure({ workbench: { views: { [specification.id]: specification } } });
+        generations.get(spec.id)?.abort();
+        publishedViews.delete(spec.id);
+        providers.set(specification.id, {
+            spec: specification,
+            provider,
+            handlers: callbacks,
+            parameters: {}
+        });
+    },
+    async showView(id) {
+        const view = providers.get(id);
+        if (!view) throw new Error(`Unknown view: ${id}`);
+        if (view.handlers.show) return await view.handlers.show();
+        await ui.update({ sidebar: id, sidebarVisible: true });
+        if (!publishedViews.has(id)) await ui.refresh(id, view.parameters);
+    },
+    async renderView(id, model, options = {}) {
+        const view = providers.get(id);
+        if (!view) throw new Error(`Unknown view: ${id}`);
+        options.signal?.throwIfAborted();
+        // Always receive this owner-local identity so cancellation can release it.
+        const version = await request('_ui.view.begin', { spec: view.spec });
+        let cancellation;
+        const abort = () => {
+            cancellation = request('_ui.view.abort', { id, version });
+        };
+        options.signal?.addEventListener('abort', abort);
+        try {
+            options.signal?.throwIfAborted();
+            const presentation = view.handlers.project
+                ? await view.handlers.project(model, options)
+                : model;
+            if (!Array.isArray(presentation.rows))
+                throw new TypeError('View providers must supply rows');
+            let page = [],
+                bytes = 2;
+            for (const row of presentation.rows) {
+                const length = astra.utf8ByteLength(JSON.stringify(row)) + 1;
+                if (page.length && (page.length === 128 || bytes + length > 60000)) {
+                    if (!(await request('_ui.view.append', { id, version, rows: page }, options)))
+                        return false;
+                    page = [];
+                    bytes = 2;
+                    await astra.sleep(0, options);
+                }
+                page.push(row);
+                bytes += length;
+            }
+            if (
+                page.length &&
+                !(await request('_ui.view.append', { id, version, rows: page }, options))
+            )
+                return false;
+            const published = await request(
+                '_ui.view.commit',
+                {
+                    id,
+                    version,
+                    subtitle: presentation.subtitle || '',
+                    empty: presentation.empty || 'No items'
+                },
+                options
+            );
+            if (!published) return false;
+            publishedViews.set(id, version);
+            if (presentation.metadata)
+                await ui.update({ view: id, model: presentation.metadata, viewVersion: version });
+            return true;
+        } finally {
+            options.signal?.removeEventListener('abort', abort);
+            await (cancellation || request('_ui.view.abort', { id, version }));
+        }
     },
     async refresh(id, parameters = {}) {
-        const provider = providers.get(id);
-        if (!provider) throw new Error(`Unknown view: ${id}`);
+        const view = providers.get(id);
+        if (!view) throw new Error(`Unknown view: ${id}`);
         generations.get(id)?.abort();
         const controller = new AbortController();
         generations.set(id, controller);
-        await ui.update({ busy: { [id]: true } });
+        view.parameters = parameters;
         try {
-            const model = await provider(parameters, { signal: controller.signal });
+            await ui.update({ busy: { [id]: true } });
+            const model = await view.provider(parameters, { signal: controller.signal });
             if (generations.get(id) === controller && !controller.signal.aborted) {
-                await ui.update({ view: id, model });
+                return await ui.renderView(id, model, { signal: controller.signal });
             }
         } catch (error) {
             if (error.name !== 'AbortError' && generations.get(id) === controller) throw error;
@@ -168,6 +255,7 @@ export const ui = {
     }
 };
 const providers = new Map();
+const publishedViews = new Map();
 const generations = new Map();
 const activeChoices = new Map();
 const activeConfirmations = new Map();
@@ -252,4 +340,19 @@ async function dialog(kind, spec, options = {}, identity) {
     }
 }
 astra.ui = ui;
+astra.on('ui.view.action', async ({ id, version, row }) => {
+    if (publishedViews.get(id) !== version) return;
+    await providers.get(id)?.handlers.activate?.(row.data, row);
+});
+ui.registerCommand(
+    { id: 'workbench.showView', title: 'Show registered view', palette: false },
+    ({ id }) => ui.showView(id)
+);
+ui.registerCommand(
+    { id: 'workbench.refreshView', title: 'Refresh registered view', palette: false },
+    ({ id }) => {
+        const view = providers.get(id);
+        return ui.refresh(id, view?.parameters);
+    }
+);
 export { request };

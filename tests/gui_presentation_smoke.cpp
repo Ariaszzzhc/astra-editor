@@ -102,6 +102,27 @@ void run(const fs::path& workspace) {
         options.resource_directory = fs::current_path();
         options.open_paths = {"one.cpp"};
         options.user_script = R"js(if(astra.context==='client') {
+            astra.ui.registerView({id:'acceptance-view',title:'Custom 中🙂',icon:'symbol',order:3},
+                async () => ({rows:[
+                    {id:'group',label:'Custom group',group:true,icon:'folder'},
+                    ...Array.from({length:600},(_,index) => ({
+                        id:String(index),label:'Custom row '+index+' 中🙂',depth:1,
+                        icon:'symbol',data:{index}
+                    })),
+                    {id:'tail',label:'Final row',data:{index:600}}
+                ],subtitle:'Registered by JavaScript'}), {
+                    activate:({index}) => astra.ui.update({status:'Custom row '+index+' 中🙂'})
+                });
+            astra.registerCommand('acceptance.view',() => astra.ui.showView('acceptance-view'));
+            astra.registerCommand('acceptance.invalidView',async () => {
+                try {
+                    await astra.ui.renderView('acceptance-view',{
+                        rows:[{id:'invalid',label:'Invalid',depth:1}]
+                    });
+                } catch (error) {
+                    await astra.ui.update({status:'Invalid view retained old rows'});
+                }
+            });
             let backgroundOpenComplete=false;
             astra.registerCommand('acceptance.backgroundOpen',async()=>{
                 await astra.sleep(100);
@@ -406,6 +427,36 @@ void run(const fs::path& workspace) {
                                   static_cast<int>(900 * state.layout.scale)),
                 "Cannot restore from vertical choices");
         settle(window);
+        window.execute_ui_command("acceptance.view");
+        settle(window);
+        auto custom = window.view_state();
+        require(custom.sidebar.at("id") == "acceptance-view" && custom.sidebar.at("total") == 602,
+                "Registered custom view was not presented");
+        click(window,
+              custom.layout.sidebar_rows.x + 45 * custom.layout.scale,
+              custom.layout.sidebar_rows.y + custom.layout.sidebar_row_height / 2);
+        require(window.view_state().sidebar.at("total") == 2,
+                "Custom view group did not collapse through the generic index");
+        click(window,
+              custom.layout.sidebar_rows.x + 45 * custom.layout.scale,
+              custom.layout.sidebar_rows.y + custom.layout.sidebar_row_height / 2);
+        custom = window.view_state();
+        require(custom.sidebar.at("total") == 602, "Custom group did not expand");
+        click(window,
+              custom.layout.sidebar_rows.x + 65 * custom.layout.scale,
+              custom.layout.sidebar_rows.y + custom.layout.sidebar_row_height * 1.5F);
+        require(window.status_text() == "Custom row 0 中🙂",
+                "Native custom row did not invoke JavaScript");
+        const auto version = window.view_state().sidebar.at("version");
+        window.execute_ui_command("acceptance.invalidView");
+        settle(window);
+        custom = window.view_state();
+        require(custom.sidebar.at("version") == version && custom.sidebar.at("total") == 602,
+                "Failed custom view publication replaced its valid snapshot");
+        require(window.status_text() == "Invalid view retained old rows",
+                "View failure did not settle JS");
+        window.request_screenshot("build/graphics/gui-custom-view.png");
+        settle(window);
         window.execute_ui_command("acceptance.waiters");
         settle(window);
         require(window.status_text() == "Concurrent waits settled",
@@ -440,8 +491,8 @@ int main() {
         require(issues.empty(), "Presentation fixture cleanup failed");
         std::cout << "Windows native workbench: 1505 indexed files, folder collapse, splitter, "
                      "paged Outline scrolling/selection, shaped tabs, drag reorder, overflow, "
-                     "resize, same-frame open/save focus, async picker/text/review cancellation "
-                     "and shutdown: PASS\n";
+                     "resize, same-frame open/save focus, async picker/text/review cancellation, "
+                     "custom JS views, guarded publication, and shutdown: PASS\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "GUI presentation failed: " << error.what()

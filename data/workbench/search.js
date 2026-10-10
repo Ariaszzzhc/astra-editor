@@ -251,7 +251,7 @@ export function registerSearch() {
         documentForm = undefined;
     });
     ui.registerView(
-        { id: 'search', title: 'Search', icon: 'search' },
+        { id: 'search', title: 'Search', icon: 'search', order: 1 },
         async (parameters, options) => {
             const matches = [];
             const issues = [];
@@ -300,6 +300,53 @@ export function registerSearch() {
                     await astra.request('operation.cancel', { id: operationId }, { raw: true });
             }
             return { matches, truncated, issues, operationId };
+        },
+        {
+            show: () => ui.execute('ui.search'),
+            async project(model, options) {
+                const rows = [];
+                for (const match of model.matches) {
+                    rows.push({
+                        id: `${rows.length}`,
+                        label: `${match.path.split(/[\\/]/).pop()}:${match.line + 1}`,
+                        icon: 'document',
+                        data: match
+                    });
+                    if (rows.length % 128 === 0) await astra.sleep(0, options);
+                }
+                return {
+                    rows,
+                    subtitle: `${rows.length} matches`,
+                    empty: 'No search results',
+                    metadata: model
+                };
+            },
+            async activate(match) {
+                const buffer = match.source === 'buffer';
+                const document = await request(
+                    buffer ? 'document.get' : 'workspace.open',
+                    buffer ? { id: match.documentId, begin: 0, end: 0 } : { path: match.path }
+                );
+                await ui.update({ document, activate: document.id });
+                if (
+                    (buffer && document.revision !== match.revision) ||
+                    (!buffer && document.dirty)
+                ) {
+                    await ui.update({
+                        status: 'Search result changed; search again to locate the match'
+                    });
+                    return;
+                }
+                const selected = await request('document.setSelections', {
+                    id: document.id,
+                    baseRevision: document.revision,
+                    selections: [{ anchor: match.begin, head: match.end }]
+                });
+                await ui.update({
+                    document: selected,
+                    scrollLine: { id: document.id, line: match.line }
+                });
+            }
         }
     );
     ui.registerCommand(

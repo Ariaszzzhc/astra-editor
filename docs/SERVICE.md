@@ -331,9 +331,54 @@ total, and `nextOffset` is null at the end. Omitting outline rows still returns
 their total. Native Outline requests its viewport range through the measured
 semantic index and rejects obsolete pages for pointer selection.
 
-`astra.ui.registerView(spec, provider)` supplies an async model provider;
-`refresh(id, parameters)` cancels older refreshes and only the current generation
-can publish. Current native sidebar model kinds are `explorer`, `search`, `git`.
+`astra.ui.registerView(spec, provider, handlers = {})` registers a sidebar view.
+The activity bar uses a snapshot of the registered `id`, `title`, `icon`, `order` (0..31) and
+optional `outline` flag. Registration installs local policy; it performs no I/O.
+At most 16 views may be presented. Activity icons are `files`, `search`, `branch`,
+`braces` or `symbol`. The default Explorer, Search and Source Control use the same
+native row renderer and publication path as custom views.
+
+The async provider receives `(parameters, {signal})` and returns
+`{rows, subtitle?, empty?}`. Each row has stable `id`, single-line `label`, optional
+`icon`, `badge`, `tone`, `depth`, `group`, `selected` and JSON `data`.
+Group descendants follow their parent in preorder; depth may increase only one
+level after a group. Depth is 0..64. Native group folding uses the measured index.
+`handlers.activate(data, row)` is awaited for leaf activation; late events from
+replaced view generations are discarded. `handlers.show()` can customize showing
+a view. Built-in providers use an async `handlers.project(model, options)` to
+translate service data into these rows; extensions normally return rows directly.
+
+`await astra.ui.showView(id)` selects a registered view, refreshing its first
+presentation. `await astra.ui.refresh(id, parameters)` cancels older refreshes;
+`await astra.ui.renderView(id, model, {signal?})` directly publishes a model.
+Both return true for an accepted publication, false for a superseded publication;
+refresh cancellation may return undefined. `astra.ui.cancel(id)` signals the
+current provider locally. Providers must honor their signal for external work.
+
+Publication uses owner-local begin/append/commit/abort identities. The JS wrapper
+sends at most 128 rows and 60,000 UTF-8 bytes per page, yielding between pages;
+the native boundary rejects more than 256 rows or 64 KiB per page, 100,000 total
+rows or 32 MiB of serialized pages. Row ids/labels are at most 4 KiB and row data
+at most 8 KiB. Malformed rows, duplicate ids, invalid hierarchy and invalid UTF-8
+are rejected before altering the builder. A failed or cancelled replacement keeps
+the last published snapshot interactive when rejected before publication. Native fold filtering advances at most
+128 rows of work per pump, restarting if the old view's fold state changes. The
+commit Promise settles only after atomic publication; shutdown cancels pending
+publication fences. No production drawing backend is replaced.
+
+```javascript
+astra.ui.registerView(
+    { id: 'favorites', title: 'Favorites', icon: 'symbol', order: 3 },
+    async (_, { signal }) => {
+        signal.throwIfAborted();
+        return {
+            rows: [{ id: 'readme', label: 'README.md', icon: 'document', data: { path: 'README.md' } }]
+        };
+    },
+    { activate: ({ path }) => astra.ui.execute('workbench.open', { path }) }
+);
+await astra.ui.showView('favorites');
+```
 
 `astra.ui.forms.open(spec)` returns a Promise for a retained nonmodal input form.
 The acknowledgement is `{id, version, values}`; it does not await dismissal or

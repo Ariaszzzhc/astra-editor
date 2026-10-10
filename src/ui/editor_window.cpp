@@ -2,7 +2,7 @@
 #include "astra/ui/renderer.hpp"
 #include "astra/ui/text_layout.hpp"
 #include "astra/ui/workbench.hpp"
-#include "astra/ui/file_tree_index.hpp"
+#include "astra/ui/view_store.hpp"
 #include "astra/ui/icons.hpp"
 #include "astra/ui/text_line_index.hpp"
 #include "astra/ui/picker_index.hpp"
@@ -48,6 +48,22 @@ std::string lower_ascii(std::string text) {
 std::string basename(std::string_view path) {
     const auto slash = path.find_last_of("/\\");
     return std::string(path.substr(slash == std::string_view::npos ? 0 : slash + 1));
+}
+
+Icon view_icon(std::string_view name) {
+    const std::pair<std::string_view, Icon> icons[] = {{"files", Icon::files},
+                                                       {"search", Icon::search},
+                                                       {"branch", Icon::branch},
+                                                       {"braces", Icon::braces},
+                                                       {"symbol", Icon::symbol},
+                                                       {"folder", Icon::folder},
+                                                       {"code", Icon::code},
+                                                       {"function", Icon::function},
+                                                       {"warning", Icon::warning}};
+    for (const auto& [id, icon] : icons)
+        if (id == name)
+            return icon;
+    return Icon::document;
 }
 
 std::string normalized_binding(std::string_view binding) {
@@ -246,12 +262,12 @@ struct EditorWindow::Impl {
                                                  {"variable", 0xFF9CDCFE},
                                                  {"heading", 0xFF569CD6},
                                                  {"error", 0xFFF44747}};
-    FileTreeIndex file_tree;
+    ViewStore sidebar_views;
+    std::string active_view{"explorer"};
     Json search_results = Json::array();
     std::string search_query;
     std::string search_operation;
     std::string replacement_text;
-    bool search_view{};
     bool replacing_workspace{};
     bool search_case_sensitive{true};
     bool search_regex{};
@@ -260,7 +276,6 @@ struct EditorWindow::Impl {
     std::map<std::string, std::string> workspace_notices;
     std::string watch_error;
     std::string replace_notice;
-    bool git_view{};
     Json git_status = Json::object();
     std::string git_path;
     std::string git_preview;
@@ -268,7 +283,6 @@ struct EditorWindow::Impl {
     std::map<std::size_t, TextLayout> git_diff_layouts;
     float git_diff_layout_scale{};
     bool git_staged{};
-    std::size_t tree_scroll{};
     std::map<std::string, TextLayout> labels;
     float scale{1};
     float row_height{26};
@@ -279,7 +293,6 @@ struct EditorWindow::Impl {
     float gutter{};
     bool show_sidebar{true};
     bool show_outline{};
-    bool explorer_expanded{true};
     float sidebar_width{248};
     float ui_font_size{13};
     WorkbenchLayout geometry;
@@ -368,6 +381,12 @@ struct EditorWindow::Impl {
                 if (method == "_ui.barrier" || method == "_ui.window.close") {
                     return begin_fence(method, params);
                 }
+                if (method == "_ui.view.commit") {
+                    return sidebar_views.commit(params.at("id").get<std::string>(),
+                                                params.at("version").get<std::string>(),
+                                                params.value("subtitle", std::string{}),
+                                                params.value("empty", std::string("No items")));
+                }
                 if (method == "_ui.action" &&
                     params.at("command").get<std::string>().starts_with("editor.")) {
                     return begin_edit(params);
@@ -382,6 +401,8 @@ struct EditorWindow::Impl {
             },
             modules,
             options.user_script);
+        for (const auto& spec : workbench->settings().at("workbench").at("views"))
+            sidebar_views.register_spec(spec);
         scale = renderer.dpi_scale();
         SDL_Rect usable{};
         if (SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(renderer.window()), &usable)) {
@@ -735,7 +756,6 @@ struct EditorWindow::Impl {
     std::future<Json> begin_dialog(const Json& spec);
     void finish_dialog(Json value);
     void search_workspace(bool replace);
-    void open_search_result(const Json& match);
     [[nodiscard]] std::string newline(const Document* document) const;
     void event(const SDL_Event& event);
     void key(const SDL_KeyboardEvent& key);
@@ -1482,7 +1502,8 @@ void EditorWindow::Impl::close_document(const std::string& id, bool discard) {
 
 bool EditorWindow::Impl::native_idle() const {
     return requests.empty() && !active_request && operations.empty() && pending_edits.empty() &&
-           pending_reads.empty() && closing_pending.empty() && form_events.empty();
+           pending_reads.empty() && closing_pending.empty() && form_events.empty() &&
+           sidebar_views.idle();
 }
 
 void EditorWindow::Impl::emit_form(std::string_view event, std::string_view action) {
@@ -1755,9 +1776,18 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         return close_inline_form(params.at("id").get<std::string>());
     if (method == "_ui.form.update")
         return inline_form && inline_form->update(params);
+    if (method == "_ui.view.begin")
+        return sidebar_views.begin(params.at("spec"));
+    if (method == "_ui.view.append")
+        return sidebar_views.append(params.at("id").get<std::string>(),
+                                    params.at("version").get<std::string>(),
+                                    params.at("rows"));
+    if (method == "_ui.view.abort")
+        return sidebar_views.abort(params.at("id").get<std::string>(),
+                                   params.at("version").get<std::string>());
     if (method == "_ui.read") {
         Json result{{"sidebarVisible", show_sidebar},
-                    {"sidebar", git_view ? "git" : (search_view ? "search" : "explorer")},
+                    {"sidebar", active_view},
                     {"outlineVisible", show_outline},
                     {"tabs", tabs},
                     {"gitPath", prompt == Prompt::git_diff ? git_path : std::string{}},
@@ -1796,6 +1826,10 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
     if (!params.is_object()) {
         throw protocol::RpcError(-32602, "UI updates require an object");
     }
+    if (params.contains("viewVersion") &&
+        sidebar_views.at(params.at("view").get<std::string>()).version !=
+            params.at("viewVersion").get<std::string>())
+        return false;
     if (params.contains("gitDiff") && dialog) {
         throw protocol::RpcError(-32004, "Dismiss the active dialog before showing a comparison");
     }
@@ -1824,12 +1858,8 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             show_outline = value.get<bool>();
         } else if (name == "sidebar") {
             const auto view = value.get<std::string>();
-            if (view != "explorer" && view != "search" && view != "git") {
-                throw protocol::RpcError(-32602, "Unknown sidebar view");
-            }
-            search_view = view == "search";
-            git_view = view == "git";
-            tree_scroll = 0;
+            static_cast<void>(sidebar_views.at(view));
+            active_view = view;
         } else if (name == "document" ||
                    name == "documents") { /* Applied before activation above. */
         } else if (name == "activate") {
@@ -1885,7 +1915,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             }
         } else if (name == "busy") {
             busy_views.merge_patch(value);
-        } else if (name != "view" && name != "model") {
+        } else if (name != "view" && name != "model" && name != "viewVersion") {
             throw protocol::RpcError(-32602, "Unknown UI update field: " + name);
         }
     }
@@ -1893,7 +1923,6 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         const auto view = params.at("view").get<std::string>();
         const auto& model = params.at("model");
         if (view == "explorer") {
-            file_tree.reset(model.at("entries"));
             status = model.value("truncated", false) ? "File tree reached its configured limit"
                                                      : "Workspace ready";
         } else if (view == "git") {
@@ -1999,10 +2028,8 @@ void EditorWindow::Impl::native_command(std::string_view name) {
             doc->needs_lines = true;
         }
     } else if (name == "ui.explorer") {
+        active_view = "explorer";
         show_sidebar = true;
-        search_view = false;
-        git_view = false;
-        tree_scroll = 0;
     } else if (name == "ui.toggleOutline") {
         show_outline = !show_outline;
     } else if (name == "ui.refreshTree") {
@@ -2172,10 +2199,9 @@ void EditorWindow::Impl::accept_prompt() {
 }
 
 void EditorWindow::Impl::search_workspace(bool replace) {
-    search_view = true;
-    git_view = false;
+    active_view = "search";
     show_sidebar = true;
-    tree_scroll = 0;
+    sidebar_views.at(active_view).scroll = 0;
     replacing_workspace = replace;
     status = "Searching workspace and unsaved buffers...";
     search_results.clear();
@@ -2186,44 +2212,6 @@ void EditorWindow::Impl::search_workspace(bool replace) {
                     {"caseSensitive", search_case_sensitive},
                     {"regex", search_regex},
                     {"wholeWord", search_whole_word}});
-}
-
-void EditorWindow::Impl::open_search_result(const Json& match) {
-    if (match.value("source", std::string("disk")) == "buffer") {
-        const auto id = match.at("documentId").get<std::string>();
-        enqueue({"document.get",
-                 {{"id", id}, {"begin", 0}, {"end", 0}},
-                 {},
-                 false,
-                 [this, match, id](const Json& result) {
-                     accept_metadata(result);
-                     activate(id);
-                     if (result.at("revision") != match.at("revision")) {
-                         status = "Search result changed; search again to locate the match";
-                         return;
-                     }
-                     set_selections(
-                         Json::array({{{"anchor", match.at("begin")}, {"head", match.at("end")}}}),
-                         result.at("revision").get<std::string>());
-                     documents.at(id).first_line = match.at("line").get<std::size_t>();
-                     documents.at(id).needs_lines = true;
-                 },
-                 {}});
-        return;
-    }
-    start_operation(
-        "workspace.open", {{"path", match.at("path")}}, [this, match](const Json& result) {
-            accept_metadata(result);
-            activate(result.at("id").get<std::string>());
-            if (result.value("dirty", false)) {
-                status = "Disk result opened; buffer has unsaved changes";
-                return;
-            }
-            set_selections(
-                Json::array({{{"anchor", match.at("begin")}, {"head", match.at("end")}}}));
-            documents.at(active_id).first_line = match.at("line").get<std::size_t>();
-            documents.at(active_id).needs_lines = true;
-        });
 }
 
 void EditorWindow::Impl::vertical(bool down, bool extend) {
@@ -2969,16 +2957,12 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             const auto index = static_cast<int>((mouse_y - geometry.activity.y) / (48 * scale));
             if (mouse_y > geometry.status.y - 40 * scale)
                 command("ui.commandPalette");
-            else if (index == 1) {
-                git_view = false;
-                show_sidebar = true;
-                command("ui.search");
-            } else if (index == 2)
-                command("ui.gitStatus");
-            else if (index == 3)
-                command("ui.diagnostics");
-            else
-                command("ui.explorer");
+            else {
+                const auto views = sidebar_views.ordered();
+                if (index >= 0 && static_cast<std::size_t>(index) < views.size())
+                    execute_policy("workbench.showView",
+                                   {{"id", views[static_cast<std::size_t>(index)]}});
+            }
             break;
         }
         if (geometry.outline_header.contains(mouse_x, mouse_y)) {
@@ -2989,18 +2973,15 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             const Box refresh{
                 left - 34 * scale, geometry.sidebar.y + 5 * scale, 28 * scale, 26 * scale};
             if (refresh.contains(mouse_x, mouse_y)) {
-                const auto view = git_view ? "git" : (search_view ? "search" : "explorer");
+                const auto& view = active_view;
                 if (busy_views.value(view, false))
                     execute_policy("workbench.cancelView", {{"id", view}});
-                else if (git_view)
-                    command("ui.gitStatus");
-                else if (search_view)
-                    search_workspace(false);
                 else
-                    command("ui.refreshTree");
-            } else if (!git_view && !search_view && mouse_y >= geometry.sidebar.y + 32 * scale) {
-                explorer_expanded = !explorer_expanded;
-                tree_scroll = 0;
+                    execute_policy("workbench.refreshView", {{"id", view}});
+            } else if (mouse_y >= geometry.sidebar.y + 32 * scale) {
+                auto& view = sidebar_views.at(active_view);
+                view.expanded = !view.expanded;
+                view.scroll = 0;
             }
             break;
         }
@@ -3020,28 +3001,22 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             break;
         }
         if (geometry.sidebar_rows.contains(mouse_x, mouse_y)) {
-            if (!git_view && !search_view && !explorer_expanded)
+            auto& view = sidebar_views.at(active_view);
+            if (!view.expanded)
                 break;
             const auto row =
-                tree_scroll + static_cast<std::size_t>((mouse_y - geometry.sidebar_rows.y) /
+                view.scroll + static_cast<std::size_t>((mouse_y - geometry.sidebar_rows.y) /
                                                        geometry.sidebar_row_height);
-            if (git_view) {
-                const auto entries = git_status.value("entries", Json::array());
-                if (row < entries.size()) {
-                    const auto& entry = entries[row];
-                    const auto staged = entry.at("unstaged") == "unchanged";
-                    fetch_git_diff(entry.at("path").get<std::string>(), staged);
-                }
-            } else if (search_view) {
-                if (row < search_results.size()) {
-                    open_search_result(search_results[row]);
-                }
-            } else if (row < file_tree.size()) {
-                const auto path = file_tree.at(row).at("path").get<std::string>();
-                if (file_tree.at(row).at("directory").get<bool>()) {
-                    file_tree.toggle(row);
-                } else {
-                    open_path(path);
+            if (row < view.index.size()) {
+                const auto item = view.index.at(row);
+                if (item.group)
+                    sidebar_views.toggle(active_view, row);
+                else {
+                    if (form_events.size() >= 256)
+                        throw protocol::RpcError(-32004, "Policy event queue capacity exceeded");
+                    form_events.emplace_back(
+                        "ui.view.action",
+                        Json{{"id", active_view}, {"version", view.version}, {"row", *item.value}});
                 }
             }
             break;
@@ -3142,8 +3117,9 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             }
         } else if (geometry.sidebar.contains(mouse_x, mouse_y)) {
             const auto shift = static_cast<long long>(std::round(input.wheel.y * direction * 3));
-            tree_scroll = static_cast<std::size_t>(
-                std::max(0LL, static_cast<long long>(tree_scroll) - shift));
+            auto& view = sidebar_views.at(active_view);
+            view.scroll = static_cast<std::size_t>(
+                std::max(0LL, static_cast<long long>(view.scroll) - shift));
         } else if (auto* document = current()) {
             if ((SDL_GetModState() & SDL_KMOD_SHIFT) != 0) {
                 document->horizontal =
@@ -3265,7 +3241,7 @@ void EditorWindow::Impl::measure_layout() {
                                         show_sidebar,
                                         sidebar_width,
                                         show_outline,
-                                        !search_view && !git_view);
+                                        sidebar_views.at(active_view).spec.value("outline", false));
     left = geometry.editor.x;
     right = geometry.editor.right();
     content_top = geometry.editor.y;
@@ -3991,22 +3967,26 @@ void EditorWindow::Impl::draw() {
     if (search_width > 260 * scale)
         label(canvas, "Ctrl+Shift+P", search_x + search_width - 85 * scale, 9 * scale, 10, muted);
     fill(geometry.activity, activity_background);
-    const auto selected_activity = git_view ? 2 : (search_view ? 1 : 0);
-    if (geometry.sidebar.width > 0)
-        rectangle(canvas,
-                  0,
-                  geometry.header.bottom() + static_cast<float>(selected_activity) * 48 * scale,
-                  2 * scale,
-                  48 * scale,
-                  accent);
-    const Icon activity_icons[] = {Icon::files, Icon::search, Icon::branch, Icon::braces};
-    for (int index = 0; index < 4; ++index)
+    const auto activity_views = sidebar_views.ordered();
+    canvas->save();
+    canvas->clipRect(SkRect::MakeLTRB(geometry.activity.x,
+                                      geometry.activity.y,
+                                      geometry.activity.right(),
+                                      geometry.status.y - 40 * scale));
+    for (std::size_t index = 0; index < activity_views.size(); ++index) {
+        const auto& view = sidebar_views.at(activity_views[index]);
+        const auto y = geometry.header.bottom() + static_cast<float>(index) * 48 * scale;
+        const auto selected = active_view == activity_views[index];
+        if (selected && geometry.sidebar.width > 0)
+            rectangle(canvas, 0, y, 2 * scale, 48 * scale, accent);
         draw_icon(canvas,
-                  activity_icons[index],
+                  view_icon(view.spec.value("icon", std::string("files"))),
                   10 * scale,
-                  geometry.header.bottom() + (13 + static_cast<float>(index) * 48) * scale,
+                  y + 13 * scale,
                   24 * scale,
-                  selected_activity == index ? foreground : muted);
+                  selected ? foreground : muted);
+    }
+    canvas->restore();
     draw_icon(
         canvas, Icon::settings, 10 * scale, geometry.status.y - 32 * scale, 22 * scale, muted);
     rectangle(canvas,
@@ -4018,14 +3998,14 @@ void EditorWindow::Impl::draw() {
     if (geometry.sidebar.width > 0) {
         fill(geometry.sidebar, sidebar_background);
         const auto sx = geometry.sidebar.x;
+        auto& view = sidebar_views.at(active_view);
         label(canvas,
-              git_view ? "SOURCE CONTROL" : (search_view ? "SEARCH" : "EXPLORER"),
+              view.spec.at("title").get<std::string>(),
               sx + 16 * scale,
               geometry.sidebar.y + 12 * scale,
               11,
               foreground);
-        const auto busy =
-            busy_views.value(git_view ? "git" : (search_view ? "search" : "explorer"), false);
+        const auto busy = busy_views.value(active_view, false);
         const Box refresh{
             left - 34 * scale, geometry.sidebar.y + 5 * scale, 28 * scale, 26 * scale};
         draw_icon(canvas,
@@ -4040,130 +4020,99 @@ void EditorWindow::Impl::draw() {
                   geometry.sidebar.width,
                   24 * scale,
                   panel_background);
-        if (!git_view && !search_view)
-            draw_icon(canvas,
-                      explorer_expanded ? Icon::chevron_down : Icon::chevron_right,
-                      sx + 6 * scale,
-                      geometry.sidebar.y + 36 * scale,
-                      16 * scale,
-                      muted);
-        canvas->save();
-        canvas->clipRect(SkRect::MakeXYWH(sx + 22 * scale,
-                                          geometry.sidebar.y + 32 * scale,
-                                          geometry.sidebar.width - 30 * scale,
-                                          24 * scale));
-        label(canvas,
-              git_view ? git_status.value("branch", std::string("Loading repository..."))
-                       : (search_view
-                              ? std::to_string(search_results.size()) + " matches: " + search_query
-                              : options.workspace_name),
-              sx + 24 * scale,
-              geometry.sidebar.y + 37 * scale,
-              12,
-              foreground);
-        canvas->restore();
-        const Json empty_entries = Json::array();
-        const auto& git_entries =
-            git_status.contains("entries") ? git_status.at("entries") : empty_entries;
-        const auto count = git_view ? git_entries.size()
-                                    : (search_view ? search_results.size()
-                                                   : (explorer_expanded ? file_tree.size() : 0));
-        if (tree_scroll >= count)
-            tree_scroll = count ? count - 1 : 0;
+        draw_icon(canvas,
+                  view.expanded ? Icon::chevron_down : Icon::chevron_right,
+                  sx + 6 * scale,
+                  geometry.sidebar.y + 36 * scale,
+                  16 * scale,
+                  muted);
+        elided_label(canvas,
+                     view.subtitle.empty() ? options.workspace_name : view.subtitle,
+                     sx + 24 * scale,
+                     geometry.sidebar.y + 37 * scale,
+                     12,
+                     geometry.sidebar.width - 30 * scale,
+                     foreground);
+        const auto count = view.expanded ? view.index.size() : 0;
+        if (view.scroll >= count)
+            view.scroll = count ? count - 1 : 0;
         const auto visible_count =
             static_cast<std::size_t>(
                 std::ceil(geometry.sidebar_rows.height / geometry.sidebar_row_height)) +
             1;
-        const auto end = std::min(count, tree_scroll + visible_count);
-        std::vector<const Json*> rows;
-        if (!git_view && !search_view)
-            file_tree.for_each_range(tree_scroll, end, [&](std::size_t, const Json& row) {
-                rows.push_back(&row);
-            });
+        const auto end = std::min(count, view.scroll + visible_count);
         canvas->save();
         canvas->clipRect(SkRect::MakeXYWH(geometry.sidebar_rows.x,
                                           geometry.sidebar_rows.y,
                                           geometry.sidebar_rows.width,
                                           geometry.sidebar_rows.height));
-        for (auto i = tree_scroll; i < end; ++i) {
+        view.index.for_each_range(view.scroll, end, [&](std::size_t index, const ViewRow& row) {
+            const auto& item = *row.value;
             const auto y = geometry.sidebar_rows.y +
-                           static_cast<float>(i - tree_scroll) * geometry.sidebar_row_height;
-            const auto& item = git_view
-                                   ? git_entries[i]
-                                   : (search_view ? search_results[i] : *rows[i - tree_scroll]);
-            const auto path = item.at("path").get<std::string>();
-            if (geometry.sidebar_rows.contains(mouse_x, mouse_y) && mouse_y >= y &&
-                mouse_y < y + geometry.sidebar_row_height)
+                           static_cast<float>(index - view.scroll) * geometry.sidebar_row_height;
+            const auto x = sx + (8 + 12 * static_cast<float>(row.depth)) * scale;
+            if (item.value("selected", false))
+                rectangle(canvas,
+                          sx,
+                          y,
+                          geometry.sidebar.width,
+                          geometry.sidebar_row_height,
+                          selection_color);
+            else if (geometry.sidebar_rows.contains(mouse_x, mouse_y) && mouse_y >= y &&
+                     mouse_y < y + geometry.sidebar_row_height)
                 rectangle(canvas,
                           sx,
                           y,
                           geometry.sidebar.width,
                           geometry.sidebar_row_height,
                           hover_color);
-            if (git_view) {
-                const auto change = item.at("unstaged") != "unchanged"
-                                        ? item.at("unstaged").get<std::string>()
-                                        : item.at("staged").get<std::string>();
-                file_icon(path, sx + 13 * scale, y + 4 * scale, 16 * scale);
-                label(canvas, basename(path), sx + 38 * scale, y + 4 * scale, 13, foreground);
-                const auto mark =
-                    change == "untracked"
-                        ? "U"
-                        : (change.empty()
-                               ? " "
-                               : std::string(1,
-                                             static_cast<char>(std::toupper(
-                                                 static_cast<unsigned char>(change.front())))));
-                label(canvas,
-                      mark,
-                      left - 25 * scale,
-                      y + 4 * scale,
-                      12,
-                      item.value("conflict", false) ? error_color : added_color);
-            } else if (search_view) {
-                file_icon(path, sx + 13 * scale, y + 4 * scale, 16 * scale);
-                label(canvas,
-                      basename(path) + ":" + std::to_string(item.at("line").get<std::size_t>() + 1),
-                      sx + 38 * scale,
-                      y + 4 * scale,
-                      13);
-            } else {
-                const auto depth = static_cast<float>(std::count(path.begin(), path.end(), '/') +
-                                                      std::count(path.begin(), path.end(), '\\'));
-                const auto x = sx + (8 + 12 * depth) * scale;
-                if (const auto* document = current(); document && document->path == path)
-                    rectangle(canvas,
-                              sx,
-                              y,
-                              geometry.sidebar.width,
-                              geometry.sidebar_row_height,
-                              selection_color);
-                if (item.at("directory").get<bool>()) {
-                    draw_icon(canvas,
-                              file_tree.collapsed(path) ? Icon::chevron_right : Icon::chevron_down,
-                              x,
-                              y + 4 * scale,
-                              16 * scale,
-                              muted);
-                    draw_icon(canvas,
-                              Icon::folder,
-                              x + 18 * scale,
-                              y + 4 * scale,
-                              16 * scale,
-                              folder_color);
-                } else
-                    file_icon(path, x + 18 * scale, y + 4 * scale, 16 * scale);
-                label(canvas, basename(path), x + 42 * scale, y + 4 * scale, 13, foreground);
-            }
-        }
-        if (!count && (git_view || search_view || explorer_expanded))
-            label(canvas,
-                  git_view ? "No changes"
-                           : (search_view ? "No search results" : "No files in this workspace"),
-                  sx + 16 * scale,
-                  geometry.sidebar_rows.y + 12 * scale,
-                  12,
-                  muted);
+            if (row.group)
+                draw_icon(canvas,
+                          view.index.collapsed(item.at("id").get<std::string>())
+                              ? Icon::chevron_right
+                              : Icon::chevron_down,
+                          x,
+                          y + 4 * scale,
+                          16 * scale,
+                          muted);
+            const auto icon = view_icon(item.value("icon", std::string{}));
+            const auto icon_color = icon == Icon::folder   ? folder_color
+                                    : icon == Icon::code   ? code_icon_color
+                                    : icon == Icon::braces ? script_icon_color
+                                                           : muted;
+            draw_icon(canvas, icon, x + 18 * scale, y + 4 * scale, 16 * scale, icon_color);
+            const auto tone = item.value("tone", std::string{});
+            const auto color = tone == "error"     ? error_color
+                               : tone == "added"   ? added_color
+                               : tone == "changed" ? changed_color
+                               : tone == "muted"   ? muted
+                                                   : foreground;
+            const auto badge = item.value("badge", std::string{});
+            const auto badge_width = badge.empty() ? 0.0F : 48 * scale;
+            elided_label(canvas,
+                         item.at("label").get<std::string>(),
+                         x + 42 * scale,
+                         y + 4 * scale,
+                         13,
+                         std::max(0.0F, left - x - 48 * scale - badge_width),
+                         color);
+            if (!badge.empty())
+                elided_label(canvas,
+                             badge,
+                             left - badge_width,
+                             y + 4 * scale,
+                             12,
+                             badge_width - 8 * scale,
+                             color);
+        });
+        if (!count && view.expanded)
+            elided_label(canvas,
+                         view.empty,
+                         sx + 16 * scale,
+                         geometry.sidebar_rows.y + 12 * scale,
+                         12,
+                         geometry.sidebar.width - 32 * scale,
+                         muted);
         canvas->restore();
         if (geometry.outline_header.height > 0) {
             fill(geometry.outline_header, panel_background);
@@ -4695,9 +4644,21 @@ WorkbenchLayout EditorWindow::layout() const {
 }
 
 WorkbenchViewState EditorWindow::view_state() const {
-    WorkbenchViewState result{
-        impl_->geometry, impl_->tab_strip, impl_->tabs, impl_->file_tree.size()};
-    result.file_first = impl_->tree_scroll;
+    WorkbenchViewState result{impl_->geometry,
+                              impl_->tab_strip,
+                              impl_->tabs,
+                              impl_->sidebar_views.at("explorer").index.size()};
+    const auto& sidebar = impl_->sidebar_views.at(impl_->active_view);
+    result.file_first = sidebar.scroll;
+    result.sidebar = {{"id", impl_->active_view},
+                      {"version", sidebar.version},
+                      {"total", sidebar.index.size()},
+                      {"rows", Json::array()}};
+    const auto end = std::min(sidebar.index.size(), sidebar.scroll + 128);
+    sidebar.index.for_each_range(
+        std::min(sidebar.scroll, sidebar.index.size()), end, [&](std::size_t, const ViewRow& row) {
+            result.sidebar["rows"].push_back(*row.value);
+        });
     if (impl_->inline_form) {
         const auto& form = *impl_->inline_form;
         result.inline_form_layout = InlineFormLayout::measure(impl_->geometry.editor,
@@ -4737,6 +4698,7 @@ bool EditorWindow::pump() {
                 pending.completion.set_value(false);
             }
             impl_->stopping_workbench = true;
+            impl_->sidebar_views.cancel_all();
             impl_->workbench_shutdown_deadline = Clock::now() + std::chrono::seconds(5);
             impl_->workbench->shutdown();
         }
@@ -4758,6 +4720,7 @@ bool EditorWindow::pump() {
             }
         });
         impl_->service_responses();
+        impl_->sidebar_views.poll();
         const auto form_deadline = Clock::now() + std::chrono::milliseconds(4);
         for (int count = 0;
              count < 8 && !impl_->form_events.empty() && Clock::now() < form_deadline;

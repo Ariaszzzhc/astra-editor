@@ -60,15 +60,49 @@ export function registerFiles() {
             workspaceNotice: { id: document.id, text: `Reloaded from disk: ${document.path}` }
         });
     });
-    ui.registerView({ id: 'explorer', title: 'Explorer', icon: 'files' }, async (_, options) => {
-        const entries = [];
-        let truncated = false;
-        for await (const page of astra.operationPages('workspace.tree', {}, options)) {
-            entries.push(...page.entries);
-            truncated ||= page.truncated;
+    ui.registerView(
+        { id: 'explorer', title: 'Explorer', icon: 'files', order: 0, outline: true },
+        async (_, options) => {
+            const entries = [];
+            let truncated = false;
+            for await (const page of astra.operationPages('workspace.tree', {}, options)) {
+                entries.push(...page.entries);
+                truncated ||= page.truncated;
+            }
+            return { entries, truncated };
+        },
+        {
+            show: () => ui.execute('ui.explorer'),
+            activate: ({ path }) => ui.execute('workbench.open', { path }),
+            async project(model, options) {
+                const rows = [];
+                for (const entry of model.entries) {
+                    const path = entry.path.replaceAll('\\', '/');
+                    const extension = path.slice(path.lastIndexOf('.'));
+                    rows.push({
+                        id: path,
+                        label: path.slice(path.lastIndexOf('/') + 1),
+                        depth: path.split('/').length - 1,
+                        group: entry.directory,
+                        icon: entry.directory
+                            ? 'folder'
+                            : ['.cpp', '.hpp', '.h', '.c'].includes(extension)
+                              ? 'code'
+                              : ['.js', '.ts', '.json'].includes(extension)
+                                ? 'braces'
+                                : 'document',
+                        data: { path: entry.path }
+                    });
+                    if (rows.length % 128 === 0) await astra.sleep(0, options);
+                }
+                return {
+                    rows,
+                    empty: 'No files in this workspace',
+                    metadata: { truncated: model.truncated }
+                };
+            }
         }
-        return { entries, truncated };
-    });
+    );
     ui.registerCommand({ id: 'ui.refreshTree', title: 'Refresh workspace files' }, () =>
         ui.refresh('explorer')
     );

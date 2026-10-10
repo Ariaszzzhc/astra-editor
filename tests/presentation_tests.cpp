@@ -4,6 +4,7 @@
 #include <astra/ui/text_line_index.hpp>
 #include <astra/ui/decoration_indexes.hpp>
 #include <astra/ui/inline_form.hpp>
+#include <astra/ui/view_store.hpp>
 #include <doctest/doctest.h>
 
 #include <random>
@@ -22,6 +23,170 @@ astra::protocol::Json form_spec() {
             {"actions", Json::array({{{"id", "next"}, {"label", "Next"}}})}};
 }
 } // namespace
+
+TEST_CASE("presentation view pages validate atomically across hierarchy boundaries") {
+    using Json = astra::protocol::Json;
+    astra::ui::ViewBuilder builder;
+    builder.append(Json::array({{{"id", "root"}, {"label", "Root"}, {"group", true}}}));
+    CHECK_THROWS(builder.append(Json::array({{{"id", "child"}, {"label", "Child"}, {"depth", 1}},
+                                             {{"id", "root"}, {"label", "Duplicate"}}})));
+    CHECK(builder.size() == 1);
+    CHECK_THROWS(builder.append(Json::array({{{"id", "bad"}, {"label", "Bad"}, {"depth", 2}}})));
+    CHECK_THROWS(builder.append(Json::array({{{"id", "bad"}, {"label", "Bad\nlabel"}}})));
+    CHECK_THROWS(
+        builder.append(Json::array({{{"id", "bad"}, {"label", "Bad"}, {"icon", "unknown"}}})));
+    CHECK(builder.size() == 1);
+    builder.append(Json::array({{{"id", "child"}, {"label", "中🙂"}, {"depth", 1}}}));
+    CHECK(builder.size() == 2);
+    auto source = std::move(builder).finish();
+    CHECK(builder.size() == 0);
+    CHECK_THROWS(builder.append(Json::array()));
+    astra::ui::ViewIndex index(source);
+    REQUIRE(index.filter_step());
+    const auto snapshot = index.snapshot();
+    index.toggle(0);
+    CHECK(index.size() == 1);
+    CHECK(snapshot.size() == 2);
+    CHECK(snapshot.at(1).value->at("label") == "中🙂");
+    index.toggle(0);
+    CHECK(index.size() == 2);
+    CHECK(index.snapshot().validate());
+    CHECK_THROWS(index.toggle(1));
+    CHECK_THROWS(static_cast<void>(index.filter_step(0)));
+}
+
+TEST_CASE("presentation hierarchical view toggles match a flat oracle with retained snapshots") {
+    using Json = astra::protocol::Json;
+    std::vector<Json> rows;
+    for (int group = 0; group < 12; ++group) {
+        rows.push_back({{"id", "g" + std::to_string(group)}, {"label", "Group"}, {"group", true}});
+        for (int subgroup = 0; subgroup < 4; ++subgroup) {
+            rows.push_back({{"id", "s" + std::to_string(rows.size())},
+                            {"label", "Subgroup"},
+                            {"depth", 1},
+                            {"group", true}});
+            for (int leaf = 0; leaf < 8; ++leaf)
+                rows.push_back(
+                    {{"id", "l" + std::to_string(rows.size())}, {"label", "中🙂"}, {"depth", 2}});
+        }
+    }
+    astra::ui::ViewBuilder builder;
+    for (std::size_t first = 0; first < rows.size(); first += 73)
+        builder.append(Json(std::vector<Json>(rows.begin() + first,
+                                              rows.begin() + std::min(first + 73, rows.size()))));
+    auto source = std::move(builder).finish();
+    astra::ui::ViewIndex index(source);
+    REQUIRE(index.filter_step());
+    const auto original = index.snapshot();
+    std::set<std::string> collapsed;
+    std::mt19937 random(0xA57BA22U);
+    for (int round = 0; round < 800; ++round) {
+        const auto target = static_cast<std::size_t>(random()) % index.size();
+        const auto& item = index.at(target);
+        if (item.group) {
+            const auto id = item.value->at("id").get<std::string>();
+            if (!collapsed.erase(id))
+                collapsed.insert(id);
+            index.toggle(target);
+        }
+        std::vector<std::string> expected;
+        std::optional<std::size_t> hidden_depth;
+        for (const auto& row : rows) {
+            const auto depth = row.value("depth", std::size_t{0});
+            if (hidden_depth && depth > *hidden_depth)
+                continue;
+            hidden_depth.reset();
+            const auto id = row.at("id").get<std::string>();
+            expected.push_back(id);
+            if (row.value("group", false) && collapsed.contains(id))
+                hidden_depth = depth;
+        }
+        REQUIRE(index.size() == expected.size());
+        for (std::size_t i = 0; i < expected.size(); ++i)
+            CHECK(index.at(i).value->at("id") == expected[i]);
+        CHECK(index.snapshot().validate());
+        CHECK(original.size() == rows.size());
+    }
+    astra::ui::ViewIndex rebuilding(source, collapsed);
+    std::size_t previous = 0;
+    while (!rebuilding.ready()) {
+        static_cast<void>(rebuilding.filter_step(7));
+        CHECK(rebuilding.size() - previous <= 7);
+        previous = rebuilding.size();
+    }
+    CHECK(rebuilding.size() == index.size());
+    for (std::size_t i = 0; i < index.size(); ++i)
+        CHECK(rebuilding.at(i).value->at("id") == index.at(i).value->at("id"));
+}
+
+TEST_CASE(
+    "presentation view publication retains old data and rejects stale or cancelled refreshes") {
+    using Json = astra::protocol::Json;
+    astra::ui::ViewStore store;
+    const Json spec{{"id", "custom"}, {"title", "Custom 中🙂"}, {"icon", "symbol"}, {"order", 3}};
+    const auto old = store.begin(spec);
+    REQUIRE(store.append("custom", old, Json::array({{{"id", "old"}, {"label", "Old"}}})));
+    auto published = store.commit("custom", old, "Subtitle", "Empty");
+    CHECK(published.wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
+    store.poll();
+    CHECK(published.get().get<bool>());
+    const auto snapshot = store.at("custom").index.snapshot();
+    const auto cancelled = store.begin(spec);
+    REQUIRE(store.append("custom", cancelled, Json::array({{{"id", "new"}, {"label", "New"}}})));
+    auto completion = store.commit("custom", cancelled, "New", "Empty");
+    const auto newer = store.begin(spec);
+    CHECK_FALSE(completion.get().get<bool>());
+    CHECK_FALSE(store.append("custom", cancelled, Json::array()));
+    CHECK_FALSE(store.abort("custom", cancelled));
+    CHECK(store.at("custom").version == old);
+    CHECK(store.at("custom").index.at(0).value->at("id") == "old");
+    CHECK_THROWS(static_cast<void>(store.append(
+        "custom", newer, Json::array({{{"id", "bad"}, {"label", "Bad"}, {"depth", 1}}}))));
+    CHECK(store.abort("custom", newer));
+    CHECK(store.idle());
+    CHECK(snapshot.at(0).value->at("id") == "old");
+    const auto shutdown = store.begin(spec);
+    auto closing = store.commit("custom", shutdown, "", "Empty");
+    store.cancel_all();
+    CHECK_FALSE(closing.get().get<bool>());
+    CHECK(store.at("custom").index.size() == 1);
+}
+
+TEST_CASE("presentation refresh preserves folds changed during bounded publication") {
+    using Json = astra::protocol::Json;
+    astra::ui::ViewStore store;
+    const Json spec{{"id", "custom"}, {"title", "Custom"}};
+    Json rows = Json::array();
+    for (int group = 0; group < 200; ++group) {
+        rows.push_back({{"id", "g" + std::to_string(group)}, {"label", "Group"}, {"group", true}});
+        rows.push_back({{"id", "l" + std::to_string(group)}, {"label", "Leaf"}, {"depth", 1}});
+    }
+    const auto fill = [&](const std::string& version) {
+        for (std::size_t first = 0; first < rows.size(); first += 100)
+            REQUIRE(store.append("custom",
+                                 version,
+                                 Json::array_t(rows.begin() + first,
+                                               rows.begin() + std::min(first + 100, rows.size()))));
+    };
+    const auto first = store.begin(spec);
+    fill(first);
+    auto initial = store.commit("custom", first, "", "Empty");
+    store.poll();
+    REQUIRE(initial.get().get<bool>());
+    store.toggle("custom", 0);
+    const auto next = store.begin(spec);
+    fill(next);
+    auto replacing = store.commit("custom", next, "", "Empty");
+    store.poll();
+    CHECK(replacing.wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
+    store.toggle("custom", 1);
+    while (!store.idle())
+        store.poll();
+    REQUIRE(replacing.get().get<bool>());
+    CHECK(store.at("custom").index.collapsed("g0"));
+    CHECK(store.at("custom").index.collapsed("g1"));
+    CHECK(store.at("custom").index.size() == 398);
+}
 
 TEST_CASE("presentation inline inputs preserve graphemes history and result generations") {
     using astra::editing::Command;

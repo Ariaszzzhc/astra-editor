@@ -9,6 +9,59 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### JS-defined retained sidebar views (2026-10-10)
+
+The activity bar now reads registered JS view descriptors. Explorer, workspace
+search, Git and custom views publish the same generic row schema and use the same
+native clipped renderer, measured range traversal and fold operations. Default
+labels, icons, hierarchy and row actions are projected in JavaScript; native
+pointer activation queues a versioned event back to JS. Search-result navigation
+now calls the shared document dispatcher from JS with captured revision guards.
+The window no longer owns a FileTreeIndex or separate Git/search row drawing and
+click branches.
+
+`ViewBuilder` validates whole pages before appending persistent measured rows.
+`ViewStore` fences begin/append/commit/abort by unique owner-local identities;
+cancelled, superseded and invalid replacements retain the published snapshot.
+The projection takes at most 128 rows of filtering work per pump and preserves
+fold changes made while the old view remains visible. JS pagination yields at
+128 rows or 60,000 UTF-8 bytes; the native boundary enforces page and total bounds.
+Pending native commit futures are cancelled on shutdown and view cancellation.
+`docs/SERVICE.md` documents the public async view API and limits.
+
+Windows Debug evidence:
+
+- `./scripts/format.ps1 -Check -Offline`: 122 C++ and 11 JS files passed.
+- `./scripts/xmake.ps1 build -y astra astra-server astra-tests gui-smoke
+  gui-presentation-smoke gui-recovery-smoke`: passed.
+- `./build/windows/x64/debug/astra-tests.exe --no-version`: 512 cases /
+  605,719 assertions passed, zero failures or skips on the final descriptor-snapshot
+  revision. The full suite and GUI/CLI checks were repeated after that correction.
+- Focused view/provider/Git checks: 8 cases / 159,318 assertions passed. Coverage
+  includes 800 hierarchical fold rounds against a flat oracle (seed 0xA57BA22),
+  immutable retained snapshots, atomic invalid pages across hierarchy boundaries,
+  fold changes during publication, stale generations and shutdown cancellation.
+  Final provider checks also mutate the caller's descriptor after registration and
+  verify that publication still uses its captured identity.
+- The unresolved-native-publication cancellation case passed separately:
+  1 case / 8 assertions; the cancelled JS workflow and native stage both drained.
+- Real GUI presentation passed for 1,505 default file rows and a 602-row custom
+  JS view, including group collapse/expand, row callbacks, malformed replacement
+  retention and renderer shutdown. `build/graphics/gui-custom-view.png` was
+  inspected using the real SDL/Skia Graphite/Dawn output.
+- Real local/TCP `gui-smoke`, `gui-recovery-smoke` and
+  `./tests/cli_smoke.ps1 -Mode debug` passed after the complete Debug suite.
+- Initial builds exposed nodiscard returns in negative tests and a range
+  callback mismatch (SumTree visits values; ViewIndex exposes index/value).
+  Those failures were corrected and the affected targets rebuilt successfully.
+
+Logs are in `build/views-*.log`. Workspace search inputs/replacement confirmation
+still contain native product policy and must move to JS/nonmodal sidebar controls.
+Keyboard focus/navigation for generic rows, streaming providers without retained
+whole JS service arrays, large-snapshot reclamation/latency measurements and
+incremental display/syntax work remain open. This revision is not a completed
+milestone and does not establish new Release or package acceptance.
+
 ### Code formatting and acceptance gate (2026-10-10)
 
 Repository-owned C++ and JavaScript now use checked-in `.clang-format` and

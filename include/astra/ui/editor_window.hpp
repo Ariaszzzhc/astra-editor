@@ -35,6 +35,7 @@ struct WorkbenchViewState {
     std::size_t file_first{};
     std::optional<InlineFormLayout> inline_form_layout;
     protocol::Json inline_form;
+    protocol::Json sidebar;
 };
 
 // Main-thread editor front end. Every document change goes through EditorChannel.
