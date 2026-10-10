@@ -98,7 +98,11 @@ export function registerFiles() {
                 return {
                     rows,
                     empty: 'No files in this workspace',
-                    metadata: { truncated: model.truncated }
+                    update: {
+                        status: model.truncated
+                            ? 'File tree reached its configured limit'
+                            : 'Workspace ready'
+                    }
                 };
             }
         }

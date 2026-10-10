@@ -1,3 +1,4 @@
+import { registerWorkspaceSearch } from 'astra/workspace-search';
 import { ui, request } from 'astra/ui';
 let documentQuery = '',
     documentReplacement = '',
@@ -155,7 +156,12 @@ async function runForm(snapshot, action, preview = false) {
             await ui.forms.update({ ...snapshot, message: '', busy: false, error: false });
             return false;
         }
-        await ui.forms.update({ ...snapshot, busy: true, error: false });
+        await ui.forms.update({
+            ...snapshot,
+            busy: true,
+            error: false,
+            message: action === 'replaceAll' ? 'Replacing…' : 'Finding…'
+        });
         const result = await documentSearch(action === 'replaceAll', {
             ...snapshot.values,
             id: document.id,
@@ -250,121 +256,5 @@ export function registerSearch() {
         documentSearchControl?.abort();
         documentForm = undefined;
     });
-    ui.registerView(
-        { id: 'search', title: 'Search', icon: 'search', order: 1 },
-        async (parameters, options) => {
-            const matches = [];
-            const issues = [];
-            let truncated = false,
-                operationId;
-            const started = await astra.request('workspace.search', parameters, {
-                ...options,
-                raw: true
-            });
-            operationId = started.operationId;
-            // Keep the service's search operation identity for guarded replacements.
-            let offset = 0,
-                complete = false;
-            try {
-                while (true) {
-                    const result = await astra.request(
-                        'operation.get',
-                        { id: operationId, offset, limit: 256 },
-                        options
-                    );
-                    if (result.state === 'pending') {
-                        await astra.sleep(8, options);
-                        continue;
-                    }
-                    if (result.state !== 'completed')
-                        throw Object.assign(
-                            new Error(result.error?.message ?? 'Search cancelled'),
-                            { name: result.state === 'cancelled' ? 'AbortError' : 'ServiceError' }
-                        );
-                    matches.push(...result.result.matches);
-                    if (result.result.cancelled)
-                        throw Object.assign(
-                            new Error('Search cancelled; search again before replacing'),
-                            { name: 'AbortError' }
-                        );
-                    if (!offset) issues.push(...(result.result.issues ?? []));
-                    truncated ||= result.result.truncated;
-                    if (!result.page || result.page.nextOffset >= result.page.total) {
-                        complete = true;
-                        break;
-                    }
-                    offset = result.page.nextOffset;
-                }
-            } finally {
-                if (!complete)
-                    await astra.request('operation.cancel', { id: operationId }, { raw: true });
-            }
-            return { matches, truncated, issues, operationId };
-        },
-        {
-            show: () => ui.execute('ui.search'),
-            async project(model, options) {
-                const rows = [];
-                for (const match of model.matches) {
-                    rows.push({
-                        id: `${rows.length}`,
-                        label: `${match.path.split(/[\\/]/).pop()}:${match.line + 1}`,
-                        icon: 'document',
-                        data: match
-                    });
-                    if (rows.length % 128 === 0) await astra.sleep(0, options);
-                }
-                return {
-                    rows,
-                    subtitle: `${rows.length} matches`,
-                    empty: 'No search results',
-                    metadata: model
-                };
-            },
-            async activate(match) {
-                const buffer = match.source === 'buffer';
-                const document = await request(
-                    buffer ? 'document.get' : 'workspace.open',
-                    buffer ? { id: match.documentId, begin: 0, end: 0 } : { path: match.path }
-                );
-                await ui.update({ document, activate: document.id });
-                if (
-                    (buffer && document.revision !== match.revision) ||
-                    (!buffer && document.dirty)
-                ) {
-                    await ui.update({
-                        status: 'Search result changed; search again to locate the match'
-                    });
-                    return;
-                }
-                const selected = await request('document.setSelections', {
-                    id: document.id,
-                    baseRevision: document.revision,
-                    selections: [{ anchor: match.begin, head: match.end }]
-                });
-                await ui.update({
-                    document: selected,
-                    scrollLine: { id: document.id, line: match.line }
-                });
-            }
-        }
-    );
-    ui.registerCommand(
-        { id: 'workbench.search', title: 'Search workspace' },
-        async (parameters) => {
-            await ui.update({
-                sidebar: 'search',
-                sidebarVisible: true,
-                status: 'Searching workspace and unsaved buffers...'
-            });
-            await ui.refresh('search', parameters);
-        }
-    );
-    ui.registerCommand(
-        { id: 'workbench.cancelView', title: 'Cancel view operation' },
-        async ({ id }) => {
-            ui.cancel(id);
-            await ui.update({ status: 'Cancelled' });
-        }
-    );
+    registerWorkspaceSearch();
 }

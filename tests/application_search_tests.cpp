@@ -149,7 +149,7 @@ class PausedSearch {
     bool inline_next_{};
 
   public:
-    explicit PausedSearch(const fs::path& root)
+    explicit PausedSearch(const fs::path& root, std::string_view commands = {})
         : app(
               root,
               [this](auto worker, auto completion) {
@@ -174,7 +174,8 @@ class PausedSearch {
                   tasks.push_back(std::move(task));
                   return future;
               },
-              "astra.configure({git:{inheritGlobalConfig:false}});") {
+              "astra.configure({git:{inheritGlobalConfig:false}});",
+              commands) {
     }
 
     Json call(std::string method, Json params = Json::object()) {
@@ -226,6 +227,39 @@ class PausedSearch {
 
     std::vector<std::unique_ptr<Task>> tasks;
 };
+
+TEST_CASE("application operation reclamation retains recent results across decimal identities") {
+    SearchFiles files;
+    PausedSearch service(files.root, "astra.registerCommand('fast',()=>42);");
+    const auto doc = service.call("document.create", {{"text", "needle"}});
+    const Json parameters{
+        {"id", doc.at("id")}, {"baseRevision", "0"}, {"query", "needle"}, {"select", false}};
+    const auto held = service.call("document.find", parameters);
+    std::vector<Json> completed;
+    for (int i = 0; i < 150; ++i) {
+        const auto operation = service.call("document.find", parameters);
+        service.worker(1);
+        service.complete(1);
+        completed.push_back(operation.at("operationId"));
+        const auto first = completed.size() > 31 ? completed.size() - 31 : 0;
+        for (auto index = first; index < completed.size(); ++index) {
+            const auto result = service.call("operation.get", {{"id", completed[index]}});
+            CHECK(result.at("state") == "completed");
+            CHECK(result.at("result").at("match").at("begin") == 0);
+        }
+        CHECK(service.call("operation.get", {{"id", held.at("operationId")}}).at("state") ==
+              "pending");
+        if (i >= 31) {
+            const auto old =
+                service.app.dispatch(request("operation.get", {{"id", completed[first - 1]}}));
+            REQUIRE(old);
+            CHECK(old->at("error").at("code") == -32002);
+        }
+        CHECK(service.call("script.command", {{"name", "fast"}}) == 42);
+        CHECK(service.call("operation.get", {{"id", completed.back()}}).at("state") == "completed");
+    }
+    CHECK(service.finish(held).at("state") == "completed");
+}
 
 TEST_CASE("document search defers computation and atomically selects Unicode matches") {
     SearchFiles files;

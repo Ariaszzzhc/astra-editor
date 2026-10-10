@@ -5,6 +5,7 @@
 
 #include <SDL3/SDL.h>
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -257,6 +258,28 @@ int main(int argc, char* argv[]) {
         options.width = 1400;
         options.height = 860;
         options.user_script = R"js(if(astra.context==='client') {
+            let unsavedReplacementId;
+            astra.registerCommand('acceptance.prepareUnsavedReplacement', async () => {
+                const { document: original } = await astra.ui.read();
+                await astra.ui.execute('ui.new');
+                const { document } = await astra.ui.read();
+                unsavedReplacementId = document.id;
+                await astra.ui.native('editor.insert_text', {
+                    id: document.id, baseRevision: document.revision, text: 'needle in unsaved'
+                });
+                await astra.ui.update({ activate: original.id });
+            });
+            astra.registerCommand('acceptance.undoUnsavedReplacement', async () => {
+                const { document } = await astra.ui.read({ id: unsavedReplacementId });
+                await astra.ui.execute('editor.undo', {
+                    id: document.id, baseRevision: document.revision
+                });
+            });
+            astra.registerCommand('acceptance.closeUnsavedReplacement', () =>
+                astra.ui.execute('workbench.close', {
+                    id: unsavedReplacementId, discardChanges: true
+                })
+            );
             astra.registerCommand('acceptance.findWithoutInput',()=>astra.ui.execute('ui.find',{query:'beta'}));
             astra.registerCommand('acceptance.readInput',async()=>{
                 const state=await astra.ui.read();
@@ -706,29 +729,124 @@ int main(int argc, char* argv[]) {
         key(window, SDLK_ESCAPE);
         std::cerr << "GUI acceptance: document search passed\n";
 
+        key(window, SDLK_F, SDL_KMOD_CTRL);
+        const auto held_document_form = window.view_state().inline_form;
+        const auto body_before_workspace_form = read_document(host, id).at("text");
         window.execute_ui_command("ui.workspaceReplace");
         settle(window);
+        require(window.view_state().sidebar_form_layout.has_value(),
+                "Workspace search was not mounted in the sidebar");
+        require(window.view_state().inline_form.at("id") == held_document_form.at("id"),
+                "Mounting workspace search replaced document find");
+        auto mounted = window.view_state();
+        require(mounted.layout.sidebar_rows.y >= mounted.sidebar_form_layout->panel.bottom(),
+                "Workspace results overlapped search inputs");
+        text(window, "temporary replacement");
+        require(window.view_state().inline_form.at("values") == held_document_form.at("values"),
+                "Workspace input modified document find");
+        require(read_document(host, id).at("text") == body_before_workspace_form,
+                "Workspace input edited the document body");
+        pointer(window,
+                SDL_EVENT_MOUSE_BUTTON_DOWN,
+                mounted.layout.editor.x + 100 * mounted.layout.scale,
+                mounted.layout.editor.y + 10 * mounted.layout.scale);
+        pointer(window,
+                SDL_EVENT_MOUSE_BUTTON_UP,
+                mounted.layout.editor.x + 100 * mounted.layout.scale,
+                mounted.layout.editor.y + 10 * mounted.layout.scale);
+        text(window, "editable");
+        require(read_document(host, id).at("text") != body_before_workspace_form,
+                "Mounted workspace input blocked body editing");
+        key(window, SDLK_Z, SDL_KMOD_CTRL);
+        require(read_document(host, id).at("text") == body_before_workspace_form,
+                "Body undo with mounted inputs lost content");
+        mounted = window.view_state();
+        pointer(window,
+                SDL_EVENT_MOUSE_BUTTON_DOWN,
+                mounted.sidebar_form_layout->fields[0].x + 15 * mounted.layout.scale,
+                mounted.sidebar_form_layout->fields[0].y + 10 * mounted.layout.scale);
+        pointer(window,
+                SDL_EVENT_MOUSE_BUTTON_UP,
+                mounted.sidebar_form_layout->fields[0].x + 15 * mounted.layout.scale,
+                mounted.sidebar_form_layout->fields[0].y + 10 * mounted.layout.scale);
+        window.execute_ui_command("workbench.cancelDocumentSearch");
+        settle(window);
+        window.execute_ui_command("acceptance.prepareUnsavedReplacement");
+        settle(window);
+        const auto replacement_tabs = window.view_state().tabs;
+        const auto unsaved_found =
+            std::find_if(replacement_tabs.begin(), replacement_tabs.end(), [&](const auto& tab) {
+                return tab != id;
+            });
+        require(unsaved_found != replacement_tabs.end(),
+                "Unsaved replacement buffer was not created");
+        const auto unsaved_replacement = *unsaved_found;
         key(window, SDLK_A, SDL_KMOD_CTRL);
         text(window, "needle");
         key(window, SDLK_RETURN);
+        key(window, SDLK_TAB);
+        key(window, SDLK_A, SDL_KMOD_CTRL);
         text(window, "thread");
         key(window, SDLK_RETURN);
         require(astra::io::read_file(workspace / "rename.txt").text == "needle and needle\n",
                 "Workspace replace ran before confirmation");
+        require(read_document(host, unsaved_replacement).at("text") == "needle in unsaved",
+                "Workspace replacement changed unsaved content before confirmation");
         window.request_screenshot("build/graphics/gui-replace-confirm.png");
         settle(window);
         window.execute_ui_command("ui.confirmReplace");
         settle(window);
         require(astra::io::read_file(workspace / "rename.txt").text == "thread and thread\n",
                 "Workspace replace did not update disk");
+        require(read_document(host, unsaved_replacement).at("text") == "thread in unsaved" &&
+                    read_document(host, unsaved_replacement).at("dirty") == true,
+                "Workspace replacement did not preserve an unsaved editable buffer");
+        window.execute_ui_command("acceptance.undoUnsavedReplacement");
+        settle(window);
+        require(read_document(host, unsaved_replacement).at("text") == "needle in unsaved",
+                "Workspace replacement was not one undoable unsaved-buffer edit");
+        window.execute_ui_command("acceptance.closeUnsavedReplacement");
+        settle(window);
         std::cerr << "GUI acceptance: workspace replace passed\n";
 
+        key(window, SDLK_F, SDL_KMOD_CTRL);
+        const auto document_form_before_cancel = window.view_state().inline_form.at("id");
+        window.execute_ui_command("ui.search");
+        settle(window);
+        SDL_Event workspace_input{};
+        workspace_input.type = SDL_EVENT_TEXT_INPUT;
+        workspace_input.text.windowID = SDL_GetWindowID(window.window());
+        workspace_input.text.text = "latest 中🙂";
+        SDL_Event workspace_cancel{};
+        workspace_cancel.type = SDL_EVENT_KEY_DOWN;
+        workspace_cancel.key.windowID = SDL_GetWindowID(window.window());
+        workspace_cancel.key.key = SDLK_ESCAPE;
+        workspace_cancel.key.down = true;
+        require(SDL_PushEvent(&workspace_input) && SDL_PushEvent(&workspace_cancel),
+                "Cannot enqueue same-batch workspace input and cancellation");
+        settle(window);
+        require(window.view_state().sidebar_form.at("values").at("query") == "latest 中🙂",
+                "Workspace cancellation lost retained input");
+        require(window.view_state().inline_form.at("id") == document_form_before_cancel,
+                "Workspace cancellation closed document find");
+        window.execute_ui_command("ui.search");
+        settle(window);
+        require(window.view_state().sidebar_form.at("values").at("query") == "latest 中🙂",
+                "Refocusing workspace search lost input");
+        window.request_screenshot("build/graphics/gui-workspace-search.png");
+        settle(window);
+        key(window, SDLK_ESCAPE);
+        window.execute_ui_command("workbench.cancelDocumentSearch");
+        settle(window);
+
+        std::cerr << "GUI acceptance: opening dirty close after workspace replace\n";
         window.execute_ui_command("ui.closeTab");
         window.request_screenshot("build/graphics/gui-dirty-close.png");
         settle(window);
         require(window.active_document_id() == id, "Dirty close silently discarded a document");
         window.execute_ui_command("ui.cancel");
         settle(window);
+        std::cerr << "GUI acceptance: saving after workspace replace\n";
         key(window, SDLK_S, SDL_KMOD_CTRL);
         require(!read_document(host, id).at("dirty").get<bool>(),
                 "Save did not mark the persisted revision clean");

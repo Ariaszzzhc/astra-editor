@@ -6,7 +6,10 @@ export const ui = {
         open: (spec) => request('_ui.form.open', spec),
         read: (id) => request('_ui.form.read', { id }),
         update: (parameters) => request('_ui.form.update', parameters),
-        close: (id) => request('_ui.form.close', { id })
+        close: (id) => request('_ui.form.close', { id }),
+        focus: (id, field, selectAll = true) => request('_ui.form.focus', { id, field, selectAll }),
+        blur: (id) => request('_ui.form.blur', { id }),
+        setValues: (parameters) => request('_ui.form.setValues', parameters)
     },
     clipboard: {
         read: () => request('_ui.clipboard.read'),
@@ -220,8 +223,8 @@ export const ui = {
             );
             if (!published) return false;
             publishedViews.set(id, version);
-            if (presentation.metadata)
-                await ui.update({ view: id, model: presentation.metadata, viewVersion: version });
+            if (presentation.update)
+                await ui.update({ ...presentation.update, view: id, viewVersion: version });
             return true;
         } finally {
             options.signal?.removeEventListener('abort', abort);
@@ -352,6 +355,7 @@ ui.registerCommand(
     { id: 'workbench.refreshView', title: 'Refresh registered view', palette: false },
     ({ id }) => {
         const view = providers.get(id);
+        if (view?.handlers.refresh) return view.handlers.refresh();
         return ui.refresh(id, view?.parameters);
     }
 );

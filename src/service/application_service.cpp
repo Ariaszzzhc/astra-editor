@@ -346,16 +346,7 @@ Json ApplicationService::script_request(std::string_view method, const Json& par
 Json ApplicationService::script_command(const Json& params) {
     // Fast commands may settle in the same dispatch without waiting. A command
     // awaiting a worker becomes a regular, cancellable service operation.
-    while (operations_.size() >= 32) {
-        const auto completed =
-            std::find_if(operations_.begin(), operations_.end(), [](const auto& entry) {
-                return entry.second->state != "pending";
-            });
-        if (completed == operations_.end()) {
-            break;
-        }
-        operations_.erase(completed);
-    }
+    prune_operations();
     if (script_tasks_.size() >= 8 || operations_.size() >= 32) {
         throw RpcError(-32004, "Script operation capacity exceeded");
     }
@@ -381,6 +372,7 @@ Json ApplicationService::script_command(const Json& params) {
         throw RpcError(-32004, "Operation ID capacity exceeded");
     }
     auto operation = std::make_shared<Operation>();
+    operation->sequence = next_operation_;
     operation->id = std::to_string(next_operation_++);
     operation->kind = "script";
     operations_.emplace(operation->id, operation);
@@ -520,6 +512,23 @@ Json ApplicationService::describe(const Document& document) const {
     return result;
 }
 
+void ApplicationService::prune_operations() {
+    // The bounded result cache retains the newest completed operations, even
+    // when their decimal identities cross digit boundaries. Pending work is
+    // never a reclamation candidate.
+    while (operations_.size() >= 32) {
+        auto oldest = operations_.end();
+        for (auto candidate = operations_.begin(); candidate != operations_.end(); ++candidate)
+            if (candidate->second->state != "pending" &&
+                (oldest == operations_.end() ||
+                 candidate->second->sequence < oldest->second->sequence))
+                oldest = candidate;
+        if (oldest == operations_.end())
+            return;
+        operations_.erase(oldest);
+    }
+}
+
 Json ApplicationService::start_operation(
     std::string kind,
     std::function<void(const std::shared_ptr<Operation>&)> worker,
@@ -534,20 +543,14 @@ Json ApplicationService::start_operation(
     if (active >= 8) {
         throw RpcError(-32004, "At most eight workspace operations may run concurrently");
     }
-    while (operations_.size() >= 32) {
-        const auto old =
-            std::find_if(operations_.begin(), operations_.end(), [](const auto& entry) {
-                return entry.second->state != "pending";
-            });
-        if (old == operations_.end()) {
-            throw RpcError(-32004, "Operation capacity exceeded");
-        }
-        operations_.erase(old);
-    }
+    prune_operations();
+    if (operations_.size() >= 32)
+        throw RpcError(-32004, "Operation capacity exceeded");
     if (next_operation_ == std::numeric_limits<std::uint64_t>::max()) {
         throw RpcError(-32004, "Operation ID capacity exceeded");
     }
     auto operation = std::make_shared<Operation>();
+    operation->sequence = next_operation_;
     operation->id = std::to_string(next_operation_++);
     operation->kind = std::move(kind);
     operation->workspace_mutation = operation->kind == "replace" || git_mutation;

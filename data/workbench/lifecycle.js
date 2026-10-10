@@ -7,6 +7,7 @@ async function closeWindow(control) {
     const options = { signal: control.signal };
     // Dismiss unrelated modal input before waiting for its cancelled workflow.
     await ui.execute('workbench.cancelDocumentSearch');
+    await ui.execute('workbench.cancelWorkspaceSearch', { shutdown: true });
     await ui.native('ui.cancel');
     for (;;) {
         await ui.waitForIdle(options);
@@ -100,6 +101,13 @@ export function registerLifecycle() {
         { id: 'ui.cancel', title: 'Cancel current interaction', palette: false },
         async () => {
             exiting?.abort();
+            const workspace = await ui.execute('workbench.cancelWorkspaceSearch', {
+                onlyFocused: true
+            });
+            if (workspace) {
+                await ui.update({ dismissPrompt: true, error: '' });
+                return;
+            }
             await ui.execute('workbench.cancelDocumentSearch');
             await ui.native('ui.cancel');
         }

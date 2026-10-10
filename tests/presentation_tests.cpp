@@ -4,6 +4,7 @@
 #include <astra/ui/text_line_index.hpp>
 #include <astra/ui/decoration_indexes.hpp>
 #include <astra/ui/inline_form.hpp>
+#include <astra/ui/form_registry.hpp>
 #include <astra/ui/view_store.hpp>
 #include <doctest/doctest.h>
 
@@ -293,6 +294,120 @@ TEST_CASE("presentation inline geometry keeps all controls inside the editor acr
                 CHECK(layout.fields[0].bottom() <= layout.fields[1].y);
                 CHECK(layout.fields[1].bottom() <= layout.toggles[0].y);
                 CHECK(layout.toggles[0].bottom() <= layout.actions[0].y);
+            }
+}
+
+TEST_CASE("presentation form value publication validates all fields before advancing generation") {
+    using Json = astra::protocol::Json;
+    astra::ui::InlineForm form(form_spec(), "epoch");
+    const auto original = form.state();
+    const auto selection = form.fields()[0].text.selections();
+    for (const auto& values : std::vector<Json>{
+             {{"query", "new"}, {"regex", "invalid"}},
+             {{"query", "new"}, {"unknown", true}},
+             {{"query", "a\nb"}, {"regex", true}},
+             {{"query", std::string("a\0b", 3)}},
+             {{"query", "\xFF"}},
+             {{"query", std::string(astra::ui::InlineForm::max_input_bytes + 1, 'x')}}}) {
+        CHECK_THROWS((void)form.set_values(
+            {{"id", "form"}, {"version", form.version()}, {"values", values}}));
+        CHECK(form.state() == original);
+        CHECK(form.fields()[0].text.selections() == selection);
+        CHECK_FALSE(form.fields()[0].text.can_undo());
+    }
+    CHECK_FALSE(form.set_values({{"id", "form"}, {"version", "stale"}, {"values", {}}}));
+    CHECK_FALSE(form.set_values({{"id", "other"}, {"version", form.version()}, {"values", {}}}));
+    CHECK_FALSE(form.set_values(
+        {{"id", "form"}, {"version", form.version()}, {"values", original.at("values")}}));
+    CHECK(form.state() == original);
+    REQUIRE(form.set_values({{"id", "form"},
+                             {"version", form.version()},
+                             {"values", {{"query", "🙂中"}, {"regex", true}}}}));
+    CHECK(form.version() == "epoch-2");
+    CHECK(form.state().at("values").at("query") == "🙂中");
+    CHECK(form.state().at("values").at("regex") == true);
+    CHECK(form.fields()[0].text.selections().front().head.value == 7);
+    REQUIRE(form.history(false));
+    CHECK(form.state().at("values").at("query") == original.at("values").at("query"));
+    CHECK(form.fields()[0].text.selections() == selection);
+    REQUIRE(form.history(true));
+    CHECK(form.state().at("values").at("query") == "🙂中");
+}
+
+TEST_CASE("presentation mounted forms retain independent input history and exclusive focus") {
+    using astra::ui::InlineForm;
+    astra::ui::FormRegistry forms;
+    auto editor = form_spec();
+    auto sidebar = form_spec();
+    sidebar["id"] = "workspace";
+    sidebar["view"] = "search";
+    CHECK_FALSE(forms.open(std::make_unique<InlineForm>(editor)));
+    REQUIRE(forms.focused());
+    CHECK(forms.focused()->id() == "form");
+    REQUIRE(forms.find("form")->edit(astra::editing::Command::insert_text, {.text = "editor"}));
+    CHECK_FALSE(forms.open(std::make_unique<InlineForm>(sidebar)));
+    CHECK(forms.focused()->id() == "workspace");
+    CHECK_FALSE(forms.find("form")->focus());
+    REQUIRE(
+        forms.find("workspace")->edit(astra::editing::Command::insert_text, {.text = "sidebar"}));
+    forms.focus("form", 0);
+    CHECK_FALSE(forms.find("workspace")->focus());
+    CHECK(forms.find("workspace")->state().at("values").at("query") == "sidebar");
+    REQUIRE(forms.find("form")->history(false));
+    CHECK(forms.find("form")->state().at("values").at("query") ==
+          editor.at("fields")[0].at("value"));
+    CHECK_THROWS(forms.focus("workspace", 20));
+    CHECK(forms.focused()->id() == "form");
+    auto duplicate = sidebar;
+    duplicate["id"] = "form";
+    CHECK_THROWS((void)forms.open(std::make_unique<InlineForm>(duplicate)));
+    CHECK(forms.focused()->id() == "form");
+    CHECK(forms.visible("search", true)[0] == forms.find("form"));
+    CHECK(forms.visible("search", true)[1] == forms.find("workspace"));
+    CHECK_FALSE(forms.visible("search", false)[1]);
+    CHECK_FALSE(forms.visible("", true)[1]);
+    auto replacement = sidebar;
+    replacement["id"] = "replacement";
+    const auto retired = forms.open(std::make_unique<InlineForm>(replacement));
+    REQUIRE(retired);
+    CHECK(retired->id() == "workspace");
+    CHECK(retired->state().at("values").at("query") == "sidebar");
+    CHECK_FALSE(forms.find("workspace"));
+    CHECK(forms.focused()->id() == "replacement");
+    REQUIRE(forms.close("form"));
+    CHECK(forms.find("replacement"));
+    forms.blur();
+    CHECK_FALSE(forms.focused());
+    CHECK(forms.mounted("search")->state().at("view") == "search");
+}
+
+TEST_CASE("presentation sidebar forms reserve bounded controls without overlap at every DPI") {
+    for (const auto scale : {1.0F, 1.25F, 1.5F, 2.0F})
+        for (const auto width : {0.0F, 80.0F, 180.0F, 300.0F})
+            for (const auto height : {0.0F, 60.0F, 900.0F}) {
+                const astra::ui::Box available{
+                    48 * scale, 80 * scale, width * scale, height * scale};
+                const auto layout =
+                    astra::ui::InlineFormLayout::measure_sidebar(available, scale, 2, 3, 3);
+                const auto bounded = [&](astra::ui::Box box) {
+                    CHECK(box.x >= available.x);
+                    CHECK(box.y >= available.y);
+                    CHECK(box.width >= 0);
+                    CHECK(box.height >= 0);
+                    CHECK(box.right() <= doctest::Approx(available.right()).epsilon(0.00001));
+                    CHECK(box.bottom() <= doctest::Approx(layout.panel.bottom()).epsilon(0.00001));
+                };
+                bounded(layout.panel);
+                bounded(layout.title);
+                bounded(layout.close);
+                bounded(layout.message);
+                for (const auto& boxes : {layout.fields, layout.toggles, layout.actions})
+                    for (const auto box : boxes)
+                        bounded(box);
+                CHECK(layout.fields[0].bottom() <= doctest::Approx(layout.fields[1].y));
+                CHECK(layout.fields[1].bottom() <= doctest::Approx(layout.toggles[0].y));
+                CHECK(layout.toggles[0].bottom() <= doctest::Approx(layout.message.y));
+                CHECK(layout.message.bottom() <= doctest::Approx(layout.actions[0].y));
             }
 }
 

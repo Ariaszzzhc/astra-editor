@@ -263,7 +263,7 @@ target("astra-workbench")
     set_kind("static")
     add_includedirs("include", {public = true})
     add_deps("astra-script", "astra-core", "astra-editing")
-    add_files("src/ui/workbench.cpp", "src/ui/file_tree_index.cpp", "src/ui/workbench_layout.cpp", "src/ui/text_line_index.cpp", "src/ui/picker_index.cpp", "src/ui/decoration_indexes.cpp", "src/ui/inline_form.cpp", "src/ui/view_index.cpp", "src/ui/view_store.cpp")
+    add_files("src/ui/workbench.cpp", "src/ui/file_tree_index.cpp", "src/ui/workbench_layout.cpp", "src/ui/text_line_index.cpp", "src/ui/picker_index.cpp", "src/ui/decoration_indexes.cpp", "src/ui/inline_form.cpp", "src/ui/form_registry.cpp", "src/ui/view_index.cpp", "src/ui/view_store.cpp")
     set_exceptions("cxx")
 
 target("astra")

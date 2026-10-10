@@ -30,6 +30,7 @@ std::string text(const Json& spec, const char* key, std::size_t limit, std::stri
 InlineForm::InlineForm(const Json& spec, std::string epoch) : epoch_(std::move(epoch)) {
     id_ = text(spec, "id", 128);
     title_ = text(spec, "title", 128);
+    view_ = text(spec, "view", 128);
     if (id_.empty() || title_.empty()) {
         throw protocol::RpcError(-32602, "Inline form identity and title required");
     }
@@ -96,7 +97,10 @@ InlineForm::Json InlineForm::state() const {
         values[field.id] = field.text.text().str();
     for (const auto& toggle : toggles_)
         values[toggle.id] = toggle.value;
-    return {{"id", id_}, {"version", version()}, {"values", std::move(values)}};
+    auto result = Json{{"id", id_}, {"version", version()}, {"values", std::move(values)}};
+    if (!view_.empty())
+        result["view"] = view_;
+    return result;
 }
 
 void InlineForm::require_generation() const {
@@ -116,10 +120,10 @@ void InlineForm::focus(std::optional<std::size_t> index, bool select_all) {
     if (index && *index >= fields_.size() + toggles_.size() + actions_.size()) {
         throw protocol::RpcError(-32602, "Inline focus is out of range");
     }
-    focus_ = index;
     if (index && *index < fields_.size() && select_all) {
         static_cast<void>(editing::execute(fields_[*index].text, editing::Command::select_all));
     }
+    focus_ = index;
 }
 
 void InlineForm::cycle_focus(bool backwards) {
@@ -202,6 +206,53 @@ bool InlineForm::update(const Json& params) {
     return true;
 }
 
+bool InlineForm::set_values(const Json& params) {
+    if (params.at("id") != id_ || params.at("version") != version())
+        return false;
+    const auto& values = params.at("values");
+    if (!values.is_object())
+        throw protocol::RpcError(-32602, "Form values must be an object");
+    std::vector<Field> prepared;
+    for (const auto& field : fields_)
+        prepared.push_back(
+            {field.id, field.placeholder, field.submit, field.shift_submit, field.text.clone()});
+    auto toggles = toggles_;
+    bool modified = false;
+    for (const auto& [id, value] : values.items()) {
+        auto field = std::find_if(prepared.begin(), prepared.end(), [&](const auto& item) {
+            return item.id == id;
+        });
+        if (field != prepared.end()) {
+            const auto content = value.get<std::string>();
+            text_valid(content, max_input_bytes);
+            if (field->text.text().str() != content) {
+                static_cast<void>(field->text.apply(
+                    {field->text.revision(),
+                     {{ByteOffset{0}, ByteOffset{field->text.text().size_bytes()}, content}},
+                     std::vector<Selection>{
+                         {ByteOffset{content.size()}, ByteOffset{content.size()}}}}));
+                modified = true;
+            }
+        } else {
+            auto toggle = std::find_if(toggles.begin(), toggles.end(), [&](const auto& item) {
+                return item.id == id;
+            });
+            if (toggle == toggles.end())
+                throw protocol::RpcError(-32602, "Unknown form value identity");
+            const auto enabled = value.get<bool>();
+            modified = modified || toggle->value != enabled;
+            toggle->value = enabled;
+        }
+    }
+    if (!modified)
+        return false;
+    require_generation();
+    fields_ = std::move(prepared);
+    toggles_ = std::move(toggles);
+    changed();
+    return true;
+}
+
 InlineFormLayout InlineFormLayout::measure(
     Box editor, float scale, std::size_t fields, std::size_t toggles, std::size_t actions) {
     if (!std::isfinite(scale) || scale <= 0 || fields < 1 || fields > 4 || toggles > 4 ||
@@ -238,6 +289,45 @@ InlineFormLayout InlineFormLayout::measure(
     for (std::size_t i = 0; i < actions; ++i)
         result.actions.push_back(
             box(236 + static_cast<float>(i) * action_width, action_y, action_width - 4, 26));
+    return result;
+}
+
+InlineFormLayout InlineFormLayout::measure_sidebar(
+    Box available, float scale, std::size_t fields, std::size_t toggles, std::size_t actions) {
+    static_cast<void>(measure(available, scale, fields, toggles, actions));
+    InlineFormLayout result;
+    const auto requested = (90 + 34 * static_cast<float>(fields) + (toggles ? 26 : 0)) * scale;
+    const auto height = std::min(requested, available.height);
+    result.panel = {available.x, available.y, available.width, height};
+    const auto sx = std::min(1.0F, available.width / (180 * scale));
+    const auto sy = requested > 0 ? height / requested : 0;
+    const auto pad = 8 * scale * sx;
+    const auto width = std::max(0.0F, available.width - 2 * pad);
+    const auto box = [&](float x, float y, float w, float h) {
+        return Box{result.panel.x + x, result.panel.y + y * scale * sy, w, h * scale * sy};
+    };
+    result.title = box(pad, 5, std::max(0.0F, width - 32 * scale * sx), 20);
+    result.close =
+        box(std::max(0.0F, available.width - pad - 28 * scale * sx), 2, 28 * scale * sx, 24);
+    for (std::size_t i = 0; i < fields; ++i)
+        result.fields.push_back(box(pad, 28 + 34 * static_cast<float>(i), width, 28));
+    auto bottom = 28 + 34 * static_cast<float>(fields);
+    if (toggles) {
+        const auto step = width / static_cast<float>(toggles);
+        for (std::size_t i = 0; i < toggles; ++i)
+            result.toggles.push_back(box(pad + static_cast<float>(i) * step,
+                                         bottom,
+                                         std::max(0.0F, step - 4 * scale * sx),
+                                         22));
+        bottom += 26;
+    }
+    result.message = box(pad, bottom + 4, width, 20);
+    const auto step = width / static_cast<float>(actions);
+    for (std::size_t i = 0; i < actions; ++i)
+        result.actions.push_back(box(pad + static_cast<float>(i) * step,
+                                     bottom + 26,
+                                     std::max(0.0F, step - 4 * scale * sx),
+                                     26));
     return result;
 }
 } // namespace astra::ui

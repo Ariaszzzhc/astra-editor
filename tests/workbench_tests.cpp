@@ -1,5 +1,6 @@
 #include <astra/ui/workbench.hpp>
 #include <astra/ui/inline_form.hpp>
+#include <astra/ui/form_registry.hpp>
 #include <astra/ui/view_store.hpp>
 #include <astra/io/file_store.hpp>
 #include <doctest/doctest.h>
@@ -48,6 +49,7 @@ std::map<std::string, std::string> modules() {
                                             {"astra/files", "files.js"},
                                             {"astra/git", "git.js"},
                                             {"astra/search", "search.js"},
+                                            {"astra/workspace-search", "workspace-search.js"},
                                             {"astra/clipboard", "clipboard.js"},
                                             {"astra/language", "language.js"},
                                             {"astra/recovery", "recovery.js"},
@@ -122,7 +124,349 @@ struct ViewHost {
         return ready(nullptr);
     }
 };
+
+struct MountedHost {
+    astra::ui::FormRegistry forms;
+    ViewHost view;
+    std::vector<Json> updates;
+    std::optional<std::promise<Json>> confirmation;
+    Json confirmation_spec;
+    unsigned sequence{};
+
+    MountedHost() {
+        view.views.register_spec(
+            {{"id", "search"}, {"title", "Search"}, {"icon", "search"}, {"order", 1}});
+    }
+
+    std::future<Json> operator()(std::string_view method, const Json& params) {
+        if (method.starts_with("_ui.view."))
+            return view(method, params);
+        if (method == "_ui.read") {
+            auto state =
+                Json{{"tabs", Json::array()}, {"document", nullptr}, {"focusedForm", nullptr}};
+            if (const auto* focused = forms.focused())
+                state["focusedForm"] = {{"id", focused->id()}, {"view", focused->view()}};
+            return ready(state);
+        }
+        if (method == "_ui.form.open") {
+            static_cast<void>(forms.open(
+                std::make_unique<astra::ui::InlineForm>(params, std::to_string(++sequence))));
+            return ready(forms.find(params.at("id").get<std::string>())->state());
+        }
+        if (method.starts_with("_ui.form.")) {
+            auto* form = forms.find(params.at("id").get<std::string>());
+            if (!form)
+                return ready(nullptr);
+            if (method == "_ui.form.read")
+                return ready(form->state());
+            if (method == "_ui.form.update")
+                return ready(form->update(params));
+            if (method == "_ui.form.setValues") {
+                if (params.at("version") != form->version())
+                    return ready(nullptr);
+                static_cast<void>(form->set_values(params));
+                return ready(form->state());
+            }
+            if (method == "_ui.form.focus") {
+                const auto field = params.at("field").get<std::string>();
+                const auto found = std::find_if(
+                    form->fields().begin(), form->fields().end(), [&](const auto& value) {
+                        return value.id == field;
+                    });
+                REQUIRE(found != form->fields().end());
+                forms.focus(form->id(), static_cast<std::size_t>(found - form->fields().begin()));
+                return ready(form->state());
+            }
+            if (method == "_ui.form.blur") {
+                form->focus(std::nullopt);
+                return ready(true);
+            }
+            if (method == "_ui.form.close")
+                return ready(static_cast<bool>(forms.close(form->id())));
+        }
+        if (method == "_ui.update") {
+            updates.push_back(params);
+            return ready(nullptr);
+        }
+        if (method == "_ui.dialog") {
+            REQUIRE_FALSE(confirmation);
+            confirmation_spec = params;
+            forms.blur();
+            confirmation.emplace();
+            return confirmation->get_future();
+        }
+        if (method == "_ui.dialog.cancel" || method == "_ui.dialog.answer") {
+            if (confirmation && params.at("id") == confirmation_spec.at("id")) {
+                confirmation->set_value(method == "_ui.dialog.answer" ? Json(params.at("accepted"))
+                                                                      : Json(nullptr));
+                confirmation.reset();
+            }
+            return ready(nullptr);
+        }
+        CHECK(method == "_ui.action");
+        return ready(nullptr);
+    }
+
+    void poll(astra::ui::Workbench& workbench) {
+        for (int tick = 0; tick < 32; ++tick) {
+            view.views.poll();
+            workbench.poll();
+        }
+    }
+};
+
+Json workspace_matches(bool truncated = false, bool issues = false) {
+    return {
+        {"state", "completed"},
+        {"result",
+         {{"matches", Json::array({{{"path", "a.txt"}, {"line", 0}, {"begin", 0}, {"end", 4}}})},
+          {"truncated", truncated},
+          {"issues",
+           issues ? Json::array({{{"path", "b.txt"}, {"message", "unreadable"}}})
+                  : Json::array()}}}};
+}
+
+void reply_workspace_search(Channel& channel, MountedHost& host, astra::ui::Workbench& workbench) {
+    REQUIRE(channel.requests.size() == 1);
+    REQUIRE(channel.requests.front().body.at("method") == "workspace.search");
+    channel.reply({{"operationId", "workspace-search"}});
+    host.poll(workbench);
+    REQUIRE(channel.requests.size() == 1);
+    REQUIRE(channel.requests.front().body.at("method") == "operation.get");
+    channel.reply(workspace_matches());
+    host.poll(workbench);
+}
 } // namespace
+
+TEST_CASE("workbench workspace search owns mounted inputs and guarded generic view publication") {
+    auto channel = std::make_shared<Channel>();
+    MountedHost host;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](auto method, const auto& params) {
+            return host(method, params);
+        },
+        modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("workbench.search",
+                      {{"query", "中🙂"}, {"regex", true}, {"scope", "disk"}, {"maxMatches", 10}},
+                      [&](const auto& result) {
+                          outcome = result;
+                      });
+    host.poll(workbench);
+    REQUIRE(channel->requests.size() == 1);
+    const auto parameters = channel->requests.front().body.at("params");
+    CHECK(parameters.at("query") == "中🙂");
+    CHECK(parameters.at("regex") == true);
+    CHECK(parameters.at("scope") == "disk");
+    CHECK(parameters.at("maxMatches") == 10);
+    CHECK_FALSE(parameters.contains("replacement"));
+    REQUIRE(host.forms.mounted("search"));
+    CHECK(host.forms.mounted("search")->state().at("values").at("query") == "中🙂");
+    CHECK_FALSE(outcome);
+    reply_workspace_search(*channel, host, workbench);
+    REQUIRE(outcome);
+    CHECK_FALSE(outcome->error);
+    CHECK(host.view.views.at("search").index.size() == 1);
+    CHECK(host.forms.mounted("search")->message() == "1 match(es)");
+    CHECK_FALSE(host.confirmation);
+    CHECK(channel->requests.empty());
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench unsafe workspace search previews cannot start replacement") {
+    for (const auto truncated : {false, true}) {
+        auto channel = std::make_shared<Channel>();
+        MountedHost host;
+        astra::ui::Workbench workbench(
+            channel,
+            [&](auto method, const auto& params) {
+                return host(method, params);
+            },
+            modules());
+        workbench.execute("workbench.search", {{"query", "find"}, {"replacement", "replace"}}, {});
+        host.poll(workbench);
+        reply_workspace_search(*channel, host, workbench);
+        auto state = host.forms.mounted("search")->state();
+        state["action"] = "replaceAll";
+        workbench.emit("ui.form.action", state);
+        host.poll(workbench);
+        REQUIRE(channel->requests.size() == 1);
+        CHECK(channel->requests.front().body.at("method") == "workspace.search");
+        channel->reply({{"operationId", "fresh-search"}});
+        host.poll(workbench);
+        REQUIRE(channel->requests.size() == 1);
+        channel->reply(workspace_matches(truncated, !truncated));
+        host.poll(workbench);
+        CHECK_FALSE(host.confirmation);
+        CHECK(host.forms.mounted("search")->error());
+        CHECK(channel->requests.empty());
+        CHECK(workbench.idle());
+        CHECK(workbench.take_errors().empty());
+    }
+}
+
+TEST_CASE("workbench accepted workspace cancellation retains partial write reports") {
+    auto channel = std::make_shared<Channel>();
+    MountedHost host;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](auto method, const auto& params) {
+            return host(method, params);
+        },
+        modules());
+    workbench.execute("workbench.search", {{"query", "find"}, {"replacement", "replace"}}, {});
+    host.poll(workbench);
+    reply_workspace_search(*channel, host, workbench);
+    auto snapshot = host.forms.mounted("search")->state();
+    snapshot["action"] = "replaceAll";
+    workbench.emit("ui.form.action", snapshot);
+    host.poll(workbench);
+    reply_workspace_search(*channel, host, workbench);
+    REQUIRE(host.confirmation);
+    CHECK(host.confirmation_spec.at("title") == "Replace 1 match(es)?");
+    CHECK(channel->requests.empty());
+    workbench.execute("ui.confirmReplace", Json::object(), {});
+    host.poll(workbench);
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "workspace.replace");
+    CHECK(channel->requests.front().body.at("params").at("replacement") == "replace");
+    workbench.execute("workbench.cancelWorkspaceSearch", Json::object(), {});
+    host.poll(workbench);
+    channel->reply({{"operationId", "write"}});
+    host.poll(workbench);
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "operation.cancel");
+    CHECK(channel->requests.front().body.at("params").at("id") == "write");
+    channel->reply({{"cancelRequested", true}});
+    host.poll(workbench);
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "operation.get");
+    const Json modified = Json::array({{{"id", "unsaved"}, {"revision", "9"}, {"dirty", true}}});
+    channel->reply({{"state", "completed"},
+                    {"result",
+                     {{"applied", Json::array({"a.txt"})},
+                      {"modifiedBuffers", modified},
+                      {"pending", Json::array({"b.txt"})},
+                      {"pendingBuffers", Json::array({"conflict"})},
+                      {"issues", Json::array()},
+                      {"cancelled", true}}}});
+    host.poll(workbench);
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "workspace.tree");
+    channel->reply({{"entries", Json::array()}, {"truncated", false}});
+    host.poll(workbench);
+    const auto result =
+        std::find_if(host.updates.begin(), host.updates.end(), [](const auto& value) {
+            return value.contains("notice");
+        });
+    REQUIRE(result != host.updates.end());
+    CHECK(result->at("documents") == modified);
+    CHECK(result->at("notice") == "Replaced in 1 disk file(s) and 1 unsaved buffer(s); 2 pending, "
+                                  "0 issue(s), cancelled. Search again before retrying");
+    CHECK_FALSE(host.forms.mounted("search")->busy());
+    CHECK(workbench.take_errors().empty());
+    CHECK(channel->requests.empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench workspace replacement rechecks native input after confirmation") {
+    auto channel = std::make_shared<Channel>();
+    MountedHost host;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](auto method, const auto& params) {
+            return host(method, params);
+        },
+        modules());
+    workbench.execute("workbench.search", {{"query", "find"}, {"replacement", "replace"}}, {});
+    host.poll(workbench);
+    reply_workspace_search(*channel, host, workbench);
+    auto snapshot = host.forms.mounted("search")->state();
+    snapshot["action"] = "replaceAll";
+    workbench.emit("ui.form.action", snapshot);
+    host.poll(workbench);
+    reply_workspace_search(*channel, host, workbench);
+    REQUIRE(host.confirmation);
+    REQUIRE(host.forms.mounted("search")->set_values({{"id", snapshot.at("id")},
+                                                      {"version", snapshot.at("version")},
+                                                      {"values", {{"query", "new query"}}}}));
+    // Deliberately delay the changed event: publication must fence the actual
+    // retained input state, rather than relying on notification delivery order.
+    workbench.execute("ui.confirmReplace", Json::object(), {});
+    host.poll(workbench);
+    CHECK_FALSE(host.confirmation);
+    CHECK(channel->requests.empty());
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+    CHECK(host.forms.mounted("search")->state().at("values").at("query") == "new query");
+}
+
+TEST_CASE("workbench workspace search cancellation drains late startup identity") {
+    auto channel = std::make_shared<Channel>();
+    MountedHost host;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](auto method, const auto& params) {
+            return host(method, params);
+        },
+        modules());
+    workbench.execute("workbench.search", {{"query", "find"}}, {});
+    host.poll(workbench);
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "workspace.search");
+    workbench.execute("workbench.cancelWorkspaceSearch", Json::object(), {});
+    host.poll(workbench);
+    CHECK_FALSE(workbench.idle());
+    channel->reply({{"operationId", "late-search"}});
+    host.poll(workbench);
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "operation.cancel");
+    CHECK(channel->requests.front().body.at("params").at("id") == "late-search");
+    channel->reply({{"cancelRequested", true}});
+    host.poll(workbench);
+    CHECK(host.view.views.at("search").index.size() == 0);
+    CHECK(host.forms.mounted("search")->state().at("values").at("query") == "find");
+    CHECK_FALSE(host.forms.focused());
+    CHECK_FALSE(host.forms.mounted("search")->busy());
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench superseded workspace failures cannot overwrite newer input or status") {
+    auto channel = std::make_shared<Channel>();
+    MountedHost host;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](auto method, const auto& params) {
+            return host(method, params);
+        },
+        modules());
+    workbench.execute("workbench.search", {{"query", "old"}}, {});
+    host.poll(workbench);
+    REQUIRE(channel->requests.size() == 1);
+    workbench.execute("workbench.search", {{"query", "new"}}, {});
+    host.poll(workbench);
+    REQUIRE(channel->requests.size() == 2);
+    auto old = std::move(channel->requests.front());
+    channel->requests.pop_front();
+    old.response.set_value(Json{{"jsonrpc", "2.0"},
+                                {"id", old.body.at("id")},
+                                {"error", {{"code", -32004}, {"message", "old query rejected"}}}}
+                               .dump());
+    host.poll(workbench);
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("params").at("query") == "new");
+    reply_workspace_search(*channel, host, workbench);
+    CHECK(host.forms.mounted("search")->state().at("values").at("query") == "new");
+    CHECK_FALSE(host.forms.mounted("search")->error());
+    for (const auto& update : host.updates)
+        if (update.contains("error"))
+            CHECK(update.at("error") != "old query rejected");
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
 
 TEST_CASE("workbench scripts own UI commands and asynchronous document workflows") {
     auto channel = std::make_shared<Channel>();

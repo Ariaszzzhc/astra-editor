@@ -7,6 +7,7 @@
 #include <astra/recovery/store.hpp>
 
 #include <exception>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <future>
@@ -63,6 +64,7 @@ class ApplicationService final {
 
     struct Operation {
         std::string id;
+        std::uint64_t sequence{};
         std::string kind;
         std::string state{"pending"};
         Json result;
@@ -83,6 +85,7 @@ class ApplicationService final {
                     std::function<Json(const std::shared_ptr<Operation>&)> complete,
                     bool git_mutation = false);
     void poll_operations();
+    void prune_operations();
     void finish_operation(const std::shared_ptr<Operation>& operation, std::exception_ptr error);
     [[nodiscard]] Json describe(const Document& document) const;
     [[nodiscard]] Json open_file(const Json& params);

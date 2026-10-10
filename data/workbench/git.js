@@ -94,7 +94,7 @@ export function registerGit() {
                     rows,
                     subtitle: model.branch,
                     empty: 'No changes',
-                    metadata: { branch: model.branch }
+                    update: { branch: model.branch }
                 };
             }
         }

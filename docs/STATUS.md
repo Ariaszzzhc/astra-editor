@@ -9,6 +9,89 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### JS-owned mounted workspace search (2026-10-10)
+
+`astra/workspace-search` now owns workspace query/replacement input, options,
+debounced readonly previews, paged service requests, result projection/navigation,
+replacement confirmation and cancellation. The C++ window no longer stores
+workspace search matches, query/options, replacement plans, search generations
+or its dedicated search/replacement prompt variants. Provider-specific native
+view model branches were replaced with JS-projected, version-guarded generic UI
+updates for status, error, branch and notices.
+
+Native `FormRegistry` retains one editor overlay and one form per registered
+sidebar with one keyboard/IME focus owner. Form-local input/history and shaping
+cache identities remain independent. Sidebar controls reserve space above the
+measured result rows; clicking the editor releases focus without discarding the
+controls. `forms.setValues` validates every requested input/toggle against one
+captured version before atomically publishing a new generation. Document find
+and workspace search can stay visible together.
+
+Replacement searches afresh and refuses incomplete/unreadable previews. JS
+rechecks the actual native form version after confirmation, including delayed
+input events. Accepted writes continue to be observed when input changes or a
+form closes; explicit cancellation requests service cancellation and reads the
+final partial-success report rather than discarding applied counts. Shutdown
+cancels readonly work and waits for accepted writes before recovery/teardown.
+
+The first real GUI run passed replacement but failed during subsequent save/close
+with `Operation expired or does not exist`. `build/mounted-gui-diagnostic.log`
+records the transition through operation ids 99, 100, 101 and 103. Both service
+entry paths had reclaimed the first completed string-map key, evicting newer
+decimal identities ahead of older ones. Reclamation now uses an explicit numeric
+creation sequence and never selects pending operations. A deterministic 150-step
+regression holds one pending request while checking recent completed results and
+fast script commands across decimal boundaries.
+
+Initial validation also exposed missing callback arguments in new tests, a
+missing UTF-8 adapter include and an unregistered initial view in the unit host;
+these were corrected. A filtered run against the stale executable reported zero
+cases and was not accepted as evidence. After rebuilding, the focused form,
+workspace-policy and operation-retention checks passed: 12 cases / 24,629
+assertions. The final suite additionally covers superseded startup failures
+without overwriting newer controls or status.
+
+The additional unsaved-buffer GUI fixture initially invoked
+`ui.execute('editor.insert_text')`, which is not yet registered in the client
+command host. It now uses the existing asynchronous `ui.native` editing adapter;
+the service still receives the production command dispatcher request. Completing
+client editing-command coverage and routing native text/vertical input through
+client overrides remains part of the architecture work, rather than being
+claimed complete by this search change.
+
+Final Windows Debug evidence:
+
+- `./scripts/format.ps1 -Check -Offline`: 124 C++ and 12 JS files passed.
+- `./scripts/xmake.ps1 build -y astra-tests astra astra-server gui-smoke
+  gui-presentation-smoke gui-recovery-smoke`: passed; `gui-smoke` was rebuilt
+  after correcting the additional unsaved-buffer fixture.
+- `./build/windows/x64/debug/astra-tests.exe --no-version`: 522 cases /
+  628,609 assertions passed, zero failures or skips.
+- `./build/windows/x64/debug/gui-smoke.exe` and the same binary with `--tcp`:
+  passed with the real SDL3/Skia Graphite/Dawn renderer. Both exercise separate
+  editor/sidebar forms, shaped pointer refocus, body editing/undo with controls
+  retained, atomic immediate input/cancellation, disk replacement only after
+  confirmation, and replacement of an unsaved buffer that stays dirty and is
+  undone as one edit. Existing document editing, close, save/reopen, palette and
+  shutdown acceptance also passed.
+- `./build/windows/x64/debug/gui-presentation-smoke.exe`: passed with 1,505
+  indexed files, custom JS views, bounded publication, layout and shutdown.
+- `./build/windows/x64/debug/gui-recovery-smoke.exe`: passed with the real GPU,
+  recovery store, durable exit and failure retention/retry/confirmation.
+- `./tests/cli_smoke.ps1 -Mode debug`: passed with independent server/TCP CLI
+  processes, Unicode arguments and async find/replace/undo/save.
+- `git diff --check`: passed. The staged runtime copy of
+  `workspace-search.js` matches the source SHA-256. The real renderer screenshot
+  `build/graphics/gui-workspace-search.png` was inspected.
+
+Final logs are in `build/mounted-*.log`; the diagnostic failure log is preserved.
+These checks do not establish new Release or package acceptance.
+
+This work does not complete the overall architecture/UI revision. Generic row
+keyboard navigation, contextual search result presentation, streaming providers
+without retained whole JS result arrays, large-snapshot reclamation/latency,
+incremental display/syntax work and final Release/package acceptance remain open.
+
 ### JS-defined retained sidebar views (2026-10-10)
 
 The activity bar now reads registered JS view descriptors. Explorer, workspace
@@ -55,14 +138,22 @@ Windows Debug evidence:
   callback mismatch (SumTree visits values; ViewIndex exposes index/value).
   Those failures were corrected and the affected targets rebuilt successfully.
 
-Logs are in `build/views-*.log`. Workspace search inputs/replacement confirmation
-still contain native product policy and must move to JS/nonmodal sidebar controls.
+Logs are in `build/views-*.log`. At this revision, workspace search inputs and
+replacement confirmation still contained native product policy; the mounted
+workspace search work above subsequently moved them to JS/sidebar controls.
 Keyboard focus/navigation for generic rows, streaming providers without retained
 whole JS service arrays, large-snapshot reclamation/latency measurements and
 incremental display/syntax work remain open. This revision is not a completed
 milestone and does not establish new Release or package acceptance.
 
 ### Code formatting and acceptance gate (2026-10-10)
+
+The current mounted-form work initially failed
+`./scripts/format.ps1 -Check -Offline` because its new C++ edits were compressed
+and had not been formatted. After `./scripts/format.ps1 -Offline`, the same check
+passed for 124 C++ and 11 JS files, and `git diff --check` passed. These checks
+cover source formatting only. At that point, the mounted-form work had not yet
+been built or accepted; its later functional evidence is recorded above.
 
 Repository-owned C++ and JavaScript now use checked-in `.clang-format` and
 `.prettierrc.json`. C++ uses four-space indentation, a 100-column limit and expanded

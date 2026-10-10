@@ -345,8 +345,12 @@ Group descendants follow their parent in preorder; depth may increase only one
 level after a group. Depth is 0..64. Native group folding uses the measured index.
 `handlers.activate(data, row)` is awaited for leaf activation; late events from
 replaced view generations are discarded. `handlers.show()` can customize showing
-a view. Built-in providers use an async `handlers.project(model, options)` to
+a view. `handlers.refresh()` can read current retained controls when the view's
+refresh command is invoked. Built-in providers use an async `handlers.project(model, options)` to
 translate service data into these rows; extensions normally return rows directly.
+Projected presentations may include `update` with generic UI fields such as
+`status`, `error` or `branch`. These updates are guarded by the published view
+version; native rendering does not interpret provider-specific service models.
 
 `await astra.ui.showView(id)` selects a registered view, refreshing its first
 presentation. `await astra.ui.refresh(id, parameters)` cancels older refreshes;
@@ -386,12 +390,17 @@ hold a modal input task. `read(id)` returns the current state or null,
 `close(id)` closes only that identity, and `update({id,version,message,busy,error})`
 applies status only to that input generation, returning false for an obsolete
 generation or component. Native openings receive unique epochs, including when
-an extension reuses a component id. One form may be open at a time; replacing it
-emits a closed event for the old identity. Existing modal inputs must be dismissed
+an extension reuses a component id. One form may be mounted in the editor and
+one in each registered sidebar view; replacing a form on the same mount
+emits a closed event for the old identity. Only one form owns keyboard/IME focus.
+Inactive sidebar forms retain their input and history. Existing modal inputs must be dismissed
 before opening a form.
 
 Specifications contain `id`, `title`, `fields`, `toggles`, `actions` and optional
-`focus` (a field id). There are 1..4 single-line fields and actions, and 0..4
+`focus` (a field id) and `view` (a registered sidebar identity). Omit `view` to
+mount an editor overlay. Show the requested sidebar before mounting or focusing
+its form. Sidebar controls reserve space above the view's rows. Acknowledgements
+include `view` for sidebar mounts. There are 1..4 single-line fields and actions, and 0..4
 toggles. All control ids are unique across the form. Fields have `id`, `value`,
 `placeholder`, `submit` and optional `shiftSubmit`; submit identities refer to
 actions. Toggles have `id`, `label`, boolean `value`, and optional `shortcut`
@@ -399,6 +408,13 @@ actions. Toggles have `id`, `label`, boolean `value`, and optional `shortcut`
 Input text is bounded to 16 KiB per field; CR/LF, NUL and invalid UTF-8 are
 rejected before mutation. Inputs have independent bounded Unicode editing and
 undo history, shaped mouse selection, clipboard and IME candidate positioning.
+`await astra.ui.forms.focus(id, field, selectAll = true)` focuses a visible field,
+returning its state or null for a closed identity. `blur(id)` releases focus
+without closing or discarding input. `setValues({id,version,values})` validates
+all supplied fields/toggles before publishing one new generation, returns the
+new state (unchanged for identical values), or null for a stale/closed identity.
+Programmatic text changes preserve independent input undo history. Failed
+validation preserves content, selection, history and generation for every field.
 Tab/Shift+Tab move focus; Enter/Shift+Enter invoke field actions, and Space/Enter
 activate a focused toggle or button. Clicking outside blurs the form and allows
 ordinary editor input while the component remains visible.
@@ -420,6 +436,21 @@ backward starts at its beginning and finds a match strictly before that byte
 offset. Wrapping backward selects the final match. Reverse regex search retains
 one result while scanning with bounded work on a worker, preserving original
 input anchors, Unicode boundaries and cancellation checks.
+
+Default `ui.search` (Ctrl+Shift+F) and `ui.workspaceReplace` (Ctrl+Shift+H)
+focus retained query/replacement fields in the Search sidebar. Their JS module
+owns match-case/regex/whole-word options, a cancellable 200 ms preview debounce,
+service pagination, row projection/navigation and replacement confirmation.
+`await astra.ui.execute('workbench.search', parameters)` updates these controls
+and searches; it accepts query/options plus the service's `scope`, `maxMatches`
+and `includeIgnored` bounds. Input changes never initiate writes. Replace all
+searches afresh, refuses truncated/unreadable previews, confirms affected files,
+then rechecks the native input version before submitting `workspace.replace`.
+Completed reports publish both disk counts and modified unsaved-buffer metadata.
+Explicit cancellation of an accepted write requests service cancellation and
+continues polling its final report; pending/conflicted work and partial success
+remain visible. Window shutdown cancels readonly previews and confirmations,
+but waits for accepted writes before checking recovery and teardown.
 
 ```javascript
 astra.registerCommand("custom.save", async ({id, baseRevision}) => {

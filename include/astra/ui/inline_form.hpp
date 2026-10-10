@@ -44,6 +44,10 @@ class InlineForm final {
         return title_;
     }
 
+    [[nodiscard]] const std::string& view() const noexcept {
+        return view_;
+    }
+
     [[nodiscard]] const std::string& message() const noexcept {
         return message_;
     }
@@ -83,11 +87,12 @@ class InlineForm final {
     void toggle(std::size_t index);
     // Late results cannot change a newer input generation or another widget.
     [[nodiscard]] bool update(const Json& params);
+    [[nodiscard]] bool set_values(const Json& params);
 
   private:
     void require_generation() const;
     void changed();
-    std::string id_, title_, message_, epoch_;
+    std::string id_, title_, view_, message_, epoch_;
     bool busy_{}, error_{};
     std::uint64_t version_{1};
     std::optional<std::size_t> focus_;
@@ -101,5 +106,7 @@ struct InlineFormLayout {
     std::vector<Box> fields, toggles, actions;
     static InlineFormLayout
     measure(Box editor, float scale, std::size_t fields, std::size_t toggles, std::size_t actions);
+    static InlineFormLayout measure_sidebar(
+        Box available, float scale, std::size_t fields, std::size_t toggles, std::size_t actions);
 };
 } // namespace astra::ui
