@@ -1363,7 +1363,7 @@ Json ApplicationService::language_apply_workspace_edit(const Json& params) {
                 }
                 auto& document = staged.at(id);
                 (void)document.apply({document.revision(), file.edits, std::nullopt});
-                auto metadata = EditorService::metadata(document);
+                auto metadata = editor_.metadata(document);
                 metadata["path"] = path_text(file.path);
                 result.push_back(metadata);
                 pending.push_back(protocol::make_notification(
@@ -1375,6 +1375,7 @@ Json ApplicationService::language_apply_workspace_edit(const Json& params) {
             Json response{{"applied", true}, {"documents", std::move(result)}};
             static_assert(std::is_nothrow_move_assignable_v<Document>);
             for (auto item = staged.begin(); item != staged.end();) {
+                const auto id = item->first;
                 if (const auto current = editor_.documents_.find(item->first);
                     current != editor_.documents_.end()) {
                     current->second = std::move(item->second);
@@ -1383,6 +1384,7 @@ Json ApplicationService::language_apply_workspace_edit(const Json& params) {
                     auto node = staged.extract(item++);
                     editor_.documents_.insert(std::move(node));
                 }
+                static_cast<void>(editor_.publish_metadata(BufferId{id}));
             }
             files_.merge(bindings);
             editor_.notifications_.swap(pending);

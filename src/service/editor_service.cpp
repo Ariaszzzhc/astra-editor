@@ -5,6 +5,7 @@
 #include <charconv>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <utility>
 
 namespace astra::service {
@@ -208,9 +209,16 @@ void EditorService::require_notification_capacity() const {
     if (notifications_.size() >= max_pending_notifications) {
         throw RpcError(-32004, "Notification queue is full; drain events before editing");
     }
+    // A mutation can serialize its notification and response without intervening
+    // owner-loop work. Refuse exhaustion before changing the document.
+    require_metadata_capacity(2);
 }
 
-Json EditorService::metadata(const Document& document) {
+void EditorService::require_metadata_capacity(std::uint64_t count) const {
+    metadata_clock_.require_capacity(count);
+}
+
+Json EditorService::metadata(const Document& document, bool new_binding) const {
     auto selections = Json::array();
     auto positions = Json::array();
     for (const auto& selection : document.selections()) {
@@ -218,7 +226,7 @@ Json EditorService::metadata(const Document& document) {
         selections.push_back({{"anchor", selection.anchor.value}, {"head", selection.head.value}});
         positions.push_back({{"line", position.line}, {"utf16Column", position.utf16_column}});
     }
-    return Json{{"id", std::to_string(document.id().value)},
+    Json result{{"id", std::to_string(document.id().value)},
                 {"revision", std::to_string(document.revision().value)},
                 {"sizeBytes", document.text().size_bytes()},
                 {"sizeUtf16", document.text().size_utf16()},
@@ -228,6 +236,22 @@ Json EditorService::metadata(const Document& document) {
                 {"dirty", document.dirty()},
                 {"canUndo", document.can_undo()},
                 {"canRedo", document.can_redo()}};
+    const auto id = document.id().value;
+    const auto found = documents_.find(id);
+    const auto live =
+        found != documents_.end() && std::addressof(found->second) == std::addressof(document);
+    return live && !new_binding
+               ? metadata_clock_.observe(document.id(), std::move(result))
+               : metadata_clock_.prepare(document.id(), std::move(result), new_binding);
+}
+
+bool EditorService::publish_metadata(BufferId id) noexcept {
+    return metadata_clock_.publish(id);
+}
+
+void EditorService::invalidate_metadata(BufferId id) {
+    require_metadata_capacity(1);
+    metadata_clock_.forget(id);
 }
 
 void EditorService::changed(const Document& document, std::string_view reason) {
@@ -277,6 +301,7 @@ Json EditorService::create(const Json& params) {
         throw;
     }
     ++next_id_;
+    static_cast<void>(publish_metadata(BufferId{next_id_ - 1}));
     return result;
 }
 
@@ -520,6 +545,7 @@ Json EditorService::close(const Json& params) {
     notifications_.push_back(
         protocol::make_notification("document.closed", std::move(event_params)));
     documents_.erase(id);
+    metadata_clock_.forget(BufferId{id});
     return result;
 }
 

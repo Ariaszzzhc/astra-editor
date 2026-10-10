@@ -1,5 +1,6 @@
 #include <astra/protocol/framing.hpp>
 #include <astra/service/editor_service.hpp>
+#include <astra/service/metadata_clock.hpp>
 
 #include <doctest/doctest.h>
 
@@ -80,6 +81,125 @@ framed_dispatch(EditorService& service, const Json& request, std::mt19937& rando
 }
 
 } // namespace
+
+TEST_CASE("service metadata clock preserves publication across abandoned preparations") {
+    astra::service::DocumentMetadataClock clock;
+    const astra::BufferId id{1};
+    const Json a{{"revision", "0"}, {"head", 1}}, b{{"revision", "0"}, {"head", 2}};
+    const auto original = clock.observe(id, a);
+    const auto proposed = clock.prepare(id, b);
+    CHECK(proposed.at("metadataSequence") != original.at("metadataSequence"));
+    CHECK(clock.observe(id, a) == original);
+    CHECK_FALSE(clock.publish(id));
+    const auto accepted_b = clock.prepare(id, b);
+    REQUIRE(clock.publish(id));
+    CHECK(clock.observe(id, b) == accepted_b);
+    const auto returned_a = clock.observe(id, a);
+    CHECK(std::stoull(returned_a.at("metadataSequence").get<std::string>()) >
+          std::stoull(accepted_b.at("metadataSequence").get<std::string>()));
+    const auto new_binding = clock.prepare(id, a, true);
+    REQUIRE(clock.publish(id));
+    CHECK(clock.observe(id, a) == new_binding);
+    CHECK(new_binding.at("metadataSequence") != returned_a.at("metadataSequence"));
+    auto exposed = clock.observe(id, a);
+    exposed["head"] = 99;
+    CHECK(clock.observe(id, a) == new_binding);
+    CHECK(original.at("head") == 1);
+    CHECK(proposed.at("head") == 2);
+    std::mt19937 random(0xA57A96);
+    std::map<std::uint64_t, Json> current;
+    std::map<std::uint64_t, Json> snapshots;
+    for (std::uint64_t buffer = 2; buffer <= 9; ++buffer) {
+        current[buffer] = a;
+        snapshots[buffer] = clock.observe(astra::BufferId{buffer}, a);
+    }
+    for (int round = 0; round < 2000; ++round) {
+        const auto buffer = 2 + random() % 8;
+        const astra::BufferId target{buffer};
+        const Json next{{"revision", "0"}, {"head", 10 + round}};
+        const auto candidate = clock.prepare(target, next);
+        CHECK(clock.prepare(target, next) == candidate);
+        if (random() % 2) {
+            REQUIRE(clock.publish(target));
+            CHECK(clock.observe(target, next) == candidate);
+            current[buffer] = next;
+            snapshots[buffer] = candidate;
+        } else {
+            CHECK(clock.observe(target, current.at(buffer)) == snapshots.at(buffer));
+            CHECK_FALSE(clock.publish(target));
+        }
+    }
+    REQUIRE(clock.retained_buffers() == 9);
+    for (std::uint64_t buffer = 1; buffer <= 9; ++buffer)
+        clock.forget(astra::BufferId{buffer});
+    CHECK(clock.retained_buffers() == 0);
+}
+
+TEST_CASE("service metadata clock uses exact decimal markers and rejects exhausted changes") {
+    const astra::BufferId id{1};
+    const Json a{{"revision", "0"}, {"head", 1}}, b{{"revision", "0"}, {"head", 2}};
+    astra::service::DocumentMetadataClock precise(9007199254740993ULL);
+    CHECK(precise.observe(id, a).at("metadataSequence") == "9007199254740993");
+    CHECK(precise.observe(id, b).at("metadataSequence") == "9007199254740994");
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    astra::service::DocumentMetadataClock exhausted(maximum - 1);
+    const auto baseline = exhausted.observe(id, a);
+    CHECK(baseline.at("metadataSequence") == std::to_string(maximum - 1));
+    CHECK_THROWS_AS(static_cast<void>(exhausted.prepare(id, b)), astra::protocol::RpcError);
+    CHECK_THROWS_AS(static_cast<void>(exhausted.observe(id, b)), astra::protocol::RpcError);
+    CHECK(exhausted.observe(id, a) == baseline);
+    CHECK_THROWS_AS(exhausted.require_capacity(2), astra::protocol::RpcError);
+    CHECK_THROWS_AS(static_cast<void>(exhausted.observe({}, a)), std::invalid_argument);
+    CHECK_THROWS_AS(static_cast<void>(exhausted.observe(id, Json::array())), std::invalid_argument);
+    CHECK_THROWS_AS(static_cast<void>(exhausted.prepare(id, {{"metadataSequence", "7"}})),
+                    std::invalid_argument);
+    CHECK(exhausted.observe(id, a) == baseline);
+}
+
+TEST_CASE("service metadata snapshots order selection-only changes and stable reads") {
+    EditorService service;
+    const auto first = call(service, "document.create", {{"text", "0123456789"}});
+    const auto id = first.at("id");
+    const auto sequence = [](const Json& metadata) {
+        REQUIRE(metadata.at("metadataSequence").is_string());
+        return std::stoull(metadata.at("metadataSequence").get<std::string>());
+    };
+    auto latest = sequence(first);
+    const auto created = service.take_notifications();
+    REQUIRE(created.size() == 1);
+    CHECK(sequence(created.front().at("params")) == latest);
+    for (std::size_t round = 1; round <= 200; ++round) {
+        const auto head = 1 + round % 9;
+        const auto moved =
+            call(service,
+                 "document.setSelections",
+                 {{"id", id},
+                  {"baseRevision", "0"},
+                  {"selections", Json::array({{{"anchor", head}, {"head", head}}})}});
+        CHECK(moved.at("revision") == "0");
+        CHECK(moved.at("dirty") == false);
+        CHECK(moved.at("canUndo") == false);
+        CHECK(sequence(moved) > latest);
+        const auto events = service.take_notifications();
+        REQUIRE(events.size() == 1);
+        const auto& notification = events.front().at("params");
+        CHECK(sequence(notification) > latest);
+        CHECK(sequence(notification) == sequence(moved));
+        CHECK(notification.at("selections") == moved.at("selections"));
+        const auto read = call(service, "document.get", {{"id", id}});
+        CHECK(read.at("revision") == "0");
+        CHECK(read.at("text") == "0123456789");
+        CHECK(read.at("selections") == moved.at("selections"));
+        CHECK(sequence(read) == sequence(moved));
+        latest = sequence(read);
+    }
+    const auto other = call(service, "document.create", {{"text", "other"}});
+    CHECK(sequence(other) > latest);
+    const auto listed = call(service, "document.list");
+    REQUIRE(listed.size() == 2);
+    CHECK(sequence(listed[0]) == latest);
+    CHECK(sequence(listed[1]) == sequence(other));
+}
 
 TEST_CASE("service viewport pages long Unicode lines without losing bytes") {
     EditorService service;

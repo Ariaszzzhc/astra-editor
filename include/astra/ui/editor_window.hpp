@@ -40,6 +40,7 @@ struct WorkbenchViewState {
     protocol::Json sidebar_form;
     protocol::Json view_retirement;
     protocol::Json document_viewport;
+    protocol::Json document;
     protocol::Json text_surface;
     protocol::Json input_layout;
     protocol::Json text_labels;

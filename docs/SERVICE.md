@@ -41,6 +41,32 @@ includes selections, matching `selectionPositions` in zero-based line/UTF-16
 coordinates, dirty state, and undo/redo availability. User movement commands
 honor graphemes, including combining marks, emoji sequences, and CRLF pairs.
 
+Document metadata also includes `metadataSequence`, a positive canonical decimal
+string within the unsigned 64-bit range. It identifies a published metadata
+snapshot within one service lifetime, separately from the text `revision`.
+Selections, saved state and file bindings can change without a text edit. Compare
+these markers numerically and per buffer; do not convert them to a JavaScript
+`Number`, compare their strings lexicographically, or use another buffer's marker
+as a floor. A new service connection needs a fresh client snapshot.
+
+Unchanged core metadata reads and their corresponding notification/response retain
+the same marker. A changed core tuple receives a newer marker; saving/reloading a
+file binding also invalidates the previous binding identity. Prepared operation
+results retain their candidate marker separately until publication, so abandoned
+preparation cannot replace the already published tuple. Failed preparations may
+leave sequence gaps: this value is neither an edit count nor a text revision.
+The service retains at most one published and one prepared core tuple per clock
+record, without document text, and forgets closed buffers. Existing operation and
+notification limits bound unpublished batch IDs; this is not a heap-size bound.
+
+The native GUI rejects older metadata for a retained buffer before changing its
+tabs, selections or JS event delivery. Both revision and sequence must be at least
+the accepted values, and an equal sequence must retain the same revision. An event
+for the exact currently accepted snapshot still reaches JS even if a read arrived
+first. Client `astra.ui.read` and native `WorkbenchViewState.document` expose the
+accepted document metadata. Closed-buffer late-response fencing remains incomplete;
+the retained-buffer guard alone does not prevent recreation after removal.
+
 ## Document methods
 
 | Method | Parameters | Result |

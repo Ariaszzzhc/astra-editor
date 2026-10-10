@@ -1,6 +1,7 @@
 #pragma once
 
 #include <astra/core/document.hpp>
+#include <astra/service/metadata_clock.hpp>
 #include <astra/editing/commands.hpp>
 #include <astra/protocol/rpc.hpp>
 
@@ -59,7 +60,11 @@ class EditorService {
     [[nodiscard]] Json close(const Json& params);
     [[nodiscard]] Document& find_document(const Json& params);
     static void require_revision(const Document& document, const Json& params);
-    [[nodiscard]] static Json metadata(const Document& document);
+    // Observed state order within this service lifetime, independent of text revision.
+    [[nodiscard]] Json metadata(const Document& document, bool new_binding = false) const;
+    [[nodiscard]] bool publish_metadata(BufferId) noexcept;
+    void invalidate_metadata(BufferId id);
+    void require_metadata_capacity(std::uint64_t count) const;
     void require_notification_capacity() const;
     void changed(const Document& document, std::string_view reason);
 
@@ -68,6 +73,7 @@ class EditorService {
     std::deque<Json> notifications_;
     std::function<editing::Options(const Document&)> command_defaults_;
     std::uint64_t next_id_{1};
+    mutable DocumentMetadataClock metadata_clock_;
 };
 
 } // namespace astra::service

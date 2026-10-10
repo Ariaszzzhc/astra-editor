@@ -561,6 +561,36 @@ TEST_CASE("application asynchronous script results preserve scalar and array val
     CHECK(app.done("script.command", {{"name", "array"}}) == Json::array({1, 2, 3}));
 }
 
+TEST_CASE("application metadata identity follows clean Save As file bindings") {
+    AppFiles files;
+    LiveApp app(files.root());
+    const auto original = app.call("document.create", {{"text", "stable 中🙂"}});
+    const auto id = original.at("id");
+    const auto sequence = [](const Json& metadata) {
+        REQUIRE(metadata.at("metadataSequence").is_string());
+        return std::stoull(metadata.at("metadataSequence").get<std::string>());
+    };
+    const auto first =
+        app.done("workspace.save", {{"id", id}, {"baseRevision", "0"}, {"path", "first.txt"}});
+    CHECK(first.at("revision") == "0");
+    CHECK(first.at("dirty") == false);
+    CHECK(sequence(first) > sequence(original));
+    CHECK(files.read("first.txt") == "stable 中🙂");
+    const auto second =
+        app.done("workspace.save", {{"id", id}, {"baseRevision", "0"}, {"path", "second.txt"}});
+    CHECK(second.at("revision") == "0");
+    CHECK(second.at("dirty") == false);
+    CHECK(second.at("selections") == original.at("selections"));
+    CHECK(sequence(second) > sequence(first));
+    CHECK(second.at("path") == "second.txt");
+    CHECK(files.read("second.txt") == "stable 中🙂");
+    const auto listed = app.call("workspace.documents");
+    REQUIRE(listed.size() == 1);
+    CHECK(listed.front().at("path") == "second.txt");
+    CHECK(sequence(listed.front()) == sequence(second));
+    CHECK(sequence(app.call("document.get", {{"id", id}})) == sequence(second));
+}
+
 TEST_CASE("application file metadata reports the actual persisted text encoding") {
     AppFiles files;
     static_cast<void>(astra::io::save_file(

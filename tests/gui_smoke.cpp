@@ -141,6 +141,13 @@ class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
     std::future<std::optional<std::string>> submit(std::string body) override {
         const auto request = Json::parse(body);
         const auto method = request.at("method").get<std::string>();
+        if (method == "document.get" && hold_next_metadata) {
+            require(!held_metadata_, "A metadata response is already withheld");
+            hold_next_metadata = false;
+            held_metadata_.emplace();
+            held_metadata_->future = channel_->submit(std::move(body));
+            return held_metadata_->reply.get_future();
+        }
         if (method == "document.find") {
             if (request.at("params").value("select", false))
                 ++find_requests;
@@ -175,6 +182,13 @@ class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
     }
 
     std::vector<std::string> take_notifications() override {
+        if (held_metadata_ && held_metadata_->future &&
+            held_metadata_->future->wait_for(std::chrono::seconds(0)) ==
+                std::future_status::ready) {
+            held_metadata_->body = held_metadata_->future->get();
+            held_metadata_->future.reset();
+            require(held_metadata_->body.has_value(), "Real metadata request returned no body");
+        }
         if (held_find && held_find->future &&
             held_find->future->wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             held_find->reply.set_value(held_find->future->get());
@@ -186,17 +200,55 @@ class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
             return {};
         }
         auto notifications = channel_->take_notifications();
+        if (released_notification_) {
+            notifications.push_back(std::move(*released_notification_));
+            released_notification_.reset();
+        }
+        std::vector<std::string> delivered;
         for (const auto& body : notifications) {
             const auto event = Json::parse(body);
             const auto method = event.value("method", std::string{});
             if (method == "document.changed" || method == "document.created") {
                 const auto& metadata = event.at("params");
+                if (withheld_selection_ && metadata.at("id") == withheld_selection_->at("id") &&
+                    metadata.at("selections") == withheld_selection_->at("selections")) {
+                    require(!held_notification_, "A selection notification is already withheld");
+                    held_notification_ = body;
+                    withheld_selection_.reset();
+                    continue;
+                }
                 observed_[metadata.at("id").get<std::string>()] = metadata;
             } else if (method == "document.closed") {
                 observed_.erase(event.at("params").at("id").get<std::string>());
             }
+            delivered.push_back(body);
         }
-        return notifications;
+        return delivered;
+    }
+
+    bool metadata_ready() const {
+        return held_metadata_ && held_metadata_->body.has_value();
+    }
+
+    void release_metadata() {
+        require(metadata_ready(), "No completed metadata response to release");
+        held_metadata_->reply.set_value(std::move(held_metadata_->body));
+        held_metadata_.reset();
+    }
+
+    void hold_selection(Json expected) {
+        require(!held_notification_ && !withheld_selection_, "A notification is already held");
+        withheld_selection_ = std::move(expected);
+    }
+
+    bool selection_held() const {
+        return held_notification_.has_value();
+    }
+
+    void release_selection() {
+        require(held_notification_.has_value(), "No actual selection notification to release");
+        released_notification_ = std::move(held_notification_);
+        held_notification_.reset();
     }
 
     bool observed_selection(const Json& expected) const {
@@ -217,6 +269,7 @@ class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
 
     bool changed{};
     bool hold_next_find{};
+    bool hold_next_metadata{};
     unsigned find_requests{}, preview_requests{}, replace_requests{}, text_downloads{};
     unsigned notification_deferrals{};
 
@@ -228,6 +281,16 @@ class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
     };
 
     std::optional<HeldFind> held_find;
+
+    struct HeldMetadata {
+        std::promise<std::optional<std::string>> reply;
+        std::optional<std::future<std::optional<std::string>>> future;
+        std::optional<std::string> body;
+    };
+
+    std::optional<HeldMetadata> held_metadata_;
+    std::optional<Json> withheld_selection_;
+    std::optional<std::string> held_notification_, released_notification_;
     std::map<std::string, Json> observed_;
     bool defer_notifications_{};
     std::shared_ptr<astra::ui::EditorChannel> channel_;
@@ -323,6 +386,18 @@ int main(int argc, char* argv[]) {
         options.width = 1400;
         options.height = 860;
         options.user_script = R"js(if(astra.context==='client') {
+            let latestSelectionEvent;
+            astra.on('document.changed', value => {
+                if (value.reason === 'selections') latestSelectionEvent = value;
+            });
+            astra.registerCommand('acceptance.delayedMetadata', async () => {
+                const {document} = await astra.ui.read({immediate:true});
+                const old = await astra.request('document.get', {id:document.id});
+                await astra.ui.update({document:old,status:'Delayed metadata response completed'});
+            });
+            astra.registerCommand('acceptance.metadataEvent', async () => {
+                await astra.ui.update({status:'Selection event '+latestSelectionEvent.selections[0].head});
+            });
             let releaseClientInput;
             astra.registerCommand('editor.insert_text', async parameters => {
                 if (parameters.text === 'A') {
@@ -442,6 +517,104 @@ int main(int argc, char* argv[]) {
         require(read_document(host, id).at("text") ==
                     "// GUI acceptance\nint main() { return 0; }\n",
                 "Opened wrong file");
+        const auto original_metadata = window.view_state().document;
+        concurrent->hold_next_metadata = true;
+        window.execute_ui_command("acceptance.delayedMetadata");
+        pump_until(
+            window,
+            [&] {
+                return concurrent->metadata_ready();
+            },
+            "Actual document.get response was not retained by the channel proxy");
+        const auto move = [&](std::size_t head) {
+            return call(host,
+                        "document.setSelections",
+                        {{"id", id},
+                         {"baseRevision", original_metadata.at("revision")},
+                         {"selections", Json::array({{{"anchor", head}, {"head", head}}})}});
+        };
+        concurrent->hold_selection(
+            {{"id", id}, {"selections", Json::array({{{"anchor", 1}, {"head", 1}}})}});
+        static_cast<void>(move(1));
+        pump_until(
+            window,
+            [&] {
+                return concurrent->selection_held();
+            },
+            "Actual selection notification was not delayed");
+        const auto newest = move(2);
+        pump_until(
+            window,
+            [&] {
+                return window.view_state().document.at("selections") == newest.at("selections");
+            },
+            "GUI did not accept the newer same-text selection");
+        const auto accepted_metadata = window.view_state().document;
+        require(accepted_metadata.at("revision") == original_metadata.at("revision"),
+                "Selection-only change advanced the text revision");
+        concurrent->release_metadata();
+        pump_until(
+            window,
+            [&] {
+                return window.status_text() == "Delayed metadata response completed" &&
+                       window.idle();
+            },
+            "Old metadata RPC continuation did not complete");
+        require(window.view_state().document == accepted_metadata,
+                "Old same-revision RPC response replaced current GUI metadata");
+        concurrent->release_selection();
+        settle(window);
+        require(window.view_state().document == accepted_metadata,
+                "Old same-revision notification replaced current GUI metadata");
+        window.execute_ui_command("acceptance.metadataEvent");
+        settle(window);
+        require(window.status_text() == "Selection event 2",
+                "Obsolete selection notification reached the user JS listener");
+        // A legitimate notification can arrive after a read of that exact
+        // state. Both must retain the same identity, and JS still needs its event.
+        concurrent->hold_selection(
+            {{"id", id}, {"selections", Json::array({{{"anchor", 3}, {"head", 3}}})}});
+        const auto third = move(3);
+        pump_until(
+            window,
+            [&] {
+                return concurrent->selection_held();
+            },
+            "Could not retain the latest legitimate selection notification");
+        window.execute_ui_command("acceptance.delayedMetadata");
+        pump_until(
+            window,
+            [&] {
+                return window.view_state().document.at("selections") == third.at("selections") &&
+                       window.status_text() == "Delayed metadata response completed" &&
+                       window.idle();
+            },
+            "Read did not observe the latest state before its notification");
+        const auto observed_sequence = window.view_state().document.at("metadataSequence");
+        concurrent->release_selection();
+        settle(window);
+        require(window.view_state().document.at("selections") == third.at("selections") &&
+                    window.view_state().document.at("metadataSequence") == observed_sequence,
+                "Same-state read and delayed legitimate event used different identities");
+        window.execute_ui_command("acceptance.metadataEvent");
+        settle(window);
+        require(window.status_text() == "Selection event 3",
+                "Latest legitimate selection event was suppressed after a read");
+        const auto restored = call(host,
+                                   "document.setSelections",
+                                   {{"id", id},
+                                    {"baseRevision", original_metadata.at("revision")},
+                                    {"selections", original_metadata.at("selections")}});
+        pump_until(
+            window,
+            [&] {
+                return window.view_state().document.at("selections") == restored.at("selections");
+            },
+            "Could not restore the selection after metadata ordering checks");
+        settle(window);
+        std::cerr << "GUI metadata order: delayed real RPC and notification, same-text selection, "
+                     "JS stale filtering, legitimate event delivery and original revision "
+                     "preserved: PASS\n";
         key(window, SDLK_B, SDL_KMOD_CTRL);
         require(window.status_text() == "User sidebar policy",
                 "Native UI command bypassed the user JS override");

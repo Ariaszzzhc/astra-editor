@@ -518,7 +518,8 @@ Json ApplicationService::recovery_request(std::string_view method, const Json& p
             auto documents = Json::array();
             auto events = std::deque<Json>();
             std::vector<RecoveryState::Transfer> transfers;
-            auto next_id = editor_.next_id_;
+            const auto first_id = editor_.next_id_;
+            auto next_id = first_id;
             for (std::size_t i = 0; i < count; ++i) {
                 const auto& binding = restored->bindings[i];
                 if (binding) {
@@ -541,7 +542,7 @@ Json ApplicationService::recovery_request(std::string_view method, const Json& p
                 const auto& record = restored->records[i];
                 auto document = Document::from_snapshot(BufferId{next_id}, record.document);
                 document.invalidate_saved_state();
-                auto metadata = EditorService::metadata(document);
+                auto metadata = editor_.metadata(document);
                 if (binding) {
                     metadata["path"] = path_text(binding->path);
                     metadata["editorConfig"] = binding->config.properties;
@@ -563,6 +564,8 @@ Json ApplicationService::recovery_request(std::string_view method, const Json& p
                 state->transfers.push_back(std::move(transfer));
             }
             editor_.documents_.merge(prepared);
+            for (auto id = first_id; id < next_id; ++id)
+                static_cast<void>(editor_.publish_metadata(BufferId{id}));
             files_.merge(bindings);
             editor_.next_id_ = next_id;
             editor_.notifications_.swap(new_events);

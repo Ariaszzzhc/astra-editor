@@ -487,7 +487,7 @@ std::vector<std::string> ApplicationService::take_notifications() {
 }
 
 Json ApplicationService::describe(const Document& document) const {
-    auto result = EditorService::metadata(document);
+    auto result = editor_.metadata(document);
     if (const auto found = files_.find(document.id().value); found != files_.end()) {
         result["path"] = path_text(found->second.path);
         result["editorConfig"] = found->second.config.properties;
@@ -751,6 +751,9 @@ void ApplicationService::reconcile_saved(BufferId id,
         return;
     }
     auto& document = found->second;
+    // Path/encoding/configuration live outside Document's core metadata tuple.
+    // Advance its snapshot identity before publishing a changed file binding.
+    editor_.invalidate_metadata(id);
     if (document.content_identity() == snapshot.content_identity) {
         auto edits = formatting_edit(document.text(), saved.text);
         if (!edits.empty()) {

@@ -282,10 +282,12 @@ struct ApplicationService::WatchState {
             throw std::logic_error("Missing prepared reload result");
         }
         // Prepare metadata before publishing the nonthrowing value moves.
-        auto result = EditorService::metadata(*item.prepared);
+        auto result = app.editor_.metadata(*item.prepared, true);
         result["path"] = path_text(item.loaded->path);
         result["editorConfig"] = item.loaded->config.properties;
         result["reloaded"] = true;
+        if (!app.editor_.publish_metadata(item.id))
+            throw std::logic_error("Reload metadata candidate was not prepared");
         document = std::move(*item.prepared);
         app.files_.at(item.id.value) = std::move(*item.loaded);
         app.watch_->observed.erase(item.id.value);

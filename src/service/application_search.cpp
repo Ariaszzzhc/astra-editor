@@ -374,6 +374,7 @@ Json ApplicationService::replace(const Json& params) {
                 {"cancelled", output->disk.cancelled || operation->cancellation.stop_requested()}};
             for (const auto id : publish) {
                 editor_.documents_.at(id) = std::move(output->prepared.at(id));
+                static_cast<void>(editor_.publish_metadata(BufferId{id}));
             }
             editor_.notifications_.swap(events);
             return response;

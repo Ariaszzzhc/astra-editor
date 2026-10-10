@@ -8,6 +8,7 @@
 #include <astra/ui/form_registry.hpp>
 #include <astra/ui/view_store.hpp>
 #include <astra/ui/view_rows_layout.hpp>
+#include <astra/ui/document_metadata.hpp>
 #include <astra/ui/workbench_style.hpp>
 #include <astra/script/runtime.hpp>
 #include <astra/io/file_store.hpp>
@@ -45,6 +46,53 @@ astra::protocol::Json shipped_style_settings() {
     return runtime.settings();
 }
 } // namespace
+
+TEST_CASE("presentation document metadata orders snapshots without advancing text revisions") {
+    using astra::ui::DocumentMetadataStamp;
+    const auto stamp = [](std::string revision, std::string sequence) {
+        return DocumentMetadataStamp::read(
+            {{"revision", revision}, {"metadataSequence", sequence}});
+    };
+    const auto current = stamp("7", "9007199254740993");
+    CHECK(stamp("7", "9007199254740994").follows(current));
+    CHECK(stamp("8", "9007199254740994").follows(current));
+    CHECK(current.follows(current));
+    CHECK_FALSE(stamp("7", "9007199254740992").follows(current));
+    CHECK_FALSE(stamp("8", "9007199254740992").follows(current));
+    CHECK_FALSE(stamp("6", "9007199254740994").follows(current));
+    CHECK_FALSE(stamp("8", "9007199254740993").follows(current));
+    CHECK(stamp("18446744073709551615", "18446744073709551615").follows(current));
+    for (const auto field : {"revision", "metadataSequence"}) {
+        for (const auto value : {astra::protocol::Json(nullptr),
+                                 astra::protocol::Json(1),
+                                 astra::protocol::Json(""),
+                                 astra::protocol::Json("01"),
+                                 astra::protocol::Json("-1"),
+                                 astra::protocol::Json("+1"),
+                                 astra::protocol::Json("1x"),
+                                 astra::protocol::Json(" 1"),
+                                 astra::protocol::Json("18446744073709551616")}) {
+            astra::protocol::Json metadata{{"revision", "7"}, {"metadataSequence", "8"}};
+            metadata[field] = value;
+            CHECK_THROWS(static_cast<void>(DocumentMetadataStamp::read(metadata)));
+        }
+    }
+    CHECK_THROWS(static_cast<void>(stamp("0", "0")));
+    CHECK_THROWS(static_cast<void>(DocumentMetadataStamp::read({{"revision", "0"}})));
+    CHECK_THROWS(static_cast<void>(DocumentMetadataStamp::read(astra::protocol::Json::array())));
+    std::mt19937 random(0xA57A95);
+    DocumentMetadataStamp accepted{7, 1};
+    std::uint64_t highest = 1;
+    for (int round = 0; round < 2000; ++round) {
+        const std::uint64_t sequence = 1 + random() % 4000;
+        const auto incoming = stamp("7", std::to_string(sequence));
+        if (incoming.follows(accepted))
+            accepted = incoming;
+        highest = std::max(highest, sequence);
+        CHECK(accepted.revision == 7);
+        CHECK(accepted.sequence == highest);
+    }
+}
 
 TEST_CASE("presentation row viewport shares clipped paint pointer and page boundaries") {
     using astra::ui::ViewRowsLayout;

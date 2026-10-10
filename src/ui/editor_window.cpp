@@ -15,6 +15,7 @@
 #include "astra/ui/text_labels.hpp"
 #include "astra/ui/tab_bar.hpp"
 #include "astra/ui/view_rows.hpp"
+#include "astra/ui/document_metadata.hpp"
 #include "astra/ui/picker_index.hpp"
 #include "astra/ui/decoration_indexes.hpp"
 #include "astra/ui/inline_form.hpp"
@@ -519,19 +520,19 @@ struct EditorWindow::Impl {
         requests.push_back(std::move(request));
     }
 
-    void accept_metadata(const Json& metadata) {
+    bool accept_metadata(const Json& metadata) {
+        const auto incoming = DocumentMetadataStamp::read(metadata);
         const auto id = metadata.at("id").get<std::string>();
+        if (const auto found = documents.find(id);
+            found != documents.end() && !found->second.metadata.empty() &&
+            !incoming.follows(DocumentMetadataStamp::read(found->second.metadata)))
+            return false;
         auto [found, inserted] = documents.try_emplace(id, fonts, layout_jobs);
         auto& document = found->second;
         if (inserted) {
             tabs.append(id, "Untitled");
         }
         const auto revision = metadata.at("revision").get<std::string>();
-        if (!document.metadata.empty() &&
-            std::stoull(revision) <
-                std::stoull(document.metadata.at("revision").get<std::string>())) {
-            return;
-        }
         if (metadata.contains("path")) {
             const auto path = metadata["path"].get<std::string>();
             if (path != document.path && active_id == id)
@@ -560,6 +561,7 @@ struct EditorWindow::Impl {
         }
         const auto line_count = metadata.value("lineCount", std::size_t{1});
         document.first_line = std::min(document.first_line, line_count - 1);
+        return true;
     }
 
     void activate(const std::string& id) {
@@ -764,10 +766,11 @@ void EditorWindow::Impl::service_responses() {
     for (const auto& body : channel->take_notifications()) {
         const auto notification = Json::parse(body);
         const auto method = notification.value("method", std::string{});
+        const auto metadata_event = method == "document.changed" || method == "document.created";
+        if (metadata_event && !accept_metadata(notification.at("params")))
+            continue;
         workbench->emit(method, notification.value("params", Json::object()));
-        if (method == "document.changed" || method == "document.created") {
-            accept_metadata(notification.at("params"));
-        } else if (method == "document.closed") {
+        if (method == "document.closed") {
             remove_document(notification.at("params").at("id").get<std::string>());
         } else if (method == "language.diagnosticsChanged") {
             const auto id = notification.at("params").at("id").get<std::string>();
@@ -5337,6 +5340,7 @@ WorkbenchViewState EditorWindow::view_state() const {
         result.sidebar_form["message"] = form->message();
     }
     if (const auto* document = impl_->current()) {
+        result.document = document->metadata;
         const auto cache = document->viewport.statistics();
         const auto& summary = document->viewport.lines().summary();
         result.document_viewport = {

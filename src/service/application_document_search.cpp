@@ -243,6 +243,7 @@ Json ApplicationService::replace_document_text(const Json& params) {
                 events.push_back(
                     protocol::make_notification("document.changed", std::move(metadata)));
                 found->second = std::move(output->prepared);
+                static_cast<void>(editor_.publish_metadata(snapshot.id));
                 editor_.notifications_.swap(events);
             }
             return result;

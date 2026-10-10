@@ -20,6 +20,82 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### Published asynchronous document metadata (2026-10-11)
+
+Service document metadata now carries a positive canonical uint64 decimal-string
+`metadataSequence`, separate from the text revision. The owner-local
+`DocumentMetadataClock` retains published and prepared core tuples separately.
+Repeated reads of unchanged state, its response and its legitimate notification
+share a marker; selection-only changes and changed save/reload bindings advance
+the marker. A discarded candidate cannot overwrite published state. Prepared
+document/search/workspace-replace/LSP-rename/recovery/reload publication adopts
+the exact staged marker. No document text is cached by this adapter; it retains
+at most two tuples per record, forgets closed buffers, and uses existing bounded
+notification batches and contiguous new IDs for unpublished records. This is
+neither a text-edit counter nor a general heap/latency bound.
+
+The native GUI strictly parses revision/sequence without floating-point conversion
+and rejects regressing metadata for retained buffers before tab/document changes
+or JS notification delivery. Equal-current legitimate events remain deliverable
+after a read. Native Agent view state now exposes the accepted active document
+metadata, matching the existing JS UI read payload. Production graphics and
+dispatch/transport implementations are unchanged.
+
+Windows evidence and retained failures:
+
+- The first per-serialization marker design broke stable before/after metadata
+  comparisons. The initial direct unit run also lacked real TCP/LSP permissions:
+  604 cases, 548 passed / 56 failed; 2,454,829 assertions / 28 failed.
+  `build/metadata-order-unit-initial-debug.log` retains the result and permission
+  errors. This was not acceptance. Stable snapshot markers preserve existing
+  equality checks; no old assertions were weakened.
+- Earlier stable-marker focused and local/TCP GUI checks passed in
+  `build/metadata-order-focused-final-debug.log`, `metadata-order-gui-debug.log`
+  and `metadata-order-tcp-debug.log`. An earlier full run passed 605 cases in
+  both modes (`build/metadata-order-acceptance-all.log`). Source review then
+  identified that serialization of an unpublished clone could replace the live
+  cached identity. The final published/prepared clock replaces that design;
+  the final full run below supersedes the earlier acceptance for current source.
+- The staged-clock test build failed on MSVC C4834: doctest's throwing expression
+  discarded `[[nodiscard]]` results. Explicit void casts fixed the fixture without
+  changing warnings or behavioral assertions. Retained failure:
+  `build/metadata-order-staged-build-debug.log`. Final
+  `./scripts/format.ps1 -Offline` formatted 180 C++ / 13 JS files
+  (`build/metadata-order-staged-format-fixed.log`).
+- `./scripts/xmake.ps1 build -y -j 2 astra-tests astra gui-smoke
+  gui-workspace-smoke gui-recovery-smoke gui-services-smoke
+  gui-presentation-smoke` passed after Debug configuration;
+  `build/metadata-order-staged-build-fixed-debug.log`.
+- `./build/windows/x64/debug/astra-tests.exe
+  '--test-case=service metadata*,presentation document metadata*,application metadata*'
+  --no-version` passed six cases / 15,154 assertions, 601 unrelated cases filtered
+  out (`build/metadata-order-staged-focused-debug.log`). Tests retain old tuples,
+  mutate returned JSON, exercise abandoned/published preparation, clean Save As
+  binding changes, closed-record cleanup, decimal precision above 2^53 and
+  exhaustion rejection. Shuffled metadata and staged-publication differential
+  runs each cover 2,000 rounds (seeds `0xA57A95` and `0xA57A96`).
+- Final `./scripts/test.ps1 -Mode all -Gui` exited 0 with source/runtime resources
+  unchanged during execution. Debug and Release each passed 607 cases /
+  2,460,623 assertions, zero failed/skipped. Real renderer/fonts/worker/viewport,
+  editing/service/recovery/workspace/workbench GUI, TCP editing, 12 package-helper
+  and seven shaping-provenance checks passed. The real local/TCP channel proxy
+  delays actual RPC responses and selection notifications: stale same-text
+  replies do not revert GUI state or reach JS listeners, while legitimate current
+  events still arrive after a read. Original revision/selections are restored
+  before the original editing workflows. No fake editor/backend establishes
+  this result. `build/metadata-order-staged-acceptance-all.log`.
+- Restored Debug using `./scripts/xmake.ps1 f -m debug -y`
+  (`build/metadata-order-restore-debug.log`). Final `./scripts/format.ps1 -Check
+  -Offline` passed 180 C++ / 13 JS files (`build/metadata-order-final-format-check.log`);
+  `git diff --check` passed. Only documentation changed after full acceptance.
+
+This establishes live-buffer metadata ordering. Removing a buffer still drops
+the client's retained comparison state, so late replies can recreate closed
+documents; lifetime fencing remains required. Sidebar outer chrome, headers and
+Outline extraction, complete font adaptation and whole-product visual acceptance,
+physical installed-IME interaction and a new distribution remain incomplete.
+Only Windows evidence is claimed.
+
 ### Shared native indexed view rows (2026-10-11)
 
 Explorer, Search, Git and registered sidebar views now use the same native
