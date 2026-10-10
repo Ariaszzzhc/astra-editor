@@ -16,6 +16,7 @@ struct LayoutJobs::Impl {
     struct Job {
         uv_work_t work{};
         std::string text;
+        TextSource previous;
         TextLayoutOptions options;
         std::size_t bytes{};
         Clock::time_point deadline;
@@ -101,7 +102,7 @@ struct LayoutJobs::Impl {
             if (!job.stopped.load(std::memory_order_acquire)) {
                 TextLayoutEngine engine;
                 job.result.paragraph = std::make_shared<const TextLayout>(
-                    engine.layout(std::move(job.text), job.options));
+                    engine.layout(std::move(job.text), job.options, std::move(job.previous)));
             }
             if (job.stopped.load(std::memory_order_acquire)) {
                 job.result = {};
@@ -203,8 +204,8 @@ LayoutJobs::LayoutJobs(LayoutJobLimits limits) : impl_(std::make_unique<Impl>(li
 
 LayoutJobs::~LayoutJobs() = default;
 
-std::optional<LayoutJobs::Ticket> LayoutJobs::submit(std::string_view text,
-                                                     const TextLayoutOptions& options) {
+std::optional<LayoutJobs::Ticket>
+LayoutJobs::submit(std::string_view text, const TextLayoutOptions& options, TextSource previous) {
     auto& state = *impl_;
     if (state.closing) {
         throw std::logic_error("Layout queue is closing");
@@ -220,6 +221,10 @@ std::optional<LayoutJobs::Ticket> LayoutJobs::submit(std::string_view text,
         bytes += amount;
     };
     add(sizeof(Impl::Job));
+    // Include the retained seed's flat text and Rope payload conservatively,
+    // even when another cache/job also holds the same immutable snapshot.
+    add(previous.statistics().bytes);
+    add(previous.statistics().bytes);
     add(options.locale.size());
     for (const auto& family : options.font_families) {
         add(sizeof(std::string));
@@ -231,7 +236,7 @@ std::optional<LayoutJobs::Ticket> LayoutJobs::submit(std::string_view text,
     }
     add(options.color_spans.size() * sizeof(TextColorSpan));
     if (bytes > state.limits.bytes) {
-        throw std::length_error("Layout style exceeds its job limit");
+        throw std::length_error("Layout job inputs exceed its byte limit");
     }
     if (state.jobs.size() >= state.limits.jobs || bytes > state.limits.bytes - state.stats.bytes) {
         return std::nullopt;
@@ -243,6 +248,7 @@ std::optional<LayoutJobs::Ticket> LayoutJobs::submit(std::string_view text,
     auto job = std::make_unique<Impl::Job>(state);
     job->ticket = ticket;
     job->text = text;
+    job->previous = std::move(previous);
     job->options = options;
     job->bytes = bytes;
     job->deadline = Impl::Clock::now() + state.limits.timeout;

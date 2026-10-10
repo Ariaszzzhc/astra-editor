@@ -14,6 +14,7 @@ namespace astra::ui {
 struct DocumentViewport::Impl {
     struct Entry {
         std::size_t hash{};
+        std::size_t number{};
         std::size_t bytes{};
         TextLayoutOptions options;
         std::shared_ptr<const TextLayout> paragraph;
@@ -67,6 +68,7 @@ struct DocumentViewport::Impl {
             bytes += amount;
         };
         add(text.size());
+        add(text.size()); // Immutable coordinate Rope's bounded chunk payload.
         add(options.locale.size());
         for (const auto& family : options.font_families) {
             add(sizeof(std::string));
@@ -93,8 +95,8 @@ struct DocumentViewport::Impl {
         ++stats.evicted;
     }
 
-    std::shared_ptr<const TextLayout> find(std::string_view text,
-                                           const TextLayoutOptions& options) {
+    std::shared_ptr<const TextLayout>
+    find(std::string_view text, const TextLayoutOptions& options, std::size_t number) {
         const auto hash = std::hash<std::string_view>{}(text);
         const auto [begin, end] = lookup.equal_range(hash);
         for (auto found = begin; found != end; ++found) {
@@ -102,6 +104,7 @@ struct DocumentViewport::Impl {
             // Hashing only selects candidates. Exact text/style certify reuse.
             if (entry->paragraph->text() == text && entry->options == options) {
                 auto paragraph = entry->paragraph;
+                entry->number = number;
                 recent.splice(recent.begin(), recent, entry);
                 ++stats.reused;
                 return paragraph;
@@ -111,14 +114,15 @@ struct DocumentViewport::Impl {
     }
 
     void store(const std::shared_ptr<const TextLayout>& paragraph,
-               const TextLayoutOptions& options) {
+               const TextLayoutOptions& options,
+               std::size_t number) {
         const auto text = paragraph->text();
         const auto hash = std::hash<std::string_view>{}(text);
         const auto bytes = accounted(text, options);
         ++stats.shaped;
         if (!limits.entries || bytes > limits.bytes)
             return;
-        recent.push_front({hash, bytes, options, paragraph});
+        recent.push_front({hash, number, bytes, options, paragraph});
         try {
             lookup.emplace(hash, recent.begin());
         } catch (...) {
@@ -130,13 +134,21 @@ struct DocumentViewport::Impl {
             evict();
     }
 
-    std::shared_ptr<const TextLayout> get(std::string_view text, const TextLayoutOptions& options) {
-        if (auto cached = find(text, options)) {
+    TextSource seed(std::size_t number) const {
+        for (const auto& entry : recent)
+            if (entry.number == number)
+                return entry.paragraph->source_snapshot();
+        return {};
+    }
+
+    std::shared_ptr<const TextLayout>
+    get(std::string_view text, const TextLayoutOptions& options, std::size_t number) {
+        if (auto cached = find(text, options, number)) {
             return cached;
         }
-        auto paragraph =
-            std::make_shared<const TextLayout>(engine.layout(std::string(text), options));
-        store(paragraph, options);
+        auto paragraph = std::make_shared<const TextLayout>(
+            engine.layout(std::string(text), options, seed(number)));
+        store(paragraph, options, number);
         return paragraph;
     }
 };
@@ -180,7 +192,7 @@ const TextLayout& DocumentViewport::shape(std::size_t number, const TextLayoutOp
         }
         impl_->pending.erase(found);
     }
-    auto paragraph = impl_->get(line->text, options);
+    auto paragraph = impl_->get(line->text, options, number);
     auto& current = impl_->current[number];
     current = std::move(paragraph);
     return *current;
@@ -194,7 +206,7 @@ const TextLayout* DocumentViewport::prepare(std::size_t number, const TextLayout
     if (!impl_->jobs || line->text.size() < 4096) {
         return &shape(number, options);
     }
-    if (auto cached = impl_->find(line->text, options)) {
+    if (auto cached = impl_->find(line->text, options, number)) {
         if (const auto found = impl_->pending.find(number); found != impl_->pending.end()) {
             if (found->second.ticket) {
                 impl_->jobs->cancel(*found->second.ticket);
@@ -221,7 +233,7 @@ const TextLayout* DocumentViewport::prepare(std::size_t number, const TextLayout
         std::rethrow_exception(value.error);
     }
     if (!value.ticket) {
-        value.ticket = impl_->jobs->submit(line->text, value.options);
+        value.ticket = impl_->jobs->submit(line->text, value.options, impl_->seed(number));
     }
     return nullptr;
 }
@@ -253,7 +265,7 @@ void DocumentViewport::poll_layouts() {
             throw std::logic_error("Pending layout lost its viewport snapshot");
         }
         if (!value.ticket) {
-            value.ticket = impl_->jobs->submit(line->text, value.options);
+            value.ticket = impl_->jobs->submit(line->text, value.options, impl_->seed(number));
         }
         auto result = value.ticket ? impl_->jobs->take(*value.ticket) : std::nullopt;
         if (!result) {
@@ -269,7 +281,7 @@ void DocumentViewport::poll_layouts() {
         if (!result->paragraph) {
             throw std::logic_error("Layout job completed without a paragraph");
         }
-        impl_->store(result->paragraph, value.options);
+        impl_->store(result->paragraph, value.options, number);
         impl_->current[number] = std::move(result->paragraph);
         it = impl_->pending.erase(it);
     }

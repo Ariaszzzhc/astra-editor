@@ -263,6 +263,31 @@ TextPosition Rope::byte_to_position(std::size_t byte_offset) const {
     return {prefix.line_breaks, prefix.trailing_utf16};
 }
 
+std::size_t Rope::utf16_to_byte_floor(std::size_t utf16_offset) const {
+    const auto found = tree_.seek(std::min(utf16_offset, size_utf16()), &TextSummary::utf16_units);
+    if (!found.item)
+        return found.prefix.bytes;
+    auto units = utf16_offset - found.prefix.utf16_units;
+    std::size_t offset{};
+    while (units && offset < found.item->size()) {
+        const auto scalar = utf8::decode(*found.item, offset);
+        const auto width = utf8::utf16_width(scalar.value);
+        if (units < width)
+            break;
+        units -= width;
+        offset += scalar.bytes;
+    }
+    return found.prefix.bytes + offset;
+}
+
+std::size_t Rope::shared_prefix_bytes(const Rope& other) const {
+    return tree_.shared_prefix_summary(other.tree_).bytes;
+}
+
+std::size_t Rope::shared_suffix_bytes(const Rope& other) const {
+    return tree_.shared_suffix_summary(other.tree_).bytes;
+}
+
 std::size_t Rope::position_to_byte(TextPosition position) const {
     const auto start = line_start(position.line);
     const auto physical_end =

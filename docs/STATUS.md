@@ -20,6 +20,64 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### Persistent native text coordinate snapshots (2026-10-11)
+
+`TextSource` now couples immutable materialized UTF-8 with the measured persistent Rope.
+`TextLayout` uses this index for UTF-8/UTF-16 conversion instead of dense
+per-byte/per-code-unit tables. Interior surrogate columns snap only through the
+explicit layout adapter; document edit conversion remains strict. ICU grapheme
+snapping, bidi, wrapping, fallback, tabs and native paragraph painting are retained.
+
+Cache misses may seed a worker with the same row's prior source from the bounded
+paragraph LRU. Scalar-aligned text differences replace only the changed Rope
+extent; unchanged coordinate subtrees survive. Workers never borrow published
+native paragraphs/fonts. Source comparison, grapheme segmentation and native
+glyph shaping still process a complete row; actual incremental glyph reuse is
+not implemented by this increment. Cache/job accounting includes flat-text and
+Rope payload bytes, not tree/container/font/paragraph/GPU heaps.
+
+Current Windows evidence:
+
+- First build failed in the new doctest fixture because `string_view` diagnostic
+  output needed a complete `<ostream>` and exception assertions discarded
+  `[[nodiscard]]` results. Added the include and explicit void casts, without
+  weakening warning settings. Log: `build/text-source-build-debug.log`.
+- `./scripts/format.ps1 -Offline` and
+  `./scripts/xmake.ps1 build -y -j 2 astra-tests text-layout-tests viewport-layout-tests astra`
+  passed in Debug; logs: `build/text-source-final-format.log` and
+  `build/text-source-final-build-debug.log`.
+- `./build/windows/x64/debug/astra-tests.exe '--test-case=text source*,rope*' --no-version`
+  passed 14 cases / 224,830 assertions. Four new source cases compare independent
+  flat Unicode coordinates, surrogate interiors across 1,024-byte chunk edges,
+  250 randomized scalar edits (seed `0xA57A82`), retained snapshots, shared
+  subtree identities and atomic malformed-UTF-8 failures. Log:
+  `build/text-source-unit-debug.log`.
+- `./build/windows/x64/debug/text-layout-tests.exe` passed actual native fonts,
+  Unicode/bidi caret/hit/selection, tabs, wrap, DPI and GPU text. Log:
+  `build/text-source-native-debug.log`.
+- `./build/windows/x64/debug/viewport-layout-tests.exe --coordinates` passed
+  actual libuv-worker publication/cancellation and cold native pixel parity.
+  A local Unicode edit retains more than 2,048 bytes of shared prefix and suffix
+  coordinate subtrees; the old paragraph continues painting unchanged during
+  the worker job. The replacement's pixels, caret and hit testing match a fresh
+  layout. These checks also run through the default viewport acceptance entry
+  point. Log: `build/text-source-worker-debug.log`.
+- Final `./scripts/test.ps1 -Mode all -Gui` completed with exit code 0 using
+  unchanged native source/runtime resources. Debug: 591 cases / 1,732,121
+  assertions; Release: 591 cases / 1,731,950 assertions, zero failed/skipped.
+  Both modes ran the new source tests and worker coordinate-reuse checks, all
+  renderer/font/viewport/input/editing/service/recovery/workspace/presentation
+  GUI workflows, TCP editing and all 12 package-helper invariants. Log:
+  `build/text-source-acceptance-all.log`.
+- After acceptance exited, `./scripts/xmake.ps1 f -m debug -y` restored Debug
+  configuration (`build/text-source-restore-debug.log`). Final
+  `./scripts/format.ps1 -Check -Offline` passed 162 C++ / 13 JS files
+  (`build/text-source-final-check.log`), and `git diff --check` passed.
+
+Further native component extraction, row-internal incremental glyph layout,
+whole-product visual acceptance and a new distribution remain incomplete.
+No non-Windows validation is claimed.
+
 ### Asynchronous Quick Open and provider pickers (2026-10-11)
 
 `Ctrl+P` now uses a JS-owned fuzzy file provider instead of literal path entry. The

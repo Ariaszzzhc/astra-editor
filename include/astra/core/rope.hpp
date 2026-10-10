@@ -95,6 +95,11 @@ class Rope {
     [[nodiscard]] std::size_t position_to_byte(TextPosition position) const;
     [[nodiscard]] std::size_t byte_to_utf16(std::size_t byte_offset) const;
     [[nodiscard]] std::size_t utf16_to_byte(std::size_t utf16_offset) const;
+    // Layout adapters may snap an interior surrogate to its scalar start and
+    // clamp an oversized column. This does not perform grapheme cursor movement.
+    [[nodiscard]] std::size_t utf16_to_byte_floor(std::size_t utf16_offset) const;
+    [[nodiscard]] std::size_t shared_prefix_bytes(const Rope& other) const;
+    [[nodiscard]] std::size_t shared_suffix_bytes(const Rope& other) const;
     [[nodiscard]] std::size_t line_start(std::size_t line) const;
     [[nodiscard]] std::size_t line_end(std::size_t line) const;
 

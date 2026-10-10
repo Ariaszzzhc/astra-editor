@@ -260,13 +260,12 @@ struct TextLayoutEngine::Impl {
 };
 
 struct TextLayout::Impl {
-    std::string text;
+    TextSource source;
+    std::string_view text;
     std::unique_ptr<paragraph::Paragraph> shaped;
     sk_sp<paragraph::FontCollection> fonts;
     sk_sp<SkUnicode> unicode;
     std::vector<std::size_t> graphemes;
-    std::vector<std::size_t> byte_to_utf16;
-    std::vector<std::size_t> utf16_to_byte;
     float tab_stop{};
     float measured_width{};
 
@@ -308,13 +307,14 @@ struct TextLayout::Impl {
             probe = *std::prev(std::lower_bound(graphemes.begin(), graphemes.end(), offset));
         }
         paragraph::Paragraph::GlyphInfo glyph{};
-        if (!shaped->getGlyphInfoAtUTF16Offset(byte_to_utf16[probe], &glyph)) {
+        const auto column = source.byte_to_utf16(probe);
+        if (!shaped->getGlyphInfoAtUTF16Offset(column, &glyph)) {
             throw std::runtime_error("Shaped paragraph has no glyph for the requested caret");
         }
         const bool rtl = glyph.fDirection == paragraph::TextDirection::kRtl;
         result.x = (trailing != rtl) ? glyph.fGraphemeLayoutBounds.right()
                                      : glyph.fGraphemeLayoutBounds.left();
-        const auto line_index = shaped->getLineNumberAtUTF16Offset(byte_to_utf16[probe]);
+        const auto line_index = shaped->getLineNumberAtUTF16Offset(column);
         if (line_index >= 0 && static_cast<std::size_t>(line_index) < lines.size()) {
             const auto& metrics = lines[static_cast<std::size_t>(line_index)];
             result.y = static_cast<float>(metrics.baseline - metrics.ascent);
@@ -332,7 +332,9 @@ TextLayoutEngine::TextLayoutEngine() : impl_(std::make_shared<Impl>()) {
 
 TextLayoutEngine::~TextLayoutEngine() = default;
 
-TextLayout TextLayoutEngine::layout(std::string text, const TextLayoutOptions& options) const {
+TextLayout TextLayoutEngine::layout(std::string text,
+                                    const TextLayoutOptions& options,
+                                    TextSource previous) const {
     if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
         SkUTF::CountUTF8(text.data(), text.size()) < 0) {
         throw std::invalid_argument("Text layout requires valid, bounded UTF-8");
@@ -350,29 +352,10 @@ TextLayout TextLayoutEngine::layout(std::string text, const TextLayoutOptions& o
     }
 
     auto result = std::make_unique<TextLayout::Impl>();
-    result->text = std::move(text);
+    result->source = previous.updated(std::move(text));
+    result->text = result->source.text();
     result->fonts = impl_->fonts;
     result->unicode = impl_->unicode;
-    result->byte_to_utf16.resize(result->text.size() + 1);
-    const char* current = result->text.data();
-    const auto* end = current + result->text.size();
-    std::size_t index16{};
-    while (current != end) {
-        const auto begin8 = static_cast<std::size_t>(current - result->text.data());
-        const auto scalar = SkUTF::NextUTF8(&current, end);
-        const auto end8 = static_cast<std::size_t>(current - result->text.data());
-        std::fill(result->byte_to_utf16.begin() + static_cast<std::ptrdiff_t>(begin8),
-                  result->byte_to_utf16.begin() + static_cast<std::ptrdiff_t>(end8),
-                  index16);
-        result->utf16_to_byte.push_back(begin8);
-        ++index16;
-        if (scalar > 0xFFFF) {
-            result->utf16_to_byte.push_back(begin8);
-            ++index16;
-        }
-    }
-    result->byte_to_utf16.back() = index16;
-    result->utf16_to_byte.push_back(result->text.size());
     auto breaks = impl_->unicode->makeBreakIterator(SkUnicode::BreakType::kGraphemes);
     if (!breaks || !breaks->setText(result->text.data(), static_cast<int>(result->text.size()))) {
         throw std::runtime_error("ICU grapheme segmentation failed");
@@ -470,7 +453,8 @@ TextLayout TextLayoutEngine::layout(std::string text, const TextLayoutOptions& o
     const float layout_width =
         options.wrap_width > 0 ? options.wrap_width : std::numeric_limits<float>::infinity();
     sk_sp<SkUnicode> layout_unicode =
-        tab_widths.empty() ? impl_->unicode : sk_make_sp<TabUnicode>(impl_->unicode, result->text);
+        tab_widths.empty() ? impl_->unicode
+                           : sk_make_sp<TabUnicode>(impl_->unicode, std::string(result->text));
     std::vector<TextColorSpan> colors;
     std::vector<std::size_t> color_boundaries{0, result->text.size()};
     for (const auto& span : options.color_spans) {
@@ -542,8 +526,8 @@ TextLayout TextLayoutEngine::layout(std::string text, const TextLayoutOptions& o
         std::vector<float> positions;
         const bool rtl_tabs = style.getTextDirection() == paragraph::TextDirection::kRtl;
         for (std::size_t i = 0; i < boxes.size(); ++i) {
-            const auto number =
-                result->shaped->getLineNumberAtUTF16Offset(result->byte_to_utf16[tab_offsets[i]]);
+            const auto number = result->shaped->getLineNumberAtUTF16Offset(
+                result->source.byte_to_utf16(tab_offsets[i]));
             if (number < 0 || static_cast<std::size_t>(number) >= result->lines.size()) {
                 throw std::runtime_error("Tab line metrics are unavailable");
             }
@@ -603,6 +587,10 @@ std::string_view TextLayout::text() const noexcept {
     return impl_->text;
 }
 
+TextSource TextLayout::source_snapshot() const noexcept {
+    return impl_->source;
+}
+
 float TextLayout::width() const {
     return impl_->measured_width;
 }
@@ -612,7 +600,7 @@ float TextLayout::height() const {
 }
 
 std::size_t TextLayout::byte_offset_from_utf16(std::size_t column) const {
-    return impl_->utf16_to_byte[std::min(column, impl_->utf16_to_byte.size() - 1)];
+    return impl_->source.utf16_to_byte(column);
 }
 
 float TextLayout::baseline() const {
@@ -640,9 +628,8 @@ TextHit TextLayout::hit_test(float x, float y) const {
         throw std::invalid_argument("Hit-test coordinates must be finite");
     }
     const auto raw = impl_->shaped->getGlyphPositionAtCoordinate(x, y);
-    const auto index = std::min(static_cast<std::size_t>(std::max(raw.position, 0)),
-                                impl_->utf16_to_byte.size() - 1);
-    const auto offset = impl_->utf16_to_byte[index];
+    const auto offset =
+        impl_->source.utf16_to_byte(static_cast<std::size_t>(std::max(raw.position, 0)));
     const auto affinity = raw.affinity == paragraph::Affinity::kUpstream
                               ? CaretAffinity::upstream
                               : CaretAffinity::downstream;
@@ -671,8 +658,8 @@ std::vector<TextRect> TextLayout::selection_rects(std::size_t begin, std::size_t
     begin = impl_->floor_boundary(begin);
     end = impl_->ceil_boundary(end);
     const auto boxes =
-        impl_->shaped->getRectsForRange(static_cast<unsigned>(impl_->byte_to_utf16[begin]),
-                                        static_cast<unsigned>(impl_->byte_to_utf16[end]),
+        impl_->shaped->getRectsForRange(static_cast<unsigned>(impl_->source.byte_to_utf16(begin)),
+                                        static_cast<unsigned>(impl_->source.byte_to_utf16(end)),
                                         paragraph::RectHeightStyle::kMax,
                                         paragraph::RectWidthStyle::kTight);
     std::vector<TextRect> rectangles;

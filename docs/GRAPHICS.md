@@ -358,6 +358,29 @@ and applies drag reorder to its caller-owned presentation index.
 
 ## Document paragraph scheduling
 
+`TextSource` holds immutable materialized UTF-8 and a persistent Rope/SumTree
+coordinate index. `TextLayout` no longer allocates per-byte and per-UTF-16-unit
+conversion arrays. UTF-8/UTF-16 seeks visit measured tree paths and one bounded
+1,024-byte leaf. Native layout adapters explicitly snap interior surrogate
+columns to their scalar start; document edits keep the strict boundary API.
+ICU remains authoritative for grapheme boundaries and user caret snapping.
+
+On a cache miss, `DocumentViewport` can pass a retained source from the same row
+in its bounded paragraph LRU. A worker shares only this immutable text/index
+data, not a previously published native paragraph or font collection. The source
+compares scalar-aligned unchanged edges and replaces the changed Rope extent,
+preserving shared coordinate subtrees. Native text, caret, selection, tabs and
+painting still use the complete Unicode paragraph. Old paragraphs can continue
+painting while that worker prepares the replacement.
+
+Cache/job accounting includes both flat-text and coordinate-chunk payload bytes,
+conservatively counting shared seeds per job. Tree/container/native allocations
+are additional; this is not a total heap measurement. Cache eviction may remove
+a seed. Comparing incoming materialized text still scans unchanged edges, and
+ICU segmentation and native glyph shaping still process the complete row. This
+coordinate reuse is groundwork for incremental glyph layout; it does not claim
+row-internal glyph reuse or logarithmic end-to-end edit latency.
+
 Document paragraphs use `DocumentViewport` and `LayoutJobs`. Cache hits and short
 rows remain immediate; cold rows of at least 4096 UTF-8 bytes shape on libuv
 workers. A job owns a private native font collection/engine and transfers its

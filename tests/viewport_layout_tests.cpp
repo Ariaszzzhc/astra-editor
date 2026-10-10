@@ -624,6 +624,28 @@ void background_viewport(TextLayoutEngine& engine) {
     const auto fresh = engine.layout(text, style);
     require(retained && pixels(*retained) == pixels(fresh) && retained->width() == fresh.width(),
             "Long worker paragraph differs from complete native shaping");
+    auto edited = text;
+    const auto change = edited.find("中", edited.size() / 2);
+    require(change != edited.npos, "Cannot locate Unicode coordinate edit fixture");
+    edited.replace(change, std::string("中").size(), "文🙂");
+    viewport.publish(rows({edited}));
+    require(!viewport.prepare(0, style), "Changed long row did not use a worker");
+    // The worker receives only immutable text/coordinate data. The old native
+    // paragraph remains owned by this thread and can paint throughout the job.
+    await(*jobs, [&] {
+        require(pixels(*retained) == pixels(fresh), "Worker coordinate reuse mutated old pixels");
+        viewport.poll_layouts();
+        return !viewport.layouts_pending();
+    });
+    const auto replacement = viewport.layout_snapshot(0);
+    require(replacement != nullptr, "Changed long row did not publish native geometry");
+    equal(*replacement, engine.layout(edited, style));
+    const auto coordinates = replacement->source_snapshot().statistics();
+    require(coordinates.shared_prefix_bytes > 2048 && coordinates.shared_suffix_bytes > 2048,
+            "Local Unicode edit rebuilt the measured coordinate tree");
+    require(retained->source_snapshot().text() == text,
+            "Worker coordinate edit changed the retained source snapshot");
+    viewport.publish(rows({text}));
     viewport.invalidate_layouts();
     require(viewport.prepare(0, style) == retained.get(), "Long paragraph cache hit queued work");
     style.font_size += 2;
@@ -1137,6 +1159,10 @@ int main(int argc, char* argv[]) {
             editable_geometry(engine);
             editable_background(engine);
             input_event_ownership();
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--coordinates") {
+            background_viewport(engine);
             return 0;
         }
         reuse(engine);

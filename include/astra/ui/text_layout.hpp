@@ -1,5 +1,7 @@
 #pragma once
 
+#include <astra/ui/text_source.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -70,6 +72,7 @@ class TextLayout final {
     TextLayout& operator=(const TextLayout&) = delete;
 
     [[nodiscard]] std::string_view text() const noexcept;
+    [[nodiscard]] TextSource source_snapshot() const noexcept;
     [[nodiscard]] float width() const;
     [[nodiscard]] float height() const;
     [[nodiscard]] float baseline() const;
@@ -106,7 +109,8 @@ class TextLayoutEngine final {
     ~TextLayoutEngine();
     TextLayoutEngine(const TextLayoutEngine&) = delete;
     TextLayoutEngine& operator=(const TextLayoutEngine&) = delete;
-    [[nodiscard]] TextLayout layout(std::string text, const TextLayoutOptions& options = {}) const;
+    [[nodiscard]] TextLayout
+    layout(std::string text, const TextLayoutOptions& options = {}, TextSource previous = {}) const;
 
   private:
     struct Impl;

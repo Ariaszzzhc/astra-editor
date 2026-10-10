@@ -43,7 +43,8 @@ class LayoutJobs final {
     // Bounds are checked before copying. Full means backpressure, no mutation.
     // Style/Unicode errors and soft deadlines are returned through take(). A
     // native call cannot be interrupted, so expiry completes after it drains.
-    [[nodiscard]] std::optional<Ticket> submit(std::string_view, const TextLayoutOptions&);
+    [[nodiscard]] std::optional<Ticket>
+    submit(std::string_view, const TextLayoutOptions&, TextSource previous = {});
     void poll();
     [[nodiscard]] std::optional<LayoutJobResult> take(Ticket);
     void cancel(Ticket);
