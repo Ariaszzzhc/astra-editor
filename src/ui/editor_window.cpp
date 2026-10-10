@@ -8,7 +8,7 @@
 #include "astra/ui/text_line_index.hpp"
 #include "astra/ui/text_panel.hpp"
 #include "astra/ui/text_surface.hpp"
-#include "astra/ui/text_input_layout.hpp"
+#include "astra/ui/text_field.hpp"
 #include "astra/ui/text_labels.hpp"
 #include "astra/ui/picker_index.hpp"
 #include "astra/ui/decoration_indexes.hpp"
@@ -210,7 +210,7 @@ struct EditorWindow::Impl {
         PickerIndex picker;
         float horizontal{};
         std::unique_ptr<InlineForm> input;
-        std::unique_ptr<TextInputLayout> input_layout;
+        std::unique_ptr<TextField> input_layout;
     };
 
     std::shared_ptr<EditorChannel> channel;
@@ -334,7 +334,7 @@ struct EditorWindow::Impl {
     std::string dragging_form_id;
     std::deque<std::pair<std::string, Json>> form_events;
 
-    using FieldLayout = TextInputLayout;
+    using FieldLayout = TextField;
 
     std::map<std::string, FieldLayout> form_fields;
     std::uint64_t form_sequence{};
@@ -755,7 +755,7 @@ struct EditorWindow::Impl {
     void sync_dialog_input();
     bool point_dialog_input(float, float, bool);
     void point_input(
-        InlineForm&, std::size_t, TextInputLayout&, float, float, bool, std::string dialog_id = {});
+        InlineForm&, std::size_t, TextField&, float, float, bool, std::string dialog_id = {});
     bool complete_input_point();
     void drain_input_events();
     void clear_input_events();
@@ -764,14 +764,8 @@ struct EditorWindow::Impl {
     bool
     text_input_key(InlineForm&, const SDL_KeyboardEvent&, bool, bool, const std::function<void()>&);
     TextLayoutOptions input_style(float) const;
-    void draw_field(SkCanvas*,
-                    const InlineForm::Field&,
-                    Box,
-                    bool,
-                    bool,
-                    TextInputLayout&,
-                    std::string_view,
-                    float);
+    void draw_field(
+        SkCanvas*, const InlineForm::Field&, Box, bool, bool, TextField&, std::string_view, float);
     const TextLayout* prepare_line(Document&, std::size_t);
     void fetch_diagnostics(const std::string& id);
     void editor_command(std::string command,
@@ -1837,7 +1831,7 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
                  {"actions", Json::array({{{"id", "accept"}, {"label", "Accept"}}})}});
         pending.input->focus(0);
         static_cast<void>(pending.input->edit(editing::Command::move_end));
-        pending.input_layout = std::make_unique<TextInputLayout>(fonts, layout_jobs);
+        pending.input_layout = std::make_unique<TextField>(fonts, layout_jobs);
     }
     auto result = pending.completion.get_future();
     focus_view(std::nullopt);
@@ -1930,14 +1924,14 @@ EditorWindow::Impl::InputContext EditorWindow::Impl::input_context() const {
 
 void EditorWindow::Impl::point_input(InlineForm& form,
                                      std::size_t field,
-                                     TextInputLayout& cached,
+                                     TextField& cached,
                                      float x,
                                      float y,
                                      bool extend,
                                      std::string dialog_id) {
     const auto& document = form.fields().at(field).text;
     const auto style = input_style(dialog_id.empty() ? ui_font_size : 14);
-    const auto* paragraph = cached.prepare_async(document.text().str(), style);
+    const auto* paragraph = cached.text().prepare_async(document.text().str(), style);
     if (paragraph) {
         const auto hit = paragraph->hit_test(x, y);
         form.select(field, ByteOffset{hit.byte_offset}, extend);
@@ -1963,7 +1957,7 @@ void EditorWindow::Impl::point_input(InlineForm& form,
 bool EditorWindow::Impl::complete_input_point() {
     const auto& pending = *input_point;
     InlineForm* form = nullptr;
-    TextInputLayout* cached = nullptr;
+    TextField* cached = nullptr;
     if (!pending.dialog.empty()) {
         if (dialog && dialog->id == pending.dialog) {
             form = dialog->input.get();
@@ -1993,7 +1987,7 @@ bool EditorWindow::Impl::complete_input_point() {
     if (Clock::now() >= pending.deadline) {
         throw std::runtime_error("Input pointer selection timed out");
     }
-    const auto* paragraph = cached->prepare_async(document.text().str(), style);
+    const auto* paragraph = cached->text().prepare_async(document.text().str(), style);
     if (!paragraph) {
         return false;
     }
@@ -2057,13 +2051,8 @@ bool EditorWindow::Impl::point_dialog_input(float x, float y, bool extend) {
         return false;
     }
     auto& input_geometry = *dialog->input_layout;
-    point_input(*dialog->input,
-                0,
-                input_geometry,
-                x - layout.input.x - 6 * scale + input_geometry.horizontal,
-                y - layout.input.y - 5 * scale,
-                extend,
-                dialog->id);
+    const auto [text_x, text_y] = input_geometry.to_text(layout.input, scale, x, y);
+    point_input(*dialog->input, 0, input_geometry, text_x, text_y, extend, dialog->id);
     preedit.clear();
     return true;
 }
@@ -3477,12 +3466,8 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                 form_fields.find(form_key(inline_form->id(), inline_form->fields()[index].id));
             if (cached != form_fields.end()) {
                 const auto& box = boxes.fields[index];
-                point_input(*inline_form,
-                            index,
-                            cached->second,
-                            mouse_x - box.x - 6 * scale + cached->second.horizontal,
-                            mouse_y - box.y - 5 * scale,
-                            true);
+                const auto [text_x, text_y] = cached->second.to_text(box, scale, mouse_x, mouse_y);
+                point_input(*inline_form, index, cached->second, text_x, text_y, true);
             }
         } else if (dragging_scroll) {
             scroll_to(mouse_y);
@@ -3577,12 +3562,10 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                                                     fonts,
                                                     layout_jobs)
                                        .first->second;
-                    point_input(*form,
-                                i,
-                                cached,
-                                mouse_x - boxes.fields[i].x - 6 * scale + cached.horizontal,
-                                mouse_y - boxes.fields[i].y - 5 * scale,
-                                (modifiers & SDL_KMOD_SHIFT) != 0);
+                    const auto [text_x, text_y] =
+                        cached.to_text(boxes.fields[i], scale, mouse_x, mouse_y);
+                    point_input(
+                        *form, i, cached, text_x, text_y, (modifiers & SDL_KMOD_SHIFT) != 0);
                     dragging_form_field = i;
                     dragging_form_id = form->id();
                 }
@@ -3949,91 +3932,32 @@ void EditorWindow::Impl::draw_field(SkCanvas* canvas,
                                     Box box,
                                     bool focused,
                                     bool invalid,
-                                    TextInputLayout& cached,
+                                    TextField& cached,
                                     std::string_view placeholder,
                                     float font_size) {
     const auto text = field.text.text().str();
-    const TextLayout* prepared = nullptr;
-    bool failed{};
+    const TextFieldPaint paint{
+        box,
+        input_style(font_size),
+        label_style(13, muted),
+        {input_color, border_color, accent, error_color, selection_color, hover_color},
+        text,
+        placeholder,
+        focused ? std::string_view(preedit) : std::string_view{},
+        field.text.selections().front(),
+        focused,
+        invalid};
+    std::optional<Box> caret;
     try {
-        prepared = cached.prepare_async(text, input_style(font_size));
+        caret = cached.draw(canvas, labels, paint);
     } catch (const std::exception& failure) {
         error = failure.what();
         status = "Input text unavailable";
-        invalid = true;
-        failed = true;
+        caret = cached.draw_unavailable(canvas, labels, paint, true);
     }
-    rectangle(canvas,
-              box.x,
-              box.y,
-              box.width,
-              box.height,
-              invalid ? error_color : (focused ? accent : border_color));
-    rectangle(canvas,
-              box.x + scale,
-              box.y + scale,
-              std::max(0.0F, box.width - 2 * scale),
-              std::max(0.0F, box.height - 2 * scale),
-              input_color);
-    if (!prepared) {
-        if (focused) {
-            input_area(box.x + 6 * scale, box.y + 5 * scale, font_size * scale);
-        }
-        elided_label(canvas,
-                     failed ? "Text unavailable" : "…",
-                     box.x + 6 * scale,
-                     box.y + 6 * scale,
-                     13,
-                     std::max(0.0F, box.width - 12 * scale),
-                     muted);
-        return;
+    if (caret) {
+        input_area(caret->x, caret->y, caret->height);
     }
-    const auto& input = *prepared;
-    const auto selection = field.text.selections().front();
-    const auto caret = input.caret(selection.head.value);
-    const auto available = std::max(0.0F, box.width - 12 * scale);
-    if (focused) {
-        if (caret.x < cached.horizontal)
-            cached.horizontal = caret.x;
-        if (caret.x > cached.horizontal + available)
-            cached.horizontal = caret.x - available;
-    }
-    cached.horizontal =
-        std::clamp(cached.horizontal, 0.0F, std::max(0.0F, input.width() - available));
-    const auto x = box.x + 6 * scale - cached.horizontal, y = box.y + 5 * scale;
-    canvas->save();
-    canvas->clipRect(SkRect::MakeXYWH(box.x + 2 * scale,
-                                      box.y + scale,
-                                      std::max(0.0F, box.width - 4 * scale),
-                                      std::max(0.0F, box.height - 2 * scale)));
-    if (text.empty() && (!focused || preedit.empty()))
-        elided_label(
-            canvas, placeholder, box.x + 6 * scale, box.y + 6 * scale, 13, available, muted);
-    for (const auto& rect : input.selection_rects(selection.begin().value, selection.end().value)) {
-        rectangle(canvas,
-                  x + rect.x,
-                  y + rect.y,
-                  rect.width,
-                  rect.height,
-                  focused ? selection_color : hover_color);
-    }
-    input.draw(canvas, x, y);
-    if (focused) {
-        rectangle(canvas,
-                  x + caret.x,
-                  y + caret.y,
-                  scale,
-                  std::min(caret.height, std::max(0.0F, box.height - 8 * scale)),
-                  foreground);
-        input_area(x + caret.x, y + caret.y, caret.height);
-        if (!preedit.empty()) {
-            const auto style = input_style(font_size);
-            const auto composition = fonts.layout(preedit, style);
-            composition.draw(canvas, x + caret.x, y);
-            rectangle(canvas, x + caret.x, y + 20 * scale, composition.width(), scale, accent);
-        }
-    }
-    canvas->restore();
 }
 
 void EditorWindow::Impl::draw_form(SkCanvas* canvas,
@@ -5211,14 +5135,19 @@ WorkbenchViewState EditorWindow::view_state() const {
                            {"workerSubmitted", impl_->layout_jobs->statistics().submitted},
                            {"workerJobs", impl_->layout_jobs->statistics().jobs}};
     std::size_t pending_fields{};
+    std::size_t composing_fields{};
     for (const auto& [id, cached] : impl_->form_fields) {
         static_cast<void>(id);
         pending_fields += cached.pending() ? 1 : 0;
+        composing_fields += cached.composition_pending() ? 1 : 0;
     }
     result.input_layout["pendingFields"] = pending_fields;
+    result.input_layout["compositionPendingFields"] = composing_fields;
     if (impl_->dialog) {
         if (impl_->dialog->input_layout) {
             result.input_layout["pending"] = impl_->dialog->input_layout->pending();
+            result.input_layout["compositionPending"] =
+                impl_->dialog->input_layout->composition_pending();
             result.input_layout["bytes"] = impl_->prompt_text.size();
         }
         const auto& detail = *impl_->dialog->detail;

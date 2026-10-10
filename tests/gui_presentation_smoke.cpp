@@ -619,6 +619,20 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         key(window, SDLK_ESCAPE);
         window.execute_ui_command("acceptance.inputEditing");
         settle(window);
+        const auto composition_bytes = window.view_state().input_layout.at("bytes");
+        SDL_Event composition_event{};
+        composition_event.type = SDL_EVENT_TEXT_EDITING;
+        composition_event.edit.windowID = SDL_GetWindowID(window.window());
+        composition_event.edit.text = "预编辑🙂";
+        require(SDL_PushEvent(&composition_event), "Cannot queue native IME composition");
+        settle(window);
+        require(window.view_state().input_layout.at("bytes") == composition_bytes,
+                "IME preedit changed the committed input model");
+        window.request_screenshot("build/graphics/gui-text-field-ime.png");
+        settle(window);
+        composition_event.edit.text = "";
+        require(SDL_PushEvent(&composition_event), "Cannot retire native IME composition");
+        settle(window);
         key(window, SDLK_LEFT);
         key(window, SDLK_BACKSPACE);
         SDL_Event unicode_input{};

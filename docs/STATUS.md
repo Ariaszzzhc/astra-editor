@@ -18,6 +18,66 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### Shared native text fields and IME presentation (2026-10-10)
+
+Modal/picker inputs and JS inline/mounted form fields now use `TextField`.
+The native component owns field borders, bounded padding/clipping, placeholder
+elision, selection/caret paint, horizontal reveal and IME composition display.
+Pointer conversion shares its exact padding/scroll transform. The window adapter
+retains SDL candidate-area conversion and guarded deferred input; document
+editing and product workflows remain in their existing document/JS layers.
+The component receives borrowed frame text and selections, never a mutable
+document, service or JS callback. End-of-input reveal reserves the caret stroke.
+Collapsed controls do not publish an out-of-bounds candidate area. RAII balances
+the canvas save/clip stack even if composition preparation fails mid-paint.
+
+IME preedit uses its own exact paragraph cache. Stable repaint reuses geometry;
+cold preedit of at least 4096 bytes shapes through the existing background queue.
+Changed/empty preedit, blur and control destruction retire obsolete work. Native
+paragraph height positions the underline. Successful and failed composition
+preparation leave committed input unchanged. `TextInputLayout.reset()` cancels
+work and releases its paragraph on the owner thread. Agent view state exposes
+composition pending observations for modal and mounted fields.
+
+Focused Windows evidence:
+
+- `./scripts/xmake.ps1 build -y viewport-layout-tests gui-presentation-smoke astra`
+  passed in Debug. Logs: `text-field-build-debug.log` and
+  `text-field-final-build-debug.log`.
+- `viewport-layout-tests.exe --fields` passed native font/pixel checks for
+  Unicode/bidi, exact paragraph reuse, every pixel outside field bounds, tiny
+  controls, caret reveal/hit transform and cached composition. Failure injection
+  with invalid composition checks both accepted-input preservation and the
+  balanced canvas stack. The real worker cancellation test rejects late
+  composition publication after a shorter replacement. Log:
+  `text-field-native-debug.log`. Additional successful long-composition
+  publication coverage is included in the full validation below.
+- `gui-presentation-smoke.exe` passed real SDL3/Graphite/Dawn workflows, including
+  an injected preedit event that leaves input byte count unchanged and subsequent
+  Unicode selection/edit/undo/clipboard, same-frame pointer/text and long-input
+  cancellation checks. Log: `text-field-gui-debug.log`.
+- Inspected the real GPU capture `build/graphics/gui-text-field-ime.png`:
+  CJK/emoji preedit and its underline remain within the input field. This validates
+  injected SDL composition display, not an installed physical IME candidate UI.
+
+- `./scripts/test.ps1 -Mode all -Gui` completed with exit code 0 on Windows.
+  Debug: 558 cases / 1,188,312 assertions; Release: 558 cases / 1,188,308
+  assertions, all passed with no skipped cases. Both modes passed native
+  renderer/fonts/viewport/field checks, including successful long-composition
+  publication, exact fresh-paragraph comparison and reuse after completion.
+  All real GUI workflows and TCP editing passed, as did 12 package helper
+  invariants. Log: `build/text-field-acceptance-all.log`. No distribution was
+  produced by this command.
+- After every acceptance process exited, `./scripts/xmake.ps1 f -m debug -y`
+  restored Debug configuration. Log: `text-field-restore-debug.log`.
+  Final `./scripts/format.ps1 -Check -Offline` passed 149 C++ / 12 JS files,
+  and `git diff --check` passed. Log: `text-field-final-format.log`.
+
+The shared field still performs bounded source
+validation/copying and short native shaping on the UI thread. Other native
+components, document IME preparation, row-internal incremental glyph layout,
+whole-product visual acceptance and a new final package remain incomplete.
+
 ### Shared chrome text and responsive controls (2026-10-10)
 
 `TextLabels` now owns plain title/tab/row/status text preparation and Unicode

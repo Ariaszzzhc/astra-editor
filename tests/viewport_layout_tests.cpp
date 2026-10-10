@@ -3,6 +3,7 @@
 #include <astra/ui/text_input_layout.hpp>
 #include <astra/ui/input_events.hpp>
 #include <astra/ui/text_labels.hpp>
+#include <astra/ui/text_field.hpp>
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkImageInfo.h"
@@ -68,6 +69,175 @@ void equal(const TextLayout& cached, const TextLayout& fresh) {
                     cached.grapheme_boundaries().end(),
                 "Cached hit splits a grapheme");
     }
+}
+
+void text_fields(TextLayoutEngine& engine) {
+    constexpr std::uint32_t untouched = 0xFF102030;
+    auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(640, 180));
+    require(surface != nullptr, "Cannot create text field pixel surface");
+    auto* canvas = surface->getCanvas();
+    TextLabels labels(engine);
+    TextField field(engine);
+    TextFieldPaint paint;
+    paint.bounds = {20, 20, 180, 32};
+    paint.text_style.font_size = 13;
+    paint.text_style.line_height = 1;
+    paint.text_style.direction = TextDirection::automatic;
+    paint.text_style.font_families = {"Segoe UI", "Microsoft YaHei UI", "Segoe UI Emoji"};
+    paint.hint_style = paint.text_style;
+    paint.hint_style.color = 0xFF999999;
+    paint.colors = {0xFF181818, 0xFF454545, 0xFF007ACC, 0xFFCC3333, 0xFF264F78, 0xFF303030};
+    paint.placeholder = "Type 中🙂";
+    paint.focused = true;
+    const auto capture = [&] {
+        std::vector<std::uint32_t> result(640 * 180);
+        require(surface->readPixels(SkImageInfo::MakeN32Premul(640, 180),
+                                    result.data(),
+                                    640 * sizeof(std::uint32_t),
+                                    0,
+                                    0),
+                "Cannot read text field pixels");
+        return result;
+    };
+    const auto render = [&] {
+        canvas->clear(untouched);
+        const auto saved = canvas->getSaveCount();
+        const auto caret = field.draw(canvas, labels, paint);
+        require(canvas->getSaveCount() == saved, "Text field leaked a canvas clip/save");
+        if (caret) {
+            require(caret->x >= paint.bounds.x && caret->y >= paint.bounds.y &&
+                        caret->right() <= paint.bounds.right() &&
+                        caret->bottom() <= paint.bounds.bottom(),
+                    "Text field IME candidate area escaped its bounds");
+        }
+        const auto result = capture();
+        for (int y = 0; y < 180; ++y) {
+            for (int x = 0; x < 640; ++x) {
+                if (x + 0.5F < paint.bounds.x || x + 0.5F >= paint.bounds.right() ||
+                    y + 0.5F < paint.bounds.y || y + 0.5F >= paint.bounds.bottom()) {
+                    require(result[static_cast<std::size_t>(y * 640 + x)] == untouched,
+                            "Text field painting escaped its control");
+                }
+            }
+        }
+        return result;
+    };
+    for (const auto dpi : {1.0F, 1.25F, 2.0F}) {
+        paint.text_style.dpi_scale = paint.hint_style.dpi_scale = dpi;
+        for (const std::string text :
+             {"", "ASCII", "中🙂é👨‍👩‍👧‍👦", "אבג xyz"}) {
+            paint.text = text;
+            paint.selection = {{0}, {text.size()}};
+            const auto original = render();
+            const auto* paragraph = field.text().layout();
+            require(paragraph != nullptr, "Text field did not prepare its native paragraph");
+            equal(*paragraph, engine.layout(text, paint.text_style));
+            require(render() == original && field.text().layout() == paragraph,
+                    "Repeated text field paint changed stable pixels or paragraph identity");
+        }
+    }
+    const std::string long_text(80, 'W');
+    paint.text_style.dpi_scale = paint.hint_style.dpi_scale = 1;
+    paint.text = long_text;
+    paint.selection = {{long_text.size()}, {long_text.size()}};
+    static_cast<void>(render());
+    require(field.text().horizontal > 0, "Text field did not reveal a scrolled caret");
+    const auto caret = field.draw(canvas, labels, paint);
+    require(caret && caret->width > 0 && caret->right() <= paint.bounds.right() - 6,
+            "End-of-input caret stroke was clipped instead of reserved");
+    const auto [x, y] = field.to_text(paint.bounds, 1, caret->x, caret->y + caret->height / 2);
+    require(field.text().layout()->hit_test(x, y).byte_offset == long_text.size(),
+            "Text field pointer and painted caret used different transforms");
+    paint.selection = {{0}, {0}};
+    static_cast<void>(render());
+    require(field.text().horizontal == 0, "Text field did not reveal the first caret");
+    paint.composition = "中🙂é";
+    const auto composition_pixels = render();
+    const auto* composition = field.composition_layout();
+    require(composition != nullptr, "Text field lost native IME composition");
+    equal(*composition, engine.layout(std::string(paint.composition), paint.text_style));
+    require(render() == composition_pixels && field.composition_layout() == composition,
+            "Unchanged IME composition was reshaped or painted differently");
+    const auto* accepted = field.text().layout();
+    paint.composition = "\xFF";
+    bool rejected{};
+    const auto saved = canvas->getSaveCount();
+    try {
+        static_cast<void>(field.draw(canvas, labels, paint));
+    } catch (const std::exception&) {
+        rejected = true;
+    }
+    require(rejected && canvas->getSaveCount() == saved && field.text().layout() == accepted,
+            "IME failure damaged accepted input or leaked a canvas clip");
+    paint.composition = "中🙂é";
+    paint.focused = false;
+    static_cast<void>(render());
+    require(field.composition_layout() == nullptr && !field.composition_pending(),
+            "Blur retained obsolete IME composition");
+    paint.focused = true;
+    paint.composition = {};
+    for (const auto size : {0.0F, 1.0F, 2.0F, 8.0F, 12.0F}) {
+        paint.bounds = {20, 20, size, size};
+        static_cast<void>(render());
+    }
+    paint.bounds.width = -1;
+    rejected = false;
+    try {
+        static_cast<void>(field.draw(canvas, labels, paint));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    require(rejected && canvas->getSaveCount() == saved,
+            "Invalid text field bounds reached native painting");
+
+    auto jobs = std::make_shared<LayoutJobs>();
+    TextField background(engine, jobs);
+    paint.bounds = {20, 20, 180, 32};
+    paint.text = "Input";
+    paint.selection = {{5}, {5}};
+    const std::string long_composition(5600, 'a');
+    paint.composition = long_composition;
+    static_cast<void>(background.draw(canvas, labels, paint));
+    require(background.composition_pending() && background.text().layout() != nullptr &&
+                jobs->statistics().submitted == 1,
+            "Cold long IME composition blocked or replaced accepted input");
+    paint.composition = "短";
+    static_cast<void>(background.draw(canvas, labels, paint));
+    require(!background.composition_pending() && background.composition_layout()->text() == "短",
+            "Changed IME composition did not cancel obsolete shaping");
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (jobs->statistics().jobs != 0 && std::chrono::steady_clock::now() < deadline) {
+        jobs->poll();
+        background.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    require(jobs->statistics().jobs == 0 && background.composition_layout()->text() == "短",
+            "Retired IME worker published into a newer control frame");
+    paint.composition = long_composition;
+    static_cast<void>(background.draw(canvas, labels, paint));
+    require(background.composition_pending(), "Cold composition cache unexpectedly matched");
+    const auto completion_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (background.composition_pending() &&
+           std::chrono::steady_clock::now() < completion_deadline) {
+        jobs->poll();
+        background.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    require(!background.composition_pending() && background.composition_layout() &&
+                background.composition_layout()->text() == long_composition,
+            "Successful background composition was not published");
+    equal(*background.composition_layout(), engine.layout(long_composition, paint.text_style));
+    const auto* composed = background.composition_layout();
+    static_cast<void>(background.draw(canvas, labels, paint));
+    require(background.composition_layout() == composed && jobs->statistics().jobs == 0,
+            "Completed IME composition did not reuse its exact paragraph");
+    paint.focused = false;
+    static_cast<void>(background.draw(canvas, labels, paint));
+    require(background.composition_layout() == nullptr,
+            "Blur did not release the composition paragraph");
+    std::cout
+        << "Shared native text fields: Unicode pixels, exact reuse, bounded clips, "
+           "caret reveal/hit transforms, IME caching/cancellation and failure preservation: PASS\n";
 }
 
 void text_labels(TextLayoutEngine& engine) {
@@ -794,6 +964,10 @@ void input_event_ownership() {
 int main(int argc, char* argv[]) {
     try {
         TextLayoutEngine engine;
+        if (argc == 2 && std::string_view(argv[1]) == "--fields") {
+            text_fields(engine);
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--labels") {
             text_labels(engine);
             return 0;
@@ -815,6 +989,7 @@ int main(int argc, char* argv[]) {
         editable_background(engine);
         input_event_ownership();
         text_labels(engine);
+        text_fields(engine);
         std::shared_ptr<const TextLayout> retained;
         {
             TextLayoutEngine temporary;

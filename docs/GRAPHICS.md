@@ -367,8 +367,8 @@ geometry. Modal actions remain available while paragraph work is pending, and
 closing a modal cancels only its own surface jobs. Source indexing and visible
 page copying are still explicit UI-thread costs.
 
-Editable modal inputs and inline form fields share `TextInputLayout`, the
-Unicode document editing commands, and the same native field painter. Caret,
+Editable modal inputs and inline form fields share the `TextField` component,
+`TextInputLayout` paragraphs and Unicode document editing commands. Caret,
 selection, clipboard and undo/redo operate on grapheme-safe document positions;
 pointer input prepares the current text/style before hit testing, including
 multiple SDL events processed before the next paint. The cache key includes
@@ -379,6 +379,21 @@ layout queue; short fields and exact cache hits remain immediate. Pending fields
 paint their border and a progress marker without using geometry from old text.
 Worker failures retain the document/cache, display an error, and leave other
 controls active. Field cancellation/destruction discards its own pending job.
+
+`TextField` receives borrowed text/selection frame snapshots and theme styles;
+it owns no document or product workflow. Painting and pointer conversion use
+the same bounded padding and horizontal scroll transform. Scroll reveal reserves
+the caret stroke, and selection/text/placeholder/composition pixels stay clipped
+to the control, including collapsed bounds. The returned physical-pixel IME area
+stays within the control; the window adapter converts it for SDL. Canvas state is
+restored by RAII when native preparation or drawing fails.
+
+Field IME preedit has its own exact `TextInputLayout` cache. Unchanged preedit
+reuses the native paragraph instead of reshaping every repaint. Cold preedit of
+at least 4096 bytes uses the same background queue; changed preedit cancels the
+older request, and blur/empty preedit releases its cache and retires its job.
+The underline follows native paragraph height. Preedit never mutates the input
+model. The existing JS form/dialog APIs and asynchronous workflows are unchanged.
 
 Pointer placement waiting for editable geometry captures widget identity/epoch,
 focused field, document revision/selection, style, coordinates and a 30-second
@@ -395,8 +410,9 @@ Tab refinement and caret queries reuse them instead of repeatedly asking
 SkParagraph to rebuild every style run's font metrics. A bounded 256-entry cache
 also reuses repeated tab-delimited width estimates within one unchanged style;
 the final paragraph still receives full native Unicode/bidi/tab shaping.
-Text validation, document flattening and short/preedit shaping remain explicit
-UI-thread costs. This does not establish row-internal incremental glyph shaping,
+Text validation, document flattening, short field/preedit shaping and document
+IME preedit preparation remain explicit UI-thread costs. This does not establish
+row-internal incremental glyph shaping,
 bounded native font/paragraph heaps or constant frame latency.
 
 ## Upstream references

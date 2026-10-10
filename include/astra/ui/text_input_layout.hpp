@@ -24,6 +24,8 @@ class TextInputLayout final {
     // Older successful geometry remains cached, but is never returned for new text/style.
     [[nodiscard]] const TextLayout* prepare_async(std::string_view, const TextLayoutOptions&);
     void poll();
+    // Retire background work and release the cached paragraph on the owner thread.
+    void reset();
     [[nodiscard]] bool pending() const noexcept;
     [[nodiscard]] const TextLayout* layout() const noexcept;
     [[nodiscard]] bool matches(std::string_view) const noexcept;

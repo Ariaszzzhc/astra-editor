@@ -95,6 +95,13 @@ bool TextInputLayout::pending() const noexcept {
     return pending_.has_value() && !pending_->error;
 }
 
+void TextInputLayout::reset() {
+    cancel();
+    key_.reset();
+    layout_.reset();
+    horizontal = 0;
+}
+
 const TextLayout* TextInputLayout::layout() const noexcept {
     return layout_.get();
 }
