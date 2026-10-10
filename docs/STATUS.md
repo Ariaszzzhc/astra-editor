@@ -20,6 +20,109 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### Native glyph snapshots and exact run replay (2026-10-11)
+
+The real pinned Skia/HarfBuzz path now exposes logical-order glyphs, UTF-8
+clusters, advances/offsets and genuine unsafe-to-concat metadata through a
+per-font-collection adapter. A reviewed patch and per-blob manifest retain the
+upstream pins; build preparation rejects changed patch/source, partial application
+and unrelated edits. Build manifests, xmake and runtime provenance require the
+adapter. This is the same production Graphite/Dawn/SkParagraph stack.
+
+`GlyphSource` retains immutable measured run snapshots without native fonts or
+paragraphs. Exact full-context/typeface/font/bidi/script/language/feature/tracking
+matches share raw glyph arrays and skip actual shaping; changed text or a worker's
+different typeface ID conservatively reshapes. Capture admits 1,024 runs / 4 MiB
+of accounted run/text/feature/glyph payload. Native allocation, vector capacity,
+tree/container and GPU heaps are outside that number. Admission bypass still
+shapes the complete native run. Source/job/viewport admission now charges glyph
+payload; the old opaque native paragraph cache is replaced by Astra's existing
+bounded paragraph LRU so a native hit cannot omit shaping metadata. Collectors
+detach on success and exceptions before any paragraph transfer.
+
+Current Windows evidence:
+
+- `./scripts/build-graphics.ps1 -Configuration Debug -Jobs 4` compiled and
+  installed the actual adapter; `build/glyph-graphics-debug.log`.
+- First application compile rejected narrowing native `size_t` feature ranges
+  to 32-bit fields. Retained native range width without casts or weakened
+  warnings; `build/glyph-build-debug.log`.
+- `./scripts/format.ps1 -Offline` and focused native/application builds passed.
+  Latest focused build: `./scripts/xmake.ps1 build -y -j 2 text-layout-tests viewport-layout-tests astra`;
+  `build/glyph-capacity-format.log`, `build/glyph-capacity-build-debug.log`.
+- The first native replay fixture made only a paint change, which SkParagraph's
+  opaque cache had already handled without invoking the collector. Its skipped
+  callback made the raw replay assertion fail (`build/glyph-native-debug.log`).
+  The fixture now also changes strut geometry independently of glyph inputs.
+  Complete paragraphs are retained only by the bounded Astra LRU, keeping
+  collector snapshots complete.
+- The first viewport check used an old 700-byte budget that could not admit
+  new glyph payload (`build/glyph-viewport-debug.log`). The entry-eviction fixture
+  now uses 4,096 bytes; its separate byte-capacity fixture still derives the
+  exact measured entry size and checks exact eviction/accounting.
+- `./build/windows/x64/debug/text-layout-tests.exe` passed actual raw glyph
+  replay and independent complete-shaping pixels, width/height, both caret
+  affinities and hit positions. Cases include ligatures, Arabic/Hebrew, native
+  CJK/emoji fallback, combining/ZWJ, tabs and DPI 1/1.5/2; font/context changes
+  preserve parity and old snapshots. A 180,000-byte input exceeds capture
+  capacity without skipping native shaping; `build/glyph-capacity-native-debug.log`.
+- `./build/windows/x64/debug/viewport-layout-tests.exe` passed all native
+  viewport, worker, editable-input, IME, label, field, tab, cancellation and
+  admission checks. The retained paragraph's glyph snapshot remains immutable
+  through a real libuv-worker local edit and transfer;
+  `build/glyph-capacity-viewport-debug.log`.
+- `.tools/graphics/python/python.exe tests/skia_patch_tests.py` passed seven
+  Windows-run provenance cases: idempotent known patch; changed patch, paired
+  patch/manifest changes, wrong revision, unrelated source, altered adapter and
+  partial application are rejected before mutation. Fixture Git metadata is
+  isolated; the actual graphics build above establishes native integration.
+  `build/glyph-final-provenance-tests.log`. The standard acceptance script now
+  runs these alongside existing package-helper checks.
+
+The first full `./scripts/test.ps1 -Mode all -Gui` passed Debug 591 cases /
+1,731,998 assertions and Release 591 cases / 1,731,903 assertions, all native and
+GUI checks and both TCP editing runs, then failed its package-helper fixture:
+the isolated dependency-patch guard had not copied the newly pinned Skia patch.
+Updated that fixture's inputs, retaining its production hash-rejection check;
+`build/glyph-acceptance-all.log` retains the complete failed run.
+
+Review also identified exception-disabled Skia frames at the callback boundary.
+The Astra collector is now `noexcept`, retains the first error, retires subsequent
+callbacks and rethrows outside native layout before publication. The native
+fixture injects a callback error and verifies exact error reporting and retirement.
+Upstream native out-of-memory recovery is not established. Acceptance of this
+follow-up is pending.
+
+The adapter now explicitly aborts before native run-buffer emission on collector
+failure and propagates that failure out of the SkParagraph shaping pass.
+`./build/windows/x64/debug/text-layout-tests.exe` passed an actual SkParagraph
+failure injection: exactly one failing native callback, no subsequent emission,
+the original error retained/reported, and all subsequent glyph/pixel/Unicode
+checks pass. `build/glyph-abort-build-debug.log` and
+`build/glyph-abort-native-debug.log` record the updated Debug build and run.
+The package-helper fix passed all 12 checks (`build/glyph-error-package-tests.log`).
+
+Final Windows evidence superseding that pending follow-up:
+
+- Updated Debug and Release graphics builds passed with the failure-propagating
+  adapter; `build/glyph-error-graphics-debug.log` and
+  `build/glyph-abort-graphics-release.log`.
+- Final `./scripts/test.ps1 -Mode all -Gui` completed with exit code 0 using
+  unchanged native source/runtime resources. Debug: 591 cases / 1,732,029
+  assertions; Release: 591 cases / 1,731,898 assertions, zero failed/skipped.
+  Both modes passed actual native failure injection and raw replay, all renderer/
+  font/viewport/input/editing/service/recovery/workspace/presentation GUI workflows,
+  the 5,005-file/640-tab scenarios and TCP editing. All 12 package-helper checks
+  and seven shaping-provenance checks passed. `build/glyph-final-acceptance-all.log`.
+- After every acceptance process exited, restored Debug configuration with
+  `./scripts/xmake.ps1 f -m debug -y`; `build/glyph-restore-debug.log`.
+  Final `./scripts/format.ps1 -Check -Offline` passed 165 C++ / 13 JS files and
+  `git diff --check` passed; `build/glyph-final-check.log`.
+
+Local-edit glyph splicing, stable cross-worker font equivalence, further
+native component extraction, whole-product visual acceptance and a new package
+remain incomplete. No non-Windows validation is claimed.
+
 ### Persistent native text coordinate snapshots (2026-10-11)
 
 `TextSource` now couples immutable materialized UTF-8 with the measured persistent Rope.

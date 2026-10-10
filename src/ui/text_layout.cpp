@@ -1,4 +1,5 @@
 #include "astra/ui/text_layout.hpp"
+#include "glyph_cache.hpp"
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkFontMgr.h"
@@ -256,11 +257,16 @@ struct TextLayoutEngine::Impl {
         }
         fonts->setDefaultFontManager(std::move(manager));
         fonts->enableFontFallback();
+        // The bounded Astra viewport owns complete paragraphs. A second opaque
+        // SkParagraph cache could return glyphs without the native metadata
+        // collector, leaving an incomplete immutable shaping snapshot.
+        fonts->getParagraphCache()->turnOn(false);
     }
 };
 
 struct TextLayout::Impl {
     TextSource source;
+    GlyphSource glyphs;
     std::string_view text;
     std::unique_ptr<paragraph::Paragraph> shaped;
     sk_sp<paragraph::FontCollection> fonts;
@@ -334,7 +340,8 @@ TextLayoutEngine::~TextLayoutEngine() = default;
 
 TextLayout TextLayoutEngine::layout(std::string text,
                                     const TextLayoutOptions& options,
-                                    TextSource previous) const {
+                                    TextSource previous,
+                                    GlyphSource glyphs) const {
     if (text.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
         SkUTF::CountUTF8(text.data(), text.size()) < 0) {
         throw std::invalid_argument("Text layout requires valid, bounded UTF-8");
@@ -352,6 +359,19 @@ TextLayout TextLayoutEngine::layout(std::string text,
     }
 
     auto result = std::make_unique<TextLayout::Impl>();
+    auto collector = std::make_shared<GlyphCache>(std::move(glyphs));
+
+    // Detached on every success/error path. Published paragraphs never retain
+    // mutable shaping collectors; native font ownership remains unchanged.
+    struct CacheScope {
+        paragraph::FontCollection& fonts;
+
+        ~CacheScope() {
+            fonts.setShapingCache({});
+        }
+    } cache_scope{*impl_->fonts};
+
+    impl_->fonts->setShapingCache(collector);
     result->source = previous.updated(std::move(text));
     result->text = result->source.text();
     result->fonts = impl_->fonts;
@@ -407,6 +427,7 @@ TextLayout TextLayoutEngine::layout(std::string text,
         builder->addText(part.data(), part.size());
         auto shaped = builder->Build();
         shaped->layout(std::numeric_limits<float>::infinity());
+        collector->rethrow_error();
         return shaped;
     };
     auto space = make_text(" ");
@@ -503,6 +524,7 @@ TextLayout TextLayoutEngine::layout(std::string text,
         }
         result->shaped = builder->Build();
         result->shaped->layout(layout_width);
+        collector->rethrow_error();
         std::vector<paragraph::LineMetrics> metrics;
         result->shaped->getLineMetrics(metrics);
         result->lines.clear();
@@ -573,6 +595,7 @@ TextLayout TextLayoutEngine::layout(std::string text,
     }
     result->measured_width = options.wrap_width > 0 ? result->shaped->getLongestLine()
                                                     : result->shaped->getMaxIntrinsicWidth();
+    result->glyphs = collector->snapshot();
     return TextLayout(std::move(result));
 }
 
@@ -589,6 +612,10 @@ std::string_view TextLayout::text() const noexcept {
 
 TextSource TextLayout::source_snapshot() const noexcept {
     return impl_->source;
+}
+
+GlyphSource TextLayout::glyph_snapshot() const noexcept {
+    return impl_->glyphs;
 }
 
 float TextLayout::width() const {

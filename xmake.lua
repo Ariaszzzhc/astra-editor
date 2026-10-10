@@ -180,7 +180,7 @@ target("astra-renderer")
     add_packages("skia-graphite", "libsdl3", {public = true})
     add_packages("utf8proc")
     add_deps("astra-text-source")
-    add_files("src/ui/renderer.cpp", "src/ui/text_layout.cpp")
+    add_files("src/ui/renderer.cpp", "src/ui/text_layout.cpp", "src/ui/glyph_cache.cpp")
     set_exceptions("cxx")
 
 target("graphics-smoke")

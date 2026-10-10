@@ -98,7 +98,8 @@ def unpack(archive: Path, directory: Path, executable: str) -> Path:
     return result
 
 
-def checkout(directory: Path, url: str, revision: str, tree: str | None = None) -> None:
+def checkout(directory: Path, url: str, revision: str, tree: str | None = None,
+             shaping_patch: bool = False) -> None:
     if not (directory / ".git").is_dir():
         if directory.exists():
             raise RuntimeError(f"Unmanaged source directory: {directory}")
@@ -116,7 +117,9 @@ def checkout(directory: Path, url: str, revision: str, tree: str | None = None) 
         raise RuntimeError(f"Checkout does not match pinned revision {revision}: {directory}")
     if tree and run("git", "-C", directory, "rev-parse", "HEAD^{tree}", capture=True) != tree:
         raise RuntimeError(f"Source tree checksum mismatch: {directory}")
-    if run("git", "-C", directory, "status", "--porcelain", "--untracked-files=no", capture=True):
+    if shaping_patch:
+        run(sys.executable, ROOT / "scripts/apply-skia-patch.py", directory)
+    elif run("git", "-C", directory, "status", "--porcelain", "--untracked-files=no", capture=True):
         raise RuntimeError(f"Tracked source was modified: {directory}")
 
 
@@ -246,7 +249,7 @@ def main() -> None:
     os.environ["PATH"] = os.pathsep.join((str(host / "bin"), str(cmake.parent), os.environ["PATH"]))
 
     source = TOOLS / "src" / "skia"
-    checkout(source, "https://skia.googlesource.com/skia.git", SKIA, SKIA_TREE)
+    checkout(source, "https://skia.googlesource.com/skia.git", SKIA, SKIA_TREE, shaping_patch=True)
     if f"dawn.git@{DAWN}" not in (source / "DEPS").read_text(encoding="utf-8"):
         raise RuntimeError("Skia DEPS does not name the pinned Dawn revision")
     gn_source = host / "src" / "gn"
@@ -331,6 +334,7 @@ def main() -> None:
     manifest = {
         "schema": 1, "platform": native, "architecture": arch, "configuration": args.configuration,
         "skia": SKIA, "skia_tree": SKIA_TREE, "dawn": DAWN, "gn": GN, "trivial_abi": False,
+        "shaping_patch": sha256(ROOT / "xmake/packages/skia-graphite/glyph-cache.patch"),
         "runtime": "libc++" if native == "macosx" else "libstdc++",
         "compiler": run(cxx, "--version", capture=True),
         "libraries": [file.name[3:-2] for file in libraries],

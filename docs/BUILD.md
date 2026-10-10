@@ -26,6 +26,13 @@ package for each configuration. Source, downloads and installed libraries requir
 several GB; see [GRAPHICS.md](GRAPHICS.md) for the exact pins, ABI and runtime data.
 There is no fallback graphics backend.
 
+The graphics source uses the reviewed, hash-verified shaping adapter under
+`xmake/packages/skia-graphite/`. Build preparation verifies upstream/output blobs,
+rejects unrelated/partial edits, and records the patch digest. xmake rejects
+graphics packages without that exact adapter. Original upstream Git objects
+remain pinned; formatter tools do not touch the downloaded checkout. The
+directory's README records this integration boundary and reproduction commands.
+
 `prepare-language-tools.ps1 -IncludeClangd` prepares the repository language-tool
 cache used by real-server tests. `prepare-windows-runtime.ps1` prepares a separate
 verified runtime inventory used by application build/install and packaging. It

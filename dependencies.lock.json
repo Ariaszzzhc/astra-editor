@@ -19,6 +19,10 @@
     "abseil": "20260107.0"
   },
   "patches": {
+    "skia-glyph-cache": {
+      "path": "xmake/packages/skia-graphite/glyph-cache.patch",
+      "sha256": "be4f9c9437c958d7221725a86d4aed85f6a44fea03df98c7389668a7cba55f18"
+    },
     "quickjs-ng-host-async-context": {
       "path": "xmake/packages/astra-quickjs/host-async-context.patch",
       "sha256": "97fe8762e74c107e912bc73f7bf023cd6fdb7f68aeeae3be8fae410272ae48e1"

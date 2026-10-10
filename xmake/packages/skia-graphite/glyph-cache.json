@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "skia": "525f94ac3418fd0b0dae42caa220422a94b18b49",
+  "sha256": "be4f9c9437c958d7221725a86d4aed85f6a44fea03df98c7389668a7cba55f18",
+  "files": [
+    {
+      "file": "modules/skshaper/include/SkShaper_harfbuzz.h",
+      "before": "1bf98f9c5672ae41933e237d70027285ad2cccce3a86b13de24417887e0612b0",
+      "after": "05737841b5b16a810a42bf182d0df4deb208525ae8f9f83eea58b024b9c92095"
+    },
+    {
+      "file": "modules/skparagraph/include/FontCollection.h",
+      "before": "5243433e369bb76f28139c39403338f62fd283486412e05fc9574e09f2252a84",
+      "after": "5bf987f5653ac8d4216f823e2df461725c6a5dfb2c97ed21756f23bf616b2f61"
+    },
+    {
+      "file": "modules/skparagraph/src/OneLineShaper.cpp",
+      "before": "d1b09f735c499152eadb82ca2e4efd24b11d35da8c8df7b5d7b8051e0aac0f50",
+      "after": "28d79eaac3d0c52bf95efc717285ae9a780ae80343a78c062bcd932db08f56fa"
+    },
+    {
+      "file": "modules/skshaper/src/SkShaper_harfbuzz.cpp",
+      "before": "0651df9e59c9cfb1f5d5080ad3ad0c2ce76b147d668f9a36d3fd7b9ec88a4b17",
+      "after": "c3129518df049e6da2dfee6e2018f737c9ac84c371abca37a8e541c9f3810f8a"
+    }
+  ]
+}

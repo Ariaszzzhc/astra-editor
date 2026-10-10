@@ -157,7 +157,10 @@ def main():
              "grammars/manifest.json", "dependencies.lock.json", "release/THIRD-PARTY.md",
              "scripts/native_release.py", "scripts/prepare-native-runtime.py",
              "xmake/packages/astra-quickjs/host-async-context.patch",
-             "xmake/packages/astra-quickjs/xmake.lua", "xmake/packages/astra-quickjs/README.md"]
+             "xmake/packages/astra-quickjs/xmake.lua", "xmake/packages/astra-quickjs/README.md",
+             "xmake/packages/skia-graphite/glyph-cache.patch",
+             "xmake/packages/skia-graphite/glyph-cache.json",
+             "xmake/packages/skia-graphite/README.md", "scripts/apply-skia-patch.py"]
     for name, patch in read_json(REPO / "dependencies.lock.json").get("patches", {}).items():
         if sha256(child(REPO, REPO / patch["path"])) != patch["sha256"]:
             raise RuntimeError("Dependency patch hash mismatch: " + name)

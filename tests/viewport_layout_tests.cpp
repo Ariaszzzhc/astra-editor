@@ -365,7 +365,9 @@ void reuse(TextLayoutEngine& engine) {
 }
 
 void limits(TextLayoutEngine& engine) {
-    DocumentViewport viewport(engine, {2, 700});
+    // Three short captions now include genuine retained raw glyph snapshots.
+    // Keep entry-capacity and payload-capacity eviction as separate checks.
+    DocumentViewport viewport(engine, {2, 4096});
     viewport.publish(rows({"one", "two", "three", std::string(2000, 'a')}));
     TextLayoutOptions style;
     (void)viewport.shape(0, style);
@@ -375,7 +377,7 @@ void limits(TextLayoutEngine& engine) {
     (void)viewport.shape(0, style);
     (void)viewport.shape(2, style);
     const auto stats = viewport.statistics();
-    require(stats.entries == 2 && stats.evicted == 1 && stats.accounted_bytes <= 700,
+    require(stats.entries == 2 && stats.evicted == 1 && stats.accounted_bytes <= 4096,
             "LRU entry/byte budget was exceeded");
     viewport.invalidate_layouts();
     require(&viewport.shape(0, style) == retained.get(),
@@ -630,7 +632,8 @@ void background_viewport(TextLayoutEngine& engine) {
     edited.replace(change, std::string("中").size(), "文🙂");
     viewport.publish(rows({edited}));
     require(!viewport.prepare(0, style), "Changed long row did not use a worker");
-    // The worker receives only immutable text/coordinate data. The old native
+    const auto retained_glyphs = retained->glyph_snapshot().statistics();
+    // The worker receives only immutable text/coordinate/glyph data. The old native
     // paragraph remains owned by this thread and can paint throughout the job.
     await(*jobs, [&] {
         require(pixels(*retained) == pixels(fresh), "Worker coordinate reuse mutated old pixels");
@@ -639,6 +642,13 @@ void background_viewport(TextLayoutEngine& engine) {
     });
     const auto replacement = viewport.layout_snapshot(0);
     require(replacement != nullptr, "Changed long row did not publish native geometry");
+    const auto replacement_glyphs = replacement->glyph_snapshot().statistics();
+    require(replacement_glyphs.glyphs > 0 && replacement_glyphs.runs > 0 &&
+                replacement_glyphs.bytes <= 4 * 1024 * 1024 &&
+                retained->glyph_snapshot().statistics().bytes == retained_glyphs.bytes &&
+                retained->glyph_snapshot().statistics().shaped_bytes ==
+                    retained_glyphs.shaped_bytes,
+            "Worker glyph snapshots were missing, oversized or mutated after transfer");
     equal(*replacement, engine.layout(edited, style));
     const auto coordinates = replacement->source_snapshot().statistics();
     require(coordinates.shared_prefix_bytes > 2048 && coordinates.shared_suffix_bytes > 2048,

@@ -12,7 +12,7 @@ namespace astra::ui {
 
 struct ViewportCacheLimits {
     std::size_t entries{256};
-    // Accounted UTF-8 text and style storage, not total paragraph/GPU heap usage.
+    // Accounted UTF-8, coordinate/glyph and style payload, not native/GPU heap.
     std::size_t bytes{8 * 1024 * 1024};
 };
 

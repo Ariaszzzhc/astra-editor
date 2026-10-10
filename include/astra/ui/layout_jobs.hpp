@@ -14,7 +14,7 @@
 namespace astra::ui {
 struct LayoutJobLimits {
     std::size_t jobs{16};
-    // Accounted input/style storage, not native font or paragraph heap usage.
+    // Accounted input/style and immutable seed payload, not native/GPU heaps.
     std::size_t bytes{64 * 1024 * 1024};
     std::size_t text_bytes{16 * 1024 * 1024};
     std::chrono::milliseconds timeout{30000};
@@ -43,8 +43,10 @@ class LayoutJobs final {
     // Bounds are checked before copying. Full means backpressure, no mutation.
     // Style/Unicode errors and soft deadlines are returned through take(). A
     // native call cannot be interrupted, so expiry completes after it drains.
-    [[nodiscard]] std::optional<Ticket>
-    submit(std::string_view, const TextLayoutOptions&, TextSource previous = {});
+    [[nodiscard]] std::optional<Ticket> submit(std::string_view,
+                                               const TextLayoutOptions&,
+                                               TextSource previous = {},
+                                               GlyphSource glyphs = {});
     void poll();
     [[nodiscard]] std::optional<LayoutJobResult> take(Ticket);
     void cancel(Ticket);

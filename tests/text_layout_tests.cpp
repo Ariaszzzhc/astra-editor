@@ -1,9 +1,24 @@
 #include "astra/ui/renderer.hpp"
 #include "astra/ui/text_layout.hpp"
+#include "../src/ui/glyph_cache.hpp"
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
 #include "include/core/SkPaint.h"
+#include "include/core/SkSurface.h"
+#include "modules/skparagraph/include/FontCollection.h"
+#include "modules/skparagraph/include/Paragraph.h"
+#include "modules/skparagraph/include/ParagraphBuilder.h"
+#include "modules/skunicode/include/SkUnicode_icu.h"
+
+#if defined(_WIN32)
+#include "include/ports/SkTypeface_win.h"
+#elif defined(__APPLE__)
+#include "include/ports/SkFontMgr_mac_ct.h"
+#else
+#include "include/ports/SkFontMgr_fontconfig.h"
+#include "include/ports/SkFontScanner_FreeType.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -60,10 +75,175 @@ void roundtrips(const TextLayout& line, bool exact_offsets = true) {
     }
 }
 
+std::vector<std::uint32_t> glyph_pixels(const TextLayout& line) {
+    auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(1024, 256));
+    require(surface != nullptr, "Glyph snapshot raster surface was unavailable");
+    surface->getCanvas()->clear(SK_ColorTRANSPARENT);
+    line.draw(surface->getCanvas(), 4, 4);
+    std::vector<std::uint32_t> result(1024 * 256);
+    require(surface->readPixels(SkImageInfo::MakeN32Premul(1024, 256),
+                                result.data(),
+                                1024 * sizeof(std::uint32_t),
+                                0,
+                                0),
+            "Glyph snapshot pixel read failed");
+    return result;
+}
+
+void glyph_snapshots() {
+    {
+        astra::ui::GlyphCache cache({});
+        SkFont font;
+        const SkShapers::HB::CacheInput input{{"x", 1}, {0, 1}, font, 0, 0, "und", {}, 0};
+        int called{};
+        const auto failure = [&](SkShaper::RunHandler::Range) -> SkShapers::HB::RunCache::Glyphs {
+            ++called;
+            throw std::runtime_error("injected native adapter failure");
+        };
+        require(cache.shape(input, failure).empty() && called == 1,
+                "Adapter error escaped the native callback boundary");
+        require(cache.shape(input, failure).empty() && called == 1,
+                "Failed collector resumed native callbacks");
+        bool reported{};
+        try {
+            cache.rethrow_error();
+        } catch (const std::runtime_error& error) {
+            reported = std::string_view(error.what()) == "injected native adapter failure";
+        }
+        require(reported, "Adapter swallowed its native-boundary error");
+    }
+    {
+        // Execute a failure through the actual exception-disabled native stack,
+        // not just a standalone cache callback. No failed glyph buffer is emitted.
+        class Failure final : public SkShapers::HB::RunCache {
+          public:
+            astra::ui::GlyphCache collector{{}};
+            int calls{};
+
+            Glyphs shape(const SkShapers::HB::CacheInput& input, const Shape&) noexcept override {
+                ++calls;
+                return collector.shape(input, [](SkShaper::RunHandler::Range) -> Glyphs {
+                    throw std::runtime_error("injected SkParagraph adapter failure");
+                });
+            }
+
+            bool failed() const noexcept override {
+                return collector.failed();
+            }
+        };
+
+        auto failure = std::make_shared<Failure>();
+        auto fonts = sk_make_sp<skia::textlayout::FontCollection>();
+#if defined(_WIN32)
+        fonts->setDefaultFontManager(SkFontMgr_New_DirectWrite());
+#elif defined(__APPLE__)
+        fonts->setDefaultFontManager(SkFontMgr_New_CoreText(nullptr));
+#else
+        fonts->setDefaultFontManager(
+            SkFontMgr_New_FontConfig(nullptr, SkFontScanner_Make_FreeType()));
+#endif
+        fonts->getParagraphCache()->turnOn(false);
+        fonts->setShapingCache(failure);
+        skia::textlayout::ParagraphStyle style;
+        auto builder =
+            skia::textlayout::ParagraphBuilder::make(style, fonts, SkUnicodes::ICU::Make());
+        builder->addText("office ffi אבג 中文🙂");
+        auto native = builder->Build();
+        native->layout(300);
+        fonts->setShapingCache({});
+        require(failure->failed() && failure->calls == 1,
+                "Native shaping did not stop before emitting failed glyph buffers");
+        bool reported{};
+        try {
+            failure->collector.rethrow_error();
+        } catch (const std::runtime_error& error) {
+            reported = std::string_view(error.what()) == "injected SkParagraph adapter failure";
+        }
+        require(reported, "Actual native adapter failed without reporting its original error");
+    }
+    for (const auto& text : {"office ffi affinity -- const value = 42;",
+                             "abc אבג مرحبا 中文 🙂 👩‍💻 é ffi",
+                             "a\tb\t中文\tz"}) {
+        for (const auto dpi : {1.0F, 1.5F, 2.0F}) {
+            TextLayoutEngine owner;
+            TextLayoutOptions options;
+            options.dpi_scale = dpi;
+            options.direction = TextDirection::automatic;
+            auto old = owner.layout(text, options);
+            const auto source = old.glyph_snapshot();
+            const auto old_stats = source.statistics();
+            const auto old_pixels = glyph_pixels(old);
+            require(old_stats.runs > 0 && old_stats.glyphs > 0 && old_stats.shaped_bytes > 0,
+                    "Native HarfBuzz glyphs were not captured");
+            require(old_stats.safe_boundaries + old_stats.unsafe_boundaries > 0,
+                    "Native concatenation boundary metadata was not captured");
+
+            // Different paint/strut require a new paragraph while the raw
+            // shaping/font/context remains identical. Inspect actual skipped work.
+            options.color = 0xFF73C1A9;
+            // Strut height changes paragraph geometry independently of glyphs.
+            options.line_height += 0.1F;
+            auto replay = owner.layout(text, options, old.source_snapshot(), source);
+            const auto stats = replay.glyph_snapshot().statistics();
+            require(stats.reused_bytes > 0,
+                    "Exact native glyph replay did not skip shaping: " + std::string(text));
+            TextLayoutEngine independent;
+            auto fresh = independent.layout(text, options);
+            require(glyph_pixels(replay) == glyph_pixels(fresh),
+                    "Replayed native glyph pixels differ from independent complete shaping");
+            near(replay.width(), fresh.width(), "Replayed native glyph width differs", 0.001F);
+            near(replay.height(), fresh.height(), "Replayed native glyph height differs", 0.001F);
+            for (const auto offset : fresh.grapheme_boundaries()) {
+                for (const auto affinity : {CaretAffinity::upstream, CaretAffinity::downstream}) {
+                    const auto a = replay.caret(offset, affinity);
+                    const auto b = fresh.caret(offset, affinity);
+                    near(a.x, b.x, "Replayed glyph caret X differs", 0.001F);
+                    near(a.y, b.y, "Replayed glyph caret Y differs", 0.001F);
+                }
+            }
+            for (float x = -2; x < fresh.width() + 2; x += 1.75F) {
+                const auto a = replay.hit_test(x, fresh.height() / 2);
+                const auto b = fresh.hit_test(x, fresh.height() / 2);
+                require(a.byte_offset == b.byte_offset && a.affinity == b.affinity,
+                        "Replayed glyph hit testing differs");
+            }
+            require(old_pixels == glyph_pixels(old) &&
+                        source.statistics().bytes == old_stats.bytes &&
+                        source.statistics().shaped_bytes == old_stats.shaped_bytes,
+                    "Glyph replay mutated the retained native/source snapshot");
+
+            options.font_size += 3;
+            auto changed_font = owner.layout(text, options, old.source_snapshot(), source);
+            require(changed_font.glyph_snapshot().statistics().reused_bytes == 0,
+                    "Changed font geometry reused incompatible glyphs");
+            auto changed_fresh = independent.layout(text, options);
+            require(glyph_pixels(changed_font) == glyph_pixels(changed_fresh),
+                    "Changed font fallback differs from complete shaping");
+
+            options.font_size -= 3;
+            auto edited =
+                owner.layout(std::string(text) + "x", options, old.source_snapshot(), source);
+            auto edited_fresh = independent.layout(std::string(text) + "x", options);
+            require(glyph_pixels(edited) == glyph_pixels(edited_fresh),
+                    "Edited context did not safely reshape");
+        }
+    }
+    std::string long_text(180000, 'a');
+    TextLayoutEngine engine;
+    auto long_line = engine.layout(long_text);
+    const auto stats = long_line.glyph_snapshot().statistics();
+    require(stats.bytes <= 4 * 1024 * 1024 && stats.runs <= 1024 &&
+                stats.shaped_bytes >= long_text.size(),
+            "Oversized native glyph capture violated admission or skipped complete shaping");
+    std::cout << "Native immutable glyph snapshots, exact replay, font/context invalidation, "
+                 "bidi/ligatures/fallback/tabs/DPI pixel parity and admission: PASS\n";
+}
+
 } // namespace
 
 int main() {
     try {
+        glyph_snapshots();
         TextLayoutEngine engine;
         auto empty = engine.layout("");
         require(empty.width() == 0 && empty.height() > 0, "Empty line has invalid metrics");

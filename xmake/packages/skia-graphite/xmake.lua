@@ -39,6 +39,9 @@ package("skia-graphite")
         assert(manifest.skia == "525f94ac3418fd0b0dae42caa220422a94b18b49" and
                manifest.dawn == "ab3c12305e776fa707503f7ecfab07364e9c7697",
                "Graphics package does not match the pinned Skia/Dawn revisions")
+        local patch = path.join(root, "xmake/packages/skia-graphite/glyph-cache.patch")
+        assert(manifest.shaping_patch == hash.sha256(patch),
+               "Graphics package requires the verified Astra shaping adapter; rebuild graphics")
         if package:is_plat("windows") then
             assert(manifest.runtime == "MT" and manifest.iterator_debug_level == 0,
                    "Graphics package has incompatible CRT settings")

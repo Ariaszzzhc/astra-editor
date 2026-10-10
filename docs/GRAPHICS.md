@@ -8,6 +8,34 @@ A raster backend, SDL renderer, Ganesh, or a mock renderer does not satisfy this
 
 ## Source and tool lock
 
+The pinned Skia checkout includes the reviewed `glyph-cache.patch` under
+`xmake/packages/skia-graphite/`. Upstream/output blobs and the patch digest are
+verified before building; unrelated or partial source changes are rejected.
+Original upstream Git objects remain intact. The installed graphics manifest
+records the digest, and xmake requires it. Runtime provenance includes the patch,
+manifest, recipe, README and application helper.
+
+The adapter exposes logical-order native HarfBuzz glyphs and genuine
+unsafe-to-concat boundaries without replacing SkParagraph's font fallback,
+itemization, bidi, metrics or drawing. `GlyphSource` stores immutable measured
+run snapshots (1,024 runs / 4 MiB accounted payload). Exact full-context run
+matches share the retained raw arrays and skip native shaping. Typeface IDs,
+font geometry, bidi/script/language/features/tracking and range must agree;
+changed text or different worker font identity currently reshapes completely.
+This does not implement local-edit prefix/suffix glyph splicing.
+
+The opaque SkParagraph paragraph cache is replaced by Astra's existing bounded
+viewport paragraph LRU so native cache hits cannot bypass metadata collection.
+Jobs and that LRU account retained glyph seed/payload bytes. Font, paragraph,
+tree/container and GPU allocations remain outside these payload measurements.
+Collectors are detached on every layout exit; snapshots hold no native fonts
+or paragraphs and can cross worker threads while older paragraphs paint.
+
+The callback catches and retains adapter errors inside Astra. Failed collectors
+retire further callbacks; errors are rethrown immediately after native layout
+returns, before geometry publication. They never unwind through exception-disabled
+Skia frames. This does not claim recovery from upstream native allocation failure.
+
 | Component | Fixed identity |
 | --- | --- |
 | Skia | `525f94ac3418fd0b0dae42caa220422a94b18b49` |

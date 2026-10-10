@@ -14,7 +14,11 @@ $grammars = Get-Content (Join-Path $repo 'grammars/manifest.json') -Raw | Conver
 $lockFiles = @('languages/manifest.json','release/windows-tools.json','release/core-notices.json','release/graphics-notices.json','grammars/manifest.json','dependencies.lock.json','release/THIRD-PARTY.md','scripts/prepare-windows-runtime.ps1','scripts/release-common.ps1',
     'xmake/packages/astra-quickjs/host-async-context.patch',
     'xmake/packages/astra-quickjs/xmake.lua',
-    'xmake/packages/astra-quickjs/README.md')
+    'xmake/packages/astra-quickjs/README.md',
+    'xmake/packages/skia-graphite/glyph-cache.patch',
+    'xmake/packages/skia-graphite/glyph-cache.json',
+    'xmake/packages/skia-graphite/README.md',
+    'scripts/apply-skia-patch.py')
 $dependencyLock = Get-Content (Join-Path $repo 'dependencies.lock.json') -Raw | ConvertFrom-Json
 foreach ($entry in $dependencyLock.patches.psobject.Properties) {
     $patch = $entry.Value

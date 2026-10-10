@@ -118,7 +118,12 @@ struct DocumentViewport::Impl {
                std::size_t number) {
         const auto text = paragraph->text();
         const auto hash = std::hash<std::string_view>{}(text);
-        const auto bytes = accounted(text, options);
+        const auto glyph_bytes = paragraph->glyph_snapshot().statistics().bytes;
+        const auto source_bytes = accounted(text, options);
+        if (glyph_bytes > std::numeric_limits<std::size_t>::max() - source_bytes) {
+            throw std::length_error("Viewport glyph accounting overflow");
+        }
+        const auto bytes = source_bytes + glyph_bytes;
         ++stats.shaped;
         if (!limits.entries || bytes > limits.bytes)
             return;
@@ -141,13 +146,20 @@ struct DocumentViewport::Impl {
         return {};
     }
 
+    GlyphSource glyph_seed(std::size_t number) const {
+        for (const auto& entry : recent)
+            if (entry.number == number)
+                return entry.paragraph->glyph_snapshot();
+        return {};
+    }
+
     std::shared_ptr<const TextLayout>
     get(std::string_view text, const TextLayoutOptions& options, std::size_t number) {
         if (auto cached = find(text, options, number)) {
             return cached;
         }
         auto paragraph = std::make_shared<const TextLayout>(
-            engine.layout(std::string(text), options, seed(number)));
+            engine.layout(std::string(text), options, seed(number), glyph_seed(number)));
         store(paragraph, options, number);
         return paragraph;
     }
@@ -233,7 +245,8 @@ const TextLayout* DocumentViewport::prepare(std::size_t number, const TextLayout
         std::rethrow_exception(value.error);
     }
     if (!value.ticket) {
-        value.ticket = impl_->jobs->submit(line->text, value.options, impl_->seed(number));
+        value.ticket = impl_->jobs->submit(
+            line->text, value.options, impl_->seed(number), impl_->glyph_seed(number));
     }
     return nullptr;
 }
@@ -265,7 +278,8 @@ void DocumentViewport::poll_layouts() {
             throw std::logic_error("Pending layout lost its viewport snapshot");
         }
         if (!value.ticket) {
-            value.ticket = impl_->jobs->submit(line->text, value.options, impl_->seed(number));
+            value.ticket = impl_->jobs->submit(
+                line->text, value.options, impl_->seed(number), impl_->glyph_seed(number));
         }
         auto result = value.ticket ? impl_->jobs->take(*value.ticket) : std::nullopt;
         if (!result) {

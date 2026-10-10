@@ -38,6 +38,8 @@ try {
         }
     }
     & "$repository/tests/package_scripts_tests.ps1"
+    & "$repository/.tools/graphics/python/python.exe" "$repository/tests/skia_patch_tests.py"
+    if ($LASTEXITCODE -ne 0) { throw 'Skia shaping provenance tests failed' }
 } finally {
     Pop-Location
 }

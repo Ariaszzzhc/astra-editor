@@ -66,7 +66,8 @@ try {
     $inputs = @('scripts/prepare-windows-runtime.ps1', 'scripts/release-common.ps1',
         'languages/manifest.json', 'release/windows-tools.json', 'release/core-notices.json',
         'release/graphics-notices.json', 'grammars/manifest.json', 'dependencies.lock.json',
-        'xmake/packages/astra-quickjs/host-async-context.patch')
+        'xmake/packages/astra-quickjs/host-async-context.patch',
+        'xmake/packages/skia-graphite/glyph-cache.patch')
     foreach ($inputFile in $inputs) {
         $target = Join-Path $patchRoot $inputFile
         [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))

@@ -144,8 +144,8 @@ try {
     }
     $tree = & $Git -C $Source rev-parse 'HEAD^{tree}'
     if ($LASTEXITCODE -ne 0 -or $tree -ne $SkiaTree) { throw 'Pinned Skia tree hash mismatch.' }
-    $dirty = & $Git -C $Source status --porcelain --untracked-files=no
-    if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Pinned Skia source has tracked modifications.' }
+    $ShapingPatch = & $Python (Join-Path $Root 'scripts/apply-skia-patch.py') $Source
+    if ($LASTEXITCODE -ne 0) { throw 'Pinned Skia shaping patch verification failed.' }
     $depsText = Get-Content -LiteralPath (Join-Path $Source 'DEPS') -Raw
     if (-not $depsText.Contains("dawn.git@$DawnRevision")) { throw 'Unexpected Dawn version in Skia DEPS.' }
     if ($Stage -eq 'Bootstrap') {
@@ -334,6 +334,7 @@ print(f'Verified {len(locked)} pinned dependency checkouts.')
     $manifest = [ordered]@{
         schema = 1; platform = 'windows'; architecture = 'x64'; configuration = $Configuration
         skia = $SkiaRevision; skia_tree = $SkiaTree; dawn = $DawnRevision; gn = $GnRevision
+        shaping_patch = $ShapingPatch
         runtime = 'MT'; iterator_debug_level = 0; trivial_abi = $false; dxc = 'v1.9.2609'
         libraries = @($libraries.BaseName | Sort-Object)
         syslinks = @('onecore', 'user32', 'gdi32', 'delayimp', 'dxguid', 'libcpmt', 'ole32', 'oleaut32', 'uuid', 'fontsub', 'usp10', 'advapi32')

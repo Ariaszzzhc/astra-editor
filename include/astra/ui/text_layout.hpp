@@ -1,6 +1,7 @@
 #pragma once
 
 #include <astra/ui/text_source.hpp>
+#include <astra/ui/glyph_source.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -73,6 +74,7 @@ class TextLayout final {
 
     [[nodiscard]] std::string_view text() const noexcept;
     [[nodiscard]] TextSource source_snapshot() const noexcept;
+    [[nodiscard]] GlyphSource glyph_snapshot() const noexcept;
     [[nodiscard]] float width() const;
     [[nodiscard]] float height() const;
     [[nodiscard]] float baseline() const;
@@ -109,8 +111,10 @@ class TextLayoutEngine final {
     ~TextLayoutEngine();
     TextLayoutEngine(const TextLayoutEngine&) = delete;
     TextLayoutEngine& operator=(const TextLayoutEngine&) = delete;
-    [[nodiscard]] TextLayout
-    layout(std::string text, const TextLayoutOptions& options = {}, TextSource previous = {}) const;
+    [[nodiscard]] TextLayout layout(std::string text,
+                                    const TextLayoutOptions& options = {},
+                                    TextSource previous = {},
+                                    GlyphSource glyphs = {}) const;
 
   private:
     struct Impl;

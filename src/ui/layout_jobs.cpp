@@ -17,6 +17,7 @@ struct LayoutJobs::Impl {
         uv_work_t work{};
         std::string text;
         TextSource previous;
+        GlyphSource glyphs;
         TextLayoutOptions options;
         std::size_t bytes{};
         Clock::time_point deadline;
@@ -101,8 +102,11 @@ struct LayoutJobs::Impl {
             }
             if (!job.stopped.load(std::memory_order_acquire)) {
                 TextLayoutEngine engine;
-                job.result.paragraph = std::make_shared<const TextLayout>(
-                    engine.layout(std::move(job.text), job.options, std::move(job.previous)));
+                job.result.paragraph =
+                    std::make_shared<const TextLayout>(engine.layout(std::move(job.text),
+                                                                     job.options,
+                                                                     std::move(job.previous),
+                                                                     std::move(job.glyphs)));
             }
             if (job.stopped.load(std::memory_order_acquire)) {
                 job.result = {};
@@ -204,8 +208,10 @@ LayoutJobs::LayoutJobs(LayoutJobLimits limits) : impl_(std::make_unique<Impl>(li
 
 LayoutJobs::~LayoutJobs() = default;
 
-std::optional<LayoutJobs::Ticket>
-LayoutJobs::submit(std::string_view text, const TextLayoutOptions& options, TextSource previous) {
+std::optional<LayoutJobs::Ticket> LayoutJobs::submit(std::string_view text,
+                                                     const TextLayoutOptions& options,
+                                                     TextSource previous,
+                                                     GlyphSource glyphs) {
     auto& state = *impl_;
     if (state.closing) {
         throw std::logic_error("Layout queue is closing");
@@ -225,6 +231,7 @@ LayoutJobs::submit(std::string_view text, const TextLayoutOptions& options, Text
     // even when another cache/job also holds the same immutable snapshot.
     add(previous.statistics().bytes);
     add(previous.statistics().bytes);
+    add(glyphs.statistics().bytes);
     add(options.locale.size());
     for (const auto& family : options.font_families) {
         add(sizeof(std::string));
@@ -249,6 +256,7 @@ LayoutJobs::submit(std::string_view text, const TextLayoutOptions& options, Text
     job->ticket = ticket;
     job->text = text;
     job->previous = std::move(previous);
+    job->glyphs = std::move(glyphs);
     job->options = options;
     job->bytes = bytes;
     job->deadline = Impl::Clock::now() + state.limits.timeout;
