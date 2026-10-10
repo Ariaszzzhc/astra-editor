@@ -1,4 +1,5 @@
 #include <astra/ui/document_viewport.hpp>
+#include <astra/ui/text_surface.hpp>
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkImageInfo.h"
@@ -418,6 +419,96 @@ void background_viewport(TextLayoutEngine& engine) {
 }
 } // namespace
 
+void text_surfaces(astra::ui::TextLayoutEngine& engine) {
+    using namespace astra::ui;
+    auto jobs = std::make_shared<LayoutJobs>();
+    TextSurface surface(engine, jobs);
+    surface.reset("中🙂\r\né\tvalue\rfinal\n");
+    require(surface.lines().size() == 4 && surface.lines().offset(1) == 9,
+            "Text surface lost mixed-newline byte extents");
+    const auto snapshot = surface.lines();
+    surface.show(0, 3);
+    TextLayoutOptions style;
+    const auto* first = surface.prepare(1, style);
+    equal(*first, engine.layout(surface.lines().at(1), style));
+    require(surface.prepare(1, style) == first, "Repeated surface paint reshaped a paragraph");
+    surface.show(1, 3);
+    require(surface.prepare(1, style) == first, "Overlapping text page lost exact cache reuse");
+    bool invalid = false;
+    try {
+        surface.show(0, 257);
+    } catch (const std::out_of_range&) {
+        invalid = true;
+    }
+    require(invalid && surface.prepare(1, style) == first, "Invalid page mutated visible text");
+    invalid = false;
+    try {
+        surface.reset(std::string("\xFF", 1));
+    } catch (const std::invalid_argument&) {
+        invalid = true;
+    }
+    require(invalid && surface.lines().size() == 4 && surface.prepare(1, style) == first,
+            "Malformed UTF-8 reset discarded existing content");
+    const auto long_text = std::string(70000, 'a') + "\t中文🙂";
+    surface.reset(long_text + "\nnew page\nend");
+    surface.show(0, 2);
+    require(!surface.prepare(0, style) && surface.pending(),
+            "Long surface text blocked instead of queuing");
+    const auto submitted = jobs->statistics().submitted;
+    for (int frame = 0; frame < 20; ++frame) {
+        require(!surface.prepare(0, style), "Pending surface published incomplete geometry");
+    }
+    require(jobs->statistics().submitted == submitted,
+            "Repeated surface frames duplicated pending jobs");
+    style.color = 0xFF70C040;
+    style.wrap_width = 450;
+    require(!surface.prepare(0, style), "Changed style reused an obsolete paragraph");
+    await(*jobs, [&] {
+        surface.poll();
+        return !surface.pending();
+    });
+    const auto* long_paragraph = surface.prepare(0, style);
+    const auto fresh = engine.layout(long_text, style);
+    require(long_paragraph && pixels(*long_paragraph) == pixels(fresh) &&
+                long_paragraph->width() == fresh.width() &&
+                long_paragraph->height() == fresh.height(),
+            "Wrapped long text surface differs from fresh native shaping");
+    style.dpi_scale = 1.25F;
+    require(!surface.prepare(0, style), "DPI change kept obsolete geometry");
+    surface.show(1, 3);
+    require(!surface.pending() && surface.prepare(1, {}) != nullptr,
+            "New page retained old pending geometry");
+    await(*jobs, [&] {
+        return jobs->idle();
+    });
+    surface.poll();
+    require(surface.prepare(1, {})->text() == "new page", "Late old-page result replaced new text");
+    require(snapshot.size() == 4 && snapshot.at(0) == "中🙂",
+            "Reset mutated a retained line index");
+    std::string many_rows;
+    for (int row = 0; row < 1000; ++row) {
+        many_rows += "row " + std::to_string(row) + "\n";
+    }
+    surface.reset(many_rows);
+    constexpr unsigned int seed = 0xA57A5F;
+    std::mt19937 random(seed);
+    for (int iteration = 0; iteration < 60; ++iteration) {
+        const auto begin = random() % 960;
+        surface.show(begin, begin + 32);
+        for (std::size_t row = begin; row < begin + 32; ++row) {
+            require(surface.prepare(row, {})->text() == "row " + std::to_string(row),
+                    "Paged surface disagrees with flat row identities");
+        }
+        require(surface.statistics().entries <= 256 &&
+                    surface.statistics().accounted_bytes <= 8 * 1024 * 1024,
+                "Surface scrolling exceeded cache bounds");
+    }
+    std::cout
+        << "Text surfaces: mixed extents, atomic reset, exact style/DPI pixels, cancellation, "
+           "scroll-page differential seed="
+        << seed << " and bounded reuse: PASS\n";
+}
+
 int main() {
     try {
         TextLayoutEngine engine;
@@ -427,6 +518,7 @@ int main() {
         differential(engine);
         background_layout(engine);
         background_viewport(engine);
+        text_surfaces(engine);
         std::shared_ptr<const TextLayout> retained;
         {
             TextLayoutEngine temporary;

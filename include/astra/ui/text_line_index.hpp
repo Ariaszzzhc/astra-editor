@@ -26,6 +26,8 @@ struct MeasureTextLine {
 // text panels seek/visit only their visible rows; line shaping stays separate.
 class TextLineIndex final {
   public:
+    static constexpr std::size_t max_bytes = 8 * 1024 * 1024;
+    static constexpr std::size_t max_rows = 100000;
     void reset(std::string_view text);
 
     [[nodiscard]] std::size_t size() const noexcept {

@@ -18,6 +18,65 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### Shared read-only text surfaces (2026-10-10)
+
+Text panels, choice details and confirmation/progress details now use
+`TextSurface`; their three native synchronous row caches were removed.
+The component owns the persistent measured logical-line index, a bounded visible
+page and the existing exact-style paragraph engine. It shares the libuv layout
+queue with documents. Long cold paragraphs shape off the UI thread; repeated
+frames coalesce pending work, overlapping pages reuse exact cached paragraphs,
+and page/content/style changes discard obsolete results. Theme/tone decisions,
+placement and declared actions remain in the caller. Rows following an unknown
+wrapped paragraph height are prepared but withheld from drawing until preceding
+geometry is known. Dialog destruction cancels its own pending work; controls and
+cancellation remain active while glyph layout is pending.
+
+Source limits are named on `TextLineIndex`: 8 MiB / 100,000 logical rows. A surface
+page contains at most 256 rows; the default cache remains 256 entries / 8 MiB of
+accounted text/style. Content above the byte limit is rejected before Unicode scanning.
+Failed UTF-8/content/page validation preserves the current content/layout.
+Native Agent view state exposes surface row/page/cache/pending observations.
+
+Focused Windows evidence:
+
+- `./scripts/xmake.ps1 build -y viewport-layout-tests astra
+  gui-presentation-smoke`: passed in Debug.
+- `./build/windows/x64/debug/viewport-layout-tests.exe`: passed with real Windows
+  font/SkParagraph pixels. Additional surface checks cover mixed CR/LF/CRLF byte
+  extents, immutable retained source, failed reset/page preservation, frame
+  coalescing, exact wrapped long-row styles, DPI cancellation, late-page result
+  rejection and a 60-page flat-row differential with seed `0xA57A5F` (10844767).
+  Cache entry/byte bounds are checked throughout scrolling.
+- `./build/windows/x64/debug/gui-presentation-smoke.exe`: passed on actual
+  SDL3/Graphite/Dawn. A cold 70 KiB panel is cancelled before shape publication,
+  followed immediately by an unrelated choice dialog whose default action stays
+  intact. A second cold panel receives 40 Down events and retains the correct
+  bounded page. Cold wrapped choice/review details also cancel normally. Existing
+  action keys, pointer choices, indexed panels, custom views and shutdown pass.
+
+Final integrated Windows evidence:
+
+- `./scripts/test.ps1 -Mode all -Gui`: passed. Debug: 557 cases / 1,185,903
+  assertions; Release: 557 cases / 1,185,807 assertions. Zero failures/skips.
+  Both modes passed CLI/process transport, actual D3D12/Dawn/Graphite readback,
+  renderer, Unicode/native surface pixel checks, local/TCP editing, real
+  clangd/Git, recovery, workspace and expanded presentation checks. Package
+  helpers passed 12 checks; no new distribution package was produced.
+- `./scripts/format.ps1 -Check -Offline`: all 141 C++ / 12 JS files passed;
+  `git diff --check` passed. Restored Debug using
+  `./scripts/xmake.ps1 f -m debug -y`.
+- Complete log: `build/text-surface-acceptance-all.log`; focused logs:
+  `text-surface-viewport-debug.log` and `text-surface-gui-debug.log`.
+- Visually inspected `build/graphics/gui-text-actions.png`: monospace semantic
+  row tones, Chinese/emoji glyphs and separate action buttons render correctly.
+
+Logs: `build/text-surface-*`. Source validation/index construction and visible
+page copying still run on the UI thread. Short paragraphs, editable fields and
+other remaining text components can still shape synchronously. This does not
+claim constant frame latency, row-internal incremental glyph shaping, complete
+native component extraction, whole-project completion or a new package.
+
 ### Background document paragraph layout (2026-10-10)
 
 Cold document rows of at least 4096 UTF-8 bytes now shape through a bounded libuv

@@ -13,12 +13,12 @@ TextLineSummary operator+(TextLineSummary left, TextLineSummary right) {
 }
 
 void TextLineIndex::reset(std::string_view text) {
-    if (text.size() > 8 * 1024 * 1024)
+    if (text.size() > max_bytes)
         throw std::length_error("Text panel exceeds its 8 MiB limit");
     std::vector<IndexedTextLine> rows;
     std::size_t begin{};
     while (true) {
-        if (rows.size() >= 100000)
+        if (rows.size() >= max_rows)
             throw std::length_error("Text panel exceeds its 100,000 line limit");
         const auto ending = text.find_first_of("\r\n", begin);
         if (ending == text.npos) {

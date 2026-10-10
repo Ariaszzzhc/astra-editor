@@ -7,6 +7,7 @@
 #include "astra/ui/icons.hpp"
 #include "astra/ui/text_line_index.hpp"
 #include "astra/ui/text_panel.hpp"
+#include "astra/ui/text_surface.hpp"
 #include "astra/ui/picker_index.hpp"
 #include "astra/ui/decoration_indexes.hpp"
 #include "astra/ui/inline_form.hpp"
@@ -200,10 +201,8 @@ struct EditorWindow::Impl {
         script::Runtime::TaskId owner{};
         Json spec;
         std::promise<Json> completion;
-        TextLineIndex detail_lines;
+        std::unique_ptr<TextSurface> detail;
         TextPanelPresentation text_panel;
-        std::map<std::size_t, TextLayout> detail_layout;
-        float detail_width{}, detail_scale{};
         TextLineIndex items;
         PickerIndex picker;
         float horizontal{};
@@ -1723,9 +1722,10 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
     pending.id = id;
     pending.owner = workbench->request_owner();
     pending.spec = spec;
-    pending.detail_lines.reset(detail);
+    pending.detail = std::make_unique<TextSurface>(fonts, layout_jobs);
+    pending.detail->reset(detail);
     if (kind == "text")
-        pending.text_panel.reset(spec, pending.detail_lines.size());
+        pending.text_panel.reset(spec, pending.detail->lines().size());
     else if (spec.contains("actions") || spec.contains("lineTones"))
         throw protocol::RpcError(-32602, "Text presentation is only supported by text panels");
     const auto items = spec.value("items", Json::array());
@@ -3242,7 +3242,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             const auto layout = TextPanelLayout::measure(width,
                                                          static_cast<float>(pixels.height),
                                                          scale,
-                                                         dialog->detail_lines.size(),
+                                                         dialog->detail->lines().size(),
                                                          dialog->text_panel.actions().size());
             for (std::size_t index = 0; index < layout.actions.size(); ++index)
                 if (layout.actions[index].contains(mouse_x, mouse_y)) {
@@ -3887,26 +3887,26 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         style.color = muted;
         style.wrap_width = layout.detail.width;
         style.font_families = {"Segoe UI", "Microsoft YaHei UI", "sans-serif"};
-        if (dialog->detail_width != style.wrap_width || dialog->detail_scale != scale) {
-            dialog->detail_layout.clear();
-            dialog->detail_width = style.wrap_width;
-            dialog->detail_scale = scale;
-        }
         canvas->save();
         canvas->clipRect(SkRect::MakeXYWH(
             layout.detail.x, layout.detail.y, layout.detail.width, layout.detail.height));
         float y = layout.detail.y;
-        dialog->detail_lines.for_each_range(
+        bool awaiting{};
+        dialog->detail->show(0, std::min(dialog->detail->lines().size(), std::size_t{8}));
+        dialog->detail->lines().for_each_range(
             0,
-            std::min(dialog->detail_lines.size(), std::size_t{8}),
-            [&](std::size_t row, const std::string& text) {
-                if (y >= layout.detail.bottom())
+            std::min(dialog->detail->lines().size(), std::size_t{8}),
+            [&](std::size_t row, const std::string&) {
+                const auto* paragraph = dialog->detail->prepare(row, style);
+                if (!paragraph) {
+                    awaiting = true;
                     return;
-                auto found = dialog->detail_layout.find(row);
-                if (found == dialog->detail_layout.end())
-                    found = dialog->detail_layout.emplace(row, fonts.layout(text, style)).first;
-                found->second.draw(canvas, layout.detail.x, y);
-                y += found->second.height();
+                }
+                if (awaiting || y >= layout.detail.bottom()) {
+                    return;
+                }
+                paragraph->draw(canvas, layout.detail.x, y);
+                y += paragraph->height();
             });
         canvas->restore();
         for (std::size_t i = 0; i < choices.size(); ++i) {
@@ -3928,8 +3928,11 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         return;
     }
     if (prompt == Prompt::policy_text && dialog) {
-        const auto layout = TextPanelLayout::measure(
-            width, height, scale, dialog->detail_lines.size(), dialog->text_panel.actions().size());
+        const auto layout = TextPanelLayout::measure(width,
+                                                     height,
+                                                     scale,
+                                                     dialog->detail->lines().size(),
+                                                     dialog->text_panel.actions().size());
         rectangle(canvas,
                   layout.panel.x,
                   layout.panel.y,
@@ -3955,48 +3958,47 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                                            "Microsoft YaHei UI",
                                            "monospace"}
                 : std::vector<std::string>{"Segoe UI", "Microsoft YaHei UI", "sans-serif"};
-        if (dialog->detail_scale != scale) {
-            dialog->detail_layout.clear();
-            dialog->detail_scale = scale;
-        }
-        prompt_choice = std::min(prompt_choice, dialog->detail_lines.size() - 1);
+        prompt_choice = std::min(prompt_choice, dialog->detail->lines().size() - 1);
         const auto count =
             static_cast<std::size_t>(std::ceil(layout.content.height / (18 * scale))) + 1;
         canvas->save();
         canvas->clipRect(SkRect::MakeXYWH(
             layout.content.x, layout.content.y, layout.content.width, layout.content.height));
         float y = layout.content.y;
-        dialog->detail_lines.for_each_range(
+        bool awaiting{};
+        dialog->detail->show(prompt_choice,
+                             std::min(dialog->detail->lines().size(), prompt_choice + count));
+        dialog->detail->lines().for_each_range(
             prompt_choice,
-            std::min(dialog->detail_lines.size(), prompt_choice + count),
-            [&](std::size_t row, const std::string& text) {
-                if (y >= layout.content.bottom())
-                    return;
-                auto found = dialog->detail_layout.find(row);
-                if (found == dialog->detail_layout.end()) {
-                    if (dialog->detail_layout.size() >= 256)
-                        dialog->detail_layout.erase(dialog->detail_layout.begin());
-                    switch (dialog->text_panel.tone(row)) {
-                    case TextPanelTone::added:
-                        style.color = added_color;
-                        break;
-                    case TextPanelTone::removed:
-                        style.color = error_color;
-                        break;
-                    case TextPanelTone::accent:
-                        style.color = accent;
-                        break;
-                    case TextPanelTone::muted:
-                        style.color = muted;
-                        break;
-                    case TextPanelTone::normal:
-                        style.color = foreground;
-                        break;
-                    }
-                    found = dialog->detail_layout.emplace(row, fonts.layout(text, style)).first;
+            std::min(dialog->detail->lines().size(), prompt_choice + count),
+            [&](std::size_t row, const std::string&) {
+                switch (dialog->text_panel.tone(row)) {
+                case TextPanelTone::added:
+                    style.color = added_color;
+                    break;
+                case TextPanelTone::removed:
+                    style.color = error_color;
+                    break;
+                case TextPanelTone::accent:
+                    style.color = accent;
+                    break;
+                case TextPanelTone::muted:
+                    style.color = muted;
+                    break;
+                case TextPanelTone::normal:
+                    style.color = foreground;
+                    break;
                 }
-                found->second.draw(canvas, layout.content.x - dialog->horizontal, y);
-                y += found->second.height();
+                const auto* paragraph = dialog->detail->prepare(row, style);
+                if (!paragraph) {
+                    awaiting = true;
+                    return;
+                }
+                if (awaiting || y >= layout.content.bottom()) {
+                    return;
+                }
+                paragraph->draw(canvas, layout.content.x - dialog->horizontal, y);
+                y += paragraph->height();
             });
         canvas->restore();
         for (std::size_t index = 0; index < layout.actions.size(); ++index) {
@@ -4033,26 +4035,26 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         style.color = muted;
         style.wrap_width = layout.detail.width;
         style.font_families = {"Segoe UI", "Microsoft YaHei UI", "sans-serif"};
-        if (dialog->detail_width != style.wrap_width || dialog->detail_scale != scale) {
-            dialog->detail_layout.clear();
-            dialog->detail_width = style.wrap_width;
-            dialog->detail_scale = scale;
-        }
         canvas->save();
         canvas->clipRect(SkRect::MakeXYWH(
             layout.detail.x, layout.detail.y, layout.detail.width, layout.detail.height));
         float detail_y = layout.detail.y;
-        dialog->detail_lines.for_each_range(
+        bool awaiting{};
+        dialog->detail->show(0, std::min(dialog->detail->lines().size(), std::size_t{8}));
+        dialog->detail->lines().for_each_range(
             0,
-            std::min(dialog->detail_lines.size(), std::size_t{8}),
-            [&](std::size_t row, const std::string& text) {
-                if (detail_y >= layout.detail.bottom())
+            std::min(dialog->detail->lines().size(), std::size_t{8}),
+            [&](std::size_t row, const std::string&) {
+                const auto* paragraph = dialog->detail->prepare(row, style);
+                if (!paragraph) {
+                    awaiting = true;
                     return;
-                auto found = dialog->detail_layout.find(row);
-                if (found == dialog->detail_layout.end())
-                    found = dialog->detail_layout.emplace(row, fonts.layout(text, style)).first;
-                found->second.draw(canvas, layout.detail.x, detail_y);
-                detail_y += found->second.height();
+                }
+                if (awaiting || detail_y >= layout.detail.bottom()) {
+                    return;
+                }
+                paragraph->draw(canvas, layout.detail.x, detail_y);
+                detail_y += paragraph->height();
             });
         canvas->restore();
         if (dialog->items.size() > 0) {
@@ -4990,6 +4992,18 @@ WorkbenchViewState EditorWindow::view_state() const {
                               {"completed", retired.completed},
                               {"reserved", retired.reserved},
                               {"bytes", retired.bytes}};
+    if (impl_->dialog) {
+        const auto& detail = *impl_->dialog->detail;
+        const auto visible = detail.visible();
+        const auto stats = detail.statistics();
+        result.text_surface = {{"rows", detail.lines().size()},
+                               {"pending", detail.pending()},
+                               {"cached", stats.entries},
+                               {"accountedBytes", stats.accounted_bytes},
+                               {"shaped", stats.shaped},
+                               {"first", visible ? Json(visible->first) : Json(nullptr)},
+                               {"end", visible ? Json(visible->second) : Json(nullptr)}};
+    }
     result.sidebar["focused"] = impl_->focused_view == impl_->active_view;
     result.sidebar["focus"] = std::to_string(impl_->view_focus_sequence);
     result.sidebar["rows"] = Json::array();
@@ -5090,6 +5104,9 @@ bool EditorWindow::pump() {
         for (auto& [id, document] : impl_->documents) {
             static_cast<void>(id);
             document.viewport.poll_layouts();
+        }
+        if (impl_->dialog) {
+            impl_->dialog->detail->poll();
         }
         // Read-only modal shortcuts retain their keystroke through release,
         // including auto-repeat and its text/IME packets after the panel closes.

@@ -331,6 +331,14 @@ idle. Viewport publication/style changes cancel obsolete jobs, and geometry
 dependent input waits for a matching paragraph. Changed long rows still require
 complete native shaping; other text components may still shape synchronously.
 
+Read-only panels and dialog details use `TextSurface`, sharing the same measured
+page, exact-style cache and layout queue as documents. Their immutable logical
+line index is bounded to 8 MiB / 100,000 rows, and visible pages to 256 rows.
+Repeated frames retain pending jobs; scroll/reset/style changes invalidate old
+geometry. Modal actions remain available while paragraph work is pending, and
+closing a modal cancels only its own surface jobs. Source indexing and visible
+page copying are still explicit UI-thread costs.
+
 ## Upstream references
 
 - [Skia build requirements](https://skia.org/docs/user/build/)

@@ -78,6 +78,17 @@ void key(Window& window, SDL_Keycode code, SDL_Keymod mods = SDL_KMOD_NONE) {
     settle(window);
 }
 
+void await_surface(Window& window) {
+    const auto until = Clock::now() + std::chrono::seconds(20);
+    while (!(window.view_state().text_surface.is_object() &&
+             window.view_state().text_surface.value("pending", false))) {
+        require(Clock::now() < until && window.pump(),
+                "Long modal text never queued native shaping");
+        require(window.last_error().empty(), window.last_error());
+        SDL_Delay(1);
+    }
+}
+
 void run(const fs::path& workspace) {
     constexpr int files = 1500;
     fs::create_directory(workspace / "generated");
@@ -227,6 +238,20 @@ void run(const fs::path& workspace) {
                     lineTones:[{begin:1,end:2,tone:'added'},{begin:2,end:3,tone:'removed'},{begin:3,end:4,tone:'accent'}],
                     actions:[{id:'inspect',label:'Inspect 中🙂',key:'i'},{id:'apply',label:'Apply',key:'a'},{id:'remove',label:'Remove',key:'r',destructive:true}]});
                 await astra.ui.update({status:action ? 'Text action '+action : 'Text action cancelled'});
+            });
+            astra.ui.registerCommand({id:'acceptance.longText',title:'Long text'},async()=>{
+                await astra.ui.showText({title:'LONG TEXT — Esc to close',monospace:true,
+                    text:'Native 中🙂\t'+'a'.repeat(70000)+'\n'+Array.from({length:80},(_,i)=>'Row '+i+' 中🙂').join('\n')});
+                await astra.ui.update({status:'Long text closed'});
+            });
+            astra.ui.registerCommand({id:'acceptance.longChoice',title:'Long choice detail'},async()=>{
+                const selected=await astra.ui.choose({title:'LONG CHOICE',detail:'Native 中🙂\t'+('word '.repeat(11000)),
+                    choices:[{label:'First',value:1},{label:'Second',value:2}]});
+                await astra.ui.update({status:selected ? 'Long choice '+selected.value : 'Long choice cancelled'});
+            });
+            astra.ui.registerCommand({id:'acceptance.longReview',title:'Long review detail'},async()=>{
+                const accepted=await astra.ui.confirm({title:'LONG REVIEW',detail:'Native 中🙂\t'+('word '.repeat(11000))});
+                await astra.ui.update({status:accepted ? 'Long review accepted' : 'Long review cancelled'});
             });
         })js";
         Window window(host, std::move(options));
@@ -508,6 +533,35 @@ void run(const fs::path& workspace) {
         key(window, SDLK_ESCAPE);
         require(window.status_text() == "Text action cancelled",
                 "Text cancellation returned an action");
+        window.execute_ui_command("acceptance.longText");
+        await_surface(window);
+        require(window.view_state().text_surface.at("rows") == 81,
+                "Long text surface lost its indexed rows");
+        enqueue_key(window, SDLK_ESCAPE);
+        require(window.pump(), "Window closed during cold text cancellation");
+        window.execute_ui_command("acceptance.choice");
+        settle(window);
+        key(window, SDLK_RETURN);
+        require(window.status_text() == "Action 3", "Late cancelled layout replaced another modal");
+        window.execute_ui_command("acceptance.longText");
+        await_surface(window);
+        for (int row = 0; row < 40; ++row) {
+            enqueue_key(window, SDLK_DOWN);
+        }
+        settle(window);
+        const auto paged_text = window.view_state().text_surface;
+        require(paged_text.at("first") == 40 &&
+                    paged_text.at("end").get<std::size_t>() - 40 <= 256 &&
+                    paged_text.at("cached").get<std::size_t>() <= 256,
+                "Long text scrolling lost visible-row or cache bounds");
+        key(window, SDLK_ESCAPE);
+        for (const auto* command : {"acceptance.longChoice", "acceptance.longReview"}) {
+            window.execute_ui_command(command);
+            await_surface(window);
+            key(window, SDLK_ESCAPE);
+        }
+        require(window.status_text() == "Long review cancelled",
+                "Cold wrapped review did not cancel");
         window.execute_ui_command("acceptance.choice");
         settle(window);
         key(window, SDLK_RETURN);
