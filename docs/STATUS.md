@@ -18,6 +18,86 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### Persistent measured tabs and JS exit batching (2026-10-10)
+
+Native tab order and cached logical widths now use `TabIndex`, a persistent
+measured SumTree with an identity-to-order map. Ordinary identity lookup,
+append/remove/reorder and single-caption measurement use logarithmic tree paths.
+Exhausting an order-label gap causes a bounded O(n) relabel; this exceptional
+path is exercised by adversarial reordering. The model admits at most 65,536
+tabs. Count/width/order/font-generation summaries support prefix seeking and
+finding the next pending measurement without scanning the complete sequence.
+
+Font/DPI invalidation advances one generation in O(1), retaining provisional
+widths until refresh. Preparation prioritizes visible captions, admits at most
+eight measurements within a four-millisecond dispatch budget per paint, and
+keeps the active tab visible as measurements refine. One caption can overrun
+that dispatch budget; this is not a hard per-frame latency guarantee. Pointer
+dispatch does not prepare new widths. Repainting current geometry does not
+measure every offscreen caption. Explicit tab enumeration and the window's
+other document polling still have linear costs; this is not a claim that the
+whole frontend now has logarithmic frame cost.
+
+Compact tab metadata pages are exposed by the async UI read API. JS exit closes
+at most 32 clean background documents concurrently without activating them;
+each close is guarded by its captured text revision and refuses discard.
+Changed/dirty rejections retain the document, publish a status and return to
+the sequential close decision. Other failures stop exit. Batches drain before
+the next decision/checkpoint, and dirty/final active documents retain normal
+save/discard/cancel behavior. This replaces the previous repeated activation,
+viewport loading and close loop when many clean tabs are open.
+
+Windows evidence:
+
+- First build failed because the new differential fixture omitted `<array>`;
+  corrected the self-contained include. Retained log:
+  `build/tab-index-build-first-failed.log`.
+- The first GUI run failed in the existing long-modal waiter requiring an
+  observable `pending` instant; log: `build/tab-index-gui-first-failed.log`.
+  The diagnostic rerun passed that stage and the 640-tab checks but exceeded
+  the original 20-second shutdown deadline with sequential tab activation;
+  log: `build/tab-index-gui-diagnostic.log`. Both fixture directories were kept.
+  The modal waiter now recognizes pending work or actual retained shaped
+  geometry. Native worker cancellation/deadline tests remain in full acceptance.
+  JS clean-background batching fixed the large-window shutdown path; its GUI
+  shutdown deadline remains 20 seconds.
+- `./scripts/xmake.ps1 build -y astra-tests gui-presentation-smoke astra` passed
+  in Debug; log: `build/tab-index-final-build-debug.log`.
+  `astra-tests.exe --no-version '--test-case=presentation tab*,presentation indexed tab*,workbench window*'`
+  passed 10 cases / 398,090 assertions; 567 unrelated cases were filtered out.
+  Log: `build/tab-index-final-unit-debug.log`. Coverage includes 2,000 random
+  mutations (seed `0xA57A7AB`), retained identities/labels/widths, exact summary
+  and balance checks, 65,536-entry admission, malformed-input preservation,
+  O(1) invalidation with shared snapshots, 256 repeated front moves and 1,000
+  flat-layout comparisons on 8,192 tabs (seed `0xA571D3`). JS tests hold a full
+  32-request close batch and inject stale, dirty and other service failures,
+  checking protected documents and prevention of checkpoint/teardown.
+- `gui-presentation-smoke.exe` passed real Windows SDL3/Graphite/Dawn checks;
+  log: `build/tab-index-final-gui-debug.log`. It opens 640 distinct actual files,
+  verifies all identities and active reveal, observes zero additional width
+  measurements or paragraph shapes across eight warm repaints, checks deferred
+  font invalidation and one measurement per tab in the new generation, then
+  restores style and closes within the unchanged deadline. Actual GPU capture
+  `build/graphics/gui-tabs-indexed.png` was inspected: captions/close targets
+  are separate, overflow controls remain visible and the active final tab is
+  visible. This is a tab component check, not whole-product visual acceptance.
+- `./scripts/test.ps1 -Mode all -Gui` completed with exit code 0 using unchanged
+  source/resources. Debug: 577 cases / 1,586,697 assertions; Release:
+  577 cases / 1,586,665 assertions. All passed, zero failed or skipped. Both
+  modes passed renderer/font/viewport/input checks, editing/service/recovery/
+  workspace/presentation GUI workflows (including the 640-tab pressure case),
+  TCP editing and 12 package helper invariants.
+  Log: `build/tab-index-acceptance-all.log`.
+- After acceptance exited, `./scripts/xmake.ps1 f -m debug -y` restored Debug;
+  log: `build/tab-index-restore-debug.log`. Final
+  `./scripts/format.ps1 -Check -Offline` passed 154 C++ / 12 JS files and
+  `git diff --check` passed; log: `build/tab-index-final-check.log`.
+
+Native icon policy, further component extraction, document IME preparation,
+row-internal incremental glyph layout, whole-product visual acceptance and a
+new distribution remain incomplete. No new package or non-Windows validation
+is claimed.
+
 ### JS textobject workflows and shared parsing (2026-10-10)
 
 Default function/class/block/string selections now execute JS-owned workflows

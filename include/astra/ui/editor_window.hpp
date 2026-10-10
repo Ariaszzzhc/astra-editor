@@ -43,6 +43,7 @@ struct WorkbenchViewState {
     protocol::Json text_surface;
     protocol::Json input_layout;
     protocol::Json text_labels;
+    protocol::Json tab_layout;
     protocol::Json style;
 };
 

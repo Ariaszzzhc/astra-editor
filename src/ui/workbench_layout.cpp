@@ -215,58 +215,61 @@ WorkbenchLayout WorkbenchLayout::measure(float width,
 
 TabStrip TabStrip::measure(Box bounds,
                            float scale,
-                           const std::vector<float>& labels,
+                           const TabIndex::Snapshot& tabs,
                            std::size_t first,
                            std::size_t active,
                            bool reveal) {
     TabStrip result;
     if (scale <= 0 || !std::isfinite(scale) || !std::isfinite(bounds.x) ||
         !std::isfinite(bounds.y) || !std::isfinite(bounds.width) || !std::isfinite(bounds.height) ||
-        bounds.width < 0 || bounds.height < 0) {
+        bounds.width < 0 || bounds.height < 0 || !std::isfinite(bounds.right())) {
         throw std::invalid_argument("Invalid tab scale");
     }
-    if (labels.empty()) {
+    if (tabs.empty()) {
         return result;
     }
-    std::vector<float> widths;
-    float total{};
-    for (const auto width : labels) {
-        if (!std::isfinite(width) || width < 0) {
-            throw std::invalid_argument("Invalid tab label width");
-        }
-        widths.push_back(std::clamp(width + 64 * scale, 110 * scale, 260 * scale));
-        total += widths.back();
-    }
-    const bool overflow = total > bounds.width;
+    const bool overflow = tabs.summary().width * scale > bounds.width;
     const auto navigation_width = overflow ? std::min(26 * scale, bounds.width / 2) : 0;
     const auto available = std::max(0.0F, bounds.width - 2 * navigation_width);
-    result.first = std::min(first, labels.size() - 1);
-    active = std::min(active, labels.size() - 1);
+    result.first = std::min(first, tabs.size() - 1);
+    active = std::min(active, tabs.size() - 1);
     if (reveal) {
         if (active < result.first) {
             result.first = active;
         }
-        float length{};
-        for (auto i = result.first; i <= active; ++i) {
-            length += widths[i];
-        }
-        while (result.first < active && length > available) {
-            length -= widths[result.first++];
+        const auto end = tabs.prefix_summary(active + 1).width;
+        const auto threshold = end - static_cast<double>(available) / scale;
+        if (tabs.prefix_summary(result.first).width < threshold) {
+            const auto cut = tabs.seek_prefix([&](const TabIndex::Summary& summary) {
+                return summary.width >= threshold;
+            });
+            result.first = std::min(active, cut.index + 1);
         }
     }
     float x = bounds.x;
-    for (auto i = result.first; i < labels.size() && x < bounds.x + available; ++i) {
-        const auto width = std::min(widths[i], bounds.x + available - x);
+    const auto visited = static_cast<std::size_t>(
+        std::min(static_cast<double>(tabs.size() - result.first),
+                 1 + std::floor(static_cast<double>(available) / (110.0 * scale))));
+    auto index = result.first;
+    bool exhausted{};
+    tabs.for_each_range(result.first, result.first + visited, [&](const TabIndex::Entry& tab) {
+        const auto i = index++;
+        if (exhausted) {
+            return;
+        }
+        const auto width = static_cast<float>(std::min(
+            static_cast<double>(tab.width) * scale, static_cast<double>(bounds.x + available - x)));
         // Every visible tab reserves separate icon, caption and close targets.
         // A sliver of the following tab belongs in overflow navigation instead.
         if (width < 96 * scale) {
-            break;
+            exhausted = true;
+            return;
         }
         result.visible.push_back({i,
                                   {x, bounds.y, width, bounds.height},
                                   {x + width - 26 * scale, bounds.y, 26 * scale, bounds.height}});
         x += width;
-    }
+    });
     if (overflow) {
         result.previous = {
             bounds.right() - 2 * navigation_width, bounds.y, navigation_width, bounds.height};

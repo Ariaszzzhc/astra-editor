@@ -1,4 +1,4 @@
-import { ui } from 'astra/ui';
+import { ui, request } from 'astra/ui';
 
 let exiting,
     exitChoice,
@@ -13,6 +13,62 @@ async function closeWindow(control) {
         await ui.waitForIdle(options);
         const state = await ui.read({ immediate: true });
         if (state.tabs.length) {
+            const page = await ui.read(
+                {
+                    immediate: true,
+                    tabOffset: Math.max(0, state.tabs.length - 32),
+                    tabLimit: 32
+                },
+                options
+            );
+            if (
+                !Array.isArray(page.tabDocuments) ||
+                page.tabDocuments.length > 32 ||
+                page.tabDocuments.some(
+                    (document) =>
+                        typeof document.id !== 'string' ||
+                        typeof document.revision !== 'string' ||
+                        typeof document.dirty !== 'boolean'
+                ) ||
+                new Set(page.tabDocuments.map((document) => document.id)).size !==
+                    page.tabDocuments.length
+            ) {
+                throw Error('Invalid bounded document page while closing the window');
+            }
+            const background = page.tabDocuments.filter(
+                (document) => !document.dirty && document.id !== state.document?.id
+            );
+            if (background.length) {
+                const closing = background.map(async (document) => {
+                    try {
+                        const result = await request(
+                            'document.close',
+                            {
+                                id: document.id,
+                                baseRevision: document.revision,
+                                discardChanges: false
+                            },
+                            options
+                        );
+                        if (result.id !== document.id || result.closed !== true) {
+                            throw Error('Close did not acknowledge the captured document');
+                        }
+                        await ui.update({ closedDocument: document.id });
+                        return { id: document.id, closed: true };
+                    } catch (error) {
+                        if (error.code !== -32001 && error.code !== -32003) throw error;
+                        // Concurrent edits keep this document for the next fenced decision.
+                        return { id: document.id, closed: false, code: error.code };
+                    }
+                });
+                const completed = await Promise.allSettled(closing);
+                const failed = completed.find((result) => result.status === 'rejected');
+                if (failed) throw failed.reason;
+                if (completed.some((result) => !result.value.closed)) {
+                    await ui.update({ status: 'Documents changed while closing; checking again' });
+                }
+                continue;
+            }
             const id = state.tabs.at(-1);
             await ui.update({ activate: id });
             if (!(await ui.execute('workbench.close', { id, signal: control.signal })))

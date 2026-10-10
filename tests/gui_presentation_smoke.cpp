@@ -86,10 +86,15 @@ void key(Window& window, SDL_Keycode code, SDL_Keymod mods = SDL_KMOD_NONE) {
 
 void await_surface(Window& window) {
     const auto until = Clock::now() + std::chrono::seconds(20);
+    // A worker may finish during GPU presentation, before the test observes
+    // pending. Completed native geometry is equally valid readiness evidence.
     while (!(window.view_state().text_surface.is_object() &&
-             window.view_state().text_surface.value("pending", false))) {
+             (window.view_state().text_surface.value("pending", false) ||
+              window.view_state().text_surface.value("shaped", std::size_t{}) > 0))) {
         require(Clock::now() < until && window.pump(),
-                "Long modal text never queued native shaping");
+                "Long modal text never queued native shaping: " +
+                    window.view_state().text_surface.dump() +
+                    " input=" + window.view_state().input_layout.dump());
         require(window.last_error().empty(), window.last_error());
         SDL_Delay(1);
     }
@@ -262,6 +267,25 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
             astra.registerCommand('acceptance.restorePage', async () => {
                 await astra.sleep(0);
                 astra.bind('PageDown', 'ui.pageDown');
+            });
+            let stressTabNext = 0, stressTabStyle;
+            astra.registerCommand('acceptance.tabs.open', async () => {
+                const end = Math.min(stressTabNext + 64, 640);
+                let document;
+                for (; stressTabNext < end; ++stressTabNext) {
+                    document = await astra.request('workspace.open', {
+                        path: `generated/item${stressTabNext}.txt`
+                    });
+                    await astra.ui.update({document});
+                }
+                if (document) await astra.ui.update({activate: document.id});
+            });
+            astra.registerCommand('acceptance.tabs.font', async () => {
+                stressTabStyle = await astra.ui.style.read();
+                await astra.ui.style.update({workbench: {uiFontSize: 9}});
+            });
+            astra.registerCommand('acceptance.tabs.restore', async () => {
+                await astra.ui.style.update(stressTabStyle);
             });
             let nextGate, releaseNext, waitInView=false;
             astra.ui.registerCommand({id:'ui.view.next',title:'Custom view next',palette:false},async ({id,...guards})=>{
@@ -1467,6 +1491,47 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         settle(window);
         require(window.status_text() == "Concurrent waits settled",
                 "Concurrent idle/close requests deadlocked");
+        const auto original_tab_count = window.view_state().tabs.size();
+        for (unsigned chunk = 0; chunk < 10; ++chunk) {
+            window.execute_ui_command("acceptance.tabs.open");
+            settle(window);
+        }
+        const auto stress = window.view_state();
+        require(stress.tabs.size() == original_tab_count + 640 &&
+                    stress.tab_layout.at("pending") == 0 && !stress.tab_strip.visible.empty() &&
+                    stress.tab_strip.visible.back().index == stress.tabs.size() - 1,
+                "Measured tab index did not retain and reveal all real opened documents");
+        const auto stress_shaped = stress.text_labels.at("shaped");
+        for (unsigned repaint = 0; repaint < 8; ++repaint) {
+            require(window.pump(), "Window closed while checking large tab repaint reuse");
+        }
+        require(window.view_state().tab_layout.at("measurements") ==
+                        stress.tab_layout.at("measurements") &&
+                    window.view_state().text_labels.at("shaped") == stress_shaped,
+                "Warm large-tab repaint remeasured or reshaped offscreen captions");
+        window.execute_ui_command("acceptance.tabs.font");
+        require(window.pump(), "Window closed during large tab font invalidation");
+        const auto first_font_pass = window.view_state();
+        require(first_font_pass.tab_layout.at("pending").get<std::size_t>() > 0 &&
+                    first_font_pass.tab_layout.at("generation") !=
+                        stress.tab_layout.at("generation"),
+                "Large font update did not defer bounded tab measurement");
+        settle(window);
+        const auto font_stress = window.view_state();
+        require(font_stress.tab_layout.at("pending") == 0 &&
+                    font_stress.tab_layout.at("maxMeasuredPass").get<std::size_t>() <= 8 &&
+                    font_stress.tab_layout.at("measurements").get<std::size_t>() -
+                            stress.tab_layout.at("measurements").get<std::size_t>() ==
+                        stress.tabs.size() &&
+                    !font_stress.tab_strip.visible.empty() &&
+                    font_stress.tab_strip.visible.back().index == font_stress.tabs.size() - 1,
+                "Large font update lost exact one-generation measurements or active visibility");
+        window.execute_ui_command("acceptance.tabs.restore");
+        settle(window);
+        window.request_screenshot("build/graphics/gui-tabs-indexed.png");
+        settle(window);
+        std::cout << "640 real file tabs: cached measured widths, bounded font refresh, "
+                     "active reveal and warm repaint reuse: PASS\n";
         window.execute_ui_command("acceptance.backgroundOpen");
         window.execute_ui_command("ui.closeWindow");
         const auto deadline = Clock::now() + std::chrono::seconds(20);

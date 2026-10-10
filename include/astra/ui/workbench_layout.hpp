@@ -1,5 +1,7 @@
 #pragma once
 
+#include <astra/ui/tab_index.hpp>
+
 #include <cstddef>
 #include <vector>
 
@@ -71,7 +73,7 @@ struct TabStrip {
     Box previous, next;
     static TabStrip measure(Box bounds,
                             float scale,
-                            const std::vector<float>& label_widths,
+                            const TabIndex::Snapshot& tabs,
                             std::size_t first,
                             std::size_t active,
                             bool reveal);

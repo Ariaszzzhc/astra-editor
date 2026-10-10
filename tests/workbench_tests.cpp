@@ -3554,7 +3554,7 @@ TEST_CASE("workbench window exit composes captured closes before its durable che
         channel,
         [&](std::string_view method, const Json& params) {
             if (method == "_ui.read")
-                return ready({{"tabs", tabs}});
+                return ready({{"tabs", tabs}, {"tabDocuments", Json::array()}});
             if (method == "_ui.barrier")
                 return ready(true);
             if (method == "_ui.window.close") {
@@ -3634,6 +3634,151 @@ TEST_CASE("workbench window exit composes captured closes before its durable che
         CHECK_FALSE(outcome->error);
         CHECK(outcome->value == true);
     }
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench window exit batches clean backgrounds and retains changed dirty documents") {
+    auto channel = std::make_shared<Channel>();
+    std::vector<std::string> tabs{"active", "dirty"};
+    std::map<std::string, Json> documents;
+    documents["active"] = {{"id", "active"}, {"revision", "7"}, {"dirty", false}};
+    documents["dirty"] = {{"id", "dirty"}, {"revision", "7"}, {"dirty", true}};
+    for (unsigned i = 0; i < 35; ++i) {
+        const auto id = "clean" + std::to_string(i);
+        tabs.push_back(id);
+        documents[id] = {{"id", id}, {"revision", "7"}, {"dirty", false}};
+    }
+    std::vector<std::string> activated, statuses;
+    std::optional<std::promise<Json>> dialog;
+    Json spec;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.read") {
+                Json result{{"tabs", tabs},
+                            {"document", documents.at(params.value("id", "active"))}};
+                if (params.contains("tabLimit")) {
+                    CHECK(params.at("tabLimit") == 32);
+                    const auto first =
+                        std::min(tabs.size(), params.at("tabOffset").get<std::size_t>());
+                    result["tabDocuments"] = Json::array();
+                    for (auto i = first; i < std::min(tabs.size(), first + 32); ++i) {
+                        result["tabDocuments"].push_back(documents.at(tabs[i]));
+                    }
+                }
+                return ready(result);
+            }
+            if (method == "_ui.barrier") {
+                return ready(true);
+            }
+            if (method == "_ui.dialog") {
+                spec = params;
+                dialog.emplace();
+                return dialog->get_future();
+            }
+            if (method == "_ui.dialog.cancel" ||
+                (method == "_ui.action" && params.at("command") == "ui.cancel")) {
+                if (dialog) {
+                    dialog->set_value(nullptr);
+                    dialog.reset();
+                }
+                return ready(nullptr);
+            }
+            if (method == "_ui.update") {
+                if (params.contains("closedDocument")) {
+                    const auto id = params.at("closedDocument").get<std::string>();
+                    CHECK_FALSE(documents.at(id).at("dirty").get<bool>());
+                    std::erase(tabs, id);
+                }
+                if (params.contains("activate")) {
+                    activated.push_back(params.at("activate"));
+                }
+                if (params.contains("status")) {
+                    statuses.push_back(params.at("status"));
+                }
+            }
+            CHECK(method != "_ui.window.close");
+            return ready(nullptr);
+        },
+        modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.closeWindow", Json::object(), [&](const auto& value) {
+        outcome = value;
+    });
+    for (unsigned tick = 0; tick < 16; ++tick) {
+        workbench.poll();
+    }
+    REQUIRE(channel->requests.size() == 32);
+    CHECK(activated.empty());
+    CHECK_FALSE(dialog);
+    const auto changed_id = channel->requests.front().body.at("params").at("id").get<std::string>();
+    int error_code = -32001;
+    SUBCASE("stale revisions reenter a dirty close decision") {
+        documents.at(changed_id)["revision"] = "8";
+        documents.at(changed_id)["dirty"] = true;
+    }
+    SUBCASE("unsaved changes without a new text revision remain protected") {
+        documents.at(changed_id)["dirty"] = true;
+        error_code = -32003;
+    }
+    SUBCASE("other service failures stay visible and prevent checkpoint or teardown") {
+        error_code = -32010;
+    }
+    for (unsigned index = 0; index < 32; ++index) {
+        const auto& params = channel->requests.front().body.at("params");
+        CHECK(channel->requests.front().body.at("method") == "document.close");
+        CHECK(params.at("baseRevision") == "7");
+        CHECK(params.at("discardChanges") == false);
+        CHECK(params.at("id") != "active");
+        CHECK(params.at("id") != "dirty");
+        if (index == 0) {
+            auto request = std::move(channel->requests.front());
+            channel->requests.pop_front();
+            request.response.set_value(
+                Json{{"jsonrpc", "2.0"},
+                     {"id", request.body.at("id")},
+                     {"error", {{"code", error_code}, {"message", "close rejected"}}}}
+                    .dump());
+        } else {
+            channel->reply({{"id", params.at("id")}, {"closed", true}});
+        }
+    }
+    for (unsigned tick = 0; tick < 20; ++tick) {
+        workbench.poll();
+    }
+    if (error_code == -32010) {
+        REQUIRE(outcome);
+        REQUIRE(outcome->error);
+        CHECK(outcome->error->at("code") == -32010);
+        CHECK(tabs.size() == 6);
+        CHECK(channel->requests.empty());
+    } else {
+        REQUIRE(channel->requests.size() == 3);
+        CHECK(std::ranges::find(statuses, "Documents changed while closing; checking again") !=
+              statuses.end());
+        for (unsigned index = 0; index < 3; ++index) {
+            const auto id = channel->requests.front().body.at("params").at("id").get<std::string>();
+            CHECK_FALSE(documents.at(id).at("dirty").get<bool>());
+            channel->reply({{"id", id}, {"closed", true}});
+        }
+        for (unsigned tick = 0; tick < 20; ++tick) {
+            workbench.poll();
+        }
+        REQUIRE(dialog);
+        CHECK(spec.at("kind") == "choice");
+        CHECK(tabs == std::vector<std::string>{"active", "dirty", changed_id});
+        CHECK(channel->requests.empty());
+        workbench.execute("ui.cancel", Json::object(), {});
+        for (unsigned tick = 0; tick < 20; ++tick) {
+            workbench.poll();
+        }
+        REQUIRE(outcome);
+        CHECK_FALSE(outcome->error);
+        CHECK(outcome->value == false);
+        CHECK(documents.at(changed_id).at("dirty") == true);
+        CHECK(tabs.size() == 3);
+    }
+    CHECK(channel->requests.empty());
     CHECK(workbench.idle());
 }
 

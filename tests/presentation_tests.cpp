@@ -21,6 +21,20 @@
 #include <cmath>
 
 namespace {
+astra::ui::TabStrip measure_tabs(astra::ui::Box bounds,
+                                 float scale,
+                                 const std::vector<float>& labels,
+                                 std::size_t first,
+                                 std::size_t active,
+                                 bool reveal) {
+    astra::ui::TabIndex index;
+    for (const auto width : labels) {
+        index.append(std::to_string(index.size()), "test");
+        index.measured(index.size() - 1, width, scale);
+    }
+    return astra::ui::TabStrip::measure(bounds, scale, index.snapshot(), first, active, reveal);
+}
+
 astra::protocol::Json shipped_style_settings() {
     astra::script::Runtime runtime(
         [](std::string_view, const astra::protocol::Json&) -> astra::protocol::Json {
@@ -1171,13 +1185,12 @@ TEST_CASE("presentation workbench layout stays bounded across DPI and narrow win
 }
 
 TEST_CASE("presentation tabs use measured labels reveal active tabs and expose close hits") {
-    using astra::ui::TabStrip;
-    auto strip = TabStrip::measure({44, 32, 600, 34}, 1, {40, 150, 20}, 0, 0, true);
+    auto strip = measure_tabs({44, 32, 600, 34}, 1, {40, 150, 20}, 0, 0, true);
     REQUIRE(strip.visible.size() == 3);
     CHECK(strip.visible[0].bounds.width != strip.visible[1].bounds.width);
     CHECK(strip.next.width == 0);
     CHECK(strip.visible[1].close.contains(strip.visible[1].bounds.right() - 10, 40));
-    strip = TabStrip::measure({44, 32, 360, 34}, 1, {100, 100, 100, 100}, 0, 3, true);
+    strip = measure_tabs({44, 32, 360, 34}, 1, {100, 100, 100, 100}, 0, 3, true);
     REQUIRE_FALSE(strip.visible.empty());
     CHECK(strip.visible.back().index == 3);
     CHECK(strip.next.right() == 404);
@@ -1188,12 +1201,11 @@ TEST_CASE("presentation tabs use measured labels reveal active tabs and expose c
 }
 
 TEST_CASE("presentation tab overflow preserves separate controls at every width") {
-    using astra::ui::TabStrip;
     for (const auto scale : {1.0F, 1.25F, 1.5F, 2.0F}) {
         for (const auto width : {0.0F, 20.0F, 70.0F, 160.0F, 240.0F, 308.0F, 600.0F}) {
             const astra::ui::Box bounds{17 * scale, 32 * scale, width * scale, 34 * scale};
-            const auto strip = TabStrip::measure(
-                bounds, scale, {180 * scale, 150 * scale, 40 * scale}, 0, 0, false);
+            const auto strip =
+                measure_tabs(bounds, scale, {180 * scale, 150 * scale, 40 * scale}, 0, 0, false);
             float previous_right = bounds.x;
             const auto content_right = strip.next.width > 0 ? strip.previous.x : bounds.right();
             for (const auto& tab : strip.visible) {
@@ -1215,27 +1227,26 @@ TEST_CASE("presentation tab overflow preserves separate controls at every width"
         }
         // The old layout painted a close button over the next file icon in
         // this remaining 64-unit sliver. Only a usable first tab may be shown.
-        const auto narrow = TabStrip::measure({0, 0, 308 * scale, 34 * scale},
-                                              scale,
-                                              {128 * scale, 128 * scale, 128 * scale},
-                                              0,
-                                              0,
-                                              false);
+        const auto narrow = measure_tabs({0, 0, 308 * scale, 34 * scale},
+                                         scale,
+                                         {128 * scale, 128 * scale, 128 * scale},
+                                         0,
+                                         0,
+                                         false);
         REQUIRE(narrow.visible.size() == 1);
         CHECK(narrow.visible.front().index == 0);
-        const auto revealed = TabStrip::measure({0, 0, 308 * scale, 34 * scale},
-                                                scale,
-                                                {128 * scale, 128 * scale, 128 * scale},
-                                                0,
-                                                2,
-                                                true);
+        const auto revealed = measure_tabs({0, 0, 308 * scale, 34 * scale},
+                                           scale,
+                                           {128 * scale, 128 * scale, 128 * scale},
+                                           0,
+                                           2,
+                                           true);
         REQUIRE(revealed.visible.size() == 1);
         CHECK(revealed.visible.front().index == 2);
     }
-    CHECK_THROWS_AS((void)TabStrip::measure({0, 0, -1, 34}, 1, {20}, 0, 0, false),
+    CHECK_THROWS_AS((void)measure_tabs({0, 0, -1, 34}, 1, {20}, 0, 0, false),
                     std::invalid_argument);
-    CHECK_THROWS_AS((void)TabStrip::measure({0, 0, 100, 34}, 0, {}, 0, 0, false),
-                    std::invalid_argument);
+    CHECK_THROWS_AS((void)measure_tabs({0, 0, 100, 34}, 0, {}, 0, 0, false), std::invalid_argument);
 }
 
 TEST_CASE("presentation text panels validate atomic actions and measured tone ranges") {

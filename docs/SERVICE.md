@@ -251,6 +251,35 @@ before revealing a caret, including after the JS completion callback.
 Duplicate native tab/sidebar/Outline/Explorer and textobject policy branches
 were removed; these product commands must resolve through the JS registry.
 
+Native tab order and cached logical widths now use a persistent measured
+`TabIndex`. Identity lookup and ordinary sequence/width updates follow logarithmic
+paths. Active reveal seeks cached width prefixes; layout visits only the bounded
+visible range. Exhausted order-label gaps trigger a bounded full relabel, rather
+than losing identity ordering. There is a 65,536-tab model admission bound.
+Font/DPI invalidation advances one generation without rebuilding every entry.
+Previous widths remain provisional until each caption is refreshed, with at most
+eight measurements and a four-millisecond dispatch budget per paint. This is
+not a worst-case execution-time bound for one caption. Visible captions receive
+priority; width preparation happens before painting, not during pointer dispatch.
+Repainting valid geometry does not measure all offscreen captions. Explicit tab
+enumeration/serialization still costs O(n).
+
+`astra.ui.read({immediate:true, tabOffset, tabLimit})` can additionally return
+`tabDocuments`, compact `{id, revision, dirty}` metadata in native tab order.
+The offset must be a nonnegative integer; the limit is 1..64. `tabLayout` exposes
+count, pending measurements, measurement count and the string font generation.
+Agent view state additionally reports tree height, order relabels and the maximum
+measurements per paint. Window idle requires the tab measurement queue to drain.
+
+JS window exit requests pages of 32 documents and concurrently closes only clean
+background documents, without activating them. Each `document.close` uses the
+captured revision and `discardChanges:false`. Stale/dirty rejections keep the
+document open, report changed state and return to the normal close decision;
+other errors stop exit. Every accepted batch drains before the next decision or
+durable checkpoint. Dirty documents and the final active document retain the
+existing sequential save/discard/cancel workflow. Cancellation cannot undo an
+already accepted clean close.
+
 `data/defaults.js` supplies complete settings and VS Code-style bindings.
 Explicit `--config <workspace-relative.js>` runs user configuration afterward:
 

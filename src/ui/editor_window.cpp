@@ -220,7 +220,9 @@ struct EditorWindow::Impl {
     TextLayoutEngine fonts;
     std::shared_ptr<LayoutJobs> layout_jobs = std::make_shared<LayoutJobs>();
     std::map<std::string, Document> documents;
-    std::vector<std::string> tabs;
+    TabIndex tabs;
+    std::optional<TextLayoutOptions> tab_measure_style;
+    std::size_t tab_max_measured_pass{};
     std::size_t first_tab{};
     std::string active_id;
     std::deque<Request> requests;
@@ -480,7 +482,7 @@ struct EditorWindow::Impl {
                          accept_metadata(metadata);
                      }
                      if (!tabs.empty()) {
-                         activate(tabs.front());
+                         activate(tabs.id_at(0));
                      } else if (options.open_paths.empty()) {
                          new_document();
                      }
@@ -528,7 +530,7 @@ struct EditorWindow::Impl {
         auto [found, inserted] = documents.try_emplace(id, fonts, layout_jobs);
         auto& document = found->second;
         if (inserted) {
-            tabs.push_back(id);
+            tabs.append(id, "Untitled");
         }
         const auto revision = metadata.at("revision").get<std::string>();
         if (!document.metadata.empty() &&
@@ -556,6 +558,7 @@ struct EditorWindow::Impl {
             document.decorations.diagnostics.clear();
         }
         document.metadata = metadata;
+        tabs.rename(id, document.path.empty() ? "Untitled" : basename(document.path));
         if (metadata.value("dirty", false)) {
             document.decorations.gutter.clear();
         }
@@ -577,12 +580,12 @@ struct EditorWindow::Impl {
     }
 
     void remove_document(const std::string& id) {
+        tabs.erase(id);
         documents.erase(id);
         workspace_notices.erase(id);
-        std::erase(tabs, id);
         if (active_id == id) {
             static_cast<void>(close_inline_form());
-            active_id = tabs.empty() ? std::string{} : tabs.back();
+            active_id = tabs.empty() ? std::string{} : tabs.id_at(tabs.size() - 1);
         }
     }
 
@@ -715,7 +718,7 @@ struct EditorWindow::Impl {
     std::optional<Json>
     vertical(std::string_view id, bool down, bool extend, std::optional<std::string> revision = {});
     void draw();
-    void measure_layout();
+    void measure_layout(bool prepare_tabs = false);
     void draw_prompt(SkCanvas* canvas, float width, float height);
     void draw_inline_form(SkCanvas* canvas);
     void draw_form(SkCanvas* canvas, const InlineForm& form, const InlineFormLayout& boxes);
@@ -2334,7 +2337,30 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         Json result{{"sidebarVisible", show_sidebar},
                     {"sidebar", active_view},
                     {"outlineVisible", show_outline},
-                    {"tabs", tabs}};
+                    {"tabs", tabs.ids()}};
+        result["tabLayout"] = {{"count", tabs.size()},
+                               {"pending", tabs.pending()},
+                               {"measurements", tabs.measurements()},
+                               {"generation", std::to_string(tabs.generation())}};
+        if (params.contains("tabLimit")) {
+            const auto& limit = params.at("tabLimit");
+            const auto offset = params.value("tabOffset", Json(0));
+            if (!limit.is_number_integer() || limit.get<std::int64_t>() < 1 ||
+                limit.get<std::int64_t>() > 64 || !offset.is_number_integer() ||
+                offset.get<std::int64_t>() < 0) {
+                throw std::invalid_argument(
+                    "Tab metadata page requires a nonnegative offset and limit 1..64");
+            }
+            const auto first = std::min(tabs.size(), offset.get<std::size_t>());
+            const auto end = first + std::min(tabs.size() - first, limit.get<std::size_t>());
+            result["tabDocuments"] = Json::array();
+            tabs.snapshot().for_each_range(first, end, [&](const TabIndex::Entry& entry) {
+                const auto& metadata = documents.at(entry.id).metadata;
+                result["tabDocuments"].push_back({{"id", entry.id},
+                                                  {"revision", metadata.at("revision")},
+                                                  {"dirty", metadata.at("dirty")}});
+            });
+        }
         result["serviceCommands"] = service_commands;
         result["focusedView"] = focused_view ? Json(*focused_view) : Json(nullptr);
         const auto* focused = forms.focused();
@@ -3417,11 +3443,8 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                 if (!tab.bounds.contains(mouse_x, mouse_y)) {
                     continue;
                 }
-                const auto found = std::ranges::find(tabs, dragging_tab);
-                if (found != tabs.end() && tabs[tab.index] != dragging_tab) {
-                    const auto id = *found;
-                    tabs.erase(found);
-                    tabs.insert(tabs.begin() + static_cast<std::ptrdiff_t>(tab.index), id);
+                if (tabs.position(dragging_tab) && tabs.id_at(tab.index) != dragging_tab) {
+                    tabs.move(dragging_tab, tab.index);
                     reveal_tab = true;
                 }
                 break;
@@ -3659,7 +3682,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                 for (const auto& tab : tab_strip.visible) {
                     if (!tab.bounds.contains(mouse_x, mouse_y))
                         continue;
-                    const auto id = tabs[tab.index];
+                    const auto id = tabs.id_at(tab.index);
                     activate(id);
                     if (tab.close.contains(mouse_x, mouse_y)) {
                         close_document(id);
@@ -3821,7 +3844,7 @@ void EditorWindow::Impl::elided_label(SkCanvas* canvas,
     }
 }
 
-void EditorWindow::Impl::measure_layout() {
+void EditorWindow::Impl::measure_layout(bool prepare_tabs) {
     const auto pixels = renderer.pixel_size();
     scale = renderer.dpi_scale();
     geometry = WorkbenchLayout::measure(static_cast<float>(pixels.width),
@@ -3841,17 +3864,48 @@ void EditorWindow::Impl::measure_layout() {
     right = geometry.editor.right();
     content_top = geometry.editor.y;
     content_bottom = geometry.editor.bottom();
-    std::vector<float> widths;
-    for (const auto& id : tabs) {
-        const auto& path = documents.at(id).path;
-        widths.push_back(
-            label_layout(path.empty() ? "Untitled" : basename(path), 13, ui_style.colors.foreground)
-                ->width());
+    auto style = label_style(13, ui_style.colors.foreground);
+    style.color = 0;
+    if (!tab_measure_style || *tab_measure_style != style) {
+        tabs.invalidate();
+        tab_measure_style = style;
     }
-    const auto active = std::ranges::find(tabs, active_id);
-    const auto index = active == tabs.end() ? 0 : static_cast<std::size_t>(active - tabs.begin());
-    tab_strip = TabStrip::measure(geometry.tabs, scale, widths, first_tab, index, reveal_tab);
+    const auto index = tabs.position(active_id).value_or(0);
+    auto strip =
+        TabStrip::measure(geometry.tabs, scale, tabs.snapshot(), first_tab, index, reveal_tab);
+    if (!prepare_tabs) {
+        tab_strip = std::move(strip);
+        return;
+    }
+    const auto until = Clock::now() + std::chrono::milliseconds(4);
+    std::size_t measured{};
+    const auto prepare = [&](std::size_t position) {
+        if (!tabs.prepared(position) && measured < 8 && Clock::now() < until) {
+            const auto width =
+                label_layout(tabs.at(position).label, 13, ui_style.colors.foreground)->width();
+            tabs.measured(position, width, scale);
+            ++measured;
+        }
+    };
+    for (const auto& tab : strip.visible) {
+        prepare(tab.index);
+    }
+    while (measured < 8 && Clock::now() < until) {
+        const auto pending = tabs.next_pending();
+        if (!pending) {
+            break;
+        }
+        prepare(*pending);
+    }
+    const auto keep_active =
+        reveal_tab || std::ranges::any_of(strip.visible, [&](const TabBox& tab) {
+            return tab.index == index;
+        });
+    tab_strip = measured ? TabStrip::measure(
+                               geometry.tabs, scale, tabs.snapshot(), first_tab, index, keep_active)
+                         : std::move(strip);
     first_tab = tab_strip.first;
+    tab_max_measured_pass = std::max(tab_max_measured_pass, measured);
     reveal_tab = false;
 }
 
@@ -4364,7 +4418,7 @@ void EditorWindow::Impl::draw() {
     row_height = std::ceil(options.font_size * scale *
                                std::clamp(editor_settings.value("lineHeight", 1.4F), 1.0F, 4.0F) +
                            3 * scale);
-    measure_layout();
+    measure_layout(true);
     gutter = 60 * scale;
     canvas->clear(ui_style.colors.background);
     const auto fill = [&](const Box& box, SkColor color) {
@@ -4611,8 +4665,8 @@ void EditorWindow::Impl::draw() {
     canvas->clipRect(SkRect::MakeXYWH(
         geometry.tabs.x, geometry.tabs.y, geometry.tabs.width, geometry.tabs.height));
     for (const auto& tab : tab_strip.visible) {
-        const auto& document = documents.at(tabs[tab.index]);
-        const bool active = tabs[tab.index] == active_id;
+        const auto& document = documents.at(tabs.id_at(tab.index));
+        const bool active = tabs.id_at(tab.index) == active_id;
         if (active) {
             fill(tab.bounds, ui_style.colors.active_tab);
             rectangle(canvas,
@@ -5107,7 +5161,7 @@ std::string EditorWindow::active_document_id() const {
 
 bool EditorWindow::idle() const noexcept {
     const auto* document = impl_->current();
-    return !impl_->quit_requested && impl_->pending_fences.empty() &&
+    return !impl_->quit_requested && impl_->tabs.pending() == 0 && impl_->pending_fences.empty() &&
            impl_->native_idle(impl_->dialog.has_value()) &&
            (impl_->workbench->idle() || (impl_->dialog && impl_->workbench->awaiting_input())) &&
            (!document || (!document->needs_lines && !document->loading && !document->needs_syntax &&
@@ -5135,10 +5189,17 @@ WorkbenchViewState EditorWindow::view_state() const {
     const auto label_stats = impl_->labels.statistics();
     WorkbenchViewState result{impl_->geometry,
                               impl_->tab_strip,
-                              impl_->tabs,
+                              impl_->tabs.ids(),
                               impl_->sidebar_views.at("explorer").index.size()};
     const auto& sidebar = impl_->sidebar_views.at(impl_->active_view);
     result.style = impl_->style_model();
+    result.tab_layout = {{"count", impl_->tabs.size()},
+                         {"pending", impl_->tabs.pending()},
+                         {"measurements", impl_->tabs.measurements()},
+                         {"generation", std::to_string(impl_->tabs.generation())},
+                         {"relabels", impl_->tabs.relabels()},
+                         {"maxMeasuredPass", impl_->tab_max_measured_pass},
+                         {"height", impl_->tabs.snapshot().height()}};
     result.file_first = sidebar.scroll;
     result.text_labels = {{"entries", label_stats.entries},
                           {"bytes", label_stats.accounted_bytes},
