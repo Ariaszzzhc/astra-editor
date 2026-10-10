@@ -1,4 +1,5 @@
 #include <astra/ui/input_queue.hpp>
+#include <algorithm>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -9,7 +10,7 @@ InputQueue::Identity
 InputQueue::accept(std::string document, std::string command, protocol::Json parameters) {
     if (document.empty() || document.size() > 128 || command.empty() || command.size() > 256 ||
         !parameters.is_object())
-        throw protocol::RpcError(-32602, "Invalid platform editing input");
+        throw protocol::RpcError(-32602, "Invalid platform policy input");
     if (inputs_.size() >= 256 || sequence_ == std::numeric_limits<Identity>::max())
         throw protocol::RpcError(-32004, "Platform input queue capacity exceeded");
     parameters["id"] = document;
@@ -43,7 +44,7 @@ void InputQueue::started(Identity identity, Identity task) {
         throw std::logic_error("Platform input already started or missing task identity");
     for (const auto& [other, value] : inputs_)
         if ((value.task == task) || (other < identity && value.document == input.document))
-            throw std::logic_error("Platform input task must preserve per-document order");
+            throw std::logic_error("Platform input task must preserve per-target order");
     input.task = task;
 }
 
@@ -62,6 +63,18 @@ void InputQueue::clear() {
 
 bool InputQueue::empty() const noexcept {
     return inputs_.empty();
+}
+
+bool InputQueue::waiting_only(std::span<const Identity> tasks) const {
+    std::set<std::string_view> scopes;
+    for (const auto& [identity, input] : inputs_) {
+        static_cast<void>(identity);
+        if (!scopes.insert(input.document).second)
+            continue;
+        if (!input.task || std::find(tasks.begin(), tasks.end(), *input.task) == tasks.end())
+            return false;
+    }
+    return true;
 }
 
 InputQueue::Identity InputQueue::fence(std::string_view document, Identity caller) const {

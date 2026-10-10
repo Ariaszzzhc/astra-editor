@@ -5,14 +5,16 @@
 #include <cstddef>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace astra::ui {
-// Accepted platform edits retain their visible document identity across JS
-// awaits. One handler per document runs at a time; unrelated documents can run
-// concurrently. Read fences include only inputs accepted before that read.
+// Accepted platform commands retain their target identity across JS awaits.
+// The document field names the scope (a document or a view). One handler per
+// scope runs at a time; independent scopes can run concurrently. Document read
+// fences include only inputs accepted before that read.
 class InputQueue final {
   public:
     using Identity = std::uint64_t;
@@ -35,6 +37,8 @@ class InputQueue final {
     [[nodiscard]] bool empty() const noexcept;
     [[nodiscard]] Identity fence(std::string_view document, Identity caller) const;
     [[nodiscard]] bool pending(std::string_view document, Identity fence) const;
+    // Successors wait for running handlers to return from their own idle fence.
+    [[nodiscard]] bool waiting_only(std::span<const Identity> tasks) const;
 
   private:
     Identity sequence_{};

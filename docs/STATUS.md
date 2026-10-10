@@ -9,6 +9,79 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### Indexed keyboard focus for JS views (2026-10-10)
+
+Sidebar rows now have a retained cursor separate from the provider's active-file
+marker. Stable row identities survive reordered refreshes; folding moves hidden
+cursors to visible ancestors and deleting a row falls back to its old visible
+index. The measured projection seeks source ordinals without flattening. Immutable
+row parent links span page boundaries, with traversal bounded by the 64-level
+hierarchy limit. Randomized fold checks compare visible identities, parents and
+hidden-row ancestor lookup against a flat oracle while retaining old snapshots.
+
+`astra.ui.views` exposes asynchronous read, focus, guarded focus return, select and
+atomic navigation. C++ owns widget geometry, cursor/fold mechanics and focus;
+overridable JS commands own dispatch and provider activation. A separate bounded
+per-view platform queue preserves arbitrary JS awaits and captured view/version/
+focus guards. Late navigation cannot change a view after focus moves. A handler's
+idle fence excludes itself and successors that cannot start until it returns;
+other scopes still have to settle. Shutdown cancels script work and clears both
+platform queues. The queue retains the existing 256-input / 8 MiB bounds.
+
+Arrows, Home/End, PageUp/PageDown, Enter and Space operate the focused widget;
+F6 reveals/focuses the sidebar, while Tab/Escape return editor focus. Explorer's
+shortcut focuses its rows. Text/IME and editor/clipboard shortcuts cannot mutate
+the document while rows own focus. Forms, editor clicks and modal input transfer
+focus. Default JS file/search activation returns editor focus using a captured
+guard, preserving a newer focus choice. Focused rows have an accent marker.
+
+Windows Debug evidence:
+
+- `./scripts/format.ps1 -Check -Offline`: 126 C++ / 12 JS files passed.
+- `./scripts/xmake.ps1 build -y astra-tests astra astra-server gui-smoke
+  gui-presentation-smoke gui-recovery-smoke gui-services-smoke gui-workspace-smoke`:
+  passed. Final GUI fixture edits were rebuilt with their individual targets.
+- `./build/windows/x64/debug/astra-tests.exe --no-version`: 531 cases /
+  1,079,927 assertions, zero failures/skips. After final native focus guards and
+  built-in JS focus-return changes, affected source-loading tests were rerun with
+  `--test-case=workbench*,presentation cursor*,presentation*view*`: 65 cases /
+  611,599 assertions passed. The earlier focused navigation run passed 8 cases /
+  610,605 assertions.
+- `gui-presentation-smoke.exe`: real 602-row custom view and 1505-file workspace;
+  ten queued Down keys through a delayed JS override, handler-owned idle fence
+  followed by another key, actual viewport paging, parent/child/fold navigation,
+  refresh retention, delayed navigation after focus change, stale focus return,
+  F6/Tab/Escape, hidden-sidebar reveal and text/shortcut document isolation passed.
+  Explorer End/Enter used the provider and returned editor focus.
+- `gui-smoke.exe` and `gui-smoke.exe --tcp`: production SDL input, JS policy and
+  shared dispatcher editing/search/replace/save/close regressions passed.
+- `gui-recovery-smoke.exe`: Unicode recovery, durable exit and failure retention
+  passed with the real Windows graphics backend.
+- `gui-workspace-smoke.exe`: pointer and F6/Home/Down/Enter search-result activation
+  preserved dirty/untitled identities and selections; retained query/replacement
+  fields, confirmation, atomic undo, external conflict and second-client stale
+  reload rejection passed.
+- `gui-services-smoke.exe`: Source Control F6/Home/Enter activated its indexed
+  `main.cpp` row through JS, transferred focus into the real Git comparison, and
+  stage/unstage/commit/discard passed. Real clangd completion/navigation/hover/
+  references/rename/formatting also passed.
+- `./tests/cli_smoke.ps1 -Mode debug`: production server/TCP CLI passed.
+- `git diff --check`: passed. The real custom-view capture was visually inspected.
+
+Failures are preserved in `build/view-navigation-*.log`: initial compilation found
+a duplicate test event variable and discarded nodiscard return values; these were
+fixed. The first presentation run assumed a fixed viewport size and was corrected
+to derive the page from actual geometry. The broader workspace fixture still
+assumed the old sequential modal search/replace input and subsequently tried to
+move the body cursor while the retained search field had focus. It now explicitly
+fills/verifies both real fields and transfers editor focus before moving/verifying
+the document cursor; replacement and concurrent-edit invariants remain asserted.
+Final logs use `presentation-final`, `workspace`, `services`, `gui`, `tcp`,
+`recovery`, `units`, `affected` and `cli` suffixes. This increment does not establish
+current Release/package acceptance or completion of the architecture/workbench
+revision. Provider streaming, large-snapshot reclamation and incremental display
+work remain open.
+
 ### JS-overridable ordered platform editing (2026-10-10)
 
 All default editing commands now have client JS handlers, including text input,

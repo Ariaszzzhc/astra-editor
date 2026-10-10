@@ -122,6 +122,18 @@ struct ViewHost {
                                 params.at("version").get<std::string>(),
                                 params.value("subtitle", std::string{}),
                                 params.value("empty", std::string{}));
+        if (method == "_ui.view.navigate" || method == "_ui.view.read" ||
+            method == "_ui.view.select") {
+            const auto id = params.at("id").get<std::string>();
+            if (params.contains("version") && params.at("version") != views.at(id).version)
+                return ready(nullptr);
+            if (method == "_ui.view.navigate")
+                return ready(views.navigate(id, params.at("action").get<std::string>(), 8));
+            if (method == "_ui.view.select" &&
+                !views.select(id, params.at("row").get<std::string>(), 8))
+                return ready(nullptr);
+            return ready(views.state(id));
+        }
         return ready(nullptr);
     }
 };
@@ -878,6 +890,9 @@ TEST_CASE("workbench platform input preserves per-document order and captured re
     CHECK_THROWS_AS(queue.started(independent, 11), std::logic_error);
     queue.started(independent, 13);
     CHECK(queue.ready().empty());
+    const astra::ui::InputQueue::Identity owners[]{11, 13};
+    CHECK(queue.waiting_only(owners));
+    CHECK_FALSE(queue.waiting_only(std::span(owners, 1)));
     const auto external = queue.fence("one", 0);
     CHECK(queue.pending("one", external));
     CHECK_FALSE(queue.pending("one", queue.fence("one", 11)));
@@ -886,6 +901,7 @@ TEST_CASE("workbench platform input preserves per-document order and captured re
     CHECK(queue.pending("one", queue.fence("one", 13)));
     const auto later = queue.accept("one", "editor.move_left", Json::object());
     queue.retire(first);
+    CHECK_FALSE(queue.waiting_only(owners));
     CHECK(queue.ready() == std::vector<astra::ui::InputQueue::Identity>{second});
     queue.started(second, 12);
     CHECK_FALSE(queue.pending("one", queue.fence("one", 12)));
@@ -1289,6 +1305,55 @@ TEST_CASE("workbench custom views publish bounded Unicode pages and guard row ac
     CHECK(host.views.at("custom").version == version);
     CHECK(host.views.at("custom").index.size() == 500);
     CHECK(host.views.idle());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench async view controls share commands and guard activation versions") {
+    auto channel = std::make_shared<Channel>();
+    ViewHost host;
+    const auto source = R"js(
+        let activated;
+        astra.ui.registerView({id:'controls',title:'Controls'}, async () => ({
+            rows:Array.from({length:40}, (_,i)=>({id:String(i),label:'Row '+i,data:{index:i}}))
+        }), {activate:async data=> { await astra.sleep(0); activated=data.index; }});
+        astra.registerCommand('exercise', async () => {
+            await astra.ui.refresh('controls');
+            const pending=astra.ui.views.read('controls');
+            if(typeof pending.then!=='function') throw Error('View reads must be asynchronous');
+            await pending;
+            await astra.ui.views.select('controls','17');
+            await astra.ui.execute('ui.view.next',{id:'controls'});
+            await astra.ui.execute('ui.view.activate',{id:'controls'});
+            const selected=await astra.ui.views.read('controls');
+            const stale=await astra.ui.views.navigate('controls','activate',{version:'obsolete'});
+            astra.ui.registerCommand({id:'ui.view.next',title:'Custom next',palette:false},
+                async ({id})=>astra.ui.views.select(id,'25'));
+            await astra.ui.execute('ui.view.next',{id:'controls'});
+            return {activated,selected,stale,override:await astra.ui.views.read('controls')};
+        });
+    )js";
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            return host(method, params);
+        },
+        modules(),
+        source);
+    std::optional<astra::script::Runtime::Outcome> result;
+    workbench.execute("exercise", Json::object(), [&](const auto& outcome) {
+        result = outcome;
+    });
+    for (int tick = 0; tick < 100 && !result; ++tick) {
+        host.views.poll();
+        workbench.poll();
+    }
+    REQUIRE(result);
+    REQUIRE_FALSE(result->error);
+    CHECK(result->value.at("activated") == 18);
+    CHECK(result->value.at("selected").at("row").at("id") == "18");
+    CHECK(result->value.at("selected").at("scroll") == 11);
+    CHECK(result->value.at("stale").is_null());
+    CHECK(result->value.at("override").at("row").at("id") == "25");
     CHECK(workbench.idle());
 }
 

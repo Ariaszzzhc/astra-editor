@@ -115,7 +115,9 @@ void require_buffer(const Host& host,
                     bool dirty,
                     const std::string& description) {
     const auto state = document(host, id);
-    require(state.at("text") == expected, description + ": unexpected document text");
+    require(state.at("text") == expected,
+            description + ": unexpected document text; wanted=" + Json(expected).dump() +
+                "; actual=" + state.at("text").dump());
     require(state.at("dirty") == dirty, description + ": unexpected saved state");
 }
 
@@ -165,10 +167,14 @@ void click_search_row(Window& window, std::size_t row) {
 }
 
 void prepare_replace(Window& window) {
-    key(window, SDLK_H, SDL_KMOD_CTRL | SDL_KMOD_SHIFT);
+    key(window, SDLK_F, SDL_KMOD_CTRL | SDL_KMOD_SHIFT);
     prompt_text(window, "needle");
     key(window, SDLK_RETURN);
-    text(window, "thread");
+    key(window, SDLK_H, SDL_KMOD_CTRL | SDL_KMOD_SHIFT);
+    prompt_text(window, "thread");
+    const auto values = window.view_state().sidebar_form.at("values");
+    require(values.at("query") == "needle" && values.at("replacement") == "thread",
+            "Replacement controls did not retain independent search/replacement input");
     key(window, SDLK_RETURN);
 }
 
@@ -229,6 +235,21 @@ void run_acceptance(const fs::path& workspace) {
                 "Untitled search result did not select its exact range");
         require(rpc(host, "document.list").size() == 2,
                 "Search result click created a duplicate or pseudo-path document");
+        require(window.view_state().sidebar.at("focused") == false,
+                "Search result activation did not return editor focus");
+        key(window, SDLK_F6);
+        key(window, SDLK_HOME);
+        key(window, SDLK_RETURN);
+        require(window.active_document_id() == dirty_id &&
+                    window.view_state().sidebar.at("focused") == false,
+                "Search keyboard did not activate the first result with editor focus");
+        key(window, SDLK_F6);
+        key(window, SDLK_DOWN);
+        key(window, SDLK_RETURN);
+        require(window.active_document_id() == untitled_id &&
+                    document(host, untitled_id).at("selections") ==
+                        Json::array({{{"anchor", 0}, {"head", 6}}}),
+                "Search keyboard did not activate the indexed untitled result");
         window.request_screenshot("build/graphics/gui-workspace-search.png");
         settle(window);
 
@@ -313,7 +334,12 @@ void run_acceptance(const fs::path& workspace) {
                 "External conflict unexpectedly edited the document");
         const auto conflict_notice = window.workspace_notice();
         search(window, "external replacement", 0);
+        window.execute_ui_command("ui.focusEditor");
+        settle(window);
         key(window, SDLK_HOME, SDL_KMOD_CTRL);
+        require(document(host, dirty_id).at("selections") ==
+                    Json::array({{{"anchor", 0}, {"head", 0}}}),
+                "Conflict verification did not move the actual document cursor to its start");
         require(window.workspace_notice() == conflict_notice,
                 "An unrelated search or cursor command erased the persistent conflict notice");
         window.request_screenshot("build/graphics/gui-workspace-conflict.png");
@@ -345,7 +371,8 @@ void run_acceptance(const fs::path& workspace) {
         settle(window);
         const auto concurrent = document(host, dirty_id);
         require(concurrent.at("text") == "concurrent " + dirty_text,
-                "Second-client edit did not reach the selected buffer");
+                "Second-client edit did not reach the selected buffer: " +
+                    concurrent.at("text").dump());
         queue_key(window, SDLK_RETURN);
         pump_until(
             window,

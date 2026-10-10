@@ -20,6 +20,7 @@ struct RetainedView {
     std::size_t scroll{};
     bool expanded{true};
     std::uint64_t fold_generation{};
+    std::optional<std::string> cursor;
 };
 
 // Owner-thread publication fence. The published snapshot survives failed,
@@ -45,6 +46,12 @@ class ViewStore final {
     [[nodiscard]] const RetainedView& at(std::string_view id) const;
     [[nodiscard]] std::vector<std::string> ordered() const;
     void toggle(std::string_view id, std::size_t row);
+    [[nodiscard]] std::optional<std::size_t> cursor(std::string_view id) const;
+    [[nodiscard]] protocol::Json state(std::string_view id) const;
+    [[nodiscard]] bool select(std::string_view id, std::string_view row, std::size_t page);
+    [[nodiscard]] protocol::Json
+    navigate(std::string_view id, std::string_view action, std::size_t page);
+    void reveal(std::string_view id, std::size_t page);
 
   private:
     struct Pending {

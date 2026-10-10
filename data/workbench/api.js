@@ -2,6 +2,19 @@ const request = (method, params = {}, options) => astra.request(method, params, 
 export const ui = {
     read: (parameters = {}, options) => read(parameters, options),
     update: (model) => request('_ui.update', model),
+    views: {
+        read: (id, options) => request('_ui.view.read', { id }, options),
+        focus: (id, options) => request('_ui.view.focus', { id }, options),
+        blur: (guards = {}, options) =>
+            request('_ui.view.focus', { ...guards, editor: true }, options),
+        select: (id, row, guards = {}, options) =>
+            request('_ui.view.select', { ...guards, id, row }, options),
+        async navigate(id, action, guards = {}, options) {
+            const result = await request('_ui.view.navigate', { ...guards, id, action }, options);
+            if (result?.activate) await activateView(result);
+            return result;
+        }
+    },
     forms: {
         open: (spec) => request('_ui.form.open', spec),
         read: (id) => request('_ui.form.read', { id }),
@@ -343,10 +356,37 @@ async function dialog(kind, spec, options = {}, identity) {
     }
 }
 astra.ui = ui;
-astra.on('ui.view.action', async ({ id, version, row }) => {
+async function activateView({ id, version, row }) {
     if (publishedViews.get(id) !== version) return;
     await providers.get(id)?.handlers.activate?.(row.data, row);
-});
+}
+astra.on('ui.view.action', activateView);
+for (const action of [
+    'next',
+    'previous',
+    'first',
+    'last',
+    'pageUp',
+    'pageDown',
+    'left',
+    'right',
+    'toggle',
+    'activate'
+])
+    ui.registerCommand(
+        { id: `ui.view.${action}`, title: `View ${action}`, palette: false },
+        ({ id, ...guards } = {}) => ui.views.navigate(id, action, guards)
+    );
+ui.registerCommand(
+    { id: 'ui.focusSidebar', title: 'Focus sidebar rows', palette: false },
+    async () => {
+        await ui.update({ sidebarVisible: true });
+        return await ui.views.focus();
+    }
+);
+ui.registerCommand({ id: 'ui.focusEditor', title: 'Focus editor', palette: false }, () =>
+    ui.views.blur()
+);
 ui.registerCommand(
     { id: 'workbench.showView', title: 'Show registered view', palette: false },
     ({ id }) => ui.showView(id)

@@ -103,8 +103,29 @@ TEST_CASE("presentation hierarchical view toggles match a flat oracle with retai
                 hidden_depth = depth;
         }
         REQUIRE(index.size() == expected.size());
-        for (std::size_t i = 0; i < expected.size(); ++i)
+        for (std::size_t i = 0; i < expected.size(); ++i) {
             CHECK(index.at(i).value->at("id") == expected[i]);
+            CHECK(index.position(expected[i]) == i);
+            auto parent = i;
+            while (parent && index.at(parent).depth >= index.at(i).depth)
+                --parent;
+            if (index.at(i).depth)
+                CHECK(index.parent(i) == parent);
+            else
+                CHECK_FALSE(index.parent(i));
+        }
+        const auto probe = static_cast<std::size_t>(random()) % rows.size();
+        const auto probe_id = rows[probe].at("id").get<std::string>();
+        auto ancestor = probe;
+        auto found = std::ranges::find(expected, probe_id);
+        CHECK(index.position(probe_id).has_value() == (found != expected.end()));
+        while (found == expected.end()) {
+            const auto depth = rows[ancestor].value("depth", std::size_t{0});
+            while (ancestor && rows[ancestor].value("depth", std::size_t{0}) >= depth)
+                --ancestor;
+            found = std::ranges::find(expected, rows[ancestor].at("id").get<std::string>());
+        }
+        CHECK(index.position(probe_id, true) == static_cast<std::size_t>(found - expected.begin()));
         CHECK(index.snapshot().validate());
         CHECK(original.size() == rows.size());
     }
@@ -187,6 +208,57 @@ TEST_CASE("presentation refresh preserves folds changed during bounded publicati
     CHECK(store.at("custom").index.collapsed("g0"));
     CHECK(store.at("custom").index.collapsed("g1"));
     CHECK(store.at("custom").index.size() == 398);
+}
+
+TEST_CASE("presentation cursor navigates hierarchy and survives reordered refreshes") {
+    using Json = astra::protocol::Json;
+    astra::ui::ViewStore store;
+    const Json spec{{"id", "navigation"}, {"title", "Navigation"}};
+    const auto publish = [&](Json rows) {
+        const auto version = store.begin(spec);
+        REQUIRE(store.append("navigation", version, rows));
+        auto result = store.commit("navigation", version, "", "Empty");
+        while (!store.idle())
+            store.poll();
+        REQUIRE(result.get().get<bool>());
+    };
+    publish(Json::array({{{"id", "root"}, {"label", "Root"}, {"group", true}},
+                         {{"id", "nested"}, {"label", "Nested"}, {"depth", 1}, {"group", true}},
+                         {{"id", "leaf"}, {"label", "中🙂"}, {"depth", 2}},
+                         {{"id", "sibling"}, {"label", "Sibling"}, {"depth", 1}},
+                         {{"id", "tail"}, {"label", "Tail"}}}));
+    CHECK(store.navigate("navigation", "retain", 2).at("row").at("id") == "root");
+    CHECK(store.navigate("navigation", "right", 2).at("row").at("id") == "nested");
+    CHECK(store.navigate("navigation", "right", 2).at("row").at("id") == "leaf");
+    CHECK(store.state("navigation").at("scroll") == 1);
+    CHECK(store.navigate("navigation", "activate", 2).at("activate") == true);
+    CHECK(store.navigate("navigation", "left", 2).at("row").at("id") == "nested");
+    CHECK(store.navigate("navigation", "left", 2).at("collapsed") == true);
+    CHECK(store.navigate("navigation", "right", 2).at("collapsed") == false);
+    REQUIRE(store.select("navigation", "leaf", 2));
+    store.toggle("navigation", 0);
+    CHECK(store.state("navigation").at("row").at("id") == "root");
+    CHECK_FALSE(store.select("navigation", "leaf", 2));
+    CHECK_FALSE(store.select("navigation", "missing", 2));
+    CHECK(store.navigate("navigation", "next", 2).at("row").at("id") == "tail");
+    CHECK(store.navigate("navigation", "previous", 2).at("row").at("id") == "root");
+    CHECK(store.navigate("navigation", "activate", 2).at("activate") == false);
+    CHECK(store.navigate("navigation", "last", 2).at("row").at("id") == "tail");
+    CHECK(store.navigate("navigation", "pageUp", 2).at("row").at("id") == "leaf");
+    CHECK(store.navigate("navigation", "pageDown", 2).at("row").at("id") == "tail");
+    const auto before = store.state("navigation");
+    CHECK_THROWS(static_cast<void>(store.navigate("navigation", "invalid", 2)));
+    CHECK_THROWS(static_cast<void>(store.navigate("navigation", "first", 0)));
+    CHECK(store.state("navigation") == before);
+    publish(Json::array(
+        {{{"id", "tail"}, {"label", "Tail moved"}}, {{"id", "new"}, {"label", "New"}}}));
+    CHECK(store.state("navigation").at("index") == 0);
+    CHECK(store.state("navigation").at("row").at("id") == "tail");
+    publish(Json::array({{{"id", "new"}, {"label", "New"}}}));
+    CHECK(store.state("navigation").at("row").at("id") == "new");
+    publish(Json::array());
+    CHECK(store.navigate("navigation", "next", 2).at("row").is_null());
+    CHECK_FALSE(store.cursor("navigation"));
 }
 
 TEST_CASE("presentation inline inputs preserve graphemes history and result generations") {

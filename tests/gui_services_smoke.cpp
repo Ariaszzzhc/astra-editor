@@ -255,8 +255,14 @@ int main() {
         std::cerr << "GUI services: hover, definition, references, rename, format passed\n";
 
         key(window, SDLK_G, SDL_KMOD_CTRL | SDL_KMOD_SHIFT);
-        window.execute_ui_command("ui.gitDiff");
-        settle(window);
+        key(window, SDLK_F6);
+        key(window, SDLK_HOME);
+        require(window.view_state().sidebar.at("id") == "git" &&
+                    window.view_state().sidebar.at("row").at("id") == "main.cpp",
+                "Source control keyboard did not select its indexed file row");
+        key(window, SDLK_RETURN);
+        require(window.view_state().sidebar.at("focused") == false,
+                "Git diff activation did not transfer focus from its row widget");
         window.request_screenshot("build/graphics/gui-git-diff.png");
         settle(window);
         key(window, SDLK_S);

@@ -5,7 +5,9 @@
 
 #include <SDL3/SDL.h>
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -61,7 +63,7 @@ void click(Window& window, float x, float y) {
     mouse(window, SDL_EVENT_MOUSE_BUTTON_UP, x, y);
 }
 
-void key(Window& window, SDL_Keycode code, SDL_Keymod mods = SDL_KMOD_NONE) {
+void enqueue_key(Window& window, SDL_Keycode code, SDL_Keymod mods = SDL_KMOD_NONE) {
     SDL_Event event{};
     event.type = SDL_EVENT_KEY_DOWN;
     event.key.windowID = SDL_GetWindowID(window.window());
@@ -69,6 +71,10 @@ void key(Window& window, SDL_Keycode code, SDL_Keymod mods = SDL_KMOD_NONE) {
     event.key.mod = mods;
     event.key.down = true;
     require(SDL_PushEvent(&event), "Cannot enqueue native key input");
+}
+
+void key(Window& window, SDL_Keycode code, SDL_Keymod mods = SDL_KMOD_NONE) {
+    enqueue_key(window, code, mods);
     settle(window);
 }
 
@@ -102,6 +108,39 @@ void run(const fs::path& workspace) {
         options.resource_directory = fs::current_path();
         options.open_paths = {"one.cpp"};
         options.user_script = R"js(if(astra.context==='client') {
+            let nextGate, releaseNext, waitInView=false;
+            astra.ui.registerCommand({id:'ui.view.next',title:'Custom view next',palette:false},async ({id,...guards})=>{
+                if(nextGate) await nextGate;
+                await astra.sleep(8);
+                return await astra.ui.views.navigate(id,'next',guards);
+            });
+            astra.registerCommand('acceptance.holdNext',()=>{
+                nextGate=new Promise(resolve=>{releaseNext=resolve;});
+            });
+            astra.registerCommand('acceptance.releaseNext',()=>{releaseNext();nextGate=undefined;});
+            astra.registerCommand('acceptance.waitInView',()=>{waitInView=true;});
+            astra.registerCommand('acceptance.focusView',()=>astra.ui.views.focus('acceptance-view'));
+            astra.registerCommand('acceptance.refreshView',()=>astra.ui.refresh('acceptance-view'));
+            let capturedFocus;
+            astra.registerCommand('acceptance.captureFocus', async () => {
+                capturedFocus = await astra.ui.views.read('acceptance-view');
+            });
+            astra.registerCommand('acceptance.staleBlur', async () => {
+                const accepted = await astra.ui.views.blur({id: capturedFocus.id, focus: capturedFocus.focus});
+                if (accepted) throw Error('Stale focus return was accepted');
+            });
+            let capturedBody;
+            astra.registerCommand('acceptance.captureBody',async()=>{
+                const {document}=await astra.ui.read();
+                capturedBody=document;
+            });
+            astra.registerCommand('acceptance.verifyBody',async()=>{
+                const document=await astra.request('document.get',{id:capturedBody.id});
+                if(document.revision!==capturedBody.revision ||
+                    JSON.stringify(document.selections)!==JSON.stringify(capturedBody.selections))
+                    throw Error('Sidebar input mutated document state');
+                await astra.ui.update({status:'Sidebar text isolated'});
+            });
             astra.ui.registerView({id:'acceptance-view',title:'Custom 中🙂',icon:'symbol',order:3},
                 async () => ({rows:[
                     {id:'group',label:'Custom group',group:true,icon:'folder'},
@@ -111,7 +150,10 @@ void run(const fs::path& workspace) {
                     })),
                     {id:'tail',label:'Final row',data:{index:600}}
                 ],subtitle:'Registered by JavaScript'}), {
-                    activate:({index}) => astra.ui.update({status:'Custom row '+index+' 中🙂'})
+                    activate:async ({index}) => {
+                        if(waitInView) await astra.ui.waitForIdle();
+                        await astra.ui.update({status:'Custom row '+index+' 中🙂'});
+                    }
                 });
             astra.registerCommand('acceptance.view',() => astra.ui.showView('acceptance-view'));
             astra.registerCommand('acceptance.invalidView',async () => {
@@ -447,6 +489,99 @@ void run(const fs::path& workspace) {
               custom.layout.sidebar_rows.y + custom.layout.sidebar_row_height * 1.5F);
         require(window.status_text() == "Custom row 0 中🙂",
                 "Native custom row did not invoke JavaScript");
+        require(window.view_state().sidebar.at("focused") == true &&
+                    window.view_state().sidebar.at("row").at("id") == "0",
+                "Pointer selection did not focus the generic row widget");
+        for (int i = 0; i < 10; ++i)
+            enqueue_key(window, SDLK_DOWN);
+        settle(window);
+        require(window.view_state().sidebar.at("row").at("id") == "10",
+                "Async custom navigation did not preserve rapid input order");
+        window.execute_ui_command("acceptance.waitInView");
+        settle(window);
+        enqueue_key(window, SDLK_RETURN);
+        enqueue_key(window, SDLK_DOWN);
+        settle(window);
+        require(window.status_text() == "Custom row 10 中🙂" &&
+                    window.view_state().sidebar.at("row").at("id") == "11",
+                "A view handler's idle barrier blocked its queued successor");
+        key(window, SDLK_END);
+        const auto end_state = window.view_state();
+        const auto row_page =
+            static_cast<std::size_t>(std::max(1.0F,
+                                              std::floor(end_state.layout.sidebar_rows.height /
+                                                         end_state.layout.sidebar_row_height)));
+        require(window.view_state().sidebar.at("row").at("id") == "tail" &&
+                    end_state.file_first <= 601 && 601 - end_state.file_first < row_page,
+                "End did not reveal the last indexed row: " + end_state.sidebar.dump());
+        key(window, SDLK_PAGEUP);
+        const auto paged = window.view_state().sidebar.at("index").get<std::size_t>();
+        require(paged == 601 - std::min(std::size_t{601}, row_page),
+                "PageUp did not use the visible row viewport");
+        key(window, SDLK_HOME);
+        key(window, SDLK_LEFT);
+        require(window.view_state().sidebar.at("total") == 2,
+                "Left did not collapse the current group");
+        key(window, SDLK_RIGHT);
+        key(window, SDLK_RIGHT);
+        require(window.view_state().sidebar.at("row").at("id") == "0",
+                "Right did not expand the group and then enter its first child");
+        key(window, SDLK_LEFT);
+        require(window.view_state().sidebar.at("row").at("id") == "group",
+                "Left did not seek the current row's parent");
+        key(window, SDLK_RIGHT);
+        const auto before_refresh = window.view_state().sidebar.at("row").at("id");
+        window.execute_ui_command("acceptance.refreshView");
+        settle(window);
+        require(window.view_state().sidebar.at("row").at("id") == before_refresh,
+                "Refresh lost the stable row cursor");
+        window.execute_ui_command("acceptance.holdNext");
+        settle(window);
+        window.execute_ui_command("acceptance.captureFocus");
+        settle(window);
+        enqueue_key(window, SDLK_DOWN);
+        require(window.pump(), "Cannot start delayed view input");
+        window.execute_ui_command("ui.focusEditor");
+        window.execute_ui_command("acceptance.releaseNext");
+        settle(window);
+        require(window.view_state().sidebar.at("focused") == false &&
+                    window.view_state().sidebar.at("row").at("id") == "0",
+                "Late navigation changed a view after focus moved to the editor");
+        key(window, SDLK_F6);
+        require(window.view_state().sidebar.at("focused") == true, "F6 did not focus the sidebar");
+        window.execute_ui_command("acceptance.staleBlur");
+        settle(window);
+        require(window.view_state().sidebar.at("focused") == true,
+                "A stale focus return stole the newly focused row widget");
+        key(window, SDLK_TAB);
+        require(window.view_state().sidebar.at("focused") == false,
+                "Tab did not return editor focus");
+        window.execute_ui_command("ui.toggleSidebar");
+        settle(window);
+        key(window, SDLK_F6);
+        require(window.view_state().layout.sidebar.width > 0 &&
+                    window.view_state().sidebar.at("focused") == true,
+                "F6 did not reveal and focus a hidden sidebar");
+        window.execute_ui_command("acceptance.focusView");
+        settle(window);
+        window.execute_ui_command("acceptance.captureBody");
+        settle(window);
+        // Text and editing shortcuts must not mutate the active document while
+        // keyboard focus belongs to the retained row widget.
+        SDL_Event sidebar_text{};
+        sidebar_text.type = SDL_EVENT_TEXT_INPUT;
+        sidebar_text.text.windowID = SDL_GetWindowID(window.window());
+        sidebar_text.text.text = "unexpected";
+        require(SDL_PushEvent(&sidebar_text), "Cannot enqueue focused row text input");
+        enqueue_key(window, SDLK_BACKSPACE);
+        enqueue_key(window, SDLK_A, SDL_KMOD_CTRL);
+        enqueue_key(window, SDLK_X, SDL_KMOD_CTRL);
+        settle(window);
+        window.execute_ui_command("acceptance.verifyBody");
+        settle(window);
+        require(window.status_text() == "Sidebar text isolated",
+                "Sidebar input changed editor text");
+        key(window, SDLK_ESCAPE);
         const auto version = window.view_state().sidebar.at("version");
         window.execute_ui_command("acceptance.invalidView");
         settle(window);
@@ -457,6 +592,17 @@ void run(const fs::path& workspace) {
                 "View failure did not settle JS");
         window.request_screenshot("build/graphics/gui-custom-view.png");
         settle(window);
+        window.execute_ui_command("ui.explorer");
+        settle(window);
+        require(window.view_state().sidebar.at("focused") == true,
+                "Explorer command did not focus its row widget");
+        key(window, SDLK_END);
+        require(window.view_state().sidebar.at("row").at("id") == "two_with_a_long_name.cpp",
+                "Explorer keyboard did not select its final indexed path");
+        key(window, SDLK_RETURN);
+        require(window.active_document_id() == two &&
+                    window.view_state().sidebar.at("focused") == false,
+                "Explorer keyboard did not activate the file and return editor focus");
         window.execute_ui_command("acceptance.waiters");
         settle(window);
         require(window.status_text() == "Concurrent waits settled",

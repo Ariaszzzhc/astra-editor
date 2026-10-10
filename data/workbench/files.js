@@ -73,7 +73,11 @@ export function registerFiles() {
         },
         {
             show: () => ui.execute('ui.explorer'),
-            activate: ({ path }) => ui.execute('workbench.open', { path }),
+            async activate({ path }) {
+                const focus = await ui.views.read('explorer');
+                await ui.execute('workbench.open', { path });
+                if (focus.focused) await ui.views.blur({ id: focus.id, focus: focus.focus });
+            },
             async project(model, options) {
                 const rows = [];
                 for (const entry of model.entries) {
@@ -114,6 +118,7 @@ export function registerFiles() {
         { id: 'ui.explorer', title: 'Show file explorer', shortcut: 'Ctrl+Shift+E' },
         async () => {
             await ui.update({ sidebar: 'explorer', sidebarVisible: true });
+            await ui.views.focus('explorer');
         }
     );
     ui.registerCommand(

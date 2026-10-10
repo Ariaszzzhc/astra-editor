@@ -311,6 +311,7 @@ export function registerWorkspaceSearch() {
             };
         },
         async activate(match) {
+            const focus = await ui.views.read('search');
             const buffer = match.source === 'buffer';
             const document = await astra.request(
                 buffer ? 'document.get' : 'workspace.open',
@@ -321,6 +322,7 @@ export function registerWorkspaceSearch() {
                 await ui.update({
                     status: 'Search result changed; search again to locate the match'
                 });
+                if (focus.focused) await ui.views.blur({ id: focus.id, focus: focus.focus });
                 return;
             }
             const selected = await astra.request('document.setSelections', {
@@ -332,6 +334,7 @@ export function registerWorkspaceSearch() {
                 document: selected,
                 scrollLine: { id: document.id, line: match.line }
             });
+            if (focus.focused) await ui.views.blur({ id: focus.id, focus: focus.focus });
         }
     });
     for (const [id, title, shortcut, replace] of [

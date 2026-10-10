@@ -142,6 +142,7 @@ struct EditorWindow::Impl {
     };
 
     struct PendingFence {
+        script::Runtime::TaskId owner{};
         std::string method;
         std::promise<Json> completion;
     };
@@ -231,6 +232,7 @@ struct EditorWindow::Impl {
     Json service_commands = Json::array();
     std::unique_ptr<Workbench> workbench;
     InputQueue policy_inputs;
+    InputQueue view_inputs;
     std::set<std::string> service_ui_commands;
     Json busy_views = Json::object();
     Json settings = Json::object();
@@ -274,6 +276,9 @@ struct EditorWindow::Impl {
                                                  {"error", 0xFFF44747}};
     ViewStore sidebar_views;
     std::string active_view{"explorer"};
+    std::optional<std::string> focused_view;
+    std::uint64_t view_focus_sequence{};
+    std::string focused_view_version;
     std::map<std::string, std::string> workspace_notices;
     std::string watch_error;
     std::string replace_notice;
@@ -740,11 +745,13 @@ struct EditorWindow::Impl {
     void close_document(const std::string& id, bool discard = false);
     std::future<Json> begin_fence(std::string_view method, const Json& params);
     bool finish_fences();
-    bool native_idle() const;
+    bool native_idle(bool waiting_inputs = false) const;
     void command(std::string_view name);
     void execute_policy(std::string_view name, const Json& params = Json::object());
     void editor_policy(std::string name, Json parameters = Json::object());
     void advance_policy_inputs();
+    void view_policy(std::string name, Json parameters);
+    void advance_view_inputs();
     void native_command(std::string_view name);
     Json native_ui_request(std::string_view method, const Json& params);
     std::future<Json> begin_dialog(const Json& spec);
@@ -765,6 +772,8 @@ struct EditorWindow::Impl {
     InlineFormLayout form_layout(const InlineForm& form) const;
     void clear_form_cache(const InlineForm& form);
     bool inline_key(const SDL_KeyboardEvent& input, bool control, bool shift, bool alt);
+    void focus_view(std::optional<std::string> id);
+    std::size_t view_page() const;
     void
     emit_form(std::string_view event, std::string_view action = {}, InlineForm* target = nullptr);
     bool close_inline_form(std::string_view id = {});
@@ -1529,10 +1538,19 @@ void EditorWindow::Impl::close_document(const std::string& id, bool discard) {
     }
 }
 
-bool EditorWindow::Impl::native_idle() const {
+bool EditorWindow::Impl::native_idle(bool waiting_inputs) const {
+    bool inputs_idle = policy_inputs.empty() && view_inputs.empty();
+    if (!inputs_idle && waiting_inputs) {
+        std::vector<InputQueue::Identity> owners;
+        for (const auto& [id, fence] : pending_fences) {
+            static_cast<void>(id);
+            owners.push_back(fence.owner);
+        }
+        inputs_idle = policy_inputs.waiting_only(owners) && view_inputs.waiting_only(owners);
+    }
     return requests.empty() && !active_request && operations.empty() && pending_edits.empty() &&
            pending_reads.empty() && closing_pending.empty() && form_events.empty() &&
-           sidebar_views.idle() && policy_inputs.empty();
+           sidebar_views.idle() && inputs_idle;
 }
 
 void EditorWindow::Impl::emit_form(std::string_view event,
@@ -1603,6 +1621,7 @@ std::future<Json> EditorWindow::Impl::begin_fence(std::string_view method, const
     if (pending_fences.size() >= 256)
         throw protocol::RpcError(-32004, "UI wait queue is full");
     PendingFence fence;
+    fence.owner = workbench->request_owner();
     fence.method = method;
     auto result = fence.completion.get_future();
     pending_fences.emplace(id, std::move(fence));
@@ -1610,7 +1629,7 @@ std::future<Json> EditorWindow::Impl::begin_fence(std::string_view method, const
 }
 
 bool EditorWindow::Impl::finish_fences() {
-    if (!native_idle() || dialog || pending_fences.empty())
+    if (!native_idle(true) || dialog || pending_fences.empty())
         return false;
     constexpr std::string_view methods[]{"_ui.barrier", "_ui.window.close"};
     if (!workbench->awaiting(methods))
@@ -1707,6 +1726,7 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
     else if (!items.empty())
         pending.items.reset(item_text);
     auto result = pending.completion.get_future();
+    focus_view(std::nullopt);
     forms.blur();
     dialog.emplace(std::move(pending));
     prompt = kind == "input"
@@ -1833,6 +1853,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         if (form_events.size() >= 256)
             throw protocol::RpcError(-32004, "Form event capacity exceeded");
         auto retired = forms.open(std::move(prepared));
+        focus_view(std::nullopt);
         if (retired) {
             emit_form("ui.form.closed", {}, retired.get());
             clear_form_cache(*retired);
@@ -1875,6 +1896,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             });
         if (found == form->fields().end())
             throw protocol::RpcError(-32602, "Unknown form field");
+        focus_view(std::nullopt);
         forms.focus(form->id(),
                     static_cast<std::size_t>(found - form->fields().begin()),
                     params.value("selectAll", true));
@@ -1901,6 +1923,49 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
     if (method == "_ui.view.abort")
         return sidebar_views.abort(params.at("id").get<std::string>(),
                                    params.at("version").get<std::string>());
+    if (method == "_ui.view.focus") {
+        if (params.contains("focus") &&
+            (!focused_view || params.at("focus") != std::to_string(view_focus_sequence) ||
+             (params.contains("id") && params.at("id") != *focused_view)))
+            return false;
+        if (dialog || prompt != Prompt::none)
+            throw protocol::RpcError(-32004, "Dismiss modal input before focusing a view");
+        if (params.value("editor", false)) {
+            focus_view(std::nullopt);
+            forms.blur();
+            preedit.clear();
+            return true;
+        }
+        const auto id = params.value("id", active_view);
+        static_cast<void>(sidebar_views.at(id));
+        if (!show_sidebar || id != active_view)
+            throw protocol::RpcError(-32004, "Cannot focus a hidden view");
+        forms.blur();
+        focus_view(id);
+        static_cast<void>(sidebar_views.navigate(id, "retain", view_page()));
+        auto result = sidebar_views.state(id);
+        result["focused"] = true;
+        result["focus"] = std::to_string(view_focus_sequence);
+        return result;
+    }
+    if (method == "_ui.view.read" || method == "_ui.view.navigate" || method == "_ui.view.select") {
+        const auto id = params.value("id", active_view);
+        const auto& view = sidebar_views.at(id);
+        if ((params.contains("version") && params.at("version") != view.version) ||
+            (params.contains("focus") &&
+             (!focused_view || *focused_view != id ||
+              params.at("focus") != std::to_string(view_focus_sequence))))
+            return nullptr;
+        if (method == "_ui.view.navigate")
+            return sidebar_views.navigate(id, params.at("action").get<std::string>(), view_page());
+        if (method == "_ui.view.select" &&
+            !sidebar_views.select(id, params.at("row").get<std::string>(), view_page()))
+            return nullptr;
+        auto result = sidebar_views.state(id);
+        result["focused"] = focused_view == id;
+        result["focus"] = std::to_string(view_focus_sequence);
+        return result;
+    }
     if (method == "_ui.read") {
         Json result{{"sidebarVisible", show_sidebar},
                     {"sidebar", active_view},
@@ -1910,6 +1975,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
                     {"gitStaged", git_staged},
                     {"gitPreview", git_preview}};
         result["serviceCommands"] = service_commands;
+        result["focusedView"] = focused_view ? Json(*focused_view) : Json(nullptr);
         const auto* focused = forms.focused();
         result["focusedForm"] =
             focused ? Json{{"id", focused->id()}, {"view", focused->view()}} : Json(nullptr);
@@ -1984,6 +2050,8 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         } else if (name == "sidebarVisible") {
             show_sidebar = value.get<bool>();
             if (!show_sidebar)
+                focus_view(std::nullopt);
+            if (!show_sidebar)
                 if (const auto* focused = forms.focused(); focused && !focused->view().empty()) {
                     forms.blur();
                     preedit.clear();
@@ -1994,6 +2062,8 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             const auto view = value.get<std::string>();
             static_cast<void>(sidebar_views.at(view));
             active_view = view;
+            if (focused_view && *focused_view != active_view)
+                focus_view(std::nullopt);
             if (const auto* focused = forms.focused();
                 focused && !focused->view().empty() && focused->view() != active_view) {
                 forms.blur();
@@ -2023,6 +2093,8 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             workspace_notices[value.at("id").get<std::string>()] =
                 value.at("text").get<std::string>();
         } else if (name == "gitDiff") {
+            focus_view(std::nullopt);
+            forms.blur();
             auto path = value.at("path").get<std::string>();
             const auto staged = value.at("staged").get<bool>();
             const auto& model = value.at("model");
@@ -2087,6 +2159,45 @@ void EditorWindow::Impl::execute_policy(std::string_view name, const Json& param
         workbench->poll();
         if (workbench->idle() || workbench->awaiting_input())
             break;
+    }
+}
+
+void EditorWindow::Impl::view_policy(std::string name, Json parameters) {
+    if (!focused_view)
+        return;
+    static_cast<void>(view_inputs.accept(*focused_view, std::move(name), std::move(parameters)));
+    advance_view_inputs();
+}
+
+void EditorWindow::Impl::advance_view_inputs() {
+    const auto until = Clock::now() + std::chrono::milliseconds(4);
+    for (const auto identity : view_inputs.ready()) {
+        if (Clock::now() >= until)
+            break;
+        const auto& input = view_inputs.at(identity);
+        if (focused_view != input.document ||
+            input.parameters.at("focus") != std::to_string(view_focus_sequence) ||
+            input.parameters.at("version") != sidebar_views.at(input.document).version) {
+            view_inputs.retire(identity);
+            continue;
+        }
+        try {
+            const auto task = workbench->execute(
+                input.command,
+                input.parameters,
+                [this, identity](const script::Runtime::Outcome& outcome) {
+                    view_inputs.retire(identity);
+                    if (outcome.error &&
+                        outcome.error->value("name", std::string{}) != "AbortError") {
+                        error = outcome.error->value("message", std::string("View policy failed"));
+                        status = "Action failed";
+                    }
+                });
+            view_inputs.started(identity, task);
+        } catch (...) {
+            view_inputs.retire(identity);
+            throw;
+        }
     }
 }
 
@@ -2193,10 +2304,17 @@ void EditorWindow::Impl::native_command(std::string_view name) {
         }
     } else if (name == "ui.toggleSidebar") {
         show_sidebar = !show_sidebar;
+        if (!show_sidebar) {
+            focus_view(std::nullopt);
+            if (const auto* focused = forms.focused(); focused && !focused->view().empty())
+                forms.blur();
+        }
         if (auto* doc = current()) {
             doc->needs_lines = true;
         }
     } else if (name == "ui.explorer") {
+        if (focused_view && *focused_view != "explorer")
+            focus_view(std::nullopt);
         active_view = "explorer";
         show_sidebar = true;
     } else if (name == "ui.toggleOutline") {
@@ -2353,6 +2471,22 @@ std::optional<Json> EditorWindow::Impl::vertical(std::string_view id,
                 {"selections", std::move(selections)}};
 }
 
+void EditorWindow::Impl::focus_view(std::optional<std::string> id) {
+    if (focused_view == id)
+        return;
+    if (view_focus_sequence == std::numeric_limits<std::uint64_t>::max())
+        throw protocol::RpcError(-32004, "View focus identity exhausted");
+    focused_view = std::move(id);
+    focused_view_version = focused_view ? sidebar_views.at(*focused_view).version : std::string{};
+    ++view_focus_sequence;
+    preedit.clear();
+}
+
+std::size_t EditorWindow::Impl::view_page() const {
+    return static_cast<std::size_t>(std::clamp(
+        std::floor(geometry.sidebar_rows.height / geometry.sidebar_row_height), 1.0F, 256.0F));
+}
+
 void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
 #if defined(__APPLE__)
     const bool control = (input.mod & (SDL_KMOD_GUI | SDL_KMOD_CTRL)) != 0;
@@ -2361,6 +2495,12 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
 #endif
     const bool shift = (input.mod & SDL_KMOD_SHIFT) != 0;
     const bool alt = (input.mod & SDL_KMOD_ALT) != 0;
+    if (prompt == Prompt::none && !control && !alt &&
+        (input.key == SDLK_F6 ||
+         (focused_view && (input.key == SDLK_TAB || input.key == SDLK_ESCAPE)))) {
+        execute_policy(focused_view ? "ui.focusEditor" : "ui.focusSidebar");
+        return;
+    }
     if (input.key == SDLK_ESCAPE) {
         command("ui.cancel");
         return;
@@ -2485,6 +2625,54 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
 
     if (inline_key(input, control, shift, alt))
         return;
+    if (focused_view && !alt) {
+        std::string action;
+        switch (input.key) {
+        case SDLK_UP:
+            action = "previous";
+            break;
+        case SDLK_DOWN:
+            action = "next";
+            break;
+        case SDLK_HOME:
+            action = "first";
+            break;
+        case SDLK_END:
+            action = "last";
+            break;
+        case SDLK_PAGEUP:
+            action = "pageUp";
+            break;
+        case SDLK_PAGEDOWN:
+            action = "pageDown";
+            break;
+        case SDLK_LEFT:
+            if (!control)
+                action = "left";
+            break;
+        case SDLK_RIGHT:
+            if (!control)
+                action = "right";
+            break;
+        case SDLK_RETURN:
+        case SDLK_KP_ENTER:
+        case SDLK_SPACE:
+            if (!control)
+                action = "activate";
+            break;
+        default:
+            break;
+        }
+        if (!action.empty()) {
+            view_policy("ui.view." + action,
+                        {{"id", *focused_view},
+                         {"version", sidebar_views.at(*focused_view).version},
+                         {"focus", std::to_string(view_focus_sequence)}});
+            return;
+        }
+        if (!control)
+            return;
+    }
     std::string key_name;
     if (input.key >= SDLK_A && input.key <= SDLK_Z) {
         key_name.assign(1, static_cast<char>('A' + input.key - SDLK_A));
@@ -2550,6 +2738,10 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
         }
     }
     if (binding != keybindings.end()) {
+        if (focused_view &&
+            (binding->second.starts_with("editor.") || binding->second == "ui.copy" ||
+             binding->second == "ui.cut" || binding->second == "ui.paste"))
+            return;
         if (binding->second.starts_with("editor.move_")) {
             editor_policy(binding->second, {{"extend", shift}});
         } else {
@@ -2564,6 +2756,8 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
     if (alt) {
         return;
     }
+    if (focused_view)
+        return;
     std::string editing;
     switch (input.key) {
     case SDLK_LEFT:
@@ -2824,11 +3018,11 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         key(input.key);
         break;
     case SDL_EVENT_TEXT_EDITING:
-        preedit = input.edit.text ? input.edit.text : "";
+        preedit = !focused_view && input.edit.text ? input.edit.text : "";
         break;
     case SDL_EVENT_TEXT_INPUT:
         preedit.clear();
-        if (!input.text.text) {
+        if (!input.text.text || focused_view) {
             break;
         }
         if (prompt != Prompt::none && prompt != Prompt::policy_choice &&
@@ -2953,6 +3147,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             if (!boxes.panel.contains(mouse_x, mouse_y))
                 continue;
             hit_form = true;
+            focus_view(std::nullopt);
             if (boxes.close.contains(mouse_x, mouse_y)) {
                 static_cast<void>(close_inline_form(form->id()));
                 break;
@@ -2988,6 +3183,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         }
         if (hit_form)
             break;
+        focus_view(std::nullopt);
         forms.blur();
         preedit.clear();
         if (!workspace_notice().empty() && mouse_x >= left + 12 * scale &&
@@ -3065,6 +3261,9 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                                                        geometry.sidebar_row_height);
             if (row < view.index.size()) {
                 const auto item = view.index.at(row);
+                focus_view(active_view);
+                static_cast<void>(sidebar_views.select(
+                    active_view, item.value->at("id").get<std::string>(), view_page()));
                 if (item.group)
                     sidebar_views.toggle(active_view, row);
                 else {
@@ -4084,7 +4283,9 @@ void EditorWindow::Impl::draw() {
             const auto y = geometry.sidebar_rows.y +
                            static_cast<float>(index - view.scroll) * geometry.sidebar_row_height;
             const auto x = sx + (8 + 12 * static_cast<float>(row.depth)) * scale;
-            if (item.value("selected", false))
+            const bool focused_row =
+                focused_view == active_view && view.cursor == item.at("id").get<std::string>();
+            if (item.value("selected", false) || focused_row)
                 rectangle(canvas,
                           sx,
                           y,
@@ -4099,6 +4300,8 @@ void EditorWindow::Impl::draw() {
                           geometry.sidebar.width,
                           geometry.sidebar_row_height,
                           hover_color);
+            if (focused_row)
+                rectangle(canvas, sx, y, 2 * scale, geometry.sidebar_row_height, accent);
             if (row.group)
                 draw_icon(canvas,
                           view.index.collapsed(item.at("id").get<std::string>())
@@ -4682,10 +4885,10 @@ WorkbenchViewState EditorWindow::view_state() const {
                               impl_->sidebar_views.at("explorer").index.size()};
     const auto& sidebar = impl_->sidebar_views.at(impl_->active_view);
     result.file_first = sidebar.scroll;
-    result.sidebar = {{"id", impl_->active_view},
-                      {"version", sidebar.version},
-                      {"total", sidebar.index.size()},
-                      {"rows", Json::array()}};
+    result.sidebar = impl_->sidebar_views.state(impl_->active_view);
+    result.sidebar["focused"] = impl_->focused_view == impl_->active_view;
+    result.sidebar["focus"] = std::to_string(impl_->view_focus_sequence);
+    result.sidebar["rows"] = Json::array();
     const auto end = std::min(sidebar.index.size(), sidebar.scroll + 128);
     sidebar.index.for_each_range(
         std::min(sidebar.scroll, sidebar.index.size()), end, [&](std::size_t, const ViewRow& row) {
@@ -4741,6 +4944,7 @@ bool EditorWindow::pump() {
             impl_->workbench_shutdown_deadline = Clock::now() + std::chrono::seconds(5);
             impl_->workbench->shutdown();
             impl_->policy_inputs.clear();
+            impl_->view_inputs.clear();
         }
         impl_->workbench->poll();
         if (impl_->workbench->idle()) {
@@ -4761,6 +4965,14 @@ bool EditorWindow::pump() {
         });
         impl_->service_responses();
         impl_->sidebar_views.poll();
+        if (impl_->focused_view) {
+            const auto& version = impl_->sidebar_views.at(*impl_->focused_view).version;
+            if (version != impl_->focused_view_version) {
+                static_cast<void>(impl_->sidebar_views.navigate(
+                    *impl_->focused_view, "retain", impl_->view_page()));
+                impl_->focused_view_version = version;
+            }
+        }
         const auto form_deadline = Clock::now() + std::chrono::milliseconds(4);
         for (int count = 0;
              count < 8 && !impl_->form_events.empty() && Clock::now() < form_deadline;
@@ -4771,6 +4983,7 @@ bool EditorWindow::pump() {
         }
         impl_->workbench->poll();
         impl_->advance_policy_inputs();
+        impl_->advance_view_inputs();
         if (impl_->finish_fences())
             impl_->workbench->poll();
         if (impl_->quit_requested && impl_->workbench->idle() && impl_->native_idle()) {

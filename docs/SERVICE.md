@@ -378,6 +378,42 @@ The async provider receives `(parameters, {signal})` and returns
 `icon`, `badge`, `tone`, `depth`, `group`, `selected` and JSON `data`.
 Group descendants follow their parent in preorder; depth may increase only one
 level after a group. Depth is 0..64. Native group folding uses the measured index.
+`await astra.ui.views.read(id?)` returns the current `{id, version, row, index,
+total, scroll, focused, focus}` state; `row` and `index` are null for an empty or
+unselected view. `await astra.ui.views.focus(id?)` focuses the visible view's rows,
+retaining its cursor or selecting the first row. Focusing a hidden view or focusing
+while modal input is active is rejected. `await astra.ui.views.blur()` returns
+focus to the editor. `blur({id, focus})` accepts an optional captured focus guard;
+a stale guard returns false. Built-in file/search activation returns editor focus
+after opening/selecting the result, without stealing focus from a subsequently
+selected control. These controls, like the other public UI APIs, return Promises.
+
+`await astra.ui.views.select(id, rowId, guards?, options?)` selects a visible row
+by stable identity. `await astra.ui.views.navigate(id, action, guards?, options?)`
+atomically computes navigation from the current retained cursor; it does not
+require a read/select round trip. Actions are `next`, `previous`, `first`, `last`,
+`pageUp`, `pageDown`, `left`, `right`, `toggle`, `activate` and `retain`.
+Optional `{version, focus}` guards come from a read/focus result. A stale guard
+returns null without changing the view. Selecting a missing or hidden row also
+returns null. Invalid actions reject.
+Left collapses an expanded group or selects its parent; Right expands a group or
+enters its first child. Activate toggles groups and awaits the JS leaf handler.
+Toggle changes groups only. Page navigation uses the visible viewport, and cursor
+changes reveal the row. Refreshes retain cursor identity across reordering; hidden
+cursors move to a visible ancestor and removed cursors to the nearest old index.
+
+SDL row navigation dispatches overridable `ui.view.<action>` JS commands, with
+captured view/version/focus guards, through a bounded FIFO per view. The limits
+are 256 accepted inputs and 8 MiB of serialized parameters/identities. Independent
+views are separate scopes; stale queued inputs are retired. A handler can await
+`waitForIdle()` without waiting on itself or its queued successors. Input/rendering
+continue while it awaits. Changing focus invalidates delayed row navigation.
+Up/Down, Home/End, PageUp/PageDown, Left/Right, Enter and Space operate the focused
+row widget. F6 switches between editor/forms and sidebar rows; Tab or Escape from
+rows returns editor focus. Ctrl+Shift+E shows and focuses Explorer. Text/IME and
+editing shortcuts do not mutate the document while row focus is active. Clicking
+editor content, tabs, or a retained form transfers focus away from the row widget.
+
 `handlers.activate(data, row)` is awaited for leaf activation; late events from
 replaced view generations are discarded. `handlers.show()` can customize showing
 a view. `handlers.refresh()` can read current retained controls when the view's

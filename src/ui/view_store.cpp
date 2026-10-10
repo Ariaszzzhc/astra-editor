@@ -148,7 +148,16 @@ void ViewStore::poll() {
                 stage.fold_generation = view.fold_generation;
             }
             if (stage.projection->filter_step(128)) {
+                std::optional<std::string> next_cursor;
+                if (view.cursor && stage.projection->size()) {
+                    const auto position =
+                        stage.projection->position(*view.cursor, true)
+                            .value_or(std::min(cursor(iterator->first).value_or(0),
+                                               stage.projection->size() - 1));
+                    next_cursor = stage.projection->at(position).value->at("id").get<std::string>();
+                }
                 view.index = std::move(*stage.projection);
+                view.cursor = std::move(next_cursor);
                 view.version = std::move(stage.version);
                 view.subtitle = std::move(stage.subtitle);
                 view.empty = std::move(stage.empty);
@@ -198,5 +207,109 @@ void ViewStore::toggle(std::string_view id, std::size_t row) {
         throw protocol::RpcError(-32004, "View fold identity exhausted");
     view.index.toggle(row);
     ++view.fold_generation;
+    if (view.cursor) {
+        const auto position = view.index.position(*view.cursor, true);
+        view.cursor =
+            position ? std::optional(view.index.at(*position).value->at("id").get<std::string>())
+                     : std::nullopt;
+    }
+}
+
+std::optional<std::size_t> ViewStore::cursor(std::string_view id) const {
+    const auto& view = at(id);
+    return view.cursor ? view.index.position(*view.cursor) : std::nullopt;
+}
+
+Json ViewStore::state(std::string_view id) const {
+    const auto& view = at(id);
+    Json result{{"id", id},
+                {"version", view.version},
+                {"total", view.index.size()},
+                {"scroll", view.scroll},
+                {"row", nullptr},
+                {"index", nullptr}};
+    if (const auto position = cursor(id)) {
+        const auto& row = view.index.at(*position);
+        result["index"] = *position;
+        result["row"] = *row.value;
+        result["collapsed"] = row.group && view.index.collapsed(*view.cursor);
+    }
+    return result;
+}
+
+void ViewStore::reveal(std::string_view id, std::size_t page) {
+    if (page == 0 || page > 256)
+        throw protocol::RpcError(-32602, "View page must be 1..256 rows");
+    auto& view = at(id);
+    if (const auto position = cursor(id)) {
+        if (*position < view.scroll)
+            view.scroll = *position;
+        else if (*position - view.scroll >= page)
+            view.scroll = *position - page + 1;
+    }
+    view.scroll = std::min(view.scroll, view.index.size() ? view.index.size() - 1 : 0);
+}
+
+bool ViewStore::select(std::string_view id, std::string_view row, std::size_t page) {
+    if (page == 0 || page > 256)
+        throw protocol::RpcError(-32602, "View page must be 1..256 rows");
+    auto& view = at(id);
+    const auto position = view.index.position(row);
+    if (!position)
+        return false;
+    view.cursor = std::string(row);
+    reveal(id, page);
+    return true;
+}
+
+Json ViewStore::navigate(std::string_view id, std::string_view action, std::size_t page) {
+    if (page == 0 || page > 256)
+        throw protocol::RpcError(-32602, "View page must be 1..256 rows");
+    if (action != "next" && action != "previous" && action != "first" && action != "last" &&
+        action != "pageUp" && action != "pageDown" && action != "left" && action != "right" &&
+        action != "toggle" && action != "activate" && action != "retain")
+        throw protocol::RpcError(-32602, "Unknown view navigation action");
+    auto& view = at(id);
+    bool activate = false;
+    if (view.index.size()) {
+        auto position = cursor(id).value_or(0);
+        const auto row = view.index.at(position);
+        const auto row_id = row.value->at("id").get<std::string>();
+        if (action == "next")
+            position = std::min(position + 1, view.index.size() - 1);
+        else if (action == "previous")
+            position = position ? position - 1 : 0;
+        else if (action == "first")
+            position = 0;
+        else if (action == "last")
+            position = view.index.size() - 1;
+        else if (action == "pageUp")
+            position -= std::min(position, page);
+        else if (action == "pageDown")
+            position = std::min(position + page, view.index.size() - 1);
+        else if (action == "left") {
+            if (row.group && !view.index.collapsed(row_id))
+                toggle(id, position);
+            else
+                position = view.index.parent(position).value_or(position);
+        } else if (action == "right") {
+            if (row.group && view.index.collapsed(row_id))
+                toggle(id, position);
+            else if (row.group && position + 1 < view.index.size() &&
+                     view.index.at(position + 1).depth > row.depth)
+                ++position;
+        } else if (action == "toggle" || action == "activate") {
+            if (row.group)
+                toggle(id, position);
+            else
+                activate = action == "activate";
+        }
+        view.cursor = view.index.at(position).value->at("id").get<std::string>();
+        view.expanded = true;
+    }
+    reveal(id, page);
+    auto result = state(id);
+    result["activate"] = activate;
+    return result;
 }
 } // namespace astra::ui

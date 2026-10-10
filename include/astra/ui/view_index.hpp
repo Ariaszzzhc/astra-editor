@@ -8,6 +8,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -19,6 +20,7 @@ struct ViewRow {
     std::shared_ptr<const protocol::Json> value;
     std::size_t ordinal{}, depth{};
     bool group{};
+    std::optional<std::size_t> parent;
 };
 
 struct ViewSummary {
@@ -83,6 +85,9 @@ class ViewIndex final {
     }
 
     void toggle(std::size_t index);
+    [[nodiscard]] std::optional<std::size_t> position(std::string_view id,
+                                                      bool visible_ancestor = false) const;
+    [[nodiscard]] std::optional<std::size_t> parent(std::size_t index) const;
 
     template <typename Function>
     void for_each_range(std::size_t begin, std::size_t end, Function&& function) const {

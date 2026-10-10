@@ -82,6 +82,18 @@ void ViewBuilder::append(const Json& values) {
             const auto& previous = rows.empty() ? source_->rows.at(row.ordinal - 1) : rows.back();
             if (row.depth > previous.depth && (row.depth != previous.depth + 1 || !previous.group))
                 throw protocol::RpcError(-32602, "View children require an adjacent parent group");
+            if (row.depth) {
+                const auto staged_begin = source_->rows.size();
+                const ViewRow* ancestor = &previous;
+                while (ancestor->depth >= row.depth) {
+                    if (!ancestor->parent)
+                        throw protocol::RpcError(-32602, "View row has no parent");
+                    const auto ordinal = *ancestor->parent;
+                    ancestor = ordinal < staged_begin ? &source_->rows.at(ordinal)
+                                                      : &rows.at(ordinal - staged_begin);
+                }
+                row.parent = ancestor->ordinal;
+            }
         }
         rows.push_back(std::move(row));
     }
@@ -120,6 +132,33 @@ std::size_t ViewIndex::subtree_end(const ViewRow& row) const {
                    return prefix.minimum_depth <= row.depth;
                })
                .index;
+}
+
+std::optional<std::size_t> ViewIndex::position(std::string_view id, bool visible_ancestor) const {
+    if (!source_ || !ready())
+        return std::nullopt;
+    const auto found = source_->positions.find(std::string(id));
+    if (found == source_->positions.end())
+        return std::nullopt;
+    auto ordinal = found->second;
+    for (;;) {
+        const auto result = visible_.seek_prefix([&](const ViewSummary& prefix) {
+            return prefix.last_source > ordinal;
+        });
+        if (result.item && result.item->ordinal == ordinal)
+            return result.index;
+        const auto& row = source_->rows.at(ordinal);
+        if (!visible_ancestor || !row.parent)
+            return std::nullopt;
+        ordinal = *row.parent;
+    }
+}
+
+std::optional<std::size_t> ViewIndex::parent(std::size_t index) const {
+    const auto& row = at(index);
+    if (!row.parent)
+        return std::nullopt;
+    return position(source_->rows.at(*row.parent).value->at("id").get<std::string>());
 }
 
 bool ViewIndex::filter_step(std::size_t budget) {
