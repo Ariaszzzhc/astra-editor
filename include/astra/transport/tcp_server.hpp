@@ -51,12 +51,12 @@ struct TcpServerStats {
 };
 
 class TransportError : public std::runtime_error {
-public:
+  public:
     using std::runtime_error::runtime_error;
 };
 
 class TransportCancelled final : public TransportError {
-public:
+  public:
     using TransportError::TransportError;
 };
 
@@ -74,12 +74,14 @@ public:
 // Only literal 127.0.0.1 and ::1 are accepted: use an authenticated SSH tunnel for
 // remote access until a native authenticated transport is implemented.
 class TcpServer {
-public:
+  public:
     using Handler = std::function<std::optional<std::string>(std::string_view)>;
     using Notifications = std::function<std::vector<std::string>()>;
 
-    explicit TcpServer(Handler handler, Notifications notifications = {},
-                       TcpServerOptions options = {}, TcpServerHooks hooks = {});
+    explicit TcpServer(Handler handler,
+                       Notifications notifications = {},
+                       TcpServerOptions options = {},
+                       TcpServerHooks hooks = {});
     ~TcpServer();
     TcpServer(const TcpServer&) = delete;
     TcpServer& operator=(const TcpServer&) = delete;
@@ -104,9 +106,8 @@ public:
     // cancellation of accepted work; rejected work does not invoke completion.
     // The future finishes after completion and propagates worker/completion
     // errors. stop() cancels work that has not started and waits for active work.
-    [[nodiscard]] std::future<void> queue_work(
-        std::function<void()> worker,
-        std::function<void(std::exception_ptr)> completion);
+    [[nodiscard]] std::future<void> queue_work(std::function<void()> worker,
+                                               std::function<void(std::exception_ptr)> completion);
 
     // One local GUI consumer receives the same notifications as TCP clients.
     // Overflow drops queued local events and replaces them with the explicit
@@ -114,7 +115,7 @@ public:
     // is consumed. The GUI then reads fresh versioned snapshots.
     [[nodiscard]] std::vector<std::string> take_local_notifications();
 
-private:
+  private:
     class Impl;
     std::unique_ptr<Impl> impl_;
 };

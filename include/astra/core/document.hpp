@@ -69,7 +69,7 @@ struct DocumentSnapshot {
 };
 
 class StaleRevision final : public std::runtime_error {
-public:
+  public:
     StaleRevision();
 };
 
@@ -77,16 +77,14 @@ enum class AnchorBias { before, after };
 
 // Maps a byte offset through sorted, disjoint edits of the original text.
 // Callers must supply validated edits; Document performs this validation itself.
-[[nodiscard]] ByteOffset transform_offset(ByteOffset offset,
-                                        std::span<const Edit> edits,
-                                        AnchorBias bias);
+[[nodiscard]] ByteOffset
+transform_offset(ByteOffset offset, std::span<const Edit> edits, AnchorBias bias);
 
 // Single-owner document model. Services serialize access; snapshots can be shared
 // across workers because the Rope is persistent and selections are copied values.
 class Document {
-public:
-    explicit Document(BufferId id, std::string_view text = {},
-                      std::size_t history_limit = 1000);
+  public:
+    explicit Document(BufferId id, std::string_view text = {}, std::size_t history_limit = 1000);
     Document& operator=(const Document&) = delete;
     Document(Document&&) = default;
     Document& operator=(Document&&) noexcept = default;
@@ -133,8 +131,9 @@ public:
     [[nodiscard]] bool redo();
     void set_history_limit(std::size_t limit) noexcept;
 
-private:
+  private:
     Document(const Document&) = default;
+
     struct State {
         Rope text;
         std::vector<Selection> selections;
@@ -146,8 +145,8 @@ private:
         State after;
     };
 
-    [[nodiscard]] static std::vector<Selection> normalize_selections(
-        const Rope& text, std::vector<Selection> selections);
+    [[nodiscard]] static std::vector<Selection>
+    normalize_selections(const Rope& text, std::vector<Selection> selections);
     void require_revision_space() const;
     void trim_history() noexcept;
 

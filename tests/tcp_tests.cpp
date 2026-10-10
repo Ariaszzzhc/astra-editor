@@ -35,7 +35,7 @@ using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 
 class SocketClient {
-public:
+  public:
     explicit SocketClient(std::uint16_t port, bool ipv6 = false) {
         WSADATA data{};
         if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
@@ -59,13 +59,17 @@ public:
                 if (InetPtonA(AF_INET6, "::1", &address.sin6_addr) != 1) {
                     throw std::runtime_error("Parse test IPv6 address failed");
                 }
-                status = connect(socket_, reinterpret_cast<const sockaddr*>(&address), static_cast<int>(sizeof(address)));
+                status = connect(socket_,
+                                 reinterpret_cast<const sockaddr*>(&address),
+                                 static_cast<int>(sizeof(address)));
             } else {
                 sockaddr_in address{};
                 address.sin_family = AF_INET;
                 address.sin_port = htons(port);
                 address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-                status = connect(socket_, reinterpret_cast<const sockaddr*>(&address), static_cast<int>(sizeof(address)));
+                status = connect(socket_,
+                                 reinterpret_cast<const sockaddr*>(&address),
+                                 static_cast<int>(sizeof(address)));
             }
             if (status == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK) {
                 throw std::runtime_error("Connect test TCP socket failed");
@@ -75,7 +79,8 @@ public:
             }
             int error = 0;
             int length = static_cast<int>(sizeof(error));
-            if (getsockopt(socket_, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &length) != 0 ||
+            if (getsockopt(
+                    socket_, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &length) != 0 ||
                 error != 0) {
                 throw std::runtime_error("Test TCP connection was refused");
             }
@@ -119,8 +124,8 @@ public:
             if (!wait_ready(false, deadline)) {
                 throw std::runtime_error("Test TCP send deadline expired");
             }
-            const auto length = std::min({fragment_size, bytes.size() - offset,
-                                           static_cast<std::size_t>(65536)});
+            const auto length =
+                std::min({fragment_size, bytes.size() - offset, static_cast<std::size_t>(65536)});
             const int sent = send(socket_, bytes.data() + offset, static_cast<int>(length), 0);
             if (sent == SOCKET_ERROR) {
                 if (WSAGetLastError() == WSAEWOULDBLOCK) {
@@ -156,7 +161,8 @@ public:
             if (received == 0) {
                 throw std::runtime_error("Test TCP peer closed before all frames arrived");
             }
-            auto decoded = decoder_.feed(std::string_view(buffer.data(), static_cast<std::size_t>(received)));
+            auto decoded =
+                decoder_.feed(std::string_view(buffer.data(), static_cast<std::size_t>(received)));
             for (auto& body : decoded) {
                 messages_.push_back(std::move(body));
             }
@@ -194,9 +200,10 @@ public:
         return false;
     }
 
-private:
+  private:
     bool wait_ready(bool reading, Clock::time_point deadline) const {
-        const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - Clock::now());
+        const auto remaining =
+            std::chrono::duration_cast<std::chrono::microseconds>(deadline - Clock::now());
         if (remaining <= 0us) {
             return false;
         }
@@ -206,8 +213,8 @@ private:
         fd_set ready{};
         FD_ZERO(&ready);
         FD_SET(socket_, &ready);
-        const int status = select(0, reading ? &ready : nullptr, reading ? nullptr : &ready,
-                                    nullptr, &timeout);
+        const int status =
+            select(0, reading ? &ready : nullptr, reading ? nullptr : &ready, nullptr, &timeout);
         if (status == SOCKET_ERROR) {
             throw std::runtime_error("Test TCP select failed");
         }
@@ -221,16 +228,19 @@ private:
 };
 
 Json tcp_request(std::string method, Json params, std::string id) {
-    return Json{{"jsonrpc", "2.0"}, {"method", std::move(method)},
-                {"params", std::move(params)}, {"id", std::move(id)}};
+    return Json{{"jsonrpc", "2.0"},
+                {"method", std::move(method)},
+                {"params", std::move(params)},
+                {"id", std::move(id)}};
 }
 
 TcpServer::Handler echo_handler() {
-    return [](std::string_view body) { return std::optional<std::string>(std::string(body)); };
+    return [](std::string_view body) {
+        return std::optional<std::string>(std::string(body));
+    };
 }
 
-template <typename Predicate>
-bool wait_until(Predicate predicate) {
+template <typename Predicate> bool wait_until(Predicate predicate) {
     const auto deadline = Clock::now() + 5s;
     while (Clock::now() < deadline) {
         if (predicate()) {
@@ -253,8 +263,7 @@ void check_shutdown(const TcpServer& server) {
     CHECK(stats.pending_work == 0);
 }
 
-template <typename Value>
-Value await_future(std::future<Value> future) {
+template <typename Value> Value await_future(std::future<Value> future) {
     if (future.wait_for(5s) != std::future_status::ready) {
         throw std::runtime_error("Local transport future deadline expired");
     }
@@ -277,7 +286,8 @@ TEST_CASE("TCP server uses real sockets for fragmented and coalesced Content-Len
     SocketClient client(server.port());
     const std::string unicode = "{\"text\":\"\xE4\xB8\xAD\xF0\x9F\x98\x80\"}";
     client.send_body(unicode, 1);
-    client.send_bytes(astra::protocol::encode_frame("second") + astra::protocol::encode_frame("third"));
+    client.send_bytes(astra::protocol::encode_frame("second") +
+                      astra::protocol::encode_frame("third"));
     CHECK(client.receive(3) == std::vector<std::string>{unicode, "second", "third"});
     server.stop();
     REQUIRE(client.await_closed());
@@ -285,21 +295,24 @@ TEST_CASE("TCP server uses real sockets for fragmented and coalesced Content-Len
     CHECK(server.stats().accepted_connections == 1);
 }
 
-TEST_CASE("TCP service replies to the origin and broadcasts metadata notifications to both clients") {
+TEST_CASE(
+    "TCP service replies to the origin and broadcasts metadata notifications to both clients") {
     astra::service::EditorService service;
     std::thread::id handler_thread;
     std::thread::id notification_thread;
-    TcpServer server([&](std::string_view body) {
-        handler_thread = std::this_thread::get_id();
-        return service.dispatch_text(body);
-    }, [&] {
-        notification_thread = std::this_thread::get_id();
-        std::vector<std::string> messages;
-        for (const auto& event : service.take_notifications()) {
-            messages.push_back(event.dump());
-        }
-        return messages;
-    });
+    TcpServer server(
+        [&](std::string_view body) {
+            handler_thread = std::this_thread::get_id();
+            return service.dispatch_text(body);
+        },
+        [&] {
+            notification_thread = std::this_thread::get_id();
+            std::vector<std::string> messages;
+            for (const auto& event : service.take_notifications()) {
+                messages.push_back(event.dump());
+            }
+            return messages;
+        });
     server.start();
     SocketClient first(server.port());
     SocketClient second(server.port());
@@ -317,7 +330,9 @@ TEST_CASE("TCP service replies to the origin and broadcasts metadata notificatio
     CHECK(read["result"]["text"] == "hello");
     CHECK_FALSE(first.readable());
     first.send_body(tcp_request("document.insert",
-        Json{{"id", "1"}, {"baseRevision", "0"}, {"text", "!"}}, "edit").dump());
+                                Json{{"id", "1"}, {"baseRevision", "0"}, {"text", "!"}},
+                                "edit")
+                        .dump());
     const auto edited = first.receive(2);
     CHECK(Json::parse(edited[0])["id"] == "edit");
     CHECK(Json::parse(edited[1])["params"]["revision"] == "1");
@@ -379,12 +394,16 @@ TEST_CASE("TCP connection limit rejects excess clients while preserving existing
     check_shutdown(server);
 }
 
-TEST_CASE("TCP per-client write budget disconnects an oversized response without stopping the server") {
+TEST_CASE(
+    "TCP per-client write budget disconnects an oversized response without stopping the server") {
     TcpServerOptions options;
     options.max_queued_write_bytes = 128;
-    TcpServer server([](std::string_view body) {
-        return std::optional<std::string>(body == "large" ? std::string(256, 'x') : "small");
-    }, {}, options);
+    TcpServer server(
+        [](std::string_view body) {
+            return std::optional<std::string>(body == "large" ? std::string(256, 'x') : "small");
+        },
+        {},
+        options);
     server.start();
     SocketClient slow(server.port());
     slow.send_body("large");
@@ -401,9 +420,12 @@ TEST_CASE("TCP per-client write budget disconnects an oversized response without
 TEST_CASE("TCP global write budget is checked before queuing a response") {
     TcpServerOptions options;
     options.max_total_queued_write_bytes = 128;
-    TcpServer server([](std::string_view) {
-        return std::optional<std::string>(std::string(256, 'x'));
-    }, {}, options);
+    TcpServer server(
+        [](std::string_view) {
+            return std::optional<std::string>(std::string(256, 'x'));
+        },
+        {},
+        options);
     server.start();
     SocketClient client(server.port());
     client.send_body("request");
@@ -416,7 +438,9 @@ TEST_CASE("TCP global write budget is checked before queuing a response") {
 
 TEST_CASE("TCP half-close finishes complete responses before closing the connection") {
     const std::string response(2 * 1024 * 1024, 'r');
-    TcpServer server([&](std::string_view) { return std::optional<std::string>(response); });
+    TcpServer server([&](std::string_view) {
+        return std::optional<std::string>(response);
+    });
     server.start();
     SocketClient client(server.port());
     client.send_body("request");
@@ -427,7 +451,8 @@ TEST_CASE("TCP half-close finishes complete responses before closing the connect
     check_shutdown(server);
 }
 
-TEST_CASE("TCP disconnect and shutdown drain outstanding asynchronous writes without stale handles") {
+TEST_CASE(
+    "TCP disconnect and shutdown drain outstanding asynchronous writes without stale handles") {
     std::atomic<std::size_t> calls{};
     const std::string response(4 * 1024 * 1024, 'r');
     TcpServer server([&](std::string_view) {
@@ -438,12 +463,16 @@ TEST_CASE("TCP disconnect and shutdown drain outstanding asynchronous writes wit
     for (std::size_t index = 0; index < 8; ++index) {
         SocketClient disconnected(server.port());
         disconnected.send_body("large");
-        REQUIRE(wait_until([&] { return calls.load() >= index + 1; }));
+        REQUIRE(wait_until([&] {
+            return calls.load() >= index + 1;
+        }));
         disconnected.close();
     }
     SocketClient active(server.port());
     active.send_bytes(astra::protocol::encode_frame("a") + astra::protocol::encode_frame("b"));
-    REQUIRE(wait_until([&] { return calls.load() >= 10; }));
+    REQUIRE(wait_until([&] {
+        return calls.load() >= 10;
+    }));
     const auto start = Clock::now();
     server.stop();
     CHECK(Clock::now() - start < 5s);
@@ -511,7 +540,8 @@ TEST_CASE("TCP failed bind cleans up its initialized loop and can be retried") {
     TcpServer occupied(echo_handler());
     occupied.start();
     TcpServer retry(echo_handler());
-    CHECK_THROWS_AS((void)(retry.start("127.0.0.1", occupied.port())), astra::transport::TransportError);
+    CHECK_THROWS_AS((void)(retry.start("127.0.0.1", occupied.port())),
+                    astra::transport::TransportError);
     CHECK_FALSE(retry.running());
     CHECK(retry.port() == 0);
     CHECK(retry.stats().loop_close_error == 0);
@@ -556,13 +586,17 @@ TEST_CASE("TCP rejects invalid resource configuration before creating a loop") {
 
 TEST_CASE("local submit and TCP share the same handler and service notifications") {
     astra::service::EditorService service;
-    TcpServer server([&](std::string_view body) { return service.dispatch_text(body); }, [&] {
-        std::vector<std::string> result;
-        for (const auto& notification : service.take_notifications()) {
-            result.push_back(notification.dump());
-        }
-        return result;
-    });
+    TcpServer server(
+        [&](std::string_view body) {
+            return service.dispatch_text(body);
+        },
+        [&] {
+            std::vector<std::string> result;
+            for (const auto& notification : service.take_notifications()) {
+                result.push_back(notification.dump());
+            }
+            return result;
+        });
     server.start();
     SocketClient remote(server.port());
     remote.send_body(tcp_request("document.get", Json{{"id", "missing"}}, "ready").dump());
@@ -629,22 +663,31 @@ TEST_CASE("local stop cancels queued futures and waits for the current loop task
     auto entered_future = entered.get_future();
     std::promise<void> release;
     const auto release_future = release.get_future().share();
-    auto blocking = server.post([&, release_future] { entered.set_value(); await_release(release_future); });
+    auto blocking = server.post([&, release_future] {
+        entered.set_value();
+        await_release(release_future);
+    });
     await_future(std::move(entered_future));
     std::vector<std::future<std::optional<std::string>>> pending;
     for (std::size_t index = 0; index < 16; ++index) {
         pending.push_back(server.submit("never executed"));
     }
-    std::jthread stopping([&] { server.stop(); });
-    const bool stop_requested = wait_until([&] { return !server.running(); });
+    std::jthread stopping([&] {
+        server.stop();
+    });
+    const bool stop_requested = wait_until([&] {
+        return !server.running();
+    });
     release.set_value();
     stopping.join();
     REQUIRE(stop_requested);
     await_future(std::move(blocking));
     for (auto& future : pending) {
-        CHECK_THROWS_AS((void)(await_future(std::move(future))), astra::transport::TransportCancelled);
+        CHECK_THROWS_AS((void)(await_future(std::move(future))),
+                        astra::transport::TransportCancelled);
     }
-    CHECK_THROWS_AS((void)(await_future(server.submit("stopped"))), astra::transport::TransportCancelled);
+    CHECK_THROWS_AS((void)(await_future(server.submit("stopped"))),
+                    astra::transport::TransportCancelled);
     check_shutdown(server);
 }
 
@@ -653,24 +696,32 @@ TEST_CASE("local task count and byte budgets fail through ready futures") {
     options.max_pending_tasks = 2;
     options.max_queued_task_bytes = 5;
     TcpServer server(echo_handler(), {}, options);
-    CHECK_THROWS_AS((void)(await_future(server.submit("before start"))), astra::transport::TransportCancelled);
+    CHECK_THROWS_AS((void)(await_future(server.submit("before start"))),
+                    astra::transport::TransportCancelled);
     server.start();
     std::promise<void> entered;
     auto entered_future = entered.get_future();
     std::promise<void> release;
     const auto release_future = release.get_future().share();
-    auto blocking = server.post([&, release_future] { entered.set_value(); await_release(release_future); });
+    auto blocking = server.post([&, release_future] {
+        entered.set_value();
+        await_release(release_future);
+    });
     await_future(std::move(entered_future));
     auto first = server.submit("abc");
     auto byte_overflow = server.submit("def");
-    auto second = server.post([] {});
-    auto count_overflow = server.post([] {});
+    auto second = server.post([] {
+    });
+    auto count_overflow = server.post([] {
+    });
     release.set_value();
     await_future(std::move(blocking));
     CHECK(await_future(std::move(first)) == std::optional<std::string>("abc"));
     await_future(std::move(second));
-    CHECK_THROWS_AS((void)(await_future(std::move(byte_overflow))), astra::transport::TransportError);
-    CHECK_THROWS_AS((void)(await_future(std::move(count_overflow))), astra::transport::TransportError);
+    CHECK_THROWS_AS((void)(await_future(std::move(byte_overflow))),
+                    astra::transport::TransportError);
+    CHECK_THROWS_AS((void)(await_future(std::move(count_overflow))),
+                    astra::transport::TransportError);
     server.stop();
     check_shutdown(server);
 }
@@ -684,7 +735,9 @@ TEST_CASE("local handler and posted task exceptions propagate without stopping t
     });
     server.start();
     CHECK_THROWS_AS((void)(await_future(server.submit("fail"))), std::logic_error);
-    CHECK_THROWS_AS((void)(await_future(server.post([] { throw std::out_of_range("task failed"); }))),
+    CHECK_THROWS_AS((void)(await_future(server.post([] {
+                        throw std::out_of_range("task failed");
+                    }))),
                     std::out_of_range);
     CHECK_THROWS_AS((void)(await_future(server.post({}))), std::invalid_argument);
     CHECK(await_future(server.submit("healthy")) == std::optional<std::string>("healthy"));
@@ -692,19 +745,26 @@ TEST_CASE("local handler and posted task exceptions propagate without stopping t
     check_shutdown(server);
 }
 
-TEST_CASE("local notification overflow emits one explicit resync marker and leaves TCP delivery intact") {
+TEST_CASE(
+    "local notification overflow emits one explicit resync marker and leaves TCP delivery intact") {
     std::size_t serial = 0;
     std::vector<std::string> pending;
     TcpServerOptions options;
     options.max_local_notifications = 2;
     options.max_local_notification_bytes = 256;
-    TcpServer server([&](std::string_view body) -> std::optional<std::string> {
-        if (body == "event") {
-            pending.push_back(Json{{"jsonrpc", "2.0"}, {"method", "event"},
-                                   {"params", Json{{"serial", ++serial}}}}.dump());
-        }
-        return std::string(body);
-    }, [&] { return std::exchange(pending, {}); }, options);
+    TcpServer server(
+        [&](std::string_view body) -> std::optional<std::string> {
+            if (body == "event") {
+                pending.push_back(Json{
+                    {"jsonrpc", "2.0"}, {"method", "event"}, {"params", Json{{"serial", ++serial}}}}
+                                      .dump());
+            }
+            return std::string(body);
+        },
+        [&] {
+            return std::exchange(pending, {});
+        },
+        options);
     server.start();
     SocketClient remote(server.port());
     remote.send_body("ready");
@@ -733,14 +793,21 @@ TEST_CASE("local notification byte limit bounds one large event without dropping
     std::vector<std::string> pending;
     TcpServerOptions options;
     options.max_local_notification_bytes = 256;
-    const auto notification = Json{{"jsonrpc", "2.0"}, {"method", "large"},
-                                   {"params", Json{{"text", std::string(300, 'x')}}}}.dump();
-    TcpServer server([&](std::string_view body) -> std::optional<std::string> {
-        if (body == "large") {
-            pending.push_back(notification);
-        }
-        return std::string(body);
-    }, [&] { return std::exchange(pending, {}); }, options);
+    const auto notification = Json{{"jsonrpc", "2.0"},
+                                   {"method", "large"},
+                                   {"params", Json{{"text", std::string(300, 'x')}}}}
+                                  .dump();
+    TcpServer server(
+        [&](std::string_view body) -> std::optional<std::string> {
+            if (body == "large") {
+                pending.push_back(notification);
+            }
+            return std::string(body);
+        },
+        [&] {
+            return std::exchange(pending, {});
+        },
+        options);
     server.start();
     SocketClient remote(server.port());
     remote.send_body("ready");
@@ -760,29 +827,34 @@ TEST_CASE("libuv background work leaves the owner loop responsive and completes 
     std::thread::id work_thread;
     std::thread::id completion_thread;
     astra::transport::TcpServerHooks hooks;
-    hooks.on_start = [&] { loop_thread = std::this_thread::get_id(); };
+    hooks.on_start = [&] {
+        loop_thread = std::this_thread::get_id();
+    };
     TcpServer server(echo_handler(), {}, {}, hooks);
     server.start();
     std::promise<void> entered;
     auto entered_future = entered.get_future();
     std::promise<void> release;
     const auto release_future = release.get_future().share();
-    auto work = server.queue_work([&, release_future] {
-        work_thread = std::this_thread::get_id();
-        entered.set_value();
-        await_release(release_future);
-    }, [&](std::exception_ptr error) {
-        if (error) {
-            std::rethrow_exception(error);
-        }
-        completion_thread = std::this_thread::get_id();
-    });
+    auto work = server.queue_work(
+        [&, release_future] {
+            work_thread = std::this_thread::get_id();
+            entered.set_value();
+            await_release(release_future);
+        },
+        [&](std::exception_ptr error) {
+            if (error) {
+                std::rethrow_exception(error);
+            }
+            completion_thread = std::this_thread::get_id();
+        });
     await_future(std::move(entered_future));
     auto responsive = server.submit("while work is blocked");
     const bool ready = responsive.wait_for(2s) == std::future_status::ready;
     release.set_value();
     REQUIRE(ready);
-    CHECK(await_future(std::move(responsive)) == std::optional<std::string>("while work is blocked"));
+    CHECK(await_future(std::move(responsive)) ==
+          std::optional<std::string>("while work is blocked"));
     await_future(std::move(work));
     server.stop();
     CHECK(work_thread != loop_thread);
@@ -795,13 +867,21 @@ TEST_CASE("libuv worker errors reach completion and its future without killing t
     TcpServer server(echo_handler());
     server.start();
     bool completion_saw_error = false;
-    auto failed = server.queue_work([] { throw std::invalid_argument("worker failed"); },
-        [&](std::exception_ptr error) { completion_saw_error = static_cast<bool>(error); });
+    auto failed = server.queue_work(
+        [] {
+            throw std::invalid_argument("worker failed");
+        },
+        [&](std::exception_ptr error) {
+            completion_saw_error = static_cast<bool>(error);
+        });
     CHECK_THROWS_AS((void)(await_future(std::move(failed))), std::invalid_argument);
     CHECK(completion_saw_error);
-    auto failed_completion = server.queue_work([] {}, [](std::exception_ptr) {
-        throw std::out_of_range("completion failed");
-    });
+    auto failed_completion = server.queue_work(
+        [] {
+        },
+        [](std::exception_ptr) {
+            throw std::out_of_range("completion failed");
+        });
     CHECK_THROWS_AS((void)(await_future(std::move(failed_completion))), std::out_of_range);
     CHECK(await_future(server.submit("still alive")) == std::optional<std::string>("still alive"));
     server.stop();
@@ -813,18 +893,32 @@ TEST_CASE("libuv shutdown waits for active workers and calls stop hook after com
     bool completed = false;
     std::size_t notification_polls_after_completion = 0;
     astra::transport::TcpServerHooks hooks;
-    hooks.on_start = [&] { order.push_back("start"); };
-    hooks.on_stop = [&] { order.push_back("stop"); };
-    TcpServer server(echo_handler(), [&] {
-        if (completed) { ++notification_polls_after_completion; }
-        return std::vector<std::string>{};
-    }, {}, hooks);
+    hooks.on_start = [&] {
+        order.push_back("start");
+    };
+    hooks.on_stop = [&] {
+        order.push_back("stop");
+    };
+    TcpServer server(
+        echo_handler(),
+        [&] {
+            if (completed) {
+                ++notification_polls_after_completion;
+            }
+            return std::vector<std::string>{};
+        },
+        {},
+        hooks);
     server.start();
     std::promise<void> entered;
     auto entered_future = entered.get_future();
     std::promise<void> release;
     const auto release_future = release.get_future().share();
-    auto work = server.queue_work([&, release_future] { entered.set_value(); await_release(release_future); },
+    auto work = server.queue_work(
+        [&, release_future] {
+            entered.set_value();
+            await_release(release_future);
+        },
         [&](std::exception_ptr error) {
             if (error) {
                 std::rethrow_exception(error);
@@ -834,8 +928,13 @@ TEST_CASE("libuv shutdown waits for active workers and calls stop hook after com
         });
     await_future(std::move(entered_future));
     std::atomic<bool> stopped{};
-    std::jthread stopping([&] { server.stop(); stopped.store(true); });
-    const bool stop_requested = wait_until([&] { return !server.running(); });
+    std::jthread stopping([&] {
+        server.stop();
+        stopped.store(true);
+    });
+    const bool stop_requested = wait_until([&] {
+        return !server.running();
+    });
     const bool waited = !stopped.load();
     release.set_value();
     stopping.join();
@@ -851,29 +950,42 @@ TEST_CASE("libuv queued work cancellation invokes completion on the loop and set
     std::thread::id loop_thread;
     std::thread::id completion_thread;
     astra::transport::TcpServerHooks hooks;
-    hooks.on_start = [&] { loop_thread = std::this_thread::get_id(); };
+    hooks.on_start = [&] {
+        loop_thread = std::this_thread::get_id();
+    };
     TcpServer server(echo_handler(), {}, {}, hooks);
     server.start();
     std::promise<void> entered;
     auto entered_future = entered.get_future();
     std::promise<void> release;
     const auto release_future = release.get_future().share();
-    auto blocking = server.post([&, release_future] { entered.set_value(); await_release(release_future); });
+    auto blocking = server.post([&, release_future] {
+        entered.set_value();
+        await_release(release_future);
+    });
     await_future(std::move(entered_future));
     bool worker_ran = false;
     bool cancelled = false;
-    auto work = server.queue_work([&] { worker_ran = true; }, [&](std::exception_ptr error) {
-        completion_thread = std::this_thread::get_id();
-        if (error) {
-            try {
-                std::rethrow_exception(error);
-            } catch (const astra::transport::TransportCancelled&) {
-                cancelled = true;
+    auto work = server.queue_work(
+        [&] {
+            worker_ran = true;
+        },
+        [&](std::exception_ptr error) {
+            completion_thread = std::this_thread::get_id();
+            if (error) {
+                try {
+                    std::rethrow_exception(error);
+                } catch (const astra::transport::TransportCancelled&) {
+                    cancelled = true;
+                }
             }
-        }
+        });
+    std::jthread stopping([&] {
+        server.stop();
     });
-    std::jthread stopping([&] { server.stop(); });
-    const bool stop_requested = wait_until([&] { return !server.running(); });
+    const bool stop_requested = wait_until([&] {
+        return !server.running();
+    });
     release.set_value();
     stopping.join();
     REQUIRE(stop_requested);
@@ -885,7 +997,8 @@ TEST_CASE("libuv queued work cancellation invokes completion on the loop and set
     check_shutdown(server);
 }
 
-TEST_CASE("libuv work admission is bounded and startup failure still releases the loop on its owner thread") {
+TEST_CASE("libuv work admission is bounded and startup failure still releases the loop on its "
+          "owner thread") {
     TcpServerOptions options;
     options.max_pending_work = 1;
     TcpServer server(echo_handler(), {}, options);
@@ -894,10 +1007,21 @@ TEST_CASE("libuv work admission is bounded and startup failure still releases th
     auto entered_future = entered.get_future();
     std::promise<void> release;
     const auto release_future = release.get_future().share();
-    auto first = server.queue_work([&, release_future] { entered.set_value(); await_release(release_future); }, [](std::exception_ptr) {});
+    auto first = server.queue_work(
+        [&, release_future] {
+            entered.set_value();
+            await_release(release_future);
+        },
+        [](std::exception_ptr) {
+        });
     await_future(std::move(entered_future));
     bool rejected_completion = false;
-    auto rejected = server.queue_work([] {}, [&](std::exception_ptr) { rejected_completion = true; });
+    auto rejected = server.queue_work(
+        [] {
+        },
+        [&](std::exception_ptr) {
+            rejected_completion = true;
+        });
     release.set_value();
     await_future(std::move(first));
     CHECK_THROWS_AS((void)(await_future(std::move(rejected))), astra::transport::TransportError);
@@ -907,8 +1031,13 @@ TEST_CASE("libuv work admission is bounded and startup failure still releases th
     std::thread::id startup_thread;
     std::thread::id shutdown_thread;
     astra::transport::TcpServerHooks hooks;
-    hooks.on_start = [&] { startup_thread = std::this_thread::get_id(); throw std::logic_error("startup failed"); };
-    hooks.on_stop = [&] { shutdown_thread = std::this_thread::get_id(); };
+    hooks.on_start = [&] {
+        startup_thread = std::this_thread::get_id();
+        throw std::logic_error("startup failed");
+    };
+    hooks.on_stop = [&] {
+        shutdown_thread = std::this_thread::get_id();
+    };
     TcpServer failed(echo_handler(), {}, {}, hooks);
     CHECK_THROWS_AS((void)(failed.start()), std::logic_error);
     CHECK(startup_thread == shutdown_thread);
@@ -924,18 +1053,30 @@ TEST_CASE("libuv idle notification timer delivers to TCP and local consumers wit
     TcpServerOptions options;
     options.notification_interval_ms = 10;
     astra::transport::TcpServerHooks hooks;
-    hooks.on_start = [&] { owner = std::this_thread::get_id(); };
-    TcpServer server(echo_handler(), [&] {
-        provider_thread = std::this_thread::get_id();
-        return publish.exchange(false) ? std::vector<std::string>{event} : std::vector<std::string>{};
-    }, options, hooks);
+    hooks.on_start = [&] {
+        owner = std::this_thread::get_id();
+    };
+    TcpServer server(
+        echo_handler(),
+        [&] {
+            provider_thread = std::this_thread::get_id();
+            return publish.exchange(false) ? std::vector<std::string>{event}
+                                           : std::vector<std::string>{};
+        },
+        options,
+        hooks);
     server.start();
     SocketClient client(server.port());
-    REQUIRE(wait_until([&] { return server.stats().active_connections == 1; }));
+    REQUIRE(wait_until([&] {
+        return server.stats().active_connections == 1;
+    }));
     publish.store(true);
     CHECK(client.receive(1).front() == event);
     std::vector<std::string> local;
-    REQUIRE(wait_until([&] { local = server.take_local_notifications(); return !local.empty(); }));
+    REQUIRE(wait_until([&] {
+        local = server.take_local_notifications();
+        return !local.empty();
+    }));
     CHECK(local == std::vector<std::string>{event});
     const auto stopped = Clock::now();
     server.stop();
@@ -951,15 +1092,25 @@ TEST_CASE("libuv notification timer records provider failures and keeps servicin
     int attempts{};
     TcpServerOptions options;
     options.notification_interval_ms = 10;
-    TcpServer server(echo_handler(), [&]() -> std::vector<std::string> {
-        if (!armed.load()) { return {}; }
-        ++attempts;
-        if (attempts == 1) { throw std::runtime_error("intentional idle provider failure"); }
-        return attempts == 2 ? std::vector<std::string>{"recovered"} : std::vector<std::string>{};
-    }, options);
+    TcpServer server(
+        echo_handler(),
+        [&]() -> std::vector<std::string> {
+            if (!armed.load()) {
+                return {};
+            }
+            ++attempts;
+            if (attempts == 1) {
+                throw std::runtime_error("intentional idle provider failure");
+            }
+            return attempts == 2 ? std::vector<std::string>{"recovered"}
+                                 : std::vector<std::string>{};
+        },
+        options);
     server.start();
     SocketClient client(server.port());
-    REQUIRE(wait_until([&] { return server.stats().active_connections == 1; }));
+    REQUIRE(wait_until([&] {
+        return server.stats().active_connections == 1;
+    }));
     armed.store(true);
     CHECK(client.receive(1).front() == "recovered");
     CHECK(server.stats().notification_poll_errors == 1);
@@ -973,7 +1124,12 @@ TEST_CASE("libuv notification timer records provider failures and keeps servicin
 TEST_CASE("libuv long notification timer closes promptly and restarts without leaked handles") {
     TcpServerOptions options;
     options.notification_interval_ms = 60000;
-    TcpServer server(echo_handler(), [] { return std::vector<std::string>{}; }, options);
+    TcpServer server(
+        echo_handler(),
+        [] {
+            return std::vector<std::string>{};
+        },
+        options);
     for (int iteration = 0; iteration < 2; ++iteration) {
         server.start();
         const auto stopped = Clock::now();

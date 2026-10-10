@@ -46,6 +46,19 @@ CRT, STL ABI and graphics configuration across all linked targets.
 
 ## Build and run
 
+Format repository-owned C++ and JavaScript before committing:
+
+```powershell
+./scripts/format.ps1
+./scripts/format.ps1 -Check -Offline
+```
+
+The formatter uses `.clang-format` and `.prettierrc.json`. Its fixed versions and
+upstream artifact hashes are in `tools/formatters.json`; tools stay in `.tools/format/`.
+The first run downloads verified archives and requires the pinned Node runtime
+prepared above. `-Offline` only uses cached archives. `scripts/test.ps1` checks
+formatting before building. Downloaded dependencies and build outputs are excluded.
+
 ```powershell
 ./scripts/xmake.ps1 f -m debug -y
 ./scripts/xmake.ps1 build -y astra astra-server astra-tests

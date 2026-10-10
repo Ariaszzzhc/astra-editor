@@ -37,7 +37,11 @@ using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
 std::string lower_ascii(std::string text) {
-    for (auto& c : text) { if (c >= 'A' && c <= 'Z') { c = static_cast<char>(c + ('a' - 'A')); } }
+    for (auto& c : text) {
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c + ('a' - 'A'));
+        }
+    }
     return text;
 }
 
@@ -47,13 +51,18 @@ std::string basename(std::string_view path) {
 }
 
 std::string normalized_binding(std::string_view binding) {
-    const auto key = binding.substr(binding.find_last_of('+') == std::string_view::npos ? 0 : binding.find_last_of('+') + 1);
+    const auto key = binding.substr(
+        binding.find_last_of('+') == std::string_view::npos ? 0 : binding.find_last_of('+') + 1);
     return std::string(binding.find("Ctrl+") != std::string_view::npos ? "Ctrl+" : "") +
-        (binding.find("Shift+") != std::string_view::npos ? "Shift+" : "") +
-        (binding.find("Alt+") != std::string_view::npos ? "Alt+" : "") + std::string(key);
+           (binding.find("Shift+") != std::string_view::npos ? "Shift+" : "") +
+           (binding.find("Alt+") != std::string_view::npos ? "Alt+" : "") + std::string(key);
 }
 
-struct SdlStringDeleter { void operator()(char* value) const noexcept { SDL_free(value); } };
+struct SdlStringDeleter {
+    void operator()(char* value) const noexcept {
+        SDL_free(value);
+    }
+};
 
 } // namespace
 
@@ -67,6 +76,7 @@ struct EditorWindow::Impl {
         std::string text;
         std::optional<TextLayout> layout;
     };
+
     struct Document {
         Json metadata;
         std::string path;
@@ -82,7 +92,7 @@ struct EditorWindow::Impl {
         std::string syntax_state{"pending"};
         DecorationIndexes decorations;
         Json outline = Json::array();
-        std::size_t outline_scroll{},outline_begin{},outline_total{};
+        std::size_t outline_scroll{}, outline_begin{}, outline_total{};
         bool needs_syntax{true};
         bool syntax_loading{};
         bool reveal_horizontal{};
@@ -91,13 +101,23 @@ struct EditorWindow::Impl {
         Clock::time_point diagnostics_after{};
         std::uint64_t diagnostics_generation{};
     };
+
     struct PendingEdit {
         std::promise<Json> completion;
         bool settled{}, cancelled{};
         std::string operation;
     };
-    struct PendingRead { std::promise<Json> completion; bool settled{}; };
-    struct PendingFence { std::string method; std::promise<Json> completion; };
+
+    struct PendingRead {
+        std::promise<Json> completion;
+        bool settled{};
+    };
+
+    struct PendingFence {
+        std::string method;
+        std::promise<Json> completion;
+    };
+
     struct Request {
         std::string method;
         Json params;
@@ -109,17 +129,60 @@ struct EditorWindow::Impl {
         std::shared_ptr<PendingEdit> edit{};
         std::shared_ptr<PendingRead> read{};
     };
-    struct ActiveRequest { Request request; std::string id; std::future<std::optional<std::string>> future; };
-    struct Operation { std::string id; std::function<void(const Json&)> complete; std::function<void()> failure; bool polling{}; Clock::time_point next_poll{}; Json accumulated; std::size_t offset{}; std::shared_ptr<PendingEdit> edit; std::string document; };
-    struct ViewState { std::string id; std::string revision; std::size_t first{}; std::size_t limit{}; std::map<std::size_t, Line> lines; };
-    enum class Prompt { none, policy_input, policy_confirm, policy_choice, policy_pick, policy_text, policy_progress, search, workspace_replace_query, workspace_replace_value, replace_confirm, git_diff };
+
+    struct ActiveRequest {
+        Request request;
+        std::string id;
+        std::future<std::optional<std::string>> future;
+    };
+
+    struct Operation {
+        std::string id;
+        std::function<void(const Json&)> complete;
+        std::function<void()> failure;
+        bool polling{};
+        Clock::time_point next_poll{};
+        Json accumulated;
+        std::size_t offset{};
+        std::shared_ptr<PendingEdit> edit;
+        std::string document;
+    };
+
+    struct ViewState {
+        std::string id;
+        std::string revision;
+        std::size_t first{};
+        std::size_t limit{};
+        std::map<std::size_t, Line> lines;
+    };
+    enum class Prompt {
+        none,
+        policy_input,
+        policy_confirm,
+        policy_choice,
+        policy_pick,
+        policy_text,
+        policy_progress,
+        search,
+        workspace_replace_query,
+        workspace_replace_value,
+        replace_confirm,
+        git_diff
+    };
+
     struct Dialog {
-        std::string id; Json spec; std::promise<Json> completion;
-        TextLineIndex detail_lines; std::map<std::size_t,TextLayout> detail_layout; float detail_width{},detail_scale{};
+        std::string id;
+        Json spec;
+        std::promise<Json> completion;
+        TextLineIndex detail_lines;
+        std::map<std::size_t, TextLayout> detail_layout;
+        float detail_width{}, detail_scale{};
         TextLineIndex items;
         PickerIndex picker;
         float horizontal{};
-        std::optional<TextLayout> input_layout; std::string input_text; float input_scale{};
+        std::optional<TextLayout> input_layout;
+        std::string input_text;
+        float input_scale{};
     };
 
     std::shared_ptr<EditorChannel> channel;
@@ -133,14 +196,14 @@ struct EditorWindow::Impl {
     std::deque<Request> requests;
     std::optional<ActiveRequest> active_request;
     std::vector<std::shared_ptr<Operation>> operations;
-    std::map<std::string,std::shared_ptr<Operation>> ordered_inputs;
-    std::map<std::string,std::shared_ptr<PendingEdit>> pending_edits;
-    std::map<std::string,std::shared_ptr<PendingRead>> pending_reads;
-    std::map<std::string,PendingFence> pending_fences;
+    std::map<std::string, std::shared_ptr<Operation>> ordered_inputs;
+    std::map<std::string, std::shared_ptr<PendingEdit>> pending_edits;
+    std::map<std::string, std::shared_ptr<PendingRead>> pending_reads;
+    std::map<std::string, PendingFence> pending_fences;
     std::uint64_t next_read{1};
     std::uint64_t next_request{1};
     std::map<std::string, std::string> keybindings;
-    Json service_commands=Json::array();
+    Json service_commands = Json::array();
     std::unique_ptr<Workbench> workbench;
     std::set<std::string> service_ui_commands;
     Json busy_views = Json::object();
@@ -173,10 +236,16 @@ struct EditorWindow::Impl {
     SkColor recovery_background{0xFF263222};
     SkColor error_background{0xFF3A1D1D};
     SkColor status_foreground{0xFFCCCCCC};
-    std::map<std::string, SkColor> syntax_colors{
-        {"comment", 0xFF6A9955}, {"string", 0xFFCE9178}, {"number", 0xFFB5CEA8}, {"keyword", 0xFFC586C0},
-        {"type", 0xFF4EC9B0}, {"function", 0xFFDCDCAA}, {"property", 0xFF9CDCFE}, {"variable", 0xFF9CDCFE},
-        {"heading", 0xFF569CD6}, {"error", 0xFFF44747}};
+    std::map<std::string, SkColor> syntax_colors{{"comment", 0xFF6A9955},
+                                                 {"string", 0xFFCE9178},
+                                                 {"number", 0xFFB5CEA8},
+                                                 {"keyword", 0xFFC586C0},
+                                                 {"type", 0xFF4EC9B0},
+                                                 {"function", 0xFFDCDCAA},
+                                                 {"property", 0xFF9CDCFE},
+                                                 {"variable", 0xFF9CDCFE},
+                                                 {"heading", 0xFF569CD6},
+                                                 {"error", 0xFFF44747}};
     FileTreeIndex file_tree;
     Json search_results = Json::array();
     std::string search_query;
@@ -196,7 +265,7 @@ struct EditorWindow::Impl {
     std::string git_path;
     std::string git_preview;
     TextLineIndex git_diff_lines;
-    std::map<std::size_t,TextLayout> git_diff_layouts;
+    std::map<std::size_t, TextLayout> git_diff_layouts;
     float git_diff_layout_scale{};
     bool git_staged{};
     std::size_t tree_scroll{};
@@ -244,115 +313,235 @@ struct EditorWindow::Impl {
     std::optional<float> vertical_column;
     std::optional<InlineForm> inline_form;
     std::optional<std::size_t> dragging_form_field;
-    std::deque<std::pair<std::string,Json>> form_events;
-    struct FieldLayout { std::string text; float scale{}; std::optional<TextLayout> layout; float horizontal{}; };
-    std::map<std::string,FieldLayout> form_fields;
+    std::deque<std::pair<std::string, Json>> form_events;
+
+    struct FieldLayout {
+        std::string text;
+        float scale{};
+        std::optional<TextLayout> layout;
+        float horizontal{};
+    };
+
+    std::map<std::string, FieldLayout> form_fields;
     std::uint64_t form_sequence{};
 
     Impl(std::shared_ptr<EditorChannel> input, EditorWindowOptions configuration)
-        : channel(std::move(input)), options(std::move(configuration)), renderer(options.title, options.width, options.height) {
-        if (!channel) { throw std::invalid_argument("EditorWindow requires a document channel"); }
+        : channel(std::move(input)), options(std::move(configuration)),
+          renderer(options.title, options.width, options.height) {
+        if (!channel) {
+            throw std::invalid_argument("EditorWindow requires a document channel");
+        }
         if (options.resource_directory.empty()) {
             const auto* base = SDL_GetBasePath();
-            if (!base) { throw std::runtime_error(std::string("Locate workbench resources: ") + SDL_GetError()); }
+            if (!base) {
+                throw std::runtime_error(std::string("Locate workbench resources: ") +
+                                         SDL_GetError());
+            }
             options.resource_directory = std::filesystem::path(base);
         }
         std::map<std::string, std::string> modules;
-        for (const auto& [name, file] : std::map<std::string, std::string>{
-            {"astra/ui", "api.js"}, {"astra/files", "files.js"}, {"astra/git", "git.js"},
-            {"astra/search", "search.js"}, {"astra/clipboard", "clipboard.js"}, {"astra/language","language.js"}, {"astra/recovery","recovery.js"}, {"astra/lifecycle","lifecycle.js"}, {"astra/commands", "commands.js"}, {"astra/workbench", "workbench.js"}}) {
-            modules.emplace(name, io::read_file(options.resource_directory / "data" / "workbench" / file, 1024 * 1024).text);
+        for (const auto& [name, file] :
+             std::map<std::string, std::string>{{"astra/ui", "api.js"},
+                                                {"astra/files", "files.js"},
+                                                {"astra/git", "git.js"},
+                                                {"astra/search", "search.js"},
+                                                {"astra/clipboard", "clipboard.js"},
+                                                {"astra/language", "language.js"},
+                                                {"astra/recovery", "recovery.js"},
+                                                {"astra/lifecycle", "lifecycle.js"},
+                                                {"astra/commands", "commands.js"},
+                                                {"astra/workbench", "workbench.js"}}) {
+            modules.emplace(
+                name,
+                io::read_file(options.resource_directory / "data" / "workbench" / file, 1024 * 1024)
+                    .text);
         }
-        workbench = std::make_unique<Workbench>(channel, [this](std::string_view method, const Json& params) {
-            if (method == "_ui.dialog") { return begin_dialog(params); }
-            if (method == "_ui.read") { return begin_read(params); }
-            if (method == "_ui.barrier" || method == "_ui.window.close") { return begin_fence(method,params); }
-            if (method == "_ui.action" && params.at("command").get<std::string>().starts_with("editor.")) { return begin_edit(params); }
-            std::promise<Json> completed;
-            try { completed.set_value(native_ui_request(method, params)); }
-            catch (...) { completed.set_exception(std::current_exception()); }
-            return completed.get_future();
-        }, modules, options.user_script);
+        workbench = std::make_unique<Workbench>(
+            channel,
+            [this](std::string_view method, const Json& params) {
+                if (method == "_ui.dialog") {
+                    return begin_dialog(params);
+                }
+                if (method == "_ui.read") {
+                    return begin_read(params);
+                }
+                if (method == "_ui.barrier" || method == "_ui.window.close") {
+                    return begin_fence(method, params);
+                }
+                if (method == "_ui.action" &&
+                    params.at("command").get<std::string>().starts_with("editor.")) {
+                    return begin_edit(params);
+                }
+                std::promise<Json> completed;
+                try {
+                    completed.set_value(native_ui_request(method, params));
+                } catch (...) {
+                    completed.set_exception(std::current_exception());
+                }
+                return completed.get_future();
+            },
+            modules,
+            options.user_script);
         scale = renderer.dpi_scale();
         SDL_Rect usable{};
         if (SDL_GetDisplayUsableBounds(SDL_GetDisplayForWindow(renderer.window()), &usable)) {
-            const auto requested_width = static_cast<int>(std::round(static_cast<float>(options.width) * scale));
-            const auto requested_height = static_cast<int>(std::round(static_cast<float>(options.height) * scale));
-            if (!SDL_SetWindowSize(renderer.window(), std::min(requested_width, usable.w * 9 / 10), std::min(requested_height, usable.h * 9 / 10))) {
-                throw std::runtime_error(std::string("Set DPI-scaled editor dimensions: ") + SDL_GetError());
+            const auto requested_width =
+                static_cast<int>(std::round(static_cast<float>(options.width) * scale));
+            const auto requested_height =
+                static_cast<int>(std::round(static_cast<float>(options.height) * scale));
+            if (!SDL_SetWindowSize(renderer.window(),
+                                   std::min(requested_width, usable.w * 9 / 10),
+                                   std::min(requested_height, usable.h * 9 / 10))) {
+                throw std::runtime_error(std::string("Set DPI-scaled editor dimensions: ") +
+                                         SDL_GetError());
             }
         }
-        keybindings = {
-            {"Ctrl+N", "ui.new"}, {"Ctrl+P", "ui.quickOpen"}, {"Ctrl+Shift+P", "ui.commandPalette"},
-            {"Ctrl+S", "ui.save"}, {"Ctrl+Shift+S", "ui.saveAs"}, {"Ctrl+W", "ui.closeTab"},
-            {"Ctrl+Z", "editor.undo"}, {"Ctrl+Y", "editor.redo"}, {"Ctrl+Shift+Z", "editor.redo"},
-            {"Ctrl+A", "editor.select_all"}, {"Ctrl+C", "ui.copy"}, {"Ctrl+X", "ui.cut"}, {"Ctrl+V", "ui.paste"},
-            {"Ctrl+/", "editor.toggle_line_comment"}, {"Shift+Alt+Down", "editor.duplicate_line"},
-            {"Ctrl+Alt+Up", "editor.add_cursor_above"}, {"Ctrl+Alt+Down", "editor.add_cursor_below"},
-            {"Ctrl+B", "ui.toggleSidebar"}, {"Ctrl+Tab", "ui.nextTab"},
-            {"Ctrl+F", "ui.find"}, {"Ctrl+H", "ui.replace"}, {"Ctrl+Shift+F", "ui.search"},
-            {"Ctrl+Shift+H", "ui.workspaceReplace"}, {"Ctrl+Space", "ui.completion"},
-            {"Ctrl+K", "ui.hover"}, {"F12", "ui.definition"}, {"Shift+F12", "ui.references"},
-            {"F2", "ui.rename"}, {"Shift+Alt+F", "ui.format"}, {"Ctrl+Shift+G", "ui.gitStatus"},
-            {"Ctrl+Shift+E", "ui.explorer"}, {"Ctrl+Shift+M", "ui.diagnostics"}
-        };
-        enqueue({"script.settings", Json::object(), {}, false, [this](const Json& result) {
-            settings = result.value("settings", Json::object());
-            settings.merge_patch(workbench->settings());
-            editor_settings = settings.value("editor", Json::object());
-            options.font_size = editor_settings.value("fontSize", options.font_size);
-            if (!std::isfinite(options.font_size) || options.font_size < 6 || options.font_size > 128) {
-                throw std::runtime_error("editor.fontSize must be between 6 and 128");
-            }
-            const auto theme = settings.value("theme", Json::object());
-            const auto color = [&](std::string_view name, SkColor& destination) {
-                const auto field = theme.find(std::string(name));
-                if (field == theme.end()) { return; }
-                const auto hex = field->get<std::string>();
-                if (hex.size() != 7 || hex.front() != '#') { throw std::runtime_error("Theme colors require #RRGGBB"); }
-                std::size_t parsed{};
-                const auto rgb = std::stoul(hex.substr(1), &parsed, 16);
-                if (parsed != 6) { throw std::runtime_error("Theme color contains non-hexadecimal digits"); }
-                destination = 0xFF000000U | static_cast<SkColor>(rgb);
-            };
-            color("background", background); color("foreground", foreground); color("sidebar", sidebar_background);
-            color("tabs", panel_background); color("border", border_color); color("muted", muted);
-            color("accent", accent); color("selection", selection_color); color("status", status_color);
-            color("activityBar", activity_background); color("activeTab", active_tab_background);
-            color("error", error_color); color("warning", warning_color);
-            color("hover", hover_color); color("currentLine", current_line_color); color("input", input_color);
-            color("cursor", cursor_color); color("scrollbar", scrollbar_color); color("folder", folder_color);
-            color("codeIcon", code_icon_color); color("scriptIcon", script_icon_color);
-            color("added", added_color); color("changed", changed_color); color("noticeBackground", notice_background);
-            color("recoveryBackground", recovery_background); color("errorBackground", error_background);
-            color("statusForeground", status_foreground);
-            const auto desired_sidebar=settings.value("workbench",Json::object()).value("sidebarWidth",248.0F);
-            const auto desired_ui_font=settings.value("workbench",Json::object()).value("uiFontSize",13.0F);
-            if (!std::isfinite(desired_sidebar) || !std::isfinite(desired_ui_font) || desired_ui_font<9 || desired_ui_font>16) { throw std::runtime_error("Invalid workbench sidebarWidth or uiFontSize (9 to 16)"); }
-            sidebar_width=std::clamp(desired_sidebar,180.0F,480.0F);ui_font_size=desired_ui_font;
-            for (auto& [name, value] : syntax_colors) { color(name, value); }
-            if (result.contains("keybindings") && result["keybindings"].is_object()) {
-                for (const auto& [key, command] : result["keybindings"].items()) {
-                    if (command.is_string()) { keybindings[normalized_binding(key)] = command.get<std::string>(); }
-                }
-            } else if (result.contains("keybindings") && result["keybindings"].is_array()) {
-                for (const auto& binding : result["keybindings"]) {
-                    keybindings[normalized_binding(binding.at("key").get<std::string>())] = binding.at("command").get<std::string>();
-                }
-            }
-            service_commands=result.value("commands",Json::array());
-            for (const auto& command : service_commands) {
-                const auto name = command.get<std::string>();
-                if (name.starts_with("ui.")) { service_ui_commands.insert(name); }
-            }
-            for (const auto& [key, name] : workbench->keybindings()) { keybindings[normalized_binding(key)] = name; }
-        }, {}});
-        enqueue({"workspace.documents", Json::object(), {}, false, [this](const Json& result) {
-            for (const auto& metadata : result) { accept_metadata(metadata); }
-            if (!tabs.empty()) { activate(tabs.front()); }
-            else if (options.open_paths.empty()) { new_document(); }
-            for (const auto& path : options.open_paths) { open_path(path); }
-        }, {}});
+        keybindings = {{"Ctrl+N", "ui.new"},
+                       {"Ctrl+P", "ui.quickOpen"},
+                       {"Ctrl+Shift+P", "ui.commandPalette"},
+                       {"Ctrl+S", "ui.save"},
+                       {"Ctrl+Shift+S", "ui.saveAs"},
+                       {"Ctrl+W", "ui.closeTab"},
+                       {"Ctrl+Z", "editor.undo"},
+                       {"Ctrl+Y", "editor.redo"},
+                       {"Ctrl+Shift+Z", "editor.redo"},
+                       {"Ctrl+A", "editor.select_all"},
+                       {"Ctrl+C", "ui.copy"},
+                       {"Ctrl+X", "ui.cut"},
+                       {"Ctrl+V", "ui.paste"},
+                       {"Ctrl+/", "editor.toggle_line_comment"},
+                       {"Shift+Alt+Down", "editor.duplicate_line"},
+                       {"Ctrl+Alt+Up", "editor.add_cursor_above"},
+                       {"Ctrl+Alt+Down", "editor.add_cursor_below"},
+                       {"Ctrl+B", "ui.toggleSidebar"},
+                       {"Ctrl+Tab", "ui.nextTab"},
+                       {"Ctrl+F", "ui.find"},
+                       {"Ctrl+H", "ui.replace"},
+                       {"Ctrl+Shift+F", "ui.search"},
+                       {"Ctrl+Shift+H", "ui.workspaceReplace"},
+                       {"Ctrl+Space", "ui.completion"},
+                       {"Ctrl+K", "ui.hover"},
+                       {"F12", "ui.definition"},
+                       {"Shift+F12", "ui.references"},
+                       {"F2", "ui.rename"},
+                       {"Shift+Alt+F", "ui.format"},
+                       {"Ctrl+Shift+G", "ui.gitStatus"},
+                       {"Ctrl+Shift+E", "ui.explorer"},
+                       {"Ctrl+Shift+M", "ui.diagnostics"}};
+        enqueue(
+            {"script.settings",
+             Json::object(),
+             {},
+             false,
+             [this](const Json& result) {
+                 settings = result.value("settings", Json::object());
+                 settings.merge_patch(workbench->settings());
+                 editor_settings = settings.value("editor", Json::object());
+                 options.font_size = editor_settings.value("fontSize", options.font_size);
+                 if (!std::isfinite(options.font_size) || options.font_size < 6 ||
+                     options.font_size > 128) {
+                     throw std::runtime_error("editor.fontSize must be between 6 and 128");
+                 }
+                 const auto theme = settings.value("theme", Json::object());
+                 const auto color = [&](std::string_view name, SkColor& destination) {
+                     const auto field = theme.find(std::string(name));
+                     if (field == theme.end()) {
+                         return;
+                     }
+                     const auto hex = field->get<std::string>();
+                     if (hex.size() != 7 || hex.front() != '#') {
+                         throw std::runtime_error("Theme colors require #RRGGBB");
+                     }
+                     std::size_t parsed{};
+                     const auto rgb = std::stoul(hex.substr(1), &parsed, 16);
+                     if (parsed != 6) {
+                         throw std::runtime_error("Theme color contains non-hexadecimal digits");
+                     }
+                     destination = 0xFF000000U | static_cast<SkColor>(rgb);
+                 };
+                 color("background", background);
+                 color("foreground", foreground);
+                 color("sidebar", sidebar_background);
+                 color("tabs", panel_background);
+                 color("border", border_color);
+                 color("muted", muted);
+                 color("accent", accent);
+                 color("selection", selection_color);
+                 color("status", status_color);
+                 color("activityBar", activity_background);
+                 color("activeTab", active_tab_background);
+                 color("error", error_color);
+                 color("warning", warning_color);
+                 color("hover", hover_color);
+                 color("currentLine", current_line_color);
+                 color("input", input_color);
+                 color("cursor", cursor_color);
+                 color("scrollbar", scrollbar_color);
+                 color("folder", folder_color);
+                 color("codeIcon", code_icon_color);
+                 color("scriptIcon", script_icon_color);
+                 color("added", added_color);
+                 color("changed", changed_color);
+                 color("noticeBackground", notice_background);
+                 color("recoveryBackground", recovery_background);
+                 color("errorBackground", error_background);
+                 color("statusForeground", status_foreground);
+                 const auto desired_sidebar =
+                     settings.value("workbench", Json::object()).value("sidebarWidth", 248.0F);
+                 const auto desired_ui_font =
+                     settings.value("workbench", Json::object()).value("uiFontSize", 13.0F);
+                 if (!std::isfinite(desired_sidebar) || !std::isfinite(desired_ui_font) ||
+                     desired_ui_font < 9 || desired_ui_font > 16) {
+                     throw std::runtime_error(
+                         "Invalid workbench sidebarWidth or uiFontSize (9 to 16)");
+                 }
+                 sidebar_width = std::clamp(desired_sidebar, 180.0F, 480.0F);
+                 ui_font_size = desired_ui_font;
+                 for (auto& [name, value] : syntax_colors) {
+                     color(name, value);
+                 }
+                 if (result.contains("keybindings") && result["keybindings"].is_object()) {
+                     for (const auto& [key, command] : result["keybindings"].items()) {
+                         if (command.is_string()) {
+                             keybindings[normalized_binding(key)] = command.get<std::string>();
+                         }
+                     }
+                 } else if (result.contains("keybindings") && result["keybindings"].is_array()) {
+                     for (const auto& binding : result["keybindings"]) {
+                         keybindings[normalized_binding(binding.at("key").get<std::string>())] =
+                             binding.at("command").get<std::string>();
+                     }
+                 }
+                 service_commands = result.value("commands", Json::array());
+                 for (const auto& command : service_commands) {
+                     const auto name = command.get<std::string>();
+                     if (name.starts_with("ui.")) {
+                         service_ui_commands.insert(name);
+                     }
+                 }
+                 for (const auto& [key, name] : workbench->keybindings()) {
+                     keybindings[normalized_binding(key)] = name;
+                 }
+             },
+             {}});
+        enqueue({"workspace.documents",
+                 Json::object(),
+                 {},
+                 false,
+                 [this](const Json& result) {
+                     for (const auto& metadata : result) {
+                         accept_metadata(metadata);
+                     }
+                     if (!tabs.empty()) {
+                         activate(tabs.front());
+                     } else if (options.open_paths.empty()) {
+                         new_document();
+                     }
+                     for (const auto& path : options.open_paths) {
+                         open_path(path);
+                     }
+                 },
+                 {}});
         refresh_tree();
         execute_policy("workbench.recoveryScan", Json::object());
     }
@@ -361,108 +550,182 @@ struct EditorWindow::Impl {
         const auto found = documents.find(active_id);
         return found == documents.end() ? nullptr : &found->second;
     }
+
     const Document* current() const {
         const auto found = documents.find(active_id);
         return found == documents.end() ? nullptr : &found->second;
     }
+
     void enqueue(Request request) {
-        if (requests.size() >= 4096) { throw std::runtime_error("Editor command queue is full; wait for the service"); }
+        if (requests.size() >= 4096) {
+            throw std::runtime_error("Editor command queue is full; wait for the service");
+        }
         requests.push_back(std::move(request));
     }
+
     void accept_metadata(const Json& metadata) {
         const auto id = metadata.at("id").get<std::string>();
         auto [found, inserted] = documents.try_emplace(id);
         auto& document = found->second;
-        if (inserted) { tabs.push_back(id); }
+        if (inserted) {
+            tabs.push_back(id);
+        }
         const auto revision = metadata.at("revision").get<std::string>();
-        if (!document.metadata.empty() && std::stoull(revision) < std::stoull(document.metadata.at("revision").get<std::string>())) { return; }
+        if (!document.metadata.empty() &&
+            std::stoull(revision) <
+                std::stoull(document.metadata.at("revision").get<std::string>())) {
+            return;
+        }
         if (metadata.contains("path")) {
             const auto path = metadata["path"].get<std::string>();
-            if (path != document.path && !path.empty()) { document.language_active = true; document.diagnostics_after = {}; }
+            if (path != document.path && !path.empty()) {
+                document.language_active = true;
+                document.diagnostics_after = {};
+            }
             document.path = path;
         }
-        if (metadata.contains("editorConfig")) { document.editor_config = metadata["editorConfig"]; }
-        if (metadata.contains("encoding")) { document.encoding = metadata.at("encoding").get<std::string>(); }
-        if (document.view_revision != revision) { document.needs_lines = true; document.needs_syntax = true; document.decorations.diagnostics.clear(); }
+        if (metadata.contains("editorConfig")) {
+            document.editor_config = metadata["editorConfig"];
+        }
+        if (metadata.contains("encoding")) {
+            document.encoding = metadata.at("encoding").get<std::string>();
+        }
+        if (document.view_revision != revision) {
+            document.needs_lines = true;
+            document.needs_syntax = true;
+            document.decorations.diagnostics.clear();
+        }
         document.metadata = metadata;
-        if (metadata.value("dirty", false)) { document.decorations.gutter.clear(); }
+        if (metadata.value("dirty", false)) {
+            document.decorations.gutter.clear();
+        }
         const auto line_count = metadata.value("lineCount", std::size_t{1});
         document.first_line = std::min(document.first_line, line_count - 1);
     }
+
     void activate(const std::string& id) {
-        if (!documents.contains(id)) { return; }
-        if(active_id!=id)static_cast<void>(close_inline_form());
+        if (!documents.contains(id)) {
+            return;
+        }
+        if (active_id != id)
+            static_cast<void>(close_inline_form());
         active_id = id;
         reveal_tab = true;
         documents.at(id).needs_lines = true;
         preedit.clear();
         vertical_column.reset();
     }
+
     void remove_document(const std::string& id) {
         documents.erase(id);
         workspace_notices.erase(id);
         std::erase(tabs, id);
-        if (active_id == id) { static_cast<void>(close_inline_form());active_id = tabs.empty() ? std::string{} : tabs.back(); }
+        if (active_id == id) {
+            static_cast<void>(close_inline_form());
+            active_id = tabs.empty() ? std::string{} : tabs.back();
+        }
     }
+
     void new_document() {
         execute_policy("ui.new");
     }
-    void start_operation(std::string method, Json params, std::function<void(const Json&)> complete,
-                         std::string document = {}, bool revision = false, std::function<void()> failure = {}) {
+
+    void start_operation(std::string method,
+                         Json params,
+                         std::function<void(const Json&)> complete,
+                         std::string document = {},
+                         bool revision = false,
+                         std::function<void()> failure = {}) {
         const bool search = method == "workspace.search";
         const auto generation = search_generation;
-        enqueue({std::move(method), std::move(params), std::move(document), revision,
-            [this, complete = std::move(complete), failure, search, generation](const Json& result) {
-                auto operation = std::make_shared<Operation>();
-                operation->id = result.at("operationId").get<std::string>();
-                if (search && generation == search_generation) { search_operation = operation->id; }
-                operation->complete = complete;
-                operation->failure = failure;
-                operations.push_back(std::move(operation));
-            }, {}, std::move(failure)});
+        enqueue({std::move(method),
+                 std::move(params),
+                 std::move(document),
+                 revision,
+                 [this, complete = std::move(complete), failure, search, generation](
+                     const Json& result) {
+                     auto operation = std::make_shared<Operation>();
+                     operation->id = result.at("operationId").get<std::string>();
+                     if (search && generation == search_generation) {
+                         search_operation = operation->id;
+                     }
+                     operation->complete = complete;
+                     operation->failure = failure;
+                     operations.push_back(std::move(operation));
+                 },
+                 {},
+                 std::move(failure)});
     }
+
     void open_path(std::string path) {
-        if (path.empty()) { return; }
+        if (path.empty()) {
+            return;
+        }
         status = "Opening " + path;
         execute_policy("workbench.open", {{"path", path}});
     }
+
     void refresh_tree(bool announce = true) {
         static_cast<void>(announce);
         command("ui.refreshTree");
     }
+
     std::string workspace_notice() const {
-        if (!watch_error.empty()) { return watch_error; }
-        if (const auto found = workspace_notices.find(active_id); found != workspace_notices.end()) { return found->second; }
-        if (!replace_notice.empty()) { return replace_notice; }
+        if (!watch_error.empty()) {
+            return watch_error;
+        }
+        if (const auto found = workspace_notices.find(active_id);
+            found != workspace_notices.end()) {
+            return found->second;
+        }
+        if (!replace_notice.empty()) {
+            return replace_notice;
+        }
         return workspace_notices.empty() ? std::string{} : workspace_notices.begin()->second;
     }
+
     bool search_prompt() const {
-        return prompt == Prompt::search || prompt == Prompt::workspace_replace_query || prompt == Prompt::workspace_replace_value;
+        return prompt == Prompt::search || prompt == Prompt::workspace_replace_query ||
+               prompt == Prompt::workspace_replace_value;
     }
 
     void service_responses();
+
     void retire_input(const std::shared_ptr<Operation>& operation) {
-        const auto found=ordered_inputs.find(operation->document);
-        if(found!=ordered_inputs.end() && found->second==operation)ordered_inputs.erase(found);
+        const auto found = ordered_inputs.find(operation->document);
+        if (found != ordered_inputs.end() && found->second == operation)
+            ordered_inputs.erase(found);
     }
+
     bool queued_for(const std::string& id) const {
-        return (active_request && active_request->request.document==id) ||
-            std::ranges::any_of(requests,[&](const Request& request){return request.document==id;});
+        return (active_request && active_request->request.document == id) ||
+               std::ranges::any_of(requests, [&](const Request& request) {
+                   return request.document == id;
+               });
     }
+
     void fetch_lines();
-    void fetch_lines_page(std::shared_ptr<ViewState> view, std::size_t first, std::optional<std::size_t> begin = {});
+    void fetch_lines_page(std::shared_ptr<ViewState> view,
+                          std::size_t first,
+                          std::optional<std::size_t> begin = {});
     void fetch_syntax();
     void fetch_diagnostics(const std::string& id);
     void fetch_git_diff(std::string path, bool staged = false);
-    void editor_command(std::string command, Json extra = Json::object(), std::shared_ptr<PendingEdit> edit = {});
+    void editor_command(std::string command,
+                        Json extra = Json::object(),
+                        std::shared_ptr<PendingEdit> edit = {});
     std::future<Json> begin_edit(const Json& params);
     std::future<Json> begin_read(Json params);
-    void settle_read(const std::shared_ptr<PendingRead>& read,const Json& value,std::exception_ptr failure = {});
-    void settle_edit(const std::shared_ptr<PendingEdit>& edit, const Json& result, std::exception_ptr failure = {});
+    void settle_read(const std::shared_ptr<PendingRead>& read,
+                     const Json& value,
+                     std::exception_ptr failure = {});
+    void settle_edit(const std::shared_ptr<PendingEdit>& edit,
+                     const Json& result,
+                     std::exception_ptr failure = {});
     void cancel_edit(const std::shared_ptr<PendingEdit>& edit);
     void set_selections(Json selections, std::string revision = {});
     void close_document(const std::string& id, bool discard = false);
-    std::future<Json> begin_fence(std::string_view method,const Json& params);
+    std::future<Json> begin_fence(std::string_view method, const Json& params);
     bool finish_fences();
     bool native_idle() const;
     void command(std::string_view name);
@@ -483,12 +746,19 @@ struct EditorWindow::Impl {
     void measure_layout();
     void draw_prompt(SkCanvas* canvas, float width, float height);
     void draw_inline_form(SkCanvas* canvas);
-    bool inline_key(const SDL_KeyboardEvent& input,bool control,bool shift,bool alt);
-    void emit_form(std::string_view event,std::string_view action={});
-    bool close_inline_form(std::string_view id={});
-    void label(SkCanvas* canvas, std::string_view text, float x, float y, float size, SkColor color = 0);
+    bool inline_key(const SDL_KeyboardEvent& input, bool control, bool shift, bool alt);
+    void emit_form(std::string_view event, std::string_view action = {});
+    bool close_inline_form(std::string_view id = {});
+    void
+    label(SkCanvas* canvas, std::string_view text, float x, float y, float size, SkColor color = 0);
     const TextLayout& label_layout(std::string_view text, float size, SkColor color);
-    void elided_label(SkCanvas* canvas,std::string_view text,float x,float y,float size,float available,SkColor color);
+    void elided_label(SkCanvas* canvas,
+                      std::string_view text,
+                      float x,
+                      float y,
+                      float size,
+                      float available,
+                      SkColor color);
     void rectangle(SkCanvas* canvas, float x, float y, float width, float height, SkColor color);
     void reveal_caret();
     void accept_prompt();
@@ -499,465 +769,785 @@ void EditorWindow::Impl::service_responses() {
         const auto notification = Json::parse(body);
         const auto method = notification.value("method", std::string{});
         workbench->emit(method, notification.value("params", Json::object()));
-        if (method == "document.changed" || method == "document.created") { accept_metadata(notification.at("params")); }
-        else if (method == "document.closed") { remove_document(notification.at("params").at("id").get<std::string>()); }
-        else if (method == "language.diagnosticsChanged") {
+        if (method == "document.changed" || method == "document.created") {
+            accept_metadata(notification.at("params"));
+        } else if (method == "document.closed") {
+            remove_document(notification.at("params").at("id").get<std::string>());
+        } else if (method == "language.diagnosticsChanged") {
             const auto id = notification.at("params").at("id").get<std::string>();
             if (const auto found = documents.find(id); found != documents.end()) {
                 found->second.language_active = true;
                 found->second.diagnostics_after = {};
                 ++found->second.diagnostics_generation;
             }
-        }
-        else if (method == "workspace.watchError") {
-            watch_error = "File monitoring: " + notification.at("params").value("message", std::string("Monitoring failed; reload files explicitly"));
-        }
-        else if (method == "workspace.fileChanged") {
+        } else if (method == "workspace.watchError") {
+            watch_error = "File monitoring: " +
+                          notification.at("params").value(
+                              "message", std::string("Monitoring failed; reload files explicitly"));
+        } else if (method == "workspace.fileChanged") {
             const auto& value = notification.at("params");
             const auto id = value.at("id").get<std::string>();
             const auto path = value.at("path").get<std::string>();
             const auto change = value.at("status").get<std::string>();
-            if (change == "reloaded") { workspace_notices[id] = "External changes reloaded: " + path; }
-            else if (change == "deleted") { workspace_notices[id] = "File deleted outside Astra; buffer preserved: " + path; }
-            else if (change == "conflict") { workspace_notices[id] = "File changed outside Astra; unsaved buffer preserved: " + path; }
-            else { workspace_notices[id] = "Cannot read " + path + ": " + value.value("message", std::string("External file error")); }
+            if (change == "reloaded") {
+                workspace_notices[id] = "External changes reloaded: " + path;
+            } else if (change == "deleted") {
+                workspace_notices[id] = "File deleted outside Astra; buffer preserved: " + path;
+            } else if (change == "conflict") {
+                workspace_notices[id] =
+                    "File changed outside Astra; unsaved buffer preserved: " + path;
+            } else {
+                workspace_notices[id] = "Cannot read " + path + ": " +
+                                        value.value("message", std::string("External file error"));
+            }
             refresh_tree(false);
         }
     }
     for (int processed = 0; processed < 32; ++processed) {
         if (active_request) {
-            if (active_request->future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) { break; }
+            if (active_request->future.wait_for(std::chrono::seconds(0)) !=
+                std::future_status::ready) {
+                break;
+            }
             auto completed = std::move(*active_request);
             active_request.reset();
             try {
                 const auto body = completed.future.get();
-                if (!body) { throw std::runtime_error("The service returned no response for an editor request"); }
-                const auto response = Json::parse(*body);
-                if (!response.contains("id") || response["id"] != completed.id) { throw std::runtime_error("The service response ID does not match its request"); }
-                if (response.contains("error")) {
-                    const auto& failure=response.at("error");
-                    throw protocol::RpcError(failure.value("code",-32603),failure.value("message",std::string("Service request failed")),
-                        failure.contains("data") ? std::optional<Json>(failure.at("data")) : std::nullopt);
+                if (!body) {
+                    throw std::runtime_error(
+                        "The service returned no response for an editor request");
                 }
-                if (completed.request.method == "script.command" && response.at("result").is_object() && response.at("result").contains("operationId")) {
+                const auto response = Json::parse(*body);
+                if (!response.contains("id") || response["id"] != completed.id) {
+                    throw std::runtime_error("The service response ID does not match its request");
+                }
+                if (response.contains("error")) {
+                    const auto& failure = response.at("error");
+                    throw protocol::RpcError(
+                        failure.value("code", -32603),
+                        failure.value("message", std::string("Service request failed")),
+                        failure.contains("data") ? std::optional<Json>(failure.at("data"))
+                                                 : std::nullopt);
+                }
+                if (completed.request.method == "script.command" &&
+                    response.at("result").is_object() &&
+                    response.at("result").contains("operationId")) {
                     auto operation = std::make_shared<Operation>();
                     operation->id = response.at("result").at("operationId").get<std::string>();
                     operation->complete = completed.request.complete;
                     operation->failure = completed.request.failure;
-                    operation->edit=completed.request.edit;
-                    operation->document=completed.request.document;
-                    if(!operation->document.empty())ordered_inputs[operation->document]=operation;
+                    operation->edit = completed.request.edit;
+                    operation->document = completed.request.document;
+                    if (!operation->document.empty())
+                        ordered_inputs[operation->document] = operation;
                     operations.push_back(operation);
-                    if(operation->edit){
-                        operation->edit->operation=operation->id;
-                        if(operation->edit->cancelled)enqueue({"operation.cancel",{{"id",operation->id}},{},false,{}, {}});
+                    if (operation->edit) {
+                        operation->edit->operation = operation->id;
+                        if (operation->edit->cancelled)
+                            enqueue(
+                                {"operation.cancel", {{"id", operation->id}}, {}, false, {}, {}});
                     }
                 } else {
-                    if (completed.request.complete) { completed.request.complete(response.at("result")); }
-                    settle_edit(completed.request.edit,response.at("result"));
+                    if (completed.request.complete) {
+                        completed.request.complete(response.at("result"));
+                    }
+                    settle_edit(completed.request.edit, response.at("result"));
                 }
-                if (completed.request.method == "script.command" || completed.request.method == "document.edit") { error.clear(); }
+                if (completed.request.method == "script.command" ||
+                    completed.request.method == "document.edit") {
+                    error.clear();
+                }
             } catch (const std::exception& failure) {
-                bool script_handles_failure=static_cast<bool>(completed.request.edit);
-                const auto* rpc_failure=dynamic_cast<const protocol::RpcError*>(&failure);
-                const bool obsolete_syntax=completed.request.method=="document.syntax" && rpc_failure && rpc_failure->code()==-32001;
-                settle_edit(completed.request.edit,nullptr,std::current_exception());
-                if (completed.request.failure) { completed.request.failure(); }
+                bool script_handles_failure = static_cast<bool>(completed.request.edit);
+                const auto* rpc_failure = dynamic_cast<const protocol::RpcError*>(&failure);
+                const bool obsolete_syntax = completed.request.method == "document.syntax" &&
+                                             rpc_failure && rpc_failure->code() == -32001;
+                settle_edit(completed.request.edit, nullptr, std::current_exception());
+                if (completed.request.failure) {
+                    completed.request.failure();
+                }
                 if (completed.request.method == "operation.get") {
                     const auto id = completed.request.params.value("id", std::string{});
-                    for (const auto& operation : operations) { if (operation->id == id) {
-                        retire_input(operation);
-                        script_handles_failure=script_handles_failure || static_cast<bool>(operation->edit);
-                        settle_edit(operation->edit,nullptr,std::current_exception());
-                        if(operation->failure)operation->failure();
-                    } }
-                    std::erase_if(operations, [&](const auto& operation) { return operation->id == id; });
+                    for (const auto& operation : operations) {
+                        if (operation->id == id) {
+                            retire_input(operation);
+                            script_handles_failure =
+                                script_handles_failure || static_cast<bool>(operation->edit);
+                            settle_edit(operation->edit, nullptr, std::current_exception());
+                            if (operation->failure)
+                                operation->failure();
+                        }
+                    }
+                    std::erase_if(operations, [&](const auto& operation) {
+                        return operation->id == id;
+                    });
                 }
-                if(!script_handles_failure && !obsolete_syntax){error = failure.what(); status = "Action failed";}
-                if (completed.request.method == "document.syntax" && documents.contains(completed.request.document)) {
-                    auto& document = documents.at(completed.request.document);
-                    document.syntax_loading = false; document.needs_syntax = obsolete_syntax; document.syntax_state = obsolete_syntax ? "pending" : "failed";
+                if (!script_handles_failure && !obsolete_syntax) {
+                    error = failure.what();
+                    status = "Action failed";
                 }
-                if (completed.request.method == "language.diagnostics" && documents.contains(completed.request.document)) {
+                if (completed.request.method == "document.syntax" &&
+                    documents.contains(completed.request.document)) {
                     auto& document = documents.at(completed.request.document);
-                    document.diagnostics_loading = false; document.language_active = false;
+                    document.syntax_loading = false;
+                    document.needs_syntax = obsolete_syntax;
+                    document.syntax_state = obsolete_syntax ? "pending" : "failed";
                 }
-                if (completed.request.method == "document.lines" && documents.contains(completed.request.document)) {
+                if (completed.request.method == "language.diagnostics" &&
+                    documents.contains(completed.request.document)) {
                     auto& document = documents.at(completed.request.document);
-                    document.loading = false; document.needs_lines = false;
-                } else if (completed.request.method == "script.command" || completed.request.method == "document.edit" || completed.request.method == "document.setSelections") {
-                    if (auto* document = current()) { document->needs_lines = true; }
+                    document.diagnostics_loading = false;
+                    document.language_active = false;
+                }
+                if (completed.request.method == "document.lines" &&
+                    documents.contains(completed.request.document)) {
+                    auto& document = documents.at(completed.request.document);
+                    document.loading = false;
+                    document.needs_lines = false;
+                } else if (completed.request.method == "script.command" ||
+                           completed.request.method == "document.edit" ||
+                           completed.request.method == "document.setSelections") {
+                    if (auto* document = current()) {
+                        document->needs_lines = true;
+                    }
                 }
             }
         }
-        if (requests.empty()) { break; }
-        const auto next=std::find_if(requests.begin(),requests.end(),[this](const Request& request){
-            return request.document.empty() || !ordered_inputs.contains(request.document) ||
-                request.method=="document.lines" || request.method=="document.syntax" || request.method=="language.diagnostics";
-        });
-        if(next==requests.end())break;
-        auto request=std::move(*next);requests.erase(next);
-        if(request.read) {
-            if(!request.read->settled) {
-                try { settle_read(request.read,native_ui_request("_ui.read",request.params)); }
-                catch (...) { settle_read(request.read,nullptr,std::current_exception()); }
+        if (requests.empty()) {
+            break;
+        }
+        const auto next =
+            std::find_if(requests.begin(), requests.end(), [this](const Request& request) {
+                return request.document.empty() || !ordered_inputs.contains(request.document) ||
+                       request.method == "document.lines" || request.method == "document.syntax" ||
+                       request.method == "language.diagnostics";
+            });
+        if (next == requests.end())
+            break;
+        auto request = std::move(*next);
+        requests.erase(next);
+        if (request.read) {
+            if (!request.read->settled) {
+                try {
+                    settle_read(request.read, native_ui_request("_ui.read", request.params));
+                } catch (...) {
+                    settle_read(request.read, nullptr, std::current_exception());
+                }
             }
             continue;
         }
-        if (request.edit && request.edit->cancelled) { continue; }
-        if (!request.document.empty() && !documents.contains(request.document)) {
-            settle_edit(request.edit,nullptr,std::make_exception_ptr(protocol::RpcError(-32001,"Document closed before the edit was dispatched"))); continue;
+        if (request.edit && request.edit->cancelled) {
+            continue;
         }
-        if(request.method=="document.syntax" && request.params.at("baseRevision")!=documents.at(request.document).metadata.at("revision")) {
-            auto& document=documents.at(request.document);document.syntax_loading=false;document.needs_syntax=true;document.syntax_state="pending";
+        if (!request.document.empty() && !documents.contains(request.document)) {
+            settle_edit(request.edit,
+                        nullptr,
+                        std::make_exception_ptr(protocol::RpcError(
+                            -32001, "Document closed before the edit was dispatched")));
+            continue;
+        }
+        if (request.method == "document.syntax" &&
+            request.params.at("baseRevision") !=
+                documents.at(request.document).metadata.at("revision")) {
+            auto& document = documents.at(request.document);
+            document.syntax_loading = false;
+            document.needs_syntax = true;
+            document.syntax_state = "pending";
             continue;
         }
         try {
-        if (request.build_params) { request.params = request.build_params(); }
-        if (request.inject_revision) {
-            const auto found = documents.find(request.document);
-            if (found == documents.end()) { continue; }
-            auto& params = request.method == "script.command" ? request.params["params"] : request.params;
-            params["id"] = request.document;
-            params["baseRevision"] = found->second.metadata.at("revision");
-        }
-        const auto id = std::to_string(next_request++);
-        auto future = channel->submit(Json{{"jsonrpc", "2.0"}, {"id", id}, {"method", request.method}, {"params", request.params}}.dump());
-        active_request.emplace(ActiveRequest{std::move(request), id, std::move(future)});
+            if (request.build_params) {
+                request.params = request.build_params();
+            }
+            if (request.inject_revision) {
+                const auto found = documents.find(request.document);
+                if (found == documents.end()) {
+                    continue;
+                }
+                auto& params =
+                    request.method == "script.command" ? request.params["params"] : request.params;
+                params["id"] = request.document;
+                params["baseRevision"] = found->second.metadata.at("revision");
+            }
+            const auto id = std::to_string(next_request++);
+            auto future = channel->submit(Json{
+                {"jsonrpc", "2.0"},
+                {"id", id},
+                {"method", request.method},
+                {"params", request.params}}.dump());
+            active_request.emplace(ActiveRequest{std::move(request), id, std::move(future)});
         } catch (const std::exception& failure) {
-            settle_edit(request.edit,nullptr,std::current_exception());
-            if(request.failure)request.failure();
-            error=failure.what();status="Action failed";
+            settle_edit(request.edit, nullptr, std::current_exception());
+            if (request.failure)
+                request.failure();
+            error = failure.what();
+            status = "Action failed";
         }
     }
     const auto now = Clock::now();
     for (const auto& operation : operations) {
-        if (operation->polling || now < operation->next_poll) { continue; }
+        if (operation->polling || now < operation->next_poll) {
+            continue;
+        }
         operation->polling = true;
-        enqueue({"operation.get", {{"id", operation->id}, {"offset", operation->offset}, {"limit", 256}}, {}, false,
-            [this, operation](const Json& result) {
-                operation->polling = false;
-                operation->next_poll = Clock::now() + std::chrono::milliseconds(35);
-                const auto state = result.at("state").get<std::string>();
-                if (state == "completed") {
-                    auto value = result.at("result");
-                    if (result.contains("page")) {
-                        const auto& page = result["page"];
-                        for (const auto field : {"entries", "matches"}) {
-                            if (value.contains(field)) {
-                                if (operation->accumulated.empty()) { operation->accumulated = value; }
-                                else { for (const auto& entry : value[field]) { operation->accumulated[field].push_back(entry); } }
-                            }
-                        }
-                        if (page.contains("nextOffset") && !page["nextOffset"].is_null() && page["nextOffset"].get<std::size_t>() < page.at("total").get<std::size_t>()) {
-                            operation->offset = page["nextOffset"].get<std::size_t>();
-                            return;
-                        }
-                        if (!operation->accumulated.empty()) { value = operation->accumulated; }
-                    }
-                    if (operation->complete) { operation->complete(value); }
-                    settle_edit(operation->edit,value);
-                    retire_input(operation);
-                    std::erase(operations, operation);
-                } else if (state == "failed" || state == "cancelled") {
-                    const auto failure=result.value("error",Json::object());
-                    const auto exception=std::make_exception_ptr(protocol::RpcError(failure.value("code",-32800),
-                        failure.value("message",std::string("Workspace operation cancelled")),
-                        failure.contains("data") ? std::optional<Json>(failure.at("data")) : std::nullopt));
-                    settle_edit(operation->edit,nullptr,exception);
-                    std::rethrow_exception(exception);
-                }
-            }, {}});
+        enqueue({"operation.get",
+                 {{"id", operation->id}, {"offset", operation->offset}, {"limit", 256}},
+                 {},
+                 false,
+                 [this, operation](const Json& result) {
+                     operation->polling = false;
+                     operation->next_poll = Clock::now() + std::chrono::milliseconds(35);
+                     const auto state = result.at("state").get<std::string>();
+                     if (state == "completed") {
+                         auto value = result.at("result");
+                         if (result.contains("page")) {
+                             const auto& page = result["page"];
+                             for (const auto field : {"entries", "matches"}) {
+                                 if (value.contains(field)) {
+                                     if (operation->accumulated.empty()) {
+                                         operation->accumulated = value;
+                                     } else {
+                                         for (const auto& entry : value[field]) {
+                                             operation->accumulated[field].push_back(entry);
+                                         }
+                                     }
+                                 }
+                             }
+                             if (page.contains("nextOffset") && !page["nextOffset"].is_null() &&
+                                 page["nextOffset"].get<std::size_t>() <
+                                     page.at("total").get<std::size_t>()) {
+                                 operation->offset = page["nextOffset"].get<std::size_t>();
+                                 return;
+                             }
+                             if (!operation->accumulated.empty()) {
+                                 value = operation->accumulated;
+                             }
+                         }
+                         if (operation->complete) {
+                             operation->complete(value);
+                         }
+                         settle_edit(operation->edit, value);
+                         retire_input(operation);
+                         std::erase(operations, operation);
+                     } else if (state == "failed" || state == "cancelled") {
+                         const auto failure = result.value("error", Json::object());
+                         const auto exception = std::make_exception_ptr(protocol::RpcError(
+                             failure.value("code", -32800),
+                             failure.value("message", std::string("Workspace operation cancelled")),
+                             failure.contains("data") ? std::optional<Json>(failure.at("data"))
+                                                      : std::nullopt));
+                         settle_edit(operation->edit, nullptr, exception);
+                         std::rethrow_exception(exception);
+                     }
+                 },
+                 {}});
     }
     fetch_lines();
     fetch_syntax();
-    if (const auto* document = current(); document && document->language_active && !document->diagnostics_loading &&
-        Clock::now() >= document->diagnostics_after && requests.empty() && !active_request) { fetch_diagnostics(active_id); }
+    if (const auto* document = current();
+        document && document->language_active && !document->diagnostics_loading &&
+        Clock::now() >= document->diagnostics_after && requests.empty() && !active_request) {
+        fetch_diagnostics(active_id);
+    }
 }
 
 void EditorWindow::Impl::fetch_lines() {
     auto* document = current();
-    if (!document || !document->needs_lines || document->loading || queued_for(active_id)) { return; }
+    if (!document || !document->needs_lines || document->loading || queued_for(active_id)) {
+        return;
+    }
     const auto id = active_id;
     const auto first = document->first_line > 2 ? document->first_line - 2 : 0;
-    const auto visible = static_cast<std::size_t>(std::max(1.0F, (content_bottom - content_top) / row_height)) + 8;
+    const auto visible =
+        static_cast<std::size_t>(std::max(1.0F, (content_bottom - content_top) / row_height)) + 8;
     document->loading = true;
     auto view = std::make_shared<ViewState>();
-    view->id = id; view->revision = document->metadata.at("revision").get<std::string>();
-    view->first = first; view->limit = std::min(first + std::min(visible, std::size_t{256}), document->metadata.at("lineCount").get<std::size_t>());
+    view->id = id;
+    view->revision = document->metadata.at("revision").get<std::string>();
+    view->first = first;
+    view->limit = std::min(first + std::min(visible, std::size_t{256}),
+                           document->metadata.at("lineCount").get<std::size_t>());
     fetch_lines_page(std::move(view), first);
 }
 
-void EditorWindow::Impl::fetch_lines_page(std::shared_ptr<ViewState> view, std::size_t first, std::optional<std::size_t> begin) {
+void EditorWindow::Impl::fetch_lines_page(std::shared_ptr<ViewState> view,
+                                          std::size_t first,
+                                          std::optional<std::size_t> begin) {
     Json params{{"id", view->id}, {"firstLine", first}, {"count", view->limit - first}};
-    if (begin) { params["begin"] = *begin; }
-    enqueue({"document.lines", std::move(params), view->id, false,
-        [this, view](const Json& result) {
-            if (!documents.contains(view->id)) { return; }
-            auto& document = documents.at(view->id);
-            if (result.at("revision") != view->revision || document.metadata.at("revision") != view->revision) {
-                document.loading = false; document.needs_lines = true; return;
-            }
-            accept_metadata(result);
-            for (const auto& record : result.at("lines")) {
-                const auto number = record.at("line").get<std::size_t>();
-                auto [found, inserted] = view->lines.try_emplace(number);
-                auto& line = found->second;
-                line.number = number;
-                if (inserted) { line.begin = record.at("begin").get<std::size_t>(); }
-                line.end = record.at("end").get<std::size_t>();
-                line.next = record.at("nextBegin").get<std::size_t>();
-                line.complete = record.at("complete").get<bool>();
-                line.text += record.at("text").get<std::string>();
-            }
-            if (result.contains("continuation")) {
-                const auto& continuation = result.at("continuation");
-                fetch_lines_page(view, continuation.at("firstLine").get<std::size_t>(), continuation.at("begin").get<std::size_t>()); return;
-            }
-            const auto next = result.at("nextLine").get<std::size_t>();
-            if (next < view->limit && !result.at("lines").empty()) { fetch_lines_page(view, next); return; }
-            document.lines = std::move(view->lines);
-            document.view_revision = view->revision;
-            document.loading = false;
-            const auto rows = static_cast<std::size_t>(std::max(1.0F, (content_bottom - content_top) / row_height)) + 1;
-            const auto required_end = std::min(document.first_line + rows, document.metadata.at("lineCount").get<std::size_t>());
-            document.needs_lines = document.first_line < view->first || required_end > view->limit;
-            document.needs_syntax = true;
-        }, {}});
+    if (begin) {
+        params["begin"] = *begin;
+    }
+    enqueue(
+        {"document.lines",
+         std::move(params),
+         view->id,
+         false,
+         [this, view](const Json& result) {
+             if (!documents.contains(view->id)) {
+                 return;
+             }
+             auto& document = documents.at(view->id);
+             if (result.at("revision") != view->revision ||
+                 document.metadata.at("revision") != view->revision) {
+                 document.loading = false;
+                 document.needs_lines = true;
+                 return;
+             }
+             accept_metadata(result);
+             for (const auto& record : result.at("lines")) {
+                 const auto number = record.at("line").get<std::size_t>();
+                 auto [found, inserted] = view->lines.try_emplace(number);
+                 auto& line = found->second;
+                 line.number = number;
+                 if (inserted) {
+                     line.begin = record.at("begin").get<std::size_t>();
+                 }
+                 line.end = record.at("end").get<std::size_t>();
+                 line.next = record.at("nextBegin").get<std::size_t>();
+                 line.complete = record.at("complete").get<bool>();
+                 line.text += record.at("text").get<std::string>();
+             }
+             if (result.contains("continuation")) {
+                 const auto& continuation = result.at("continuation");
+                 fetch_lines_page(view,
+                                  continuation.at("firstLine").get<std::size_t>(),
+                                  continuation.at("begin").get<std::size_t>());
+                 return;
+             }
+             const auto next = result.at("nextLine").get<std::size_t>();
+             if (next < view->limit && !result.at("lines").empty()) {
+                 fetch_lines_page(view, next);
+                 return;
+             }
+             document.lines = std::move(view->lines);
+             document.view_revision = view->revision;
+             document.loading = false;
+             const auto rows = static_cast<std::size_t>(
+                                   std::max(1.0F, (content_bottom - content_top) / row_height)) +
+                               1;
+             const auto required_end = std::min(
+                 document.first_line + rows, document.metadata.at("lineCount").get<std::size_t>());
+             document.needs_lines = document.first_line < view->first || required_end > view->limit;
+             document.needs_syntax = true;
+         },
+         {}});
 }
 
 void EditorWindow::Impl::fetch_syntax() {
     auto* document = current();
-    if (!document || document->loading || document->needs_lines || !document->needs_syntax || document->syntax_loading ||
-        queued_for(active_id) || document->lines.empty()) { return; }
+    if (!document || document->loading || document->needs_lines || !document->needs_syntax ||
+        document->syntax_loading || queued_for(active_id) || document->lines.empty()) {
+        return;
+    }
     const auto id = active_id;
     const auto revision = document->view_revision;
-    const auto outline_begin=document->outline_scroll;
-    const auto outline_limit=static_cast<std::size_t>(std::ceil(geometry.outline_rows.height/geometry.sidebar_row_height))+1;
-    const auto include_outline=show_outline && geometry.outline_rows.height>0;
+    const auto outline_begin = document->outline_scroll;
+    const auto outline_limit = static_cast<std::size_t>(std::ceil(geometry.outline_rows.height /
+                                                                  geometry.sidebar_row_height)) +
+                               1;
+    const auto include_outline = show_outline && geometry.outline_rows.height > 0;
     document->syntax_loading = true;
-    enqueue({"document.syntax", {{"id", id}, {"baseRevision", revision}, {"begin", document->lines.begin()->second.begin},
-                                {"end", document->lines.rbegin()->second.end},{"outlineBegin",outline_begin},{"outlineLimit",outline_limit},{"includeOutline",include_outline}}, id, false,
-        [this, id, revision,outline_limit,include_outline](const Json& result) {
-            if (!documents.contains(id)) { return; }
-            auto& document = documents.at(id);
-            document.syntax_loading = false;
-            if (document.metadata.at("revision") != revision) { document.needs_syntax = true; return; }
-            const auto state = result.at("state").get<std::string>();
-            document.syntax_state = state;
-            if (state == "pending") {
-                document.syntax_loading = true;
-                auto operation = std::make_shared<Operation>();
-                operation->id = result.at("operationId").get<std::string>();
-                operation->complete = [this, id](const Json&) {
-                    if (documents.contains(id)) { documents.at(id).syntax_loading = false; documents.at(id).needs_syntax = true; }
-                };
-                operation->failure = [this, id] {
-                    if (documents.contains(id)) { auto& doc = documents.at(id); doc.syntax_loading = false; doc.needs_syntax = false; doc.syntax_state = "failed"; }
-                };
-                operations.push_back(std::move(operation));
-                return;
-            }
-            document.syntax_revision = revision; document.needs_syntax = false;
-            document.decorations.set_highlights(result.value("highlights", Json::array()));
-            document.outline = result.value("outline", Json::array());
-            const auto page=result.value("outlinePage",Json::object());
-            document.outline_begin=page.value("offset",std::size_t{0});document.outline_total=page.value("total",document.outline.size());
-            if(document.outline_scroll>=document.outline_total)document.outline_scroll=document.outline_total>outline_limit ? document.outline_total-outline_limit : 0;
-            const auto current_limit=static_cast<std::size_t>(std::ceil(geometry.outline_rows.height/geometry.sidebar_row_height))+1;
-            const auto want_outline=show_outline && geometry.outline_rows.height>0;
-            document.needs_syntax=want_outline!=include_outline || (want_outline && (document.outline_scroll!=document.outline_begin || current_limit>outline_limit));
-            for (auto& [number, line] : document.lines) { static_cast<void>(number); line.layout.reset(); }
-        }, {}});
+    enqueue({"document.syntax",
+             {{"id", id},
+              {"baseRevision", revision},
+              {"begin", document->lines.begin()->second.begin},
+              {"end", document->lines.rbegin()->second.end},
+              {"outlineBegin", outline_begin},
+              {"outlineLimit", outline_limit},
+              {"includeOutline", include_outline}},
+             id,
+             false,
+             [this, id, revision, outline_limit, include_outline](const Json& result) {
+                 if (!documents.contains(id)) {
+                     return;
+                 }
+                 auto& document = documents.at(id);
+                 document.syntax_loading = false;
+                 if (document.metadata.at("revision") != revision) {
+                     document.needs_syntax = true;
+                     return;
+                 }
+                 const auto state = result.at("state").get<std::string>();
+                 document.syntax_state = state;
+                 if (state == "pending") {
+                     document.syntax_loading = true;
+                     auto operation = std::make_shared<Operation>();
+                     operation->id = result.at("operationId").get<std::string>();
+                     operation->complete = [this, id](const Json&) {
+                         if (documents.contains(id)) {
+                             documents.at(id).syntax_loading = false;
+                             documents.at(id).needs_syntax = true;
+                         }
+                     };
+                     operation->failure = [this, id] {
+                         if (documents.contains(id)) {
+                             auto& doc = documents.at(id);
+                             doc.syntax_loading = false;
+                             doc.needs_syntax = false;
+                             doc.syntax_state = "failed";
+                         }
+                     };
+                     operations.push_back(std::move(operation));
+                     return;
+                 }
+                 document.syntax_revision = revision;
+                 document.needs_syntax = false;
+                 document.decorations.set_highlights(result.value("highlights", Json::array()));
+                 document.outline = result.value("outline", Json::array());
+                 const auto page = result.value("outlinePage", Json::object());
+                 document.outline_begin = page.value("offset", std::size_t{0});
+                 document.outline_total = page.value("total", document.outline.size());
+                 if (document.outline_scroll >= document.outline_total)
+                     document.outline_scroll = document.outline_total > outline_limit
+                                                   ? document.outline_total - outline_limit
+                                                   : 0;
+                 const auto current_limit =
+                     static_cast<std::size_t>(
+                         std::ceil(geometry.outline_rows.height / geometry.sidebar_row_height)) +
+                     1;
+                 const auto want_outline = show_outline && geometry.outline_rows.height > 0;
+                 document.needs_syntax =
+                     want_outline != include_outline ||
+                     (want_outline && (document.outline_scroll != document.outline_begin ||
+                                       current_limit > outline_limit));
+                 for (auto& [number, line] : document.lines) {
+                     static_cast<void>(number);
+                     line.layout.reset();
+                 }
+             },
+             {}});
 }
 
-void EditorWindow::Impl::settle_edit(const std::shared_ptr<PendingEdit>& edit,const Json& result,std::exception_ptr failure) {
-    if(!edit || edit->settled)return;
-    edit->settled=true;
-    if(failure)edit->completion.set_exception(std::move(failure));
-    else edit->completion.set_value(result);
-    std::erase_if(pending_edits,[&](const auto& entry){return entry.second==edit;});
+void EditorWindow::Impl::settle_edit(const std::shared_ptr<PendingEdit>& edit,
+                                     const Json& result,
+                                     std::exception_ptr failure) {
+    if (!edit || edit->settled)
+        return;
+    edit->settled = true;
+    if (failure)
+        edit->completion.set_exception(std::move(failure));
+    else
+        edit->completion.set_value(result);
+    std::erase_if(pending_edits, [&](const auto& entry) {
+        return entry.second == edit;
+    });
 }
 
 void EditorWindow::Impl::cancel_edit(const std::shared_ptr<PendingEdit>& edit) {
-    if(edit->cancelled || edit->settled)return;
-    edit->cancelled=true;
+    if (edit->cancelled || edit->settled)
+        return;
+    edit->cancelled = true;
     // Runtime cancellation rejects the caller and drains this abandoned future.
     // Resolve the drain value, as for dismissed native dialogs.
-    settle_edit(edit,nullptr);
-    if(!edit->operation.empty())enqueue({"operation.cancel",{{"id",edit->operation}},{},false,{}, {}});
+    settle_edit(edit, nullptr);
+    if (!edit->operation.empty())
+        enqueue({"operation.cancel", {{"id", edit->operation}}, {}, false, {}, {}});
 }
 
-void EditorWindow::Impl::settle_read(const std::shared_ptr<PendingRead>& read,const Json& value,std::exception_ptr failure) {
-    if(read->settled)return;
-    read->settled=true;
-    if(failure)read->completion.set_exception(std::move(failure));
-    else read->completion.set_value(value);
-    std::erase_if(pending_reads,[&](const auto& entry){return entry.second==read;});
-    std::erase_if(requests,[&](const Request& request){return request.read==read;});
+void EditorWindow::Impl::settle_read(const std::shared_ptr<PendingRead>& read,
+                                     const Json& value,
+                                     std::exception_ptr failure) {
+    if (read->settled)
+        return;
+    read->settled = true;
+    if (failure)
+        read->completion.set_exception(std::move(failure));
+    else
+        read->completion.set_value(value);
+    std::erase_if(pending_reads, [&](const auto& entry) {
+        return entry.second == read;
+    });
+    std::erase_if(requests, [&](const Request& request) {
+        return request.read == read;
+    });
 }
 
 std::future<Json> EditorWindow::Impl::begin_read(Json params) {
-    const auto id=params.value("id",active_id);
-    params["id"]=id;
-    auto read=std::make_shared<PendingRead>();auto future=read->completion.get_future();
-    if(params.value("immediate",false) || id.empty() || (!queued_for(id) && !ordered_inputs.contains(id))) {
-        try { settle_read(read,native_ui_request("_ui.read",params)); }
-        catch (...) { settle_read(read,nullptr,std::current_exception()); }
+    const auto id = params.value("id", active_id);
+    params["id"] = id;
+    auto read = std::make_shared<PendingRead>();
+    auto future = read->completion.get_future();
+    if (params.value("immediate", false) || id.empty() ||
+        (!queued_for(id) && !ordered_inputs.contains(id))) {
+        try {
+            settle_read(read, native_ui_request("_ui.read", params));
+        } catch (...) {
+            settle_read(read, nullptr, std::current_exception());
+        }
         return future;
     }
-    if(!params.contains("readId") && next_read==std::numeric_limits<std::uint64_t>::max())throw protocol::RpcError(-32004,"UI read identity capacity exceeded");
-    const auto token=params.contains("readId") ? params.at("readId").get<std::string>() : "native-read-"+std::to_string(next_read++);
-    if(token.empty() || token.size()>128 || pending_reads.contains(token))throw protocol::RpcError(-32602,"Invalid UI read identity");
-    if(pending_reads.size()>=256)throw protocol::RpcError(-32004,"UI read queue is full");
-    pending_reads.emplace(token,read);
-    try { enqueue({"_ui.read",std::move(params),id,false,{}, {},{}, {},read}); }
-    catch (...) { settle_read(read,nullptr,std::current_exception()); }
+    if (!params.contains("readId") && next_read == std::numeric_limits<std::uint64_t>::max())
+        throw protocol::RpcError(-32004, "UI read identity capacity exceeded");
+    const auto token = params.contains("readId") ? params.at("readId").get<std::string>()
+                                                 : "native-read-" + std::to_string(next_read++);
+    if (token.empty() || token.size() > 128 || pending_reads.contains(token))
+        throw protocol::RpcError(-32602, "Invalid UI read identity");
+    if (pending_reads.size() >= 256)
+        throw protocol::RpcError(-32004, "UI read queue is full");
+    pending_reads.emplace(token, read);
+    try {
+        enqueue({"_ui.read", std::move(params), id, false, {}, {}, {}, {}, read});
+    } catch (...) {
+        settle_read(read, nullptr, std::current_exception());
+    }
     return future;
 }
 
 std::future<Json> EditorWindow::Impl::begin_edit(const Json& params) {
-    if(dialog)throw protocol::RpcError(-32004,"Dismiss the active dialog before editing");
-    const auto token=params.at("actionId").get<std::string>();
-    if(token.empty() || token.size()>128 || pending_edits.contains(token))throw protocol::RpcError(-32602,"Invalid editor action identity");
-    if(pending_edits.size()>=256)throw protocol::RpcError(-32004,"Editor action queue is full");
-    const auto extra=params.value("parameters",Json::object());
-    if(!extra.is_object())throw protocol::RpcError(-32602,"Editor action parameters must be an object");
-    const auto id=extra.value("id",active_id);
-    if(!documents.contains(id))throw protocol::RpcError(-32001,"Editor action requires an open document");
-    auto edit=std::make_shared<PendingEdit>();auto future=edit->completion.get_future();
-    pending_edits.emplace(token,edit);
-    try { editor_command(params.at("command").get<std::string>(),extra,edit); }
-    catch (...) { settle_edit(edit,nullptr,std::current_exception()); }
+    if (dialog)
+        throw protocol::RpcError(-32004, "Dismiss the active dialog before editing");
+    const auto token = params.at("actionId").get<std::string>();
+    if (token.empty() || token.size() > 128 || pending_edits.contains(token))
+        throw protocol::RpcError(-32602, "Invalid editor action identity");
+    if (pending_edits.size() >= 256)
+        throw protocol::RpcError(-32004, "Editor action queue is full");
+    const auto extra = params.value("parameters", Json::object());
+    if (!extra.is_object())
+        throw protocol::RpcError(-32602, "Editor action parameters must be an object");
+    const auto id = extra.value("id", active_id);
+    if (!documents.contains(id))
+        throw protocol::RpcError(-32001, "Editor action requires an open document");
+    auto edit = std::make_shared<PendingEdit>();
+    auto future = edit->completion.get_future();
+    pending_edits.emplace(token, edit);
+    try {
+        editor_command(params.at("command").get<std::string>(), extra, edit);
+    } catch (...) {
+        settle_edit(edit, nullptr, std::current_exception());
+    }
     return future;
 }
 
-void EditorWindow::Impl::editor_command(std::string name, Json extra,std::shared_ptr<PendingEdit> edit) {
-    const auto id=extra.value("id",active_id);
-    const auto found=documents.find(id);
-    if(found==documents.end()) { return; }
-    if (!name.starts_with("editor.move_up") && !name.starts_with("editor.move_down")) { vertical_column.reset(); }
+void EditorWindow::Impl::editor_command(std::string name,
+                                        Json extra,
+                                        std::shared_ptr<PendingEdit> edit) {
+    const auto id = extra.value("id", active_id);
+    const auto found = documents.find(id);
+    if (found == documents.end()) {
+        return;
+    }
+    if (!name.starts_with("editor.move_up") && !name.starts_with("editor.move_down")) {
+        vertical_column.reset();
+    }
     if (name != "editor.undo" && name != "editor.redo") {
         auto tab_size = editor_settings.value("tabSize", 4U);
         auto insert_spaces = editor_settings.value("insertSpaces", true);
         const auto& config = found->second.editor_config;
-        if (config.contains("tab_width")) { tab_size = static_cast<unsigned>(std::stoul(config.at("tab_width").get<std::string>())); }
-        else if (config.contains("indent_size") && config.at("indent_size") != "tab") { tab_size = static_cast<unsigned>(std::stoul(config.at("indent_size").get<std::string>())); }
-        if (config.contains("indent_style")) { insert_spaces = config.at("indent_style") == "space"; }
-        if(!extra.contains("tabSize"))extra["tabSize"] = tab_size;
-        if(!extra.contains("insertSpaces"))extra["insertSpaces"] = insert_spaces;
-        if(!extra.contains("newline")) {
-            auto ending=std::string("\n");
-            if(config.contains("end_of_line")) {
-                if(config.at("end_of_line")=="crlf")ending="\r\n";
-            } else for(const auto& [number,line]:found->second.lines) {
-                static_cast<void>(number);
-                if(line.complete && line.next-line.end==2){ending="\r\n";break;}
-            }
-            extra["newline"]=std::move(ending);
+        if (config.contains("tab_width")) {
+            tab_size = static_cast<unsigned>(std::stoul(config.at("tab_width").get<std::string>()));
+        } else if (config.contains("indent_size") && config.at("indent_size") != "tab") {
+            tab_size =
+                static_cast<unsigned>(std::stoul(config.at("indent_size").get<std::string>()));
+        }
+        if (config.contains("indent_style")) {
+            insert_spaces = config.at("indent_style") == "space";
+        }
+        if (!extra.contains("tabSize"))
+            extra["tabSize"] = tab_size;
+        if (!extra.contains("insertSpaces"))
+            extra["insertSpaces"] = insert_spaces;
+        if (!extra.contains("newline")) {
+            auto ending = std::string("\n");
+            if (config.contains("end_of_line")) {
+                if (config.at("end_of_line") == "crlf")
+                    ending = "\r\n";
+            } else
+                for (const auto& [number, line] : found->second.lines) {
+                    static_cast<void>(number);
+                    if (line.complete && line.next - line.end == 2) {
+                        ending = "\r\n";
+                        break;
+                    }
+                }
+            extra["newline"] = std::move(ending);
         }
     }
-    const bool inject_revision=!extra.contains("baseRevision");
-    extra["id"]=id;
-    enqueue({"script.command", {{"name", name}, {"params", std::move(extra)}}, id, inject_revision,
-        [this,id](const Json& result) {
-            if(result.is_object() && result.contains("id") && result.contains("revision")) {
-                accept_metadata(result);if(active_id==id)reveal_caret();
-            }
-            status = "Ready";
-        }, {},{},std::move(edit)});
+    const bool inject_revision = !extra.contains("baseRevision");
+    extra["id"] = id;
+    enqueue({"script.command",
+             {{"name", name}, {"params", std::move(extra)}},
+             id,
+             inject_revision,
+             [this, id](const Json& result) {
+                 if (result.is_object() && result.contains("id") && result.contains("revision")) {
+                     accept_metadata(result);
+                     if (active_id == id)
+                         reveal_caret();
+                 }
+                 status = "Ready";
+             },
+             {},
+             {},
+             std::move(edit)});
 }
 
 void EditorWindow::Impl::fetch_diagnostics(const std::string& id) {
-    if (!documents.contains(id) || documents.at(id).diagnostics_loading) { return; }
+    if (!documents.contains(id) || documents.at(id).diagnostics_loading) {
+        return;
+    }
     documents.at(id).diagnostics_loading = true;
     const auto generation = documents.at(id).diagnostics_generation;
-    enqueue({"language.diagnostics", {{"id", id}}, id, false, [this, id, generation](const Json& result) {
-        if (!documents.contains(id)) { return; }
-        auto& document = documents.at(id);
-        document.diagnostics_loading = false;
-        document.diagnostics_after = generation == document.diagnostics_generation
-            ? Clock::now() + std::chrono::milliseconds(750) : Clock::time_point{};
-        document.language_active = result.value("available", true);
-        if (result.at("revision") == document.metadata.at("revision")) { document.decorations.set_diagnostics(result.value("diagnostics", Json::array())); }
-    }, {}});
+    enqueue({"language.diagnostics",
+             {{"id", id}},
+             id,
+             false,
+             [this, id, generation](const Json& result) {
+                 if (!documents.contains(id)) {
+                     return;
+                 }
+                 auto& document = documents.at(id);
+                 document.diagnostics_loading = false;
+                 document.diagnostics_after = generation == document.diagnostics_generation
+                                                  ? Clock::now() + std::chrono::milliseconds(750)
+                                                  : Clock::time_point{};
+                 document.language_active = result.value("available", true);
+                 if (result.at("revision") == document.metadata.at("revision")) {
+                     document.decorations.set_diagnostics(
+                         result.value("diagnostics", Json::array()));
+                 }
+             },
+             {}});
 }
 
 void EditorWindow::Impl::fetch_git_diff(std::string path, bool staged) {
-    execute_policy("workbench.gitDiff",{{"path",std::move(path)},{"staged",staged}});
+    execute_policy("workbench.gitDiff", {{"path", std::move(path)}, {"staged", staged}});
 }
 
 void EditorWindow::Impl::set_selections(Json selections, std::string revision) {
     auto* document = current();
-    if (!document) { return; }
+    if (!document) {
+        return;
+    }
     Json params{{"id", active_id}, {"selections", std::move(selections)}};
-    if (!revision.empty()) { params["baseRevision"] = revision; }
-    enqueue({"document.setSelections", std::move(params), active_id, revision.empty(),
-        [this](const Json& result) { accept_metadata(result); reveal_caret(); status = "Ready"; }, {}});
+    if (!revision.empty()) {
+        params["baseRevision"] = revision;
+    }
+    enqueue({"document.setSelections",
+             std::move(params),
+             active_id,
+             revision.empty(),
+             [this](const Json& result) {
+                 accept_metadata(result);
+                 reveal_caret();
+                 status = "Ready";
+             },
+             {}});
 }
 
 void EditorWindow::Impl::reveal_caret() {
     auto* document = current();
-    if (!document || document->metadata.at("selections").empty()) { return; }
-    const auto& positions = document->metadata.contains("selectionPositions") ? document->metadata["selectionPositions"] : document->metadata["selections"];
+    if (!document || document->metadata.at("selections").empty()) {
+        return;
+    }
+    const auto& positions = document->metadata.contains("selectionPositions")
+                                ? document->metadata["selectionPositions"]
+                                : document->metadata["selections"];
     const auto line = positions.front().value("line", std::size_t{0});
     document->reveal_horizontal = true;
-    const auto rows = static_cast<std::size_t>(std::max(1.0F, (content_bottom - content_top) / row_height));
-    if (line < document->first_line) { document->first_line = line; document->needs_lines = true; }
-    else if (line >= document->first_line + rows) { document->first_line = line - rows + 1; document->needs_lines = true; }
+    const auto rows =
+        static_cast<std::size_t>(std::max(1.0F, (content_bottom - content_top) / row_height));
+    if (line < document->first_line) {
+        document->first_line = line;
+        document->needs_lines = true;
+    } else if (line >= document->first_line + rows) {
+        document->first_line = line - rows + 1;
+        document->needs_lines = true;
+    }
 }
 
 void EditorWindow::Impl::close_document(const std::string& id, bool discard) {
     const auto found = documents.find(id);
-    if (found == documents.end() || closing_pending.contains(id)) { return; }
+    if (found == documents.end() || closing_pending.contains(id)) {
+        return;
+    }
     closing_pending.insert(id);
-    try { workbench->execute("workbench.close",{{"id",id},{"discardChanges",discard}},[this,id](const script::Runtime::Outcome& outcome) {
+    try {
+        workbench->execute(
+            "workbench.close",
+            {{"id", id}, {"discardChanges", discard}},
+            [this, id](const script::Runtime::Outcome& outcome) {
+                closing_pending.erase(id);
+                if (outcome.error) {
+                    if (outcome.error->value("name", std::string{}) != "AbortError") {
+                        error = outcome.error->value("message", std::string("Close failed"));
+                        status = "Action failed";
+                    }
+                }
+            });
+    } catch (...) {
         closing_pending.erase(id);
-        if(outcome.error) {
-            if(outcome.error->value("name",std::string{})!="AbortError"){error=outcome.error->value("message",std::string("Close failed"));status="Action failed";}
-        }
-    }); } catch (...) { closing_pending.erase(id);throw; }
+        throw;
+    }
 }
 
 bool EditorWindow::Impl::native_idle() const {
-    return requests.empty() && !active_request && operations.empty() && pending_edits.empty() && pending_reads.empty() && closing_pending.empty() && form_events.empty();
+    return requests.empty() && !active_request && operations.empty() && pending_edits.empty() &&
+           pending_reads.empty() && closing_pending.empty() && form_events.empty();
 }
 
-void EditorWindow::Impl::emit_form(std::string_view event,std::string_view action) {
-    if(!inline_form)return;
-    auto state=inline_form->state();if(!action.empty())state["action"]=action;
-    if(event=="ui.form.changed" && !form_events.empty() && form_events.back().first==event && form_events.back().second.at("id")==inline_form->id()) {
-        form_events.back().second=std::move(state);return;
+void EditorWindow::Impl::emit_form(std::string_view event, std::string_view action) {
+    if (!inline_form)
+        return;
+    auto state = inline_form->state();
+    if (!action.empty())
+        state["action"] = action;
+    if (event == "ui.form.changed" && !form_events.empty() && form_events.back().first == event &&
+        form_events.back().second.at("id") == inline_form->id()) {
+        form_events.back().second = std::move(state);
+        return;
     }
-    if(form_events.size()>=256)throw protocol::RpcError(-32004,"Inline event queue capacity exceeded");
-    form_events.emplace_back(event,std::move(state));
-}
-bool EditorWindow::Impl::close_inline_form(std::string_view id) {
-    if(!inline_form || (!id.empty() && inline_form->id()!=id))return false;
-    emit_form("ui.form.closed");inline_form.reset();dragging_form_field.reset();form_fields.clear();preedit.clear();return true;
+    if (form_events.size() >= 256)
+        throw protocol::RpcError(-32004, "Inline event queue capacity exceeded");
+    form_events.emplace_back(event, std::move(state));
 }
 
-std::future<Json> EditorWindow::Impl::begin_fence(std::string_view method,const Json& params) {
-    const auto id=params.at("waitId").get<std::string>();
-    if(id.empty() || id.size()>128 || pending_fences.contains(id) || quitting_fences.contains(id))throw protocol::RpcError(-32602,"Invalid UI wait identity");
-    if(pending_fences.size()>=256)throw protocol::RpcError(-32004,"UI wait queue is full");
-    PendingFence fence;fence.method=method;auto result=fence.completion.get_future();
-    pending_fences.emplace(id,std::move(fence));return result;
+bool EditorWindow::Impl::close_inline_form(std::string_view id) {
+    if (!inline_form || (!id.empty() && inline_form->id() != id))
+        return false;
+    emit_form("ui.form.closed");
+    inline_form.reset();
+    dragging_form_field.reset();
+    form_fields.clear();
+    preedit.clear();
+    return true;
+}
+
+std::future<Json> EditorWindow::Impl::begin_fence(std::string_view method, const Json& params) {
+    const auto id = params.at("waitId").get<std::string>();
+    if (id.empty() || id.size() > 128 || pending_fences.contains(id) ||
+        quitting_fences.contains(id))
+        throw protocol::RpcError(-32602, "Invalid UI wait identity");
+    if (pending_fences.size() >= 256)
+        throw protocol::RpcError(-32004, "UI wait queue is full");
+    PendingFence fence;
+    fence.method = method;
+    auto result = fence.completion.get_future();
+    pending_fences.emplace(id, std::move(fence));
+    return result;
 }
 
 bool EditorWindow::Impl::finish_fences() {
-    if(!native_idle() || dialog || pending_fences.empty())return false;
-    constexpr std::string_view methods[]{"_ui.barrier","_ui.window.close"};
-    if(!workbench->awaiting(methods))return false;
-    for(const auto method:{"_ui.barrier","_ui.window.close"}) {
+    if (!native_idle() || dialog || pending_fences.empty())
+        return false;
+    constexpr std::string_view methods[]{"_ui.barrier", "_ui.window.close"};
+    if (!workbench->awaiting(methods))
+        return false;
+    for (const auto method : {"_ui.barrier", "_ui.window.close"}) {
         // The waiting command itself owns one fence. All other script jobs and
         // transport responses must have settled before teardown is granted.
-        const bool closing=std::string_view(method)=="_ui.window.close";
-        const bool accepted=!closing || tabs.empty();
-        for(auto it=pending_fences.begin();it!=pending_fences.end();) {
-            if(it->second.method!=method){++it;continue;}
-            if(closing && accepted){quitting_fences.insert(it->first);quit_requested=true;}
-            auto pending=std::move(it->second);it=pending_fences.erase(it);
+        const bool closing = std::string_view(method) == "_ui.window.close";
+        const bool accepted = !closing || tabs.empty();
+        for (auto it = pending_fences.begin(); it != pending_fences.end();) {
+            if (it->second.method != method) {
+                ++it;
+                continue;
+            }
+            if (closing && accepted) {
+                quitting_fences.insert(it->first);
+                quit_requested = true;
+            }
+            auto pending = std::move(it->second);
+            it = pending_fences.erase(it);
             pending.completion.set_value(accepted);
         }
     }
@@ -965,391 +1555,717 @@ bool EditorWindow::Impl::finish_fences() {
 }
 
 std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
-    if (dialog || prompt != Prompt::none) { throw protocol::RpcError(-32004, "Another modal input is active"); }
+    if (dialog || prompt != Prompt::none) {
+        throw protocol::RpcError(-32004, "Another modal input is active");
+    }
     const auto id = spec.at("id").get<std::string>();
     const auto kind = spec.at("kind").get<std::string>();
-    if (kind != "input" && kind != "confirm" && kind != "choice" && kind != "pick" && kind != "text" && kind != "progress") { throw protocol::RpcError(-32602, "Unknown dialog kind"); }
+    if (kind != "input" && kind != "confirm" && kind != "choice" && kind != "pick" &&
+        kind != "text" && kind != "progress") {
+        throw protocol::RpcError(-32602, "Unknown dialog kind");
+    }
     const auto title = spec.at("title").get<std::string>();
     const auto value = spec.value("value", std::string{});
-    const auto detail = spec.value(kind=="text" ? "text" : "detail", std::string{});
+    const auto detail = spec.value(kind == "text" ? "text" : "detail", std::string{});
     const auto accept = spec.value("accept", std::string("Confirm"));
     const auto placeholder = spec.value("placeholder", std::string{});
-    if(spec.value("cancel",std::string{}).size()>4096)throw protocol::RpcError(-32602,"Dialog cancel label exceeds its bounds");
-    if (id.empty() || id.size()>128 || title.empty() || title.size() > 4096 || value.size() > 16384 || detail.size() > (kind=="text" ? 8*1024*1024U : 65536U) || accept.size()>4096 || placeholder.size()>4096 || value.find_first_of("\r\n")!=value.npos || value.find('\0')!=value.npos) { throw protocol::RpcError(-32602, "Dialog content exceeds its bounds"); }
-    Dialog pending;pending.id=id;pending.spec=spec;pending.detail_lines.reset(detail);
-    const auto items=spec.value("items",Json::array());
-    if(!items.is_array() || items.size()>4096)throw protocol::RpcError(-32602,"Confirmation items must be an array of at most 4096 strings");
-    std::string item_text;
-    for(const auto& item:items){
-        const auto label=item.get<std::string>();
-        if(label.empty() || label.find_first_of("\r\n")!=std::string::npos || label.size()>4096 || item_text.size()+label.size()+1>65536)throw protocol::RpcError(-32602,"Confirmation item text exceeds its bounds");
-        if(!item_text.empty())item_text+='\n';item_text+=label;
+    if (spec.value("cancel", std::string{}).size() > 4096)
+        throw protocol::RpcError(-32602, "Dialog cancel label exceeds its bounds");
+    if (id.empty() || id.size() > 128 || title.empty() || title.size() > 4096 ||
+        value.size() > 16384 || detail.size() > (kind == "text" ? 8 * 1024 * 1024U : 65536U) ||
+        accept.size() > 4096 || placeholder.size() > 4096 ||
+        value.find_first_of("\r\n") != value.npos || value.find('\0') != value.npos) {
+        throw protocol::RpcError(-32602, "Dialog content exceeds its bounds");
     }
-    if(kind=="choice") {
-        if(items.size()<2 || items.size()>4)throw protocol::RpcError(-32602,"Choice dialogs require 2 to 4 choices");
-        const auto selected=spec.value("defaultChoice",Json(0));
-        if(!selected.is_number_integer() || (selected.is_number_integer() && !selected.is_number_unsigned() && selected.get<std::int64_t>()<0) || selected.get<std::uint64_t>()>=items.size())throw protocol::RpcError(-32602,"Invalid default choice");
-        const auto keys=spec.value("keys",Json::array());
-        if(!keys.is_array() || (!keys.empty() && keys.size()!=items.size()))throw protocol::RpcError(-32602,"Choice keys must match the choices");
+    Dialog pending;
+    pending.id = id;
+    pending.spec = spec;
+    pending.detail_lines.reset(detail);
+    const auto items = spec.value("items", Json::array());
+    if (!items.is_array() || items.size() > 4096)
+        throw protocol::RpcError(-32602,
+                                 "Confirmation items must be an array of at most 4096 strings");
+    std::string item_text;
+    for (const auto& item : items) {
+        const auto label = item.get<std::string>();
+        if (label.empty() || label.find_first_of("\r\n") != std::string::npos ||
+            label.size() > 4096 || item_text.size() + label.size() + 1 > 65536)
+            throw protocol::RpcError(-32602, "Confirmation item text exceeds its bounds");
+        if (!item_text.empty())
+            item_text += '\n';
+        item_text += label;
+    }
+    if (kind == "choice") {
+        if (items.size() < 2 || items.size() > 4)
+            throw protocol::RpcError(-32602, "Choice dialogs require 2 to 4 choices");
+        const auto selected = spec.value("defaultChoice", Json(0));
+        if (!selected.is_number_integer() ||
+            (selected.is_number_integer() && !selected.is_number_unsigned() &&
+             selected.get<std::int64_t>() < 0) ||
+            selected.get<std::uint64_t>() >= items.size())
+            throw protocol::RpcError(-32602, "Invalid default choice");
+        const auto keys = spec.value("keys", Json::array());
+        if (!keys.is_array() || (!keys.empty() && keys.size() != items.size()))
+            throw protocol::RpcError(-32602, "Choice keys must match the choices");
         std::set<std::string> used;
-        for(const auto& key:keys) {
-            const auto text=lower_ascii(key.get<std::string>());
-            if(text.empty())continue;
-            if(text.size()!=1 || !((text[0]>='a' && text[0]<='z') || (text[0]>='0' && text[0]<='9')) || !used.insert(text).second)throw protocol::RpcError(-32602,"Choice keys must be unique ASCII letters or digits");
+        for (const auto& key : keys) {
+            const auto text = lower_ascii(key.get<std::string>());
+            if (text.empty())
+                continue;
+            if (text.size() != 1 ||
+                !((text[0] >= 'a' && text[0] <= 'z') || (text[0] >= '0' && text[0] <= '9')) ||
+                !used.insert(text).second)
+                throw protocol::RpcError(-32602,
+                                         "Choice keys must be unique ASCII letters or digits");
         }
     }
-    if(kind=="pick")pending.picker.reset(items.get<std::vector<std::string>>());
-    else if(!items.empty())pending.items.reset(item_text);
+    if (kind == "pick")
+        pending.picker.reset(items.get<std::vector<std::string>>());
+    else if (!items.empty())
+        pending.items.reset(item_text);
     auto result = pending.completion.get_future();
-    if(inline_form)inline_form->focus(std::nullopt);
+    if (inline_form)
+        inline_form->focus(std::nullopt);
     dialog.emplace(std::move(pending));
-    prompt = kind == "input" ? Prompt::policy_input : (kind=="pick" ? Prompt::policy_pick : (kind=="text" ? Prompt::policy_text : (kind=="choice" ? Prompt::policy_choice : (kind=="progress" ? Prompt::policy_progress : Prompt::policy_confirm))));
-    prompt_text = value; prompt_choice = kind=="choice" ? spec.value("defaultChoice",std::size_t{0}) : 0; prompt_select_all = false; preedit.clear();
+    prompt = kind == "input"
+                 ? Prompt::policy_input
+                 : (kind == "pick"
+                        ? Prompt::policy_pick
+                        : (kind == "text" ? Prompt::policy_text
+                                          : (kind == "choice"
+                                                 ? Prompt::policy_choice
+                                                 : (kind == "progress" ? Prompt::policy_progress
+                                                                       : Prompt::policy_confirm))));
+    prompt_text = value;
+    prompt_choice = kind == "choice" ? spec.value("defaultChoice", std::size_t{0}) : 0;
+    prompt_select_all = false;
+    preedit.clear();
     return result;
 }
 
 void EditorWindow::Impl::finish_dialog(Json value) {
-    if (!dialog) { return; }
-    auto pending = std::move(*dialog); dialog.reset();
-    prompt = Prompt::none; prompt_text.clear(); prompt_select_all = false; preedit.clear();
+    if (!dialog) {
+        return;
+    }
+    auto pending = std::move(*dialog);
+    dialog.reset();
+    prompt = Prompt::none;
+    prompt_text.clear();
+    prompt_select_all = false;
+    preedit.clear();
     pending.completion.set_value(std::move(value));
 }
 
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
-    if(method=="_ui.dialog.present") {
-        if(!dialog || dialog->id!=params.at("id").get<std::string>())throw protocol::RpcError(-32004,"The progress component could not be opened");
+    if (method == "_ui.dialog.present") {
+        if (!dialog || dialog->id != params.at("id").get<std::string>())
+            throw protocol::RpcError(-32004, "The progress component could not be opened");
         return true;
     }
-    if(method=="_ui.wait.cancel") {
-        const auto id=params.at("waitId").get<std::string>();
-        if(quitting_fences.contains(id)){quit_requested=false;quitting_fences.clear();}
-        const auto found=pending_fences.find(id);
-        if(found!=pending_fences.end()) {
-            auto pending=std::move(found->second);pending_fences.erase(found);pending.completion.set_value(false);
+    if (method == "_ui.wait.cancel") {
+        const auto id = params.at("waitId").get<std::string>();
+        if (quitting_fences.contains(id)) {
+            quit_requested = false;
+            quitting_fences.clear();
+        }
+        const auto found = pending_fences.find(id);
+        if (found != pending_fences.end()) {
+            auto pending = std::move(found->second);
+            pending_fences.erase(found);
+            pending.completion.set_value(false);
         }
         return nullptr;
     }
-    if(method=="_ui.dialog.answer") {
-        if(!dialog || dialog->id!=params.at("id").get<std::string>())return nullptr;
-        if(prompt==Prompt::policy_confirm) { finish_dialog(params.at("accepted").get<bool>());return nullptr; }
-        if(prompt!=Prompt::policy_choice)return nullptr;
-        const auto& index=params.at("index");
-        if(!index.is_number_integer() || (!index.is_number_unsigned() && index.get<std::int64_t>()<0) || index.get<std::uint64_t>()>=dialog->spec.at("items").size())throw protocol::RpcError(-32602,"Invalid choice index");
-        finish_dialog(index);return nullptr;
+    if (method == "_ui.dialog.answer") {
+        if (!dialog || dialog->id != params.at("id").get<std::string>())
+            return nullptr;
+        if (prompt == Prompt::policy_confirm) {
+            finish_dialog(params.at("accepted").get<bool>());
+            return nullptr;
+        }
+        if (prompt != Prompt::policy_choice)
+            return nullptr;
+        const auto& index = params.at("index");
+        if (!index.is_number_integer() ||
+            (!index.is_number_unsigned() && index.get<std::int64_t>() < 0) ||
+            index.get<std::uint64_t>() >= dialog->spec.at("items").size())
+            throw protocol::RpcError(-32602, "Invalid choice index");
+        finish_dialog(index);
+        return nullptr;
     }
-    if(method=="_ui.read.cancel") {
-        const auto found=pending_reads.find(params.at("readId").get<std::string>());
-        if(found!=pending_reads.end()){const auto read=found->second;settle_read(read,nullptr);}
+    if (method == "_ui.read.cancel") {
+        const auto found = pending_reads.find(params.at("readId").get<std::string>());
+        if (found != pending_reads.end()) {
+            const auto read = found->second;
+            settle_read(read, nullptr);
+        }
         return nullptr;
     }
     if (method == "_ui.dialog.cancel") {
-        if (dialog && dialog->id == params.at("id").get<std::string>()) { finish_dialog(nullptr); }
+        if (dialog && dialog->id == params.at("id").get<std::string>()) {
+            finish_dialog(nullptr);
+        }
         return nullptr;
     }
-    if(method=="_ui.action.cancel") {
-        const auto found=pending_edits.find(params.at("actionId").get<std::string>());
-        if(found!=pending_edits.end()){const auto edit=found->second;cancel_edit(edit);}
+    if (method == "_ui.action.cancel") {
+        const auto found = pending_edits.find(params.at("actionId").get<std::string>());
+        if (found != pending_edits.end()) {
+            const auto edit = found->second;
+            cancel_edit(edit);
+        }
         return nullptr;
     }
     if (method == "_ui.clipboard.read") {
         const std::unique_ptr<char, SdlStringDeleter> text(SDL_GetClipboardText());
-        if (!text) { throw std::runtime_error(std::string("Clipboard read failed: ") + SDL_GetError()); }
+        if (!text) {
+            throw std::runtime_error(std::string("Clipboard read failed: ") + SDL_GetError());
+        }
         const std::string_view value(text.get());
-        if (value.size() > 8 * 1024 * 1024) { throw std::runtime_error("Clipboard exceeds the 8 MiB scripted clipboard limit"); }
+        if (value.size() > 8 * 1024 * 1024) {
+            throw std::runtime_error("Clipboard exceeds the 8 MiB scripted clipboard limit");
+        }
         return value;
     }
     if (method == "_ui.clipboard.write") {
         const auto text = params.at("text").get<std::string>();
-        if (text.size() > 8 * 1024 * 1024 || text.find('\0') != std::string::npos) { throw std::runtime_error("Clipboard text exceeds its limit or contains NUL"); }
-        if (!SDL_SetClipboardText(text.c_str())) { throw std::runtime_error(std::string("Clipboard write failed: ") + SDL_GetError()); }
+        if (text.size() > 8 * 1024 * 1024 || text.find('\0') != std::string::npos) {
+            throw std::runtime_error("Clipboard text exceeds its limit or contains NUL");
+        }
+        if (!SDL_SetClipboardText(text.c_str())) {
+            throw std::runtime_error(std::string("Clipboard write failed: ") + SDL_GetError());
+        }
         return nullptr;
     }
-    if(method=="_ui.form.open") {
-        if(dialog || prompt!=Prompt::none)throw protocol::RpcError(-32004,"Dismiss modal input before opening an inline form");
-        if(form_sequence==std::numeric_limits<std::uint64_t>::max())throw protocol::RpcError(-32004,"Inline component identity exhausted");
-        InlineForm prepared(params,std::to_string(++form_sequence));
-        static_cast<void>(close_inline_form());inline_form.emplace(std::move(prepared));form_fields.clear();preedit.clear();
+    if (method == "_ui.form.open") {
+        if (dialog || prompt != Prompt::none)
+            throw protocol::RpcError(-32004, "Dismiss modal input before opening an inline form");
+        if (form_sequence == std::numeric_limits<std::uint64_t>::max())
+            throw protocol::RpcError(-32004, "Inline component identity exhausted");
+        InlineForm prepared(params, std::to_string(++form_sequence));
+        static_cast<void>(close_inline_form());
+        inline_form.emplace(std::move(prepared));
+        form_fields.clear();
+        preedit.clear();
         return inline_form->state();
     }
-    if(method=="_ui.form.read")return inline_form && params.at("id")==inline_form->id() ? inline_form->state() : Json(nullptr);
-    if(method=="_ui.form.close")return close_inline_form(params.at("id").get<std::string>());
-    if(method=="_ui.form.update")return inline_form && inline_form->update(params);
+    if (method == "_ui.form.read")
+        return inline_form && params.at("id") == inline_form->id() ? inline_form->state()
+                                                                   : Json(nullptr);
+    if (method == "_ui.form.close")
+        return close_inline_form(params.at("id").get<std::string>());
+    if (method == "_ui.form.update")
+        return inline_form && inline_form->update(params);
     if (method == "_ui.read") {
-        Json result{{"sidebarVisible", show_sidebar}, {"sidebar",git_view ? "git" : (search_view ? "search" : "explorer")}, {"outlineVisible", show_outline}, {"tabs", tabs}, {"gitPath", prompt == Prompt::git_diff ? git_path : std::string{}}, {"gitStaged",git_staged},{"gitPreview",git_preview}};
-        result["serviceCommands"]=service_commands;
-        const auto requested=params.value("id",active_id);
-        const auto found=documents.find(requested);
-        if (const auto* document = found==documents.end() ? nullptr : &found->second) {
-            result["document"] = document->metadata; result["document"]["path"] = document->path;
-            result["newline"] = newline(document); result["selectionLines"] = Json::array();
-            for (const auto& position : document->metadata.value("selectionPositions", Json::array())) {
+        Json result{{"sidebarVisible", show_sidebar},
+                    {"sidebar", git_view ? "git" : (search_view ? "search" : "explorer")},
+                    {"outlineVisible", show_outline},
+                    {"tabs", tabs},
+                    {"gitPath", prompt == Prompt::git_diff ? git_path : std::string{}},
+                    {"gitStaged", git_staged},
+                    {"gitPreview", git_preview}};
+        result["serviceCommands"] = service_commands;
+        const auto requested = params.value("id", active_id);
+        const auto found = documents.find(requested);
+        if (const auto* document = found == documents.end() ? nullptr : &found->second) {
+            result["document"] = document->metadata;
+            result["document"]["path"] = document->path;
+            result["newline"] = newline(document);
+            result["selectionLines"] = Json::array();
+            for (const auto& position :
+                 document->metadata.value("selectionPositions", Json::array())) {
                 const auto line = document->lines.find(position.value("line", std::size_t{0}));
-                if (line == document->lines.end() || document->view_revision != document->metadata.at("revision").get<std::string>()) { result["selectionLines"].push_back(nullptr); }
-                else { result["selectionLines"].push_back({{"begin", line->second.begin}, {"next", line->second.next}}); }
+                if (line == document->lines.end() ||
+                    document->view_revision !=
+                        document->metadata.at("revision").get<std::string>()) {
+                    result["selectionLines"].push_back(nullptr);
+                } else {
+                    result["selectionLines"].push_back(
+                        {{"begin", line->second.begin}, {"next", line->second.next}});
+                }
             }
         }
         return result;
     }
-    if (method == "_ui.action") { native_command(params.at("command").get<std::string>()); return nullptr; }
-    if (method != "_ui.update") { throw protocol::RpcError(-32601, "Unknown native UI primitive"); }
-    if (!params.is_object()) { throw protocol::RpcError(-32602, "UI updates require an object"); }
-    if(params.contains("gitDiff") && dialog) { throw protocol::RpcError(-32004,"Dismiss the active dialog before showing a comparison"); }
+    if (method == "_ui.action") {
+        native_command(params.at("command").get<std::string>());
+        return nullptr;
+    }
+    if (method != "_ui.update") {
+        throw protocol::RpcError(-32601, "Unknown native UI primitive");
+    }
+    if (!params.is_object()) {
+        throw protocol::RpcError(-32602, "UI updates require an object");
+    }
+    if (params.contains("gitDiff") && dialog) {
+        throw protocol::RpcError(-32004, "Dismiss the active dialog before showing a comparison");
+    }
     // Establish document state before activation regardless of JSON key order.
-    if (params.contains("document")) { accept_metadata(params.at("document")); }
-    if(params.contains("documents"))for(const auto& metadata:params.at("documents"))accept_metadata(metadata);
+    if (params.contains("document")) {
+        accept_metadata(params.at("document"));
+    }
+    if (params.contains("documents"))
+        for (const auto& metadata : params.at("documents"))
+            accept_metadata(metadata);
     for (const auto& [name, value] : params.items()) {
-        if(name=="closedDocument") { remove_document(value.get<std::string>()); }
-        else if (name == "status") { status = value.get<std::string>(); }
-        else if (name == "recoveryAvailable") { recovery_available=value.get<bool>(); }
-        else if (name == "error") {
-            const auto message=value.get<std::string>();
-            if(message.size()>64*1024)throw protocol::RpcError(-32602,"UI error exceeds its 64 KiB limit");
-            error=message;
-        }
-        else if (name == "sidebarVisible") { show_sidebar = value.get<bool>(); }
-        else if (name == "outlineVisible") { show_outline = value.get<bool>(); }
-        else if (name == "sidebar") {
+        if (name == "closedDocument") {
+            remove_document(value.get<std::string>());
+        } else if (name == "status") {
+            status = value.get<std::string>();
+        } else if (name == "recoveryAvailable") {
+            recovery_available = value.get<bool>();
+        } else if (name == "error") {
+            const auto message = value.get<std::string>();
+            if (message.size() > 64 * 1024)
+                throw protocol::RpcError(-32602, "UI error exceeds its 64 KiB limit");
+            error = message;
+        } else if (name == "sidebarVisible") {
+            show_sidebar = value.get<bool>();
+        } else if (name == "outlineVisible") {
+            show_outline = value.get<bool>();
+        } else if (name == "sidebar") {
             const auto view = value.get<std::string>();
-            if (view != "explorer" && view != "search" && view != "git") { throw protocol::RpcError(-32602, "Unknown sidebar view"); }
-            search_view = view == "search"; git_view = view == "git"; tree_scroll = 0;
-        } else if (name == "document" || name == "documents") { /* Applied before activation above. */ }
-        else if (name == "activate") { activate(value.get<std::string>()); }
-        else if (name == "languageActive") {
-            if(const auto found=documents.find(value.at("id").get<std::string>());found!=documents.end())found->second.language_active=value.at("active").get<bool>();
-        }
-        else if (name == "scrollLine") {
-            if(const auto found=documents.find(value.at("id").get<std::string>());found!=documents.end()){
-                found->second.first_line=std::min(value.at("line").get<std::size_t>(),found->second.metadata.at("lineCount").get<std::size_t>()-1);found->second.needs_lines=true;
+            if (view != "explorer" && view != "search" && view != "git") {
+                throw protocol::RpcError(-32602, "Unknown sidebar view");
             }
-        }
-        else if (name == "revealCaret") { if (value.get<bool>()) { reveal_caret(); } }
-        else if (name == "workspaceNotice") { workspace_notices[value.at("id").get<std::string>()] = value.at("text").get<std::string>(); }
-        else if (name == "gitDiff") {
-            auto path=value.at("path").get<std::string>();const auto staged=value.at("staged").get<bool>();
-            const auto& model=value.at("model");
-            auto text=value.at("text").get<std::string>();auto preview=model.value("previewId",std::string{});
-            TextLineIndex lines;lines.reset(text);
-            const auto marks=model.value("gutter",Json::array());
-            if(!marks.is_array())throw protocol::RpcError(-32602,"Git gutter must be an array");
-            git_path=std::move(path);git_staged=staged;git_preview=std::move(preview);
-            git_diff_lines=std::move(lines);git_diff_layouts.clear();git_diff_layout_scale=0;
-            for(auto& [id,document]:documents){
+            search_view = view == "search";
+            git_view = view == "git";
+            tree_scroll = 0;
+        } else if (name == "document" ||
+                   name == "documents") { /* Applied before activation above. */
+        } else if (name == "activate") {
+            activate(value.get<std::string>());
+        } else if (name == "languageActive") {
+            if (const auto found = documents.find(value.at("id").get<std::string>());
+                found != documents.end())
+                found->second.language_active = value.at("active").get<bool>();
+        } else if (name == "scrollLine") {
+            if (const auto found = documents.find(value.at("id").get<std::string>());
+                found != documents.end()) {
+                found->second.first_line =
+                    std::min(value.at("line").get<std::size_t>(),
+                             found->second.metadata.at("lineCount").get<std::size_t>() - 1);
+                found->second.needs_lines = true;
+            }
+        } else if (name == "revealCaret") {
+            if (value.get<bool>()) {
+                reveal_caret();
+            }
+        } else if (name == "workspaceNotice") {
+            workspace_notices[value.at("id").get<std::string>()] =
+                value.at("text").get<std::string>();
+        } else if (name == "gitDiff") {
+            auto path = value.at("path").get<std::string>();
+            const auto staged = value.at("staged").get<bool>();
+            const auto& model = value.at("model");
+            auto text = value.at("text").get<std::string>();
+            auto preview = model.value("previewId", std::string{});
+            TextLineIndex lines;
+            lines.reset(text);
+            const auto marks = model.value("gutter", Json::array());
+            if (!marks.is_array())
+                throw protocol::RpcError(-32602, "Git gutter must be an array");
+            git_path = std::move(path);
+            git_staged = staged;
+            git_preview = std::move(preview);
+            git_diff_lines = std::move(lines);
+            git_diff_layouts.clear();
+            git_diff_layout_scale = 0;
+            for (auto& [id, document] : documents) {
                 static_cast<void>(id);
-                if(document.path==git_path&&!git_staged&&!document.metadata.value("dirty",false))document.decorations.set_gutter(marks);
+                if (document.path == git_path && !git_staged &&
+                    !document.metadata.value("dirty", false))
+                    document.decorations.set_gutter(marks);
             }
-            prompt=Prompt::git_diff;prompt_choice=0;
+            prompt = Prompt::git_diff;
+            prompt_choice = 0;
+        } else if (name == "dismissPrompt") {
+            if (value.get<bool>()) {
+                finish_dialog(nullptr);
+                prompt = Prompt::none;
+            }
+        } else if (name == "busy") {
+            busy_views.merge_patch(value);
+        } else if (name != "view" && name != "model") {
+            throw protocol::RpcError(-32602, "Unknown UI update field: " + name);
         }
-        else if (name == "dismissPrompt") { if (value.get<bool>()) { finish_dialog(nullptr); prompt = Prompt::none; } }
-        else if (name == "busy") { busy_views.merge_patch(value); }
-        else if (name != "view" && name != "model") { throw protocol::RpcError(-32602, "Unknown UI update field: " + name); }
     }
     if (params.contains("view")) {
         const auto view = params.at("view").get<std::string>();
         const auto& model = params.at("model");
         if (view == "explorer") {
             file_tree.reset(model.at("entries"));
-            status = model.value("truncated", false) ? "File tree reached its configured limit" : "Workspace ready";
-        } else if (view == "git") { git_status = model; }
-        else if (view == "search") {
-            search_results = model.at("matches"); search_operation = model.at("operationId").get<std::string>();
+            status = model.value("truncated", false) ? "File tree reached its configured limit"
+                                                     : "Workspace ready";
+        } else if (view == "git") {
+            git_status = model;
+        } else if (view == "search") {
+            search_results = model.at("matches");
+            search_operation = model.at("operationId").get<std::string>();
             status = std::to_string(search_results.size()) + " workspace match(es)";
-            if (model.value("truncated", false)) { error = "Search reached its limit; refine the query before replacing"; }
-            else if (!model.value("issues", Json::array()).empty()) { error = "Search could not read some files; refine the scope before replacing"; }
-            else if (replacing_workspace && !search_results.empty()) { prompt = Prompt::replace_confirm; }
-        } else { throw protocol::RpcError(-32602, "Unknown view model"); }
+            if (model.value("truncated", false)) {
+                error = "Search reached its limit; refine the query before replacing";
+            } else if (!model.value("issues", Json::array()).empty()) {
+                error = "Search could not read some files; refine the scope before replacing";
+            } else if (replacing_workspace && !search_results.empty()) {
+                prompt = Prompt::replace_confirm;
+            }
+        } else {
+            throw protocol::RpcError(-32602, "Unknown view model");
+        }
     }
-    if (auto* document = current(); document && (params.contains("sidebarVisible") || params.contains("outlineVisible"))) { document->needs_lines = true; }
+    if (auto* document = current();
+        document && (params.contains("sidebarVisible") || params.contains("outlineVisible"))) {
+        document->needs_lines = true;
+    }
     return nullptr;
 }
 
 void EditorWindow::Impl::execute_policy(std::string_view name, const Json& params) {
     workbench->execute(name, params, [this](const script::Runtime::Outcome& outcome) {
         if (outcome.error) {
-            if (outcome.error->value("name", std::string{}) != "AbortError") { error = outcome.error->value("message", std::string("Workbench action failed")); status = "Action failed"; }
-        } else if (outcome.value.is_object() && outcome.value.contains("id") && outcome.value.contains("revision") &&
-                   outcome.value.contains("sizeBytes") && outcome.value.contains("lineCount") &&
-                   outcome.value.contains("selections") && outcome.value.contains("selectionPositions")) {
-            accept_metadata(outcome.value); reveal_caret();
+            if (outcome.error->value("name", std::string{}) != "AbortError") {
+                error = outcome.error->value("message", std::string("Workbench action failed"));
+                status = "Action failed";
+            }
+        } else if (outcome.value.is_object() && outcome.value.contains("id") &&
+                   outcome.value.contains("revision") && outcome.value.contains("sizeBytes") &&
+                   outcome.value.contains("lineCount") && outcome.value.contains("selections") &&
+                   outcome.value.contains("selectionPositions")) {
+            accept_metadata(outcome.value);
+            reveal_caret();
         }
     });
     // Settle ready native focus/layout primitives before the next SDL event.
     // Neither tick waits for a service future, parser or disk operation.
-    const auto until=Clock::now()+std::chrono::milliseconds(4);
-    for(int tick=0;tick<8 && Clock::now()<until;++tick){
+    const auto until = Clock::now() + std::chrono::milliseconds(4);
+    for (int tick = 0; tick < 8 && Clock::now() < until; ++tick) {
         workbench->poll();
-        if(workbench->idle() || workbench->awaiting_input())break;
+        if (workbench->idle() || workbench->awaiting_input())
+            break;
     }
 }
 
 void EditorWindow::Impl::command(std::string_view name) {
     prompt_select_all = false;
-    if ((quit_requested || prompt==Prompt::policy_progress) && name != "ui.cancel") { return; }
+    if ((quit_requested || prompt == Prompt::policy_progress) && name != "ui.cancel") {
+        return;
+    }
     if (service_ui_commands.contains(std::string(name))) {
-        enqueue({"script.command", {{"name", name}, {"params", Json::object()}}, active_id, !active_id.empty(),
-            [this](const Json& result) { if (result.is_object() && result.contains("id") && result.contains("revision")) { accept_metadata(result); reveal_caret(); } }, {}});
-    } else if (workbench->contains(name)) { execute_policy(name); }
-    else { native_command(name); }
+        enqueue({"script.command",
+                 {{"name", name}, {"params", Json::object()}},
+                 active_id,
+                 !active_id.empty(),
+                 [this](const Json& result) {
+                     if (result.is_object() && result.contains("id") &&
+                         result.contains("revision")) {
+                         accept_metadata(result);
+                         reveal_caret();
+                     }
+                 },
+                 {}});
+    } else if (workbench->contains(name)) {
+        execute_policy(name);
+    } else {
+        native_command(name);
+    }
 }
 
 void EditorWindow::Impl::native_command(std::string_view name) {
-    if (dialog && name != "ui.cancel" && name != "ui.closeWindow") { throw protocol::RpcError(-32004, "Dismiss the active dialog before changing its focus"); }
+    if (dialog && name != "ui.cancel" && name != "ui.closeWindow") {
+        throw protocol::RpcError(-32004, "Dismiss the active dialog before changing its focus");
+    }
     prompt_select_all = false;
     if (name.starts_with("editor.")) {
         editor_command(std::string(name));
-    }
-    else if (name == "ui.dismissWorkspaceNotice") {
-        if (!watch_error.empty()) { watch_error.clear(); }
-        else if (workspace_notices.contains(active_id)) { workspace_notices.erase(active_id); }
-        else if (!replace_notice.empty()) { replace_notice.clear(); }
-        else if (!workspace_notices.empty()) { workspace_notices.erase(workspace_notices.begin()); }
-    }
-    else if (name == "ui.toggleSearchCase") { search_case_sensitive = !search_case_sensitive; }
-    else if (name == "ui.toggleSearchRegex") { search_regex = !search_regex; }
-    else if (name == "ui.toggleSearchWholeWord") { search_whole_word = !search_whole_word; }
-    else if (name == "ui.toggleSidebar") { show_sidebar = !show_sidebar; if (auto* doc = current()) { doc->needs_lines = true; } }
-    else if (name == "ui.explorer") { show_sidebar = true; search_view = false; git_view = false; tree_scroll = 0; }
-    else if (name == "ui.toggleOutline") { show_outline = !show_outline; }
-    else if (name == "ui.refreshTree") { refresh_tree(); }
-    else if (name == "ui.search") { prompt = Prompt::search; prompt_text = search_query; }
-    else if (name == "ui.workspaceReplace") { prompt = Prompt::workspace_replace_query; prompt_text = search_query; }
-    else if (name == "ui.selectFunction" || name == "ui.selectClass" || name == "ui.selectBlock" || name == "ui.selectString") {
-        const auto* document = current();
-        if (!document) { return; }
-        if (document->syntax_state != "ready" || document->syntax_revision != document->metadata.at("revision").get<std::string>()) {
-            status = "Wait for parsing before selecting a syntax object"; return;
+    } else if (name == "ui.dismissWorkspaceNotice") {
+        if (!watch_error.empty()) {
+            watch_error.clear();
+        } else if (workspace_notices.contains(active_id)) {
+            workspace_notices.erase(active_id);
+        } else if (!replace_notice.empty()) {
+            replace_notice.clear();
+        } else if (!workspace_notices.empty()) {
+            workspace_notices.erase(workspace_notices.begin());
         }
-        const auto kind = name == "ui.selectFunction" ? "function" : (name == "ui.selectClass" ? "class" : (name == "ui.selectBlock" ? "block" : "string"));
-        enqueue({"document.selectObject", {{"kind", kind}, {"inner", name == "ui.selectString"}}, active_id, true,
-            [this](const Json& result) { accept_metadata(result); reveal_caret(); }, {}});
-    }
-    else if (name == "ui.confirmReplace") {
-        if (prompt != Prompt::replace_confirm) { return; }
+    } else if (name == "ui.toggleSearchCase") {
+        search_case_sensitive = !search_case_sensitive;
+    } else if (name == "ui.toggleSearchRegex") {
+        search_regex = !search_regex;
+    } else if (name == "ui.toggleSearchWholeWord") {
+        search_whole_word = !search_whole_word;
+    } else if (name == "ui.toggleSidebar") {
+        show_sidebar = !show_sidebar;
+        if (auto* doc = current()) {
+            doc->needs_lines = true;
+        }
+    } else if (name == "ui.explorer") {
+        show_sidebar = true;
+        search_view = false;
+        git_view = false;
+        tree_scroll = 0;
+    } else if (name == "ui.toggleOutline") {
+        show_outline = !show_outline;
+    } else if (name == "ui.refreshTree") {
+        refresh_tree();
+    } else if (name == "ui.search") {
+        prompt = Prompt::search;
+        prompt_text = search_query;
+    } else if (name == "ui.workspaceReplace") {
+        prompt = Prompt::workspace_replace_query;
+        prompt_text = search_query;
+    } else if (name == "ui.selectFunction" || name == "ui.selectClass" ||
+               name == "ui.selectBlock" || name == "ui.selectString") {
+        const auto* document = current();
+        if (!document) {
+            return;
+        }
+        if (document->syntax_state != "ready" ||
+            document->syntax_revision != document->metadata.at("revision").get<std::string>()) {
+            status = "Wait for parsing before selecting a syntax object";
+            return;
+        }
+        const auto kind =
+            name == "ui.selectFunction"
+                ? "function"
+                : (name == "ui.selectClass" ? "class"
+                                            : (name == "ui.selectBlock" ? "block" : "string"));
+        enqueue({"document.selectObject",
+                 {{"kind", kind}, {"inner", name == "ui.selectString"}},
+                 active_id,
+                 true,
+                 [this](const Json& result) {
+                     accept_metadata(result);
+                     reveal_caret();
+                 },
+                 {}});
+    } else if (name == "ui.confirmReplace") {
+        if (prompt != Prompt::replace_confirm) {
+            return;
+        }
         prompt = Prompt::none;
-        start_operation("workspace.replace", {{"searchId", search_operation}, {"replacement", replacement_text}}, [this](const Json& result) {
-            const auto modified = result.value("modifiedBuffers", Json::array());
-            for (const auto& metadata : modified) { accept_metadata(metadata); }
-            replace_notice = "Replaced in " + std::to_string(result.at("applied").size()) + " disk file(s) and " +
-                std::to_string(modified.size()) + " unsaved buffer(s)";
-            const auto pending = result.at("pending").size() + result.value("pendingBuffers", Json::array()).size();
-            if (pending != 0 || !result.at("issues").empty() || result.value("cancelled", false)) {
-                replace_notice += "; " + std::to_string(pending) + " pending, " + std::to_string(result.at("issues").size()) + " issue(s). Search again before retrying";
-            }
-            status = replace_notice;
-            search_results.clear();
-            refresh_tree(false);
-            if (auto* document = current()) { document->needs_lines = true; }
-        });
-    }
-    else if (name == "ui.nextTab" && !tabs.empty()) {
+        start_operation("workspace.replace",
+                        {{"searchId", search_operation}, {"replacement", replacement_text}},
+                        [this](const Json& result) {
+                            const auto modified = result.value("modifiedBuffers", Json::array());
+                            for (const auto& metadata : modified) {
+                                accept_metadata(metadata);
+                            }
+                            replace_notice = "Replaced in " +
+                                             std::to_string(result.at("applied").size()) +
+                                             " disk file(s) and " +
+                                             std::to_string(modified.size()) + " unsaved buffer(s)";
+                            const auto pending =
+                                result.at("pending").size() +
+                                result.value("pendingBuffers", Json::array()).size();
+                            if (pending != 0 || !result.at("issues").empty() ||
+                                result.value("cancelled", false)) {
+                                replace_notice += "; " + std::to_string(pending) + " pending, " +
+                                                  std::to_string(result.at("issues").size()) +
+                                                  " issue(s). Search again before retrying";
+                            }
+                            status = replace_notice;
+                            search_results.clear();
+                            refresh_tree(false);
+                            if (auto* document = current()) {
+                                document->needs_lines = true;
+                            }
+                        });
+    } else if (name == "ui.nextTab" && !tabs.empty()) {
         const auto current_tab = std::ranges::find(tabs, active_id);
-        const auto index = current_tab == tabs.end() ? 0 : static_cast<std::size_t>(current_tab - tabs.begin());
+        const auto index =
+            current_tab == tabs.end() ? 0 : static_cast<std::size_t>(current_tab - tabs.begin());
         activate(tabs[(index + 1) % tabs.size()]);
     } else if (name == "ui.previousTab" && !tabs.empty()) {
         const auto position = std::ranges::find(tabs, active_id);
-        const auto index = position == tabs.end() ? 0 : static_cast<std::size_t>(position - tabs.begin());
+        const auto index =
+            position == tabs.end() ? 0 : static_cast<std::size_t>(position - tabs.begin());
         activate(tabs[(index + tabs.size() - 1) % tabs.size()]);
     } else if (name == "ui.cancel") {
         finish_dialog(nullptr);
         static_cast<void>(close_inline_form());
-        prompt = Prompt::none; quit_requested=false;quitting_fences.clear();
-        preedit.clear(); error.clear();
+        prompt = Prompt::none;
+        quit_requested = false;
+        quitting_fences.clear();
+        preedit.clear();
+        error.clear();
     } else if (!name.starts_with("ui.")) {
-        enqueue({"script.command", {{"name", name}, {"params", Json::object()}}, active_id, !active_id.empty(),
-            [this](const Json& result) { if (result.is_object() && result.contains("id") && result.contains("revision")) { accept_metadata(result); reveal_caret(); } }, {}});
-    } else { throw std::invalid_argument("Unknown UI command: " + std::string(name)); }
+        enqueue({"script.command",
+                 {{"name", name}, {"params", Json::object()}},
+                 active_id,
+                 !active_id.empty(),
+                 [this](const Json& result) {
+                     if (result.is_object() && result.contains("id") &&
+                         result.contains("revision")) {
+                         accept_metadata(result);
+                         reveal_caret();
+                     }
+                 },
+                 {}});
+    } else {
+        throw std::invalid_argument("Unknown UI command: " + std::string(name));
+    }
 }
 
 std::string EditorWindow::Impl::newline(const Document* document) const {
-    if (!document) { return "\n"; }
+    if (!document) {
+        return "\n";
+    }
     if (document->editor_config.contains("end_of_line")) {
         const auto configured = document->editor_config.at("end_of_line").get<std::string>();
-        if (configured == "crlf") { return "\r\n"; }
+        if (configured == "crlf") {
+            return "\r\n";
+        }
         // Legacy CR files use LF internally; the workspace codec preserves CR on save.
-        if (configured == "cr") { return "\n"; }
+        if (configured == "cr") {
+            return "\n";
+        }
         return "\n";
     }
     for (const auto& [number, line] : document->lines) {
         static_cast<void>(number);
-        if (line.complete && line.next - line.end == 2) { return "\r\n"; }
-        if (line.complete && line.next > line.end) { return "\n"; }
+        if (line.complete && line.next - line.end == 2) {
+            return "\r\n";
+        }
+        if (line.complete && line.next > line.end) {
+            return "\n";
+        }
     }
     return "\n";
 }
 
 void EditorWindow::Impl::accept_prompt() {
-    if (prompt == Prompt::policy_input) { finish_dialog(prompt_text); }
-    else if (prompt == Prompt::policy_confirm) { finish_dialog(true); }
-    else if (prompt == Prompt::policy_pick && dialog) {
+    if (prompt == Prompt::policy_input) {
+        finish_dialog(prompt_text);
+    } else if (prompt == Prompt::policy_confirm) {
+        finish_dialog(true);
+    } else if (prompt == Prompt::policy_pick && dialog) {
         dialog->picker.filter(prompt_text);
-        if(dialog->picker.size())finish_dialog(dialog->picker.at(std::min(prompt_choice,dialog->picker.size()-1)).source);
-    }
-    else if (prompt == Prompt::policy_text) { finish_dialog(nullptr); }
-    else if (prompt == Prompt::git_diff) { prompt = Prompt::none; }
-    else if (prompt == Prompt::workspace_replace_query) {
-        if (prompt_text.empty()) { return; }
+        if (dialog->picker.size())
+            finish_dialog(
+                dialog->picker.at(std::min(prompt_choice, dialog->picker.size() - 1)).source);
+    } else if (prompt == Prompt::policy_text) {
+        finish_dialog(nullptr);
+    } else if (prompt == Prompt::git_diff) {
+        prompt = Prompt::none;
+    } else if (prompt == Prompt::workspace_replace_query) {
+        if (prompt_text.empty()) {
+            return;
+        }
         search_query = prompt_text;
         prompt = Prompt::workspace_replace_value;
         prompt_text.clear();
     } else if (prompt == Prompt::search || prompt == Prompt::workspace_replace_value) {
         const bool replace = prompt == Prompt::workspace_replace_value;
-        if (!replace) { if (prompt_text.empty()) { return; } search_query = prompt_text; }
-        else { replacement_text = prompt_text; }
-        prompt = Prompt::none; search_workspace(replace);
-    } else if (prompt == Prompt::replace_confirm) { command("ui.confirmReplace"); }
+        if (!replace) {
+            if (prompt_text.empty()) {
+                return;
+            }
+            search_query = prompt_text;
+        } else {
+            replacement_text = prompt_text;
+        }
+        prompt = Prompt::none;
+        search_workspace(replace);
+    } else if (prompt == Prompt::replace_confirm) {
+        command("ui.confirmReplace");
+    }
 }
 
 void EditorWindow::Impl::search_workspace(bool replace) {
-    search_view = true; git_view = false; show_sidebar = true; tree_scroll = 0; replacing_workspace = replace;
+    search_view = true;
+    git_view = false;
+    show_sidebar = true;
+    tree_scroll = 0;
+    replacing_workspace = replace;
     status = "Searching workspace and unsaved buffers...";
-    search_results.clear(); search_operation.clear();
+    search_results.clear();
+    search_operation.clear();
     ++search_generation;
-    execute_policy("workbench.search", {{"query", search_query}, {"caseSensitive", search_case_sensitive},
-        {"regex", search_regex}, {"wholeWord", search_whole_word}});
+    execute_policy("workbench.search",
+                   {{"query", search_query},
+                    {"caseSensitive", search_case_sensitive},
+                    {"regex", search_regex},
+                    {"wholeWord", search_whole_word}});
 }
 
 void EditorWindow::Impl::open_search_result(const Json& match) {
     if (match.value("source", std::string("disk")) == "buffer") {
         const auto id = match.at("documentId").get<std::string>();
-        enqueue({"document.get", {{"id", id}, {"begin", 0}, {"end", 0}}, {}, false, [this, match, id](const Json& result) {
-            accept_metadata(result); activate(id);
-            if (result.at("revision") != match.at("revision")) { status = "Search result changed; search again to locate the match"; return; }
-            set_selections(Json::array({{{"anchor", match.at("begin")}, {"head", match.at("end")}}}), result.at("revision").get<std::string>());
-            documents.at(id).first_line = match.at("line").get<std::size_t>(); documents.at(id).needs_lines = true;
-        }, {}});
+        enqueue({"document.get",
+                 {{"id", id}, {"begin", 0}, {"end", 0}},
+                 {},
+                 false,
+                 [this, match, id](const Json& result) {
+                     accept_metadata(result);
+                     activate(id);
+                     if (result.at("revision") != match.at("revision")) {
+                         status = "Search result changed; search again to locate the match";
+                         return;
+                     }
+                     set_selections(
+                         Json::array({{{"anchor", match.at("begin")}, {"head", match.at("end")}}}),
+                         result.at("revision").get<std::string>());
+                     documents.at(id).first_line = match.at("line").get<std::size_t>();
+                     documents.at(id).needs_lines = true;
+                 },
+                 {}});
         return;
     }
-    start_operation("workspace.open", {{"path", match.at("path")}}, [this, match](const Json& result) {
-        accept_metadata(result); activate(result.at("id").get<std::string>());
-        if (result.value("dirty", false)) { status = "Disk result opened; buffer has unsaved changes"; return; }
-        set_selections(Json::array({{{"anchor", match.at("begin")}, {"head", match.at("end")}}}));
-        documents.at(active_id).first_line = match.at("line").get<std::size_t>();
-        documents.at(active_id).needs_lines = true;
-    });
+    start_operation(
+        "workspace.open", {{"path", match.at("path")}}, [this, match](const Json& result) {
+            accept_metadata(result);
+            activate(result.at("id").get<std::string>());
+            if (result.value("dirty", false)) {
+                status = "Disk result opened; buffer has unsaved changes";
+                return;
+            }
+            set_selections(
+                Json::array({{{"anchor", match.at("begin")}, {"head", match.at("end")}}}));
+            documents.at(active_id).first_line = match.at("line").get<std::size_t>();
+            documents.at(active_id).needs_lines = true;
+        });
 }
 
 void EditorWindow::Impl::vertical(bool down, bool extend) {
     auto* document = current();
-    if (!document) { return; }
+    if (!document) {
+        return;
+    }
     if (document->view_revision != document->metadata.at("revision").get<std::string>()) {
-        editor_command(down ? "editor.move_down" : "editor.move_up", {{"extend", extend}}); return;
+        editor_command(down ? "editor.move_down" : "editor.move_up", {{"extend", extend}});
+        return;
     }
     auto selections = Json::array();
-    const auto& positions = document->metadata.contains("selectionPositions") ? document->metadata["selectionPositions"] : document->metadata["selections"];
+    const auto& positions = document->metadata.contains("selectionPositions")
+                                ? document->metadata["selectionPositions"]
+                                : document->metadata["selections"];
     std::size_t i{};
     for (const auto& selection : document->metadata.at("selections")) {
         const auto number = positions[i++].value("line", std::size_t{0});
-        const auto next = down ? std::min(number + 1, document->metadata.at("lineCount").get<std::size_t>() - 1) : (number == 0 ? 0 : number - 1);
+        const auto next =
+            down ? std::min(number + 1, document->metadata.at("lineCount").get<std::size_t>() - 1)
+                 : (number == 0 ? 0 : number - 1);
         const auto source = document->lines.find(number);
         const auto target = document->lines.find(next);
-        if (source == document->lines.end() || target == document->lines.end() || !source->second.layout || !target->second.layout) {
-            editor_command(down ? "editor.move_down" : "editor.move_up", {{"extend", extend}}); return;
+        if (source == document->lines.end() || target == document->lines.end() ||
+            !source->second.layout || !target->second.layout) {
+            editor_command(down ? "editor.move_down" : "editor.move_up", {{"extend", extend}});
+            return;
         }
         const auto head = selection.at("head").get<std::size_t>();
-        const auto x = source->second.layout->caret(std::min(head - source->second.begin, source->second.text.size())).x;
-        if (!vertical_column && document->metadata.at("selections").size() == 1) { vertical_column = x; }
-        const auto hit = target->second.layout->hit_test(vertical_column.value_or(x), target->second.layout->height() / 2);
+        const auto x =
+            source->second.layout
+                ->caret(std::min(head - source->second.begin, source->second.text.size()))
+                .x;
+        if (!vertical_column && document->metadata.at("selections").size() == 1) {
+            vertical_column = x;
+        }
+        const auto hit = target->second.layout->hit_test(vertical_column.value_or(x),
+                                                         target->second.layout->height() / 2);
         const auto offset = target->second.begin + hit.byte_offset;
-        selections.push_back({{"anchor", extend ? selection.at("anchor").get<std::size_t>() : offset}, {"head", offset}});
+        selections.push_back(
+            {{"anchor", extend ? selection.at("anchor").get<std::size_t>() : offset},
+             {"head", offset}});
     }
     set_selections(std::move(selections), document->view_revision);
 }
@@ -1362,407 +2278,753 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
 #endif
     const bool shift = (input.mod & SDL_KMOD_SHIFT) != 0;
     const bool alt = (input.mod & SDL_KMOD_ALT) != 0;
-    if (input.key == SDLK_ESCAPE) { command("ui.cancel"); return; }
-    if (!preedit.empty()) { return; }
+    if (input.key == SDLK_ESCAPE) {
+        command("ui.cancel");
+        return;
+    }
+    if (!preedit.empty()) {
+        return;
+    }
     if (prompt != Prompt::none) {
-        if(prompt==Prompt::policy_choice && dialog) {
-            const auto count=dialog->spec.at("items").size();
-            if(input.key==SDLK_RETURN || input.key==SDLK_KP_ENTER){finish_dialog(prompt_choice);return;}
-            if(input.key==SDLK_RIGHT || input.key==SDLK_DOWN || (input.key==SDLK_TAB && !shift))prompt_choice=(prompt_choice+1)%count;
-            else if(input.key==SDLK_LEFT || input.key==SDLK_UP || (input.key==SDLK_TAB && shift))prompt_choice=(prompt_choice+count-1)%count;
-            else if(!control && !alt) {
-                const auto keys=dialog->spec.value("keys",Json::array());
-                for(std::size_t i=0;i<keys.size();++i) {
-                    const auto key=lower_ascii(keys[i].get<std::string>());
-                    if(!key.empty() && input.key==static_cast<SDL_Keycode>(key[0])){finish_dialog(i);return;}
+        if (prompt == Prompt::policy_choice && dialog) {
+            const auto count = dialog->spec.at("items").size();
+            if (input.key == SDLK_RETURN || input.key == SDLK_KP_ENTER) {
+                finish_dialog(prompt_choice);
+                return;
+            }
+            if (input.key == SDLK_RIGHT || input.key == SDLK_DOWN ||
+                (input.key == SDLK_TAB && !shift))
+                prompt_choice = (prompt_choice + 1) % count;
+            else if (input.key == SDLK_LEFT || input.key == SDLK_UP ||
+                     (input.key == SDLK_TAB && shift))
+                prompt_choice = (prompt_choice + count - 1) % count;
+            else if (!control && !alt) {
+                const auto keys = dialog->spec.value("keys", Json::array());
+                for (std::size_t i = 0; i < keys.size(); ++i) {
+                    const auto key = lower_ascii(keys[i].get<std::string>());
+                    if (!key.empty() && input.key == static_cast<SDL_Keycode>(key[0])) {
+                        finish_dialog(i);
+                        return;
+                    }
                 }
             }
             return;
         }
         if (prompt == Prompt::policy_confirm) {
-            if (input.key == SDLK_RETURN || input.key == SDLK_KP_ENTER) { finish_dialog(true); }
-            else if(input.key==SDLK_DOWN)++prompt_choice;
-            else if(input.key==SDLK_UP && prompt_choice)--prompt_choice;
+            if (input.key == SDLK_RETURN || input.key == SDLK_KP_ENTER) {
+                finish_dialog(true);
+            } else if (input.key == SDLK_DOWN)
+                ++prompt_choice;
+            else if (input.key == SDLK_UP && prompt_choice)
+                --prompt_choice;
             return;
         }
         if (search_prompt() && alt) {
-            if (input.key == SDLK_C) { command("ui.toggleSearchCase"); return; }
-            if (input.key == SDLK_R) { command("ui.toggleSearchRegex"); return; }
-            if (input.key == SDLK_W) { command("ui.toggleSearchWholeWord"); return; }
-        }
-        if (prompt == Prompt::policy_progress) { return; }
-        if (prompt == Prompt::git_diff || prompt == Prompt::policy_text) {
-            if (prompt == Prompt::git_diff) {
-                if (input.key == SDLK_S) { command("ui.gitStage"); return; }
-                if (input.key == SDLK_U) { command("ui.gitUnstage"); return; }
-                if (input.key == SDLK_D) { command("ui.gitDiscard"); return; }
+            if (input.key == SDLK_C) {
+                command("ui.toggleSearchCase");
+                return;
             }
-            if (input.key == SDLK_RETURN) { if(dialog)finish_dialog(nullptr);else prompt = Prompt::none; }
-            else if (input.key == SDLK_DOWN) { ++prompt_choice; }
-            else if (input.key == SDLK_UP && prompt_choice != 0) { --prompt_choice; }
-            else if (dialog && input.key == SDLK_LEFT) { dialog->horizontal=std::max(0.0F,dialog->horizontal-64*scale); }
-            else if (dialog && input.key == SDLK_RIGHT) { dialog->horizontal=std::min(64*1024*1024*scale,dialog->horizontal+64*scale); }
+            if (input.key == SDLK_R) {
+                command("ui.toggleSearchRegex");
+                return;
+            }
+            if (input.key == SDLK_W) {
+                command("ui.toggleSearchWholeWord");
+                return;
+            }
+        }
+        if (prompt == Prompt::policy_progress) {
             return;
         }
-        if (control && input.key == SDLK_A) { prompt_select_all = true; return; }
-        if (input.key == SDLK_RETURN || input.key == SDLK_KP_ENTER) { accept_prompt(); }
-        else if (input.key == SDLK_BACKSPACE && !prompt_text.empty()) {
-            if (prompt_select_all) { prompt_text.clear(); prompt_select_all = false; }
-            else {
+        if (prompt == Prompt::git_diff || prompt == Prompt::policy_text) {
+            if (prompt == Prompt::git_diff) {
+                if (input.key == SDLK_S) {
+                    command("ui.gitStage");
+                    return;
+                }
+                if (input.key == SDLK_U) {
+                    command("ui.gitUnstage");
+                    return;
+                }
+                if (input.key == SDLK_D) {
+                    command("ui.gitDiscard");
+                    return;
+                }
+            }
+            if (input.key == SDLK_RETURN) {
+                if (dialog)
+                    finish_dialog(nullptr);
+                else
+                    prompt = Prompt::none;
+            } else if (input.key == SDLK_DOWN) {
+                ++prompt_choice;
+            } else if (input.key == SDLK_UP && prompt_choice != 0) {
+                --prompt_choice;
+            } else if (dialog && input.key == SDLK_LEFT) {
+                dialog->horizontal = std::max(0.0F, dialog->horizontal - 64 * scale);
+            } else if (dialog && input.key == SDLK_RIGHT) {
+                dialog->horizontal =
+                    std::min(64 * 1024 * 1024 * scale, dialog->horizontal + 64 * scale);
+            }
+            return;
+        }
+        if (control && input.key == SDLK_A) {
+            prompt_select_all = true;
+            return;
+        }
+        if (input.key == SDLK_RETURN || input.key == SDLK_KP_ENTER) {
+            accept_prompt();
+        } else if (input.key == SDLK_BACKSPACE && !prompt_text.empty()) {
+            if (prompt_select_all) {
+                prompt_text.clear();
+                prompt_select_all = false;
+            } else {
                 const auto layout = fonts.layout(prompt_text);
                 const auto boundaries = layout.grapheme_boundaries();
                 prompt_text.resize(boundaries[boundaries.size() - 2]);
             }
             prompt_choice = 0;
-        } else if (input.key == SDLK_UP && prompt_choice != 0) { --prompt_choice; }
-        else if (input.key == SDLK_DOWN) { ++prompt_choice; }
-        else if (control && input.key == SDLK_V) {
+        } else if (input.key == SDLK_UP && prompt_choice != 0) {
+            --prompt_choice;
+        } else if (input.key == SDLK_DOWN) {
+            ++prompt_choice;
+        } else if (control && input.key == SDLK_V) {
             const std::unique_ptr<char, SdlStringDeleter> text(SDL_GetClipboardText());
-            if (!text) { throw std::runtime_error(std::string("Clipboard read failed: ") + SDL_GetError()); }
+            if (!text) {
+                throw std::runtime_error(std::string("Clipboard read failed: ") + SDL_GetError());
+            }
             const std::string_view pasted(text.get());
-            if(dialog && (pasted.find_first_of("\r\n")!=pasted.npos || pasted.find('\0')!=pasted.npos)) { error="Input must contain one logical line";return; }
-            const auto existing=prompt_select_all ? std::size_t{0} : prompt_text.size();
-            if (existing>16384 || pasted.size()>16384-existing) { error="Input exceeds its 16 KiB limit"; return; }
-            if (prompt_select_all) { prompt_text.clear(); prompt_select_all = false; }
+            if (dialog &&
+                (pasted.find_first_of("\r\n") != pasted.npos || pasted.find('\0') != pasted.npos)) {
+                error = "Input must contain one logical line";
+                return;
+            }
+            const auto existing = prompt_select_all ? std::size_t{0} : prompt_text.size();
+            if (existing > 16384 || pasted.size() > 16384 - existing) {
+                error = "Input exceeds its 16 KiB limit";
+                return;
+            }
+            if (prompt_select_all) {
+                prompt_text.clear();
+                prompt_select_all = false;
+            }
             prompt_text += pasted;
-            prompt_choice=0;
+            prompt_choice = 0;
         }
         return;
     }
 
-    if(inline_key(input,control,shift,alt))return;
+    if (inline_key(input, control, shift, alt))
+        return;
     std::string key_name;
-    if (input.key >= SDLK_A && input.key <= SDLK_Z) { key_name.assign(1, static_cast<char>('A' + input.key - SDLK_A)); }
-    else {
+    if (input.key >= SDLK_A && input.key <= SDLK_Z) {
+        key_name.assign(1, static_cast<char>('A' + input.key - SDLK_A));
+    } else {
         switch (input.key) {
-        case SDLK_UP: key_name = "Up"; break;
-        case SDLK_DOWN: key_name = "Down"; break;
-        case SDLK_LEFT: key_name = "Left"; break;
-        case SDLK_RIGHT: key_name = "Right"; break;
-        case SDLK_TAB: key_name = "Tab"; break;
-        case SDLK_HOME: key_name = "Home"; break;
-        case SDLK_END: key_name = "End"; break;
-        case SDLK_BACKSPACE: key_name = "Backspace"; break;
-        case SDLK_DELETE: key_name = "Delete"; break;
-        case SDLK_RETURN: case SDLK_KP_ENTER: key_name = "Enter"; break;
-        case SDLK_F1: key_name = "F1"; break;
-        case SDLK_SPACE: key_name = "Space"; break;
-        case SDLK_SLASH: key_name = "/"; break;
-        case SDLK_F4: key_name = "F4"; break;
-        default: key_name = SDL_GetKeyName(input.key); break;
+        case SDLK_UP:
+            key_name = "Up";
+            break;
+        case SDLK_DOWN:
+            key_name = "Down";
+            break;
+        case SDLK_LEFT:
+            key_name = "Left";
+            break;
+        case SDLK_RIGHT:
+            key_name = "Right";
+            break;
+        case SDLK_TAB:
+            key_name = "Tab";
+            break;
+        case SDLK_HOME:
+            key_name = "Home";
+            break;
+        case SDLK_END:
+            key_name = "End";
+            break;
+        case SDLK_BACKSPACE:
+            key_name = "Backspace";
+            break;
+        case SDLK_DELETE:
+            key_name = "Delete";
+            break;
+        case SDLK_RETURN:
+        case SDLK_KP_ENTER:
+            key_name = "Enter";
+            break;
+        case SDLK_F1:
+            key_name = "F1";
+            break;
+        case SDLK_SPACE:
+            key_name = "Space";
+            break;
+        case SDLK_SLASH:
+            key_name = "/";
+            break;
+        case SDLK_F4:
+            key_name = "F4";
+            break;
+        default:
+            key_name = SDL_GetKeyName(input.key);
+            break;
         }
     }
-    const std::string token = (control ? "Ctrl+" : "") + std::string(shift ? "Shift+" : "") + (alt ? "Alt+" : "") + key_name;
+    const std::string token = (control ? "Ctrl+" : "") + std::string(shift ? "Shift+" : "") +
+                              (alt ? "Alt+" : "") + key_name;
     auto binding = keybindings.find(token);
     if (binding == keybindings.end() && shift) {
-        const auto unextended = (control ? "Ctrl+" : "") + std::string(alt ? "Alt+" : "") + key_name;
+        const auto unextended =
+            (control ? "Ctrl+" : "") + std::string(alt ? "Alt+" : "") + key_name;
         const auto candidate = keybindings.find(unextended);
-        if (candidate != keybindings.end() && candidate->second.starts_with("editor.move_")) { binding = candidate; }
+        if (candidate != keybindings.end() && candidate->second.starts_with("editor.move_")) {
+            binding = candidate;
+        }
     }
     if (binding != keybindings.end()) {
-        if (binding->second == "editor.move_up" || binding->second == "editor.move_down") { vertical(binding->second == "editor.move_down", shift); }
-        else if (binding->second.starts_with("editor.move_")) { editor_command(binding->second, {{"extend", shift}}); }
-        else { command(binding->second); }
+        if (binding->second == "editor.move_up" || binding->second == "editor.move_down") {
+            vertical(binding->second == "editor.move_down", shift);
+        } else if (binding->second.starts_with("editor.move_")) {
+            editor_command(binding->second, {{"extend", shift}});
+        } else {
+            command(binding->second);
+        }
         return;
     }
-    if (alt && input.key == SDLK_F4) { command("ui.closeWindow"); return; }
-    if (alt) { return; }
+    if (alt && input.key == SDLK_F4) {
+        command("ui.closeWindow");
+        return;
+    }
+    if (alt) {
+        return;
+    }
     std::string editing;
     switch (input.key) {
-    case SDLK_LEFT: editing = control ? "move_word_left" : "move_left"; break;
-    case SDLK_RIGHT: editing = control ? "move_word_right" : "move_right"; break;
-    case SDLK_UP: vertical(false, shift); return;
-    case SDLK_DOWN: vertical(true, shift); return;
-    case SDLK_HOME: editing = control ? "move_document_start" : "move_home"; break;
-    case SDLK_END: editing = control ? "move_document_end" : "move_end"; break;
-    case SDLK_BACKSPACE: editing = control ? "delete_word_backward" : "backspace"; break;
-    case SDLK_DELETE: editing = control ? "delete_word_forward" : "delete_forward"; break;
-    case SDLK_RETURN: case SDLK_KP_ENTER: editing = "newline"; break;
-    case SDLK_TAB: editing = shift ? "outdent" : "indent"; break;
-    case SDLK_PAGEUP: case SDLK_PAGEDOWN: {
+    case SDLK_LEFT:
+        editing = control ? "move_word_left" : "move_left";
+        break;
+    case SDLK_RIGHT:
+        editing = control ? "move_word_right" : "move_right";
+        break;
+    case SDLK_UP:
+        vertical(false, shift);
+        return;
+    case SDLK_DOWN:
+        vertical(true, shift);
+        return;
+    case SDLK_HOME:
+        editing = control ? "move_document_start" : "move_home";
+        break;
+    case SDLK_END:
+        editing = control ? "move_document_end" : "move_end";
+        break;
+    case SDLK_BACKSPACE:
+        editing = control ? "delete_word_backward" : "backspace";
+        break;
+    case SDLK_DELETE:
+        editing = control ? "delete_word_forward" : "delete_forward";
+        break;
+    case SDLK_RETURN:
+    case SDLK_KP_ENTER:
+        editing = "newline";
+        break;
+    case SDLK_TAB:
+        editing = shift ? "outdent" : "indent";
+        break;
+    case SDLK_PAGEUP:
+    case SDLK_PAGEDOWN: {
         auto* document = current();
-        if (!document) { return; }
-        const auto step = static_cast<std::size_t>(std::max(1.0F, (content_bottom - content_top) / row_height));
-        document->first_line = input.key == SDLK_PAGEUP ? (document->first_line > step ? document->first_line - step : 0)
-            : std::min(document->first_line + step, document->metadata.at("lineCount").get<std::size_t>() - 1);
+        if (!document) {
+            return;
+        }
+        const auto step =
+            static_cast<std::size_t>(std::max(1.0F, (content_bottom - content_top) / row_height));
+        document->first_line =
+            input.key == SDLK_PAGEUP
+                ? (document->first_line > step ? document->first_line - step : 0)
+                : std::min(document->first_line + step,
+                           document->metadata.at("lineCount").get<std::size_t>() - 1);
         document->needs_lines = true;
         return;
     }
-    default: return;
+    default:
+        return;
     }
     editor_command("editor." + editing, {{"extend", shift}});
 }
 
-bool EditorWindow::Impl::inline_key(const SDL_KeyboardEvent& input,bool control,bool shift,bool alt) {
-    if(!inline_form || !inline_form->focus())return false;
-    auto& form=*inline_form;
-    if(alt && !control && input.key>=SDLK_A && input.key<=SDLK_Z) {
-        const auto token=std::string("Alt+")+static_cast<char>('A'+input.key-SDLK_A);
-        for(std::size_t i=0;i<form.toggles().size();++i)if(form.toggles()[i].shortcut==token) {
-            form.toggle(i);emit_form("ui.form.changed");return true;
-        }
+bool EditorWindow::Impl::inline_key(const SDL_KeyboardEvent& input,
+                                    bool control,
+                                    bool shift,
+                                    bool alt) {
+    if (!inline_form || !inline_form->focus())
+        return false;
+    auto& form = *inline_form;
+    if (alt && !control && input.key >= SDLK_A && input.key <= SDLK_Z) {
+        const auto token = std::string("Alt+") + static_cast<char>('A' + input.key - SDLK_A);
+        for (std::size_t i = 0; i < form.toggles().size(); ++i)
+            if (form.toggles()[i].shortcut == token) {
+                form.toggle(i);
+                emit_form("ui.form.changed");
+                return true;
+            }
     }
-    if(alt)return false;
-    if(input.key==SDLK_TAB && !control){form.cycle_focus(shift);preedit.clear();return true;}
-    const auto focused=*form.focus();
-    if(focused>=form.fields().size()) {
-        if(input.key==SDLK_SPACE || input.key==SDLK_RETURN || input.key==SDLK_KP_ENTER) {
-            const auto index=focused-form.fields().size();
-            if(index<form.toggles().size()){form.toggle(index);emit_form("ui.form.changed");}
-            else emit_form("ui.form.action",form.actions()[index-form.toggles().size()].id);
+    if (alt)
+        return false;
+    if (input.key == SDLK_TAB && !control) {
+        form.cycle_focus(shift);
+        preedit.clear();
+        return true;
+    }
+    const auto focused = *form.focus();
+    if (focused >= form.fields().size()) {
+        if (input.key == SDLK_SPACE || input.key == SDLK_RETURN || input.key == SDLK_KP_ENTER) {
+            const auto index = focused - form.fields().size();
+            if (index < form.toggles().size()) {
+                form.toggle(index);
+                emit_form("ui.form.changed");
+            } else
+                emit_form("ui.form.action", form.actions()[index - form.toggles().size()].id);
             return true;
         }
-        return (control && (input.key==SDLK_A || input.key==SDLK_C || input.key==SDLK_X || input.key==SDLK_V || input.key==SDLK_Z || input.key==SDLK_Y)) ||
-            (!control && ((input.key>=SDLK_SPACE && input.key<=SDLK_DELETE) || input.key==SDLK_UP || input.key==SDLK_DOWN || input.key==SDLK_LEFT || input.key==SDLK_RIGHT || input.key==SDLK_HOME || input.key==SDLK_END));
+        return (control && (input.key == SDLK_A || input.key == SDLK_C || input.key == SDLK_X ||
+                            input.key == SDLK_V || input.key == SDLK_Z || input.key == SDLK_Y)) ||
+               (!control &&
+                ((input.key >= SDLK_SPACE && input.key <= SDLK_DELETE) || input.key == SDLK_UP ||
+                 input.key == SDLK_DOWN || input.key == SDLK_LEFT || input.key == SDLK_RIGHT ||
+                 input.key == SDLK_HOME || input.key == SDLK_END));
     }
-    const auto& field=form.fields()[focused];
-    if(input.key==SDLK_RETURN || input.key==SDLK_KP_ENTER) {
-        const auto& action=shift && !field.shift_submit.empty() ? field.shift_submit : field.submit;
-        if(!action.empty())emit_form("ui.form.action",action);
+    const auto& field = form.fields()[focused];
+    if (input.key == SDLK_RETURN || input.key == SDLK_KP_ENTER) {
+        const auto& action =
+            shift && !field.shift_submit.empty() ? field.shift_submit : field.submit;
+        if (!action.empty())
+            emit_form("ui.form.action", action);
         return true;
     }
-    if(control && (input.key==SDLK_C || input.key==SDLK_X)) {
-        const auto selection=field.text.selections().front();
-        const auto text=field.text.text().slice(selection.begin().value,selection.end().value);
-        if(!SDL_SetClipboardText(text.c_str()))throw std::runtime_error(SDL_GetError());
-        if(input.key==SDLK_X && form.edit(editing::Command::insert_text))emit_form("ui.form.changed");
+    if (control && (input.key == SDLK_C || input.key == SDLK_X)) {
+        const auto selection = field.text.selections().front();
+        const auto text = field.text.text().slice(selection.begin().value, selection.end().value);
+        if (!SDL_SetClipboardText(text.c_str()))
+            throw std::runtime_error(SDL_GetError());
+        if (input.key == SDLK_X && form.edit(editing::Command::insert_text))
+            emit_form("ui.form.changed");
         return true;
     }
-    if(control && input.key==SDLK_V) {
-        const std::unique_ptr<char,SdlStringDeleter> pasted(SDL_GetClipboardText());
-        if(!pasted)throw std::runtime_error(SDL_GetError());
-        editing::Options input_options;input_options.text=pasted.get();
-        if(form.edit(editing::Command::insert_text,input_options))emit_form("ui.form.changed");return true;
+    if (control && input.key == SDLK_V) {
+        const std::unique_ptr<char, SdlStringDeleter> pasted(SDL_GetClipboardText());
+        if (!pasted)
+            throw std::runtime_error(SDL_GetError());
+        editing::Options input_options;
+        input_options.text = pasted.get();
+        if (form.edit(editing::Command::insert_text, input_options))
+            emit_form("ui.form.changed");
+        return true;
     }
-    if(control && (input.key==SDLK_Z || input.key==SDLK_Y)) {
-        if(form.history(input.key==SDLK_Y || shift))emit_form("ui.form.changed");return true;
+    if (control && (input.key == SDLK_Z || input.key == SDLK_Y)) {
+        if (form.history(input.key == SDLK_Y || shift))
+            emit_form("ui.form.changed");
+        return true;
     }
     std::optional<editing::Command> input_command;
-    switch(input.key) {
-    case SDLK_LEFT: input_command=control ? editing::Command::move_word_left : editing::Command::move_left;break;
-    case SDLK_RIGHT: input_command=control ? editing::Command::move_word_right : editing::Command::move_right;break;
-    case SDLK_HOME: input_command=editing::Command::move_home;break;
-    case SDLK_END: input_command=editing::Command::move_end;break;
-    case SDLK_BACKSPACE: input_command=control ? editing::Command::delete_word_backward : editing::Command::backspace;break;
-    case SDLK_DELETE: input_command=control ? editing::Command::delete_word_forward : editing::Command::delete_forward;break;
-    case SDLK_A: if(control)input_command=editing::Command::select_all;break;
-    default:break;
+    switch (input.key) {
+    case SDLK_LEFT:
+        input_command = control ? editing::Command::move_word_left : editing::Command::move_left;
+        break;
+    case SDLK_RIGHT:
+        input_command = control ? editing::Command::move_word_right : editing::Command::move_right;
+        break;
+    case SDLK_HOME:
+        input_command = editing::Command::move_home;
+        break;
+    case SDLK_END:
+        input_command = editing::Command::move_end;
+        break;
+    case SDLK_BACKSPACE:
+        input_command =
+            control ? editing::Command::delete_word_backward : editing::Command::backspace;
+        break;
+    case SDLK_DELETE:
+        input_command =
+            control ? editing::Command::delete_word_forward : editing::Command::delete_forward;
+        break;
+    case SDLK_A:
+        if (control)
+            input_command = editing::Command::select_all;
+        break;
+    default:
+        break;
     }
-    if(!input_command)return !control && ((input.key>=SDLK_SPACE && input.key<=SDLK_DELETE) || input.key==SDLK_UP || input.key==SDLK_DOWN || input.key==SDLK_PAGEUP || input.key==SDLK_PAGEDOWN);
-    editing::Options input_options;input_options.extend=shift;
-    if(form.edit(*input_command,input_options))emit_form("ui.form.changed");return true;
+    if (!input_command)
+        return !control &&
+               ((input.key >= SDLK_SPACE && input.key <= SDLK_DELETE) || input.key == SDLK_UP ||
+                input.key == SDLK_DOWN || input.key == SDLK_PAGEUP || input.key == SDLK_PAGEDOWN);
+    editing::Options input_options;
+    input_options.extend = shift;
+    if (form.edit(*input_command, input_options))
+        emit_form("ui.form.changed");
+    return true;
 }
 
 void EditorWindow::Impl::point(float x, float y, bool extend, bool add) {
     auto* document = current();
-    if (!document || x < left || x > right || y < content_top || y > content_bottom) { return; }
-    const auto number = document->first_line + static_cast<std::size_t>((y - content_top) / row_height);
+    if (!document || x < left || x > right || y < content_top || y > content_bottom) {
+        return;
+    }
+    const auto number =
+        document->first_line + static_cast<std::size_t>((y - content_top) / row_height);
     const auto found = document->lines.find(number);
-    if (found == document->lines.end() || !found->second.layout) { return; }
-    const auto hit = found->second.layout->hit_test(x - left - gutter + document->horizontal,
-        std::max(0.0F, y - content_top - static_cast<float>(number - document->first_line) * row_height));
+    if (found == document->lines.end() || !found->second.layout) {
+        return;
+    }
+    const auto hit = found->second.layout->hit_test(
+        x - left - gutter + document->horizontal,
+        std::max(0.0F,
+                 y - content_top - static_cast<float>(number - document->first_line) * row_height));
     const auto offset = found->second.begin + hit.byte_offset;
     if (add) {
         const auto id = active_id;
         const auto revision = document->view_revision;
-        enqueue({"document.setSelections", Json::object(), id, false,
-            [this](const Json& result) { accept_metadata(result); reveal_caret(); },
-            [this, id, revision, offset] {
-                auto selections = documents.at(id).metadata.at("selections");
-                selections.push_back({{"anchor", offset}, {"head", offset}});
-                return Json{{"id", id}, {"baseRevision", revision}, {"selections", std::move(selections)}};
-            }});
-        vertical_column.reset(); return;
+        enqueue({"document.setSelections",
+                 Json::object(),
+                 id,
+                 false,
+                 [this](const Json& result) {
+                     accept_metadata(result);
+                     reveal_caret();
+                 },
+                 [this, id, revision, offset] {
+                     auto selections = documents.at(id).metadata.at("selections");
+                     selections.push_back({{"anchor", offset}, {"head", offset}});
+                     return Json{{"id", id},
+                                 {"baseRevision", revision},
+                                 {"selections", std::move(selections)}};
+                 }});
+        vertical_column.reset();
+        return;
     }
     auto selections = add ? document->metadata.at("selections") : Json::array();
-    const auto anchor = dragging ? drag_anchor : (extend ? document->metadata.at("selections").front().at("anchor").get<std::size_t>() : offset);
+    const auto anchor =
+        dragging
+            ? drag_anchor
+            : (extend ? document->metadata.at("selections").front().at("anchor").get<std::size_t>()
+                      : offset);
     selections.push_back({{"anchor", anchor}, {"head", offset}});
-    if (!dragging) { drag_anchor = anchor; }
+    if (!dragging) {
+        drag_anchor = anchor;
+    }
     vertical_column.reset();
     set_selections(std::move(selections), document->view_revision);
 }
 
 void EditorWindow::Impl::scroll_to(float y) {
     auto* document = current();
-    if (!document) { return; }
+    if (!document) {
+        return;
+    }
     const auto count = document->metadata.at("lineCount").get<std::size_t>();
-    const auto position = std::clamp((y - content_top) / std::max(1.0F, content_bottom - content_top), 0.0F, 1.0F);
+    const auto position =
+        std::clamp((y - content_top) / std::max(1.0F, content_bottom - content_top), 0.0F, 1.0F);
     document->first_line = static_cast<std::size_t>(position * static_cast<float>(count - 1));
     document->needs_lines = true;
 }
 
 void EditorWindow::Impl::event(const SDL_Event& input) {
-    if(quit_requested) {
-        if(input.type==SDL_EVENT_KEY_DOWN && input.key.key==SDLK_ESCAPE)command("ui.cancel");
+    if (quit_requested) {
+        if (input.type == SDL_EVENT_KEY_DOWN && input.key.key == SDLK_ESCAPE)
+            command("ui.cancel");
         return;
     }
     int logical_width{}, logical_height{};
-    if (!SDL_GetWindowSize(renderer.window(), &logical_width, &logical_height)) { throw std::runtime_error(SDL_GetError()); }
+    if (!SDL_GetWindowSize(renderer.window(), &logical_width, &logical_height)) {
+        throw std::runtime_error(SDL_GetError());
+    }
     const auto pixels = renderer.pixel_size();
-    const auto ratio_x = logical_width > 0 ? static_cast<float>(pixels.width) / static_cast<float>(logical_width) : 1;
-    const auto ratio_y = logical_height > 0 ? static_cast<float>(pixels.height) / static_cast<float>(logical_height) : 1;
+    const auto ratio_x = logical_width > 0
+                             ? static_cast<float>(pixels.width) / static_cast<float>(logical_width)
+                             : 1;
+    const auto ratio_y =
+        logical_height > 0 ? static_cast<float>(pixels.height) / static_cast<float>(logical_height)
+                           : 1;
     measure_layout();
     switch (input.type) {
-    case SDL_EVENT_QUIT: case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-        command("ui.closeWindow"); break;
-    case SDL_EVENT_KEY_DOWN: key(input.key); break;
+    case SDL_EVENT_QUIT:
+    case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+        command("ui.closeWindow");
+        break;
+    case SDL_EVENT_KEY_DOWN:
+        key(input.key);
+        break;
     case SDL_EVENT_TEXT_EDITING:
         preedit = input.edit.text ? input.edit.text : "";
         break;
     case SDL_EVENT_TEXT_INPUT:
         preedit.clear();
-        if (!input.text.text) { break; }
-        if (prompt != Prompt::none && prompt != Prompt::policy_choice && prompt != Prompt::replace_confirm &&
-            prompt != Prompt::policy_text && prompt != Prompt::git_diff &&
-            prompt != Prompt::policy_progress && prompt != Prompt::policy_confirm) {
+        if (!input.text.text) {
+            break;
+        }
+        if (prompt != Prompt::none && prompt != Prompt::policy_choice &&
+            prompt != Prompt::replace_confirm && prompt != Prompt::policy_text &&
+            prompt != Prompt::git_diff && prompt != Prompt::policy_progress &&
+            prompt != Prompt::policy_confirm) {
             const std::string_view entered(input.text.text);
-            if(dialog && entered.find_first_of("\r\n")!=entered.npos){error="Input must contain one logical line";break;}
-            const auto existing=prompt_select_all ? std::size_t{0} : prompt_text.size();
-            if (existing + entered.size() > 16384) { error = "Input exceeds its 16 KiB limit"; break; }
-            if (prompt_select_all) { prompt_text.clear(); prompt_select_all = false; }
-            prompt_text += input.text.text; prompt_choice = 0;
+            if (dialog && entered.find_first_of("\r\n") != entered.npos) {
+                error = "Input must contain one logical line";
+                break;
+            }
+            const auto existing = prompt_select_all ? std::size_t{0} : prompt_text.size();
+            if (existing + entered.size() > 16384) {
+                error = "Input exceeds its 16 KiB limit";
+                break;
+            }
+            if (prompt_select_all) {
+                prompt_text.clear();
+                prompt_select_all = false;
+            }
+            prompt_text += input.text.text;
+            prompt_choice = 0;
         } else if (prompt == Prompt::none) {
-            if(inline_form && inline_form->focus()) {
-                editing::Options input_options;input_options.text=input.text.text;
-                if(inline_form->edit(editing::Command::insert_text,input_options))emit_form("ui.form.changed");
-            } else editor_command("editor.insert_text", {{"text", input.text.text}});
+            if (inline_form && inline_form->focus()) {
+                editing::Options input_options;
+                input_options.text = input.text.text;
+                if (inline_form->edit(editing::Command::insert_text, input_options))
+                    emit_form("ui.form.changed");
+            } else
+                editor_command("editor.insert_text", {{"text", input.text.text}});
         }
         break;
     case SDL_EVENT_MOUSE_MOTION:
-        mouse_x = input.motion.x * ratio_x; mouse_y = input.motion.y * ratio_y;
-        if (dragging_sidebar) { sidebar_width=std::clamp((mouse_x-geometry.activity.right())/scale,180.0F,480.0F); }
-        else if (!dragging_tab.empty() && std::abs(mouse_x-tab_drag_start)>8*scale) {
+        mouse_x = input.motion.x * ratio_x;
+        mouse_y = input.motion.y * ratio_y;
+        if (dragging_sidebar) {
+            sidebar_width =
+                std::clamp((mouse_x - geometry.activity.right()) / scale, 180.0F, 480.0F);
+        } else if (!dragging_tab.empty() && std::abs(mouse_x - tab_drag_start) > 8 * scale) {
             for (const auto& tab : tab_strip.visible) {
-                if (!tab.bounds.contains(mouse_x,mouse_y)) { continue; }
-                const auto found=std::ranges::find(tabs,dragging_tab);
-                if (found!=tabs.end() && tabs[tab.index]!=dragging_tab) {
-                    const auto id=*found; tabs.erase(found);
-                    tabs.insert(tabs.begin()+static_cast<std::ptrdiff_t>(tab.index),id); reveal_tab=true;
+                if (!tab.bounds.contains(mouse_x, mouse_y)) {
+                    continue;
+                }
+                const auto found = std::ranges::find(tabs, dragging_tab);
+                if (found != tabs.end() && tabs[tab.index] != dragging_tab) {
+                    const auto id = *found;
+                    tabs.erase(found);
+                    tabs.insert(tabs.begin() + static_cast<std::ptrdiff_t>(tab.index), id);
+                    reveal_tab = true;
                 }
                 break;
             }
-        }
-        else if(dragging_form_field && inline_form) {
-            const auto index=*dragging_form_field;
-            const auto boxes=InlineFormLayout::measure(geometry.editor,scale,inline_form->fields().size(),inline_form->toggles().size(),inline_form->actions().size());
-            const auto cached=form_fields.find(inline_form->fields()[index].id);
-            if(cached!=form_fields.end() && cached->second.layout) {
-                const auto& box=boxes.fields[index];
-                const auto hit=cached->second.layout->hit_test(mouse_x-box.x-6*scale+cached->second.horizontal,mouse_y-box.y-5*scale);
-                inline_form->select(index,ByteOffset{hit.byte_offset},true);
+        } else if (dragging_form_field && inline_form) {
+            const auto index = *dragging_form_field;
+            const auto boxes = InlineFormLayout::measure(geometry.editor,
+                                                         scale,
+                                                         inline_form->fields().size(),
+                                                         inline_form->toggles().size(),
+                                                         inline_form->actions().size());
+            const auto cached = form_fields.find(inline_form->fields()[index].id);
+            if (cached != form_fields.end() && cached->second.layout) {
+                const auto& box = boxes.fields[index];
+                const auto hit = cached->second.layout->hit_test(mouse_x - box.x - 6 * scale +
+                                                                     cached->second.horizontal,
+                                                                 mouse_y - box.y - 5 * scale);
+                inline_form->select(index, ByteOffset{hit.byte_offset}, true);
             }
+        } else if (dragging_scroll) {
+            scroll_to(mouse_y);
+        } else if (dragging) {
+            point(mouse_x, mouse_y, true, false);
         }
-        else if (dragging_scroll) { scroll_to(mouse_y); }
-        else if (dragging) { point(mouse_x, mouse_y, true, false); }
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: {
-        if (input.button.button != SDL_BUTTON_LEFT) { break; }
-        mouse_x = input.button.x * ratio_x; mouse_y = input.button.y * ratio_y;
+        if (input.button.button != SDL_BUTTON_LEFT) {
+            break;
+        }
+        mouse_x = input.button.x * ratio_x;
+        mouse_y = input.button.y * ratio_y;
         const auto width = static_cast<float>(pixels.width);
         if (prompt == Prompt::policy_pick && dialog) {
             dialog->picker.filter(prompt_text);
-            const auto layout=PickerLayout::measure(width,static_cast<float>(pixels.height),scale,dialog->picker.size());
-            if(layout.rows.contains(mouse_x,mouse_y) && layout.capacity && dialog->picker.size()){
-                prompt_choice=std::min(prompt_choice,dialog->picker.size()-1);
-                const auto first=prompt_choice>=layout.capacity ? prompt_choice-layout.capacity+1 : 0;
-                const auto row=static_cast<std::size_t>((mouse_y-layout.rows.y)/layout.row_height);
-                if(row<layout.capacity && first+row<dialog->picker.size()){prompt_choice=first+row;accept_prompt();}
+            const auto layout = PickerLayout::measure(
+                width, static_cast<float>(pixels.height), scale, dialog->picker.size());
+            if (layout.rows.contains(mouse_x, mouse_y) && layout.capacity &&
+                dialog->picker.size()) {
+                prompt_choice = std::min(prompt_choice, dialog->picker.size() - 1);
+                const auto first =
+                    prompt_choice >= layout.capacity ? prompt_choice - layout.capacity + 1 : 0;
+                const auto row =
+                    static_cast<std::size_t>((mouse_y - layout.rows.y) / layout.row_height);
+                if (row < layout.capacity && first + row < dialog->picker.size()) {
+                    prompt_choice = first + row;
+                    accept_prompt();
+                }
             }
             break;
         }
-        if(prompt==Prompt::policy_choice && dialog) {
-            const auto layout=ChoiceLayout::measure(width,static_cast<float>(pixels.height),scale,dialog->spec.at("items").size());
-            for(std::size_t i=0;i<layout.buttons.size();++i)if(layout.buttons[i].contains(mouse_x,mouse_y)){finish_dialog(i);break;}
+        if (prompt == Prompt::policy_choice && dialog) {
+            const auto layout = ChoiceLayout::measure(
+                width, static_cast<float>(pixels.height), scale, dialog->spec.at("items").size());
+            for (std::size_t i = 0; i < layout.buttons.size(); ++i)
+                if (layout.buttons[i].contains(mouse_x, mouse_y)) {
+                    finish_dialog(i);
+                    break;
+                }
             break;
         }
-        if (prompt == Prompt::policy_confirm || prompt==Prompt::policy_progress) {
-            const auto layout=ConfirmationLayout::measure(width,static_cast<float>(pixels.height),scale,dialog ? dialog->items.size() : 0);
-            if(prompt==Prompt::policy_confirm && layout.accept.contains(mouse_x,mouse_y))finish_dialog(true);
-            else if(layout.cancel.contains(mouse_x,mouse_y))finish_dialog(nullptr);
+        if (prompt == Prompt::policy_confirm || prompt == Prompt::policy_progress) {
+            const auto layout = ConfirmationLayout::measure(
+                width, static_cast<float>(pixels.height), scale, dialog ? dialog->items.size() : 0);
+            if (prompt == Prompt::policy_confirm && layout.accept.contains(mouse_x, mouse_y))
+                finish_dialog(true);
+            else if (layout.cancel.contains(mouse_x, mouse_y))
+                finish_dialog(nullptr);
             break;
         }
         if (prompt == Prompt::replace_confirm) {
             const auto bx = (width - 600 * scale) / 2;
             if (mouse_y >= 211 * scale && mouse_y < 245 * scale) {
-                if (mouse_x >= bx + 24 * scale && mouse_x < bx + 260 * scale) { command("ui.confirmReplace"); }
-                else if (mouse_x >= bx + 340 * scale && mouse_x < bx + 576 * scale) { command("ui.cancel"); }
+                if (mouse_x >= bx + 24 * scale && mouse_x < bx + 260 * scale) {
+                    command("ui.confirmReplace");
+                } else if (mouse_x >= bx + 340 * scale && mouse_x < bx + 576 * scale) {
+                    command("ui.cancel");
+                }
             }
             break;
         }
         if (search_prompt()) {
             const auto bx = (width - 600 * scale) / 2;
             if (mouse_y >= 132 * scale && mouse_y < 158 * scale) {
-                if (mouse_x >= bx + 12 * scale && mouse_x < bx + 196 * scale) { command("ui.toggleSearchCase"); }
-                else if (mouse_x >= bx + 206 * scale && mouse_x < bx + 390 * scale) { command("ui.toggleSearchRegex"); }
-                else if (mouse_x >= bx + 400 * scale && mouse_x < bx + 584 * scale) { command("ui.toggleSearchWholeWord"); }
+                if (mouse_x >= bx + 12 * scale && mouse_x < bx + 196 * scale) {
+                    command("ui.toggleSearchCase");
+                } else if (mouse_x >= bx + 206 * scale && mouse_x < bx + 390 * scale) {
+                    command("ui.toggleSearchRegex");
+                } else if (mouse_x >= bx + 400 * scale && mouse_x < bx + 584 * scale) {
+                    command("ui.toggleSearchWholeWord");
+                }
             }
         }
-        if (prompt != Prompt::none) { break; }
-        if(inline_form) {
-            const auto form_layout=InlineFormLayout::measure(geometry.editor,scale,inline_form->fields().size(),inline_form->toggles().size(),inline_form->actions().size());
-            if(form_layout.panel.contains(mouse_x,mouse_y)) {
-                if(form_layout.close.contains(mouse_x,mouse_y)){static_cast<void>(close_inline_form());break;}
-                for(std::size_t i=0;i<form_layout.fields.size();++i)if(form_layout.fields[i].contains(mouse_x,mouse_y)) {
-                    inline_form->focus(i);
-                    const auto found=form_fields.find(inline_form->fields()[i].id);
-                    if(found!=form_fields.end() && found->second.layout) {
-                        const auto hit=found->second.layout->hit_test(mouse_x-form_layout.fields[i].x-6*scale+found->second.horizontal,mouse_y-form_layout.fields[i].y-5*scale);
-                        inline_form->select(i,ByteOffset{hit.byte_offset},(SDL_GetModState()&SDL_KMOD_SHIFT)!=0);
-                        dragging_form_field=i;
+        if (prompt != Prompt::none) {
+            break;
+        }
+        if (inline_form) {
+            const auto form_layout = InlineFormLayout::measure(geometry.editor,
+                                                               scale,
+                                                               inline_form->fields().size(),
+                                                               inline_form->toggles().size(),
+                                                               inline_form->actions().size());
+            if (form_layout.panel.contains(mouse_x, mouse_y)) {
+                if (form_layout.close.contains(mouse_x, mouse_y)) {
+                    static_cast<void>(close_inline_form());
+                    break;
+                }
+                for (std::size_t i = 0; i < form_layout.fields.size(); ++i)
+                    if (form_layout.fields[i].contains(mouse_x, mouse_y)) {
+                        inline_form->focus(i);
+                        const auto found = form_fields.find(inline_form->fields()[i].id);
+                        if (found != form_fields.end() && found->second.layout) {
+                            const auto hit = found->second.layout->hit_test(
+                                mouse_x - form_layout.fields[i].x - 6 * scale +
+                                    found->second.horizontal,
+                                mouse_y - form_layout.fields[i].y - 5 * scale);
+                            inline_form->select(i,
+                                                ByteOffset{hit.byte_offset},
+                                                (SDL_GetModState() & SDL_KMOD_SHIFT) != 0);
+                            dragging_form_field = i;
+                        }
                     }
-                }
-                for(std::size_t i=0;i<form_layout.toggles.size();++i)if(form_layout.toggles[i].contains(mouse_x,mouse_y)) {
-                    inline_form->focus(inline_form->fields().size()+i);inline_form->toggle(i);emit_form("ui.form.changed");
-                }
-                for(std::size_t i=0;i<form_layout.actions.size();++i)if(form_layout.actions[i].contains(mouse_x,mouse_y)) {
-                    inline_form->focus(inline_form->fields().size()+inline_form->toggles().size()+i);emit_form("ui.form.action",inline_form->actions()[i].id);
-                }
+                for (std::size_t i = 0; i < form_layout.toggles.size(); ++i)
+                    if (form_layout.toggles[i].contains(mouse_x, mouse_y)) {
+                        inline_form->focus(inline_form->fields().size() + i);
+                        inline_form->toggle(i);
+                        emit_form("ui.form.changed");
+                    }
+                for (std::size_t i = 0; i < form_layout.actions.size(); ++i)
+                    if (form_layout.actions[i].contains(mouse_x, mouse_y)) {
+                        inline_form->focus(inline_form->fields().size() +
+                                           inline_form->toggles().size() + i);
+                        emit_form("ui.form.action", inline_form->actions()[i].id);
+                    }
                 break;
             }
-            inline_form->focus(std::nullopt);preedit.clear();
+            inline_form->focus(std::nullopt);
+            preedit.clear();
         }
-        if (!workspace_notice().empty() && mouse_x >= left + 12 * scale && mouse_x < right - 12 * scale &&
-            mouse_y >= content_bottom - 142 * scale && mouse_y < content_bottom - 106 * scale) {
-            command("ui.dismissWorkspaceNotice"); break;
+        if (!workspace_notice().empty() && mouse_x >= left + 12 * scale &&
+            mouse_x < right - 12 * scale && mouse_y >= content_bottom - 142 * scale &&
+            mouse_y < content_bottom - 106 * scale) {
+            command("ui.dismissWorkspaceNotice");
+            break;
         }
         if (recovery_available && mouse_x >= left + 12 * scale && mouse_x < right - 12 * scale &&
-            mouse_y >= content_bottom - 100 * scale && mouse_y < content_bottom - 64 * scale) { command("ui.recovery"); break; }
-        if (geometry.header.contains(mouse_x,mouse_y)) { command("ui.commandPalette"); break; }
-        if (geometry.sidebar_handle.contains(mouse_x,mouse_y)) { dragging_sidebar=true; break; }
-        if (geometry.activity.contains(mouse_x,mouse_y)) {
-            const auto index=static_cast<int>((mouse_y-geometry.activity.y)/(48*scale));
-            if (mouse_y>geometry.status.y-40*scale) command("ui.commandPalette");
-            else if (index==1) { git_view=false; show_sidebar=true; command("ui.search"); }
-            else if (index==2) command("ui.gitStatus");
-            else if (index==3) command("ui.diagnostics");
-            else command("ui.explorer");
+            mouse_y >= content_bottom - 100 * scale && mouse_y < content_bottom - 64 * scale) {
+            command("ui.recovery");
             break;
         }
-        if (geometry.outline_header.contains(mouse_x,mouse_y)) { command("ui.toggleOutline"); break; }
-        if (geometry.sidebar.contains(mouse_x,mouse_y) && mouse_y<geometry.sidebar_rows.y) {
-            const Box refresh{left-34*scale,geometry.sidebar.y+5*scale,28*scale,26*scale};
-            if (refresh.contains(mouse_x,mouse_y)) {
-                const auto view=git_view ? "git" : (search_view ? "search" : "explorer");
-                if (busy_views.value(view,false)) execute_policy("workbench.cancelView",{{"id",view}});
-                else if (git_view) command("ui.gitStatus");
-                else if (search_view) search_workspace(false);
-                else command("ui.refreshTree");
-            } else if (!git_view && !search_view && mouse_y>=geometry.sidebar.y+32*scale) { explorer_expanded=!explorer_expanded; tree_scroll=0; }
+        if (geometry.header.contains(mouse_x, mouse_y)) {
+            command("ui.commandPalette");
             break;
         }
-        if (geometry.outline_rows.contains(mouse_x,mouse_y)) {
-            if (const auto* document=current();document && document->syntax_revision==document->view_revision && document->outline_begin==document->outline_scroll) {
-                const auto index=static_cast<std::size_t>((mouse_y-geometry.outline_rows.y)/geometry.sidebar_row_height);
-                if (index<document->outline.size()) {
-                    const auto& symbol=document->outline[index];
-                    set_selections(Json::array({{{"anchor",symbol.at("selectionBegin")},{"head",symbol.at("selectionEnd")}}}),document->syntax_revision);
+        if (geometry.sidebar_handle.contains(mouse_x, mouse_y)) {
+            dragging_sidebar = true;
+            break;
+        }
+        if (geometry.activity.contains(mouse_x, mouse_y)) {
+            const auto index = static_cast<int>((mouse_y - geometry.activity.y) / (48 * scale));
+            if (mouse_y > geometry.status.y - 40 * scale)
+                command("ui.commandPalette");
+            else if (index == 1) {
+                git_view = false;
+                show_sidebar = true;
+                command("ui.search");
+            } else if (index == 2)
+                command("ui.gitStatus");
+            else if (index == 3)
+                command("ui.diagnostics");
+            else
+                command("ui.explorer");
+            break;
+        }
+        if (geometry.outline_header.contains(mouse_x, mouse_y)) {
+            command("ui.toggleOutline");
+            break;
+        }
+        if (geometry.sidebar.contains(mouse_x, mouse_y) && mouse_y < geometry.sidebar_rows.y) {
+            const Box refresh{
+                left - 34 * scale, geometry.sidebar.y + 5 * scale, 28 * scale, 26 * scale};
+            if (refresh.contains(mouse_x, mouse_y)) {
+                const auto view = git_view ? "git" : (search_view ? "search" : "explorer");
+                if (busy_views.value(view, false))
+                    execute_policy("workbench.cancelView", {{"id", view}});
+                else if (git_view)
+                    command("ui.gitStatus");
+                else if (search_view)
+                    search_workspace(false);
+                else
+                    command("ui.refreshTree");
+            } else if (!git_view && !search_view && mouse_y >= geometry.sidebar.y + 32 * scale) {
+                explorer_expanded = !explorer_expanded;
+                tree_scroll = 0;
+            }
+            break;
+        }
+        if (geometry.outline_rows.contains(mouse_x, mouse_y)) {
+            if (const auto* document = current();
+                document && document->syntax_revision == document->view_revision &&
+                document->outline_begin == document->outline_scroll) {
+                const auto index = static_cast<std::size_t>((mouse_y - geometry.outline_rows.y) /
+                                                            geometry.sidebar_row_height);
+                if (index < document->outline.size()) {
+                    const auto& symbol = document->outline[index];
+                    set_selections(Json::array({{{"anchor", symbol.at("selectionBegin")},
+                                                 {"head", symbol.at("selectionEnd")}}}),
+                                   document->syntax_revision);
                 }
             }
             break;
         }
-        if (geometry.sidebar_rows.contains(mouse_x,mouse_y)) {
-            if (!git_view && !search_view && !explorer_expanded) break;
-            const auto row = tree_scroll + static_cast<std::size_t>((mouse_y-geometry.sidebar_rows.y)/geometry.sidebar_row_height);
+        if (geometry.sidebar_rows.contains(mouse_x, mouse_y)) {
+            if (!git_view && !search_view && !explorer_expanded)
+                break;
+            const auto row =
+                tree_scroll + static_cast<std::size_t>((mouse_y - geometry.sidebar_rows.y) /
+                                                       geometry.sidebar_row_height);
             if (git_view) {
                 const auto entries = git_status.value("entries", Json::array());
                 if (row < entries.size()) {
@@ -1771,342 +3033,769 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                     fetch_git_diff(entry.at("path").get<std::string>(), staged);
                 }
             } else if (search_view) {
-                if (row < search_results.size()) { open_search_result(search_results[row]); }
+                if (row < search_results.size()) {
+                    open_search_result(search_results[row]);
+                }
             } else if (row < file_tree.size()) {
                 const auto path = file_tree.at(row).at("path").get<std::string>();
                 if (file_tree.at(row).at("directory").get<bool>()) {
                     file_tree.toggle(row);
-                } else { open_path(path); }
+                } else {
+                    open_path(path);
+                }
             }
             break;
         }
-        if (geometry.tabs.contains(mouse_x,mouse_y)) {
-            if (tab_strip.previous.contains(mouse_x,mouse_y)) { if (first_tab) --first_tab; reveal_tab=false; }
-            else if (tab_strip.next.contains(mouse_x,mouse_y)) { if (first_tab+1<tabs.size()) ++first_tab; reveal_tab=false; }
-            else for (const auto& tab : tab_strip.visible) {
-                if (!tab.bounds.contains(mouse_x,mouse_y)) continue;
-                const auto id=tabs[tab.index]; activate(id);
-                if (tab.close.contains(mouse_x,mouse_y)) { close_document(id); }
-                else { dragging_tab=id; tab_drag_start=mouse_x; }
-                break;
-            }
+        if (geometry.tabs.contains(mouse_x, mouse_y)) {
+            if (tab_strip.previous.contains(mouse_x, mouse_y)) {
+                if (first_tab)
+                    --first_tab;
+                reveal_tab = false;
+            } else if (tab_strip.next.contains(mouse_x, mouse_y)) {
+                if (first_tab + 1 < tabs.size())
+                    ++first_tab;
+                reveal_tab = false;
+            } else
+                for (const auto& tab : tab_strip.visible) {
+                    if (!tab.bounds.contains(mouse_x, mouse_y))
+                        continue;
+                    const auto id = tabs[tab.index];
+                    activate(id);
+                    if (tab.close.contains(mouse_x, mouse_y)) {
+                        close_document(id);
+                    } else {
+                        dragging_tab = id;
+                        tab_drag_start = mouse_x;
+                    }
+                    break;
+                }
             break;
         }
-        if (mouse_x >= right - 12 * scale && mouse_x < right && mouse_y >= content_top && mouse_y <= content_bottom) {
-            dragging_scroll = true; scroll_to(mouse_y); break;
+        if (mouse_x >= right - 12 * scale && mouse_x < right && mouse_y >= content_top &&
+            mouse_y <= content_bottom) {
+            dragging_scroll = true;
+            scroll_to(mouse_y);
+            break;
         }
         const auto modifiers = SDL_GetModState();
         point(mouse_x, mouse_y, (modifiers & SDL_KMOD_SHIFT) != 0, (modifiers & SDL_KMOD_ALT) != 0);
-        if (mouse_x >= left && mouse_x <= right && mouse_y >= content_top && mouse_y <= content_bottom) {
+        if (mouse_x >= left && mouse_x <= right && mouse_y >= content_top &&
+            mouse_y <= content_bottom) {
             dragging = (modifiers & SDL_KMOD_ALT) == 0;
-            if (input.button.clicks >= 2) { editor_command("editor.select_word"); dragging = false; }
+            if (input.button.clicks >= 2) {
+                editor_command("editor.select_word");
+                dragging = false;
+            }
         }
         break;
     }
     case SDL_EVENT_MOUSE_BUTTON_UP:
-        if (input.button.button == SDL_BUTTON_LEFT) { dragging=false; dragging_scroll=false; dragging_sidebar=false; dragging_form_field.reset(); dragging_tab.clear(); }
+        if (input.button.button == SDL_BUTTON_LEFT) {
+            dragging = false;
+            dragging_scroll = false;
+            dragging_sidebar = false;
+            dragging_form_field.reset();
+            dragging_tab.clear();
+        }
         break;
     case SDL_EVENT_MOUSE_WHEEL: {
-        mouse_x=input.wheel.mouse_x*ratio_x;mouse_y=input.wheel.mouse_y*ratio_y;
+        mouse_x = input.wheel.mouse_x * ratio_x;
+        mouse_y = input.wheel.mouse_y * ratio_y;
         const auto direction = input.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0F : 1.0F;
         if (prompt != Prompt::none) {
-            if(prompt==Prompt::policy_text && dialog && (SDL_GetModState()&SDL_KMOD_SHIFT)!=0){dialog->horizontal=std::clamp(dialog->horizontal-input.wheel.y*direction*40*scale,0.0F,64*1024*1024*scale);break;}
+            if (prompt == Prompt::policy_text && dialog &&
+                (SDL_GetModState() & SDL_KMOD_SHIFT) != 0) {
+                dialog->horizontal =
+                    std::clamp(dialog->horizontal - input.wheel.y * direction * 40 * scale,
+                               0.0F,
+                               64 * 1024 * 1024 * scale);
+                break;
+            }
             const auto shift = static_cast<long long>(std::round(input.wheel.y * direction * 3));
-            prompt_choice = static_cast<std::size_t>(std::max(0LL, static_cast<long long>(prompt_choice) - shift));
+            prompt_choice = static_cast<std::size_t>(
+                std::max(0LL, static_cast<long long>(prompt_choice) - shift));
             break;
         }
-        if (geometry.tabs.contains(mouse_x,mouse_y)) {
-            const auto direction_step=input.wheel.y*direction<0 ? 1 : -1;
-            first_tab=static_cast<std::size_t>(std::clamp(static_cast<long long>(first_tab)+direction_step,0LL,static_cast<long long>(tabs.empty() ? 0 : tabs.size()-1))); reveal_tab=false;
-        } else if (geometry.outline_rows.contains(mouse_x,mouse_y)) {
-            if(auto* document=current()){
-                const auto shift=static_cast<long long>(std::round(input.wheel.y*direction*3));
-                const auto count=static_cast<std::size_t>(std::ceil(geometry.outline_rows.height/geometry.sidebar_row_height));
-                const auto maximum=document->outline_total>count ? document->outline_total-count : 0;
-                const auto next=static_cast<std::size_t>(std::clamp(static_cast<long long>(document->outline_scroll)-shift,0LL,static_cast<long long>(maximum)));
-                if(next!=document->outline_scroll){document->outline_scroll=next;document->needs_syntax=true;}
+        if (geometry.tabs.contains(mouse_x, mouse_y)) {
+            const auto direction_step = input.wheel.y * direction < 0 ? 1 : -1;
+            first_tab = static_cast<std::size_t>(
+                std::clamp(static_cast<long long>(first_tab) + direction_step,
+                           0LL,
+                           static_cast<long long>(tabs.empty() ? 0 : tabs.size() - 1)));
+            reveal_tab = false;
+        } else if (geometry.outline_rows.contains(mouse_x, mouse_y)) {
+            if (auto* document = current()) {
+                const auto shift =
+                    static_cast<long long>(std::round(input.wheel.y * direction * 3));
+                const auto count = static_cast<std::size_t>(
+                    std::ceil(geometry.outline_rows.height / geometry.sidebar_row_height));
+                const auto maximum =
+                    document->outline_total > count ? document->outline_total - count : 0;
+                const auto next = static_cast<std::size_t>(
+                    std::clamp(static_cast<long long>(document->outline_scroll) - shift,
+                               0LL,
+                               static_cast<long long>(maximum)));
+                if (next != document->outline_scroll) {
+                    document->outline_scroll = next;
+                    document->needs_syntax = true;
+                }
             }
-        } else if (geometry.sidebar.contains(mouse_x,mouse_y)) {
+        } else if (geometry.sidebar.contains(mouse_x, mouse_y)) {
             const auto shift = static_cast<long long>(std::round(input.wheel.y * direction * 3));
-            tree_scroll = static_cast<std::size_t>(std::max(0LL, static_cast<long long>(tree_scroll) - shift));
+            tree_scroll = static_cast<std::size_t>(
+                std::max(0LL, static_cast<long long>(tree_scroll) - shift));
         } else if (auto* document = current()) {
             if ((SDL_GetModState() & SDL_KMOD_SHIFT) != 0) {
-                document->horizontal = std::max(0.0F, document->horizontal - input.wheel.y * direction * 40 * scale);
+                document->horizontal =
+                    std::max(0.0F, document->horizontal - input.wheel.y * direction * 40 * scale);
             } else {
-                const auto shift = static_cast<long long>(std::round(input.wheel.y * direction * 3));
-                document->first_line = std::min(static_cast<std::size_t>(std::max(0LL, static_cast<long long>(document->first_line) - shift)),
-                    document->metadata.at("lineCount").get<std::size_t>() - 1);
+                const auto shift =
+                    static_cast<long long>(std::round(input.wheel.y * direction * 3));
+                document->first_line =
+                    std::min(static_cast<std::size_t>(std::max(
+                                 0LL, static_cast<long long>(document->first_line) - shift)),
+                             document->metadata.at("lineCount").get<std::size_t>() - 1);
                 document->needs_lines = true;
-                document->horizontal = std::max(0.0F, document->horizontal - input.wheel.x * direction * 40 * scale);
+                document->horizontal =
+                    std::max(0.0F, document->horizontal - input.wheel.x * direction * 40 * scale);
             }
         }
         break;
     }
     case SDL_EVENT_DROP_FILE:
-        if (input.drop.data) { open_path(input.drop.data); }
-        break;
-    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
-        labels.clear();
-        for (auto& [id, document] : documents) {
-            static_cast<void>(id); document.needs_lines = true;
-            for (auto& [number, line] : document.lines) { static_cast<void>(number); line.layout.reset(); }
+        if (input.drop.data) {
+            open_path(input.drop.data);
         }
         break;
-    default: break;
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+    case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
+        labels.clear();
+        for (auto& [id, document] : documents) {
+            static_cast<void>(id);
+            document.needs_lines = true;
+            for (auto& [number, line] : document.lines) {
+                static_cast<void>(number);
+                line.layout.reset();
+            }
+        }
+        break;
+    default:
+        break;
     }
 }
 
-void EditorWindow::Impl::rectangle(SkCanvas* canvas, float x, float y, float width, float height, SkColor color) {
-    SkPaint paint; paint.setColor(color);
+void EditorWindow::Impl::rectangle(
+    SkCanvas* canvas, float x, float y, float width, float height, SkColor color) {
+    SkPaint paint;
+    paint.setColor(color);
     canvas->drawRect(SkRect::MakeXYWH(x, y, width, height), paint);
 }
 
-void EditorWindow::Impl::label(SkCanvas* canvas, std::string_view text, float x, float y, float size, SkColor color) {
-    if (text.empty()) { return; }
+void EditorWindow::Impl::label(
+    SkCanvas* canvas, std::string_view text, float x, float y, float size, SkColor color) {
+    if (text.empty()) {
+        return;
+    }
     label_layout(text, size, color).draw(canvas, x, y);
 }
 
-const TextLayout& EditorWindow::Impl::label_layout(std::string_view text, float size, SkColor color) {
-    size=size*ui_font_size/13.0F;
-    if (color == 0) { color = foreground; }
+const TextLayout&
+EditorWindow::Impl::label_layout(std::string_view text, float size, SkColor color) {
+    size = size * ui_font_size / 13.0F;
+    if (color == 0) {
+        color = foreground;
+    }
     std::string display(text);
     std::ranges::replace(display, '\n', ' ');
     std::ranges::replace(display, '\r', ' ');
-    const auto cache_key = display + '\0' + std::to_string(size) + ':' + std::to_string(color) + ':' + std::to_string(scale);
-    if (labels.size() > 1024) { labels.clear(); }
+    const auto cache_key = display + '\0' + std::to_string(size) + ':' + std::to_string(color) +
+                           ':' + std::to_string(scale);
+    if (labels.size() > 1024) {
+        labels.clear();
+    }
     auto found = labels.find(cache_key);
     if (found == labels.end()) {
-        TextLayoutOptions style; style.font_size = size; style.dpi_scale = scale; style.color = color; style.line_height = 1.15F;
+        TextLayoutOptions style;
+        style.font_size = size;
+        style.dpi_scale = scale;
+        style.color = color;
+        style.line_height = 1.15F;
         style.font_families = {"Segoe UI", "Microsoft YaHei UI", "Segoe UI Emoji"};
         found = labels.emplace(cache_key, fonts.layout(std::move(display), style)).first;
     }
     return found->second;
 }
 
-void EditorWindow::Impl::elided_label(SkCanvas* canvas,std::string_view text,float x,float y,float size,float available,SkColor color) {
-    if (text.empty() || available<=0) return;
-    const auto& full=label_layout(text,size,color);
-    if (full.width()<=available) { full.draw(canvas,x,y); return; }
-    const auto points=full.grapheme_boundaries();
-    const std::vector<std::size_t> boundaries(points.begin(),points.end());
-    if (label_layout("…",size,color).width()>available) return;
-    std::size_t low{},high=boundaries.size()-1;
-    while (low<high) {
-        const auto middle=(low+high+1)/2;
-        const auto candidate=std::string(text.substr(0,boundaries[middle]))+"…";
-        if (label_layout(candidate,size,color).width()<=available) low=middle;
-        else high=middle-1;
+void EditorWindow::Impl::elided_label(SkCanvas* canvas,
+                                      std::string_view text,
+                                      float x,
+                                      float y,
+                                      float size,
+                                      float available,
+                                      SkColor color) {
+    if (text.empty() || available <= 0)
+        return;
+    const auto& full = label_layout(text, size, color);
+    if (full.width() <= available) {
+        full.draw(canvas, x, y);
+        return;
     }
-    label(canvas,std::string(text.substr(0,boundaries[low]))+"…",x,y,size,color);
+    const auto points = full.grapheme_boundaries();
+    const std::vector<std::size_t> boundaries(points.begin(), points.end());
+    if (label_layout("…", size, color).width() > available)
+        return;
+    std::size_t low{}, high = boundaries.size() - 1;
+    while (low < high) {
+        const auto middle = (low + high + 1) / 2;
+        const auto candidate = std::string(text.substr(0, boundaries[middle])) + "…";
+        if (label_layout(candidate, size, color).width() <= available)
+            low = middle;
+        else
+            high = middle - 1;
+    }
+    label(canvas, std::string(text.substr(0, boundaries[low])) + "…", x, y, size, color);
 }
 
 void EditorWindow::Impl::measure_layout() {
     const auto pixels = renderer.pixel_size();
     scale = renderer.dpi_scale();
-    geometry = WorkbenchLayout::measure(static_cast<float>(pixels.width), static_cast<float>(pixels.height), scale,
-        show_sidebar, sidebar_width, show_outline, !search_view && !git_view);
-    left = geometry.editor.x; right = geometry.editor.right();
-    content_top = geometry.editor.y; content_bottom = geometry.editor.bottom();
+    geometry = WorkbenchLayout::measure(static_cast<float>(pixels.width),
+                                        static_cast<float>(pixels.height),
+                                        scale,
+                                        show_sidebar,
+                                        sidebar_width,
+                                        show_outline,
+                                        !search_view && !git_view);
+    left = geometry.editor.x;
+    right = geometry.editor.right();
+    content_top = geometry.editor.y;
+    content_bottom = geometry.editor.bottom();
     std::vector<float> widths;
     for (const auto& id : tabs) {
         const auto& path = documents.at(id).path;
-        widths.push_back(label_layout(path.empty() ? "Untitled" : basename(path), 13, foreground).width());
+        widths.push_back(
+            label_layout(path.empty() ? "Untitled" : basename(path), 13, foreground).width());
     }
     const auto active = std::ranges::find(tabs, active_id);
-    const auto index = active == tabs.end() ? 0 : static_cast<std::size_t>(active-tabs.begin());
+    const auto index = active == tabs.end() ? 0 : static_cast<std::size_t>(active - tabs.begin());
     tab_strip = TabStrip::measure(geometry.tabs, scale, widths, first_tab, index, reveal_tab);
-    first_tab = tab_strip.first; reveal_tab = false;
+    first_tab = tab_strip.first;
+    reveal_tab = false;
 }
 
 void EditorWindow::Impl::draw_inline_form(SkCanvas* canvas) {
-    if(!inline_form)return;
-    const auto& form=*inline_form;
-    const auto boxes=InlineFormLayout::measure(geometry.editor,scale,form.fields().size(),form.toggles().size(),form.actions().size());
-    if(boxes.panel.width<=0 || boxes.panel.height<=0)return;
-    rectangle(canvas,boxes.panel.x+3*scale,boxes.panel.y+3*scale,boxes.panel.width,boxes.panel.height,0x55000000);
-    rectangle(canvas,boxes.panel.x,boxes.panel.y,boxes.panel.width,boxes.panel.height,border_color);
-    rectangle(canvas,boxes.panel.x+scale,boxes.panel.y+scale,std::max(0.0F,boxes.panel.width-2*scale),std::max(0.0F,boxes.panel.height-2*scale),sidebar_background);
-    canvas->save();canvas->clipRect(SkRect::MakeXYWH(boxes.panel.x,boxes.panel.y,boxes.panel.width,boxes.panel.height));
-    elided_label(canvas,form.title(),boxes.title.x,boxes.title.y,12,boxes.title.width,foreground);
-    if(boxes.close.contains(mouse_x,mouse_y))rectangle(canvas,boxes.close.x,boxes.close.y,boxes.close.width,boxes.close.height,hover_color);
-    draw_icon(canvas,Icon::close,boxes.close.x+6*scale,boxes.close.y+5*scale,14*scale,muted);
-    for(std::size_t i=0;i<form.fields().size();++i) {
-        const auto& field=form.fields()[i];const auto box=boxes.fields[i];const auto focused=form.focus()==i;
-        auto& cached=form_fields[field.id];const auto text=field.text.text().str();
-        if(!cached.layout || cached.text!=text || cached.scale!=scale) {
-            TextLayoutOptions style;style.font_size=ui_font_size;style.dpi_scale=scale;style.line_height=1.0F;style.color=foreground;
-            style.font_families={"Segoe UI","Microsoft YaHei UI","Segoe UI Emoji"};style.direction=TextDirection::automatic;
-            cached.layout=fonts.layout(text,style);cached.text=text;cached.scale=scale;
+    if (!inline_form)
+        return;
+    const auto& form = *inline_form;
+    const auto boxes = InlineFormLayout::measure(
+        geometry.editor, scale, form.fields().size(), form.toggles().size(), form.actions().size());
+    if (boxes.panel.width <= 0 || boxes.panel.height <= 0)
+        return;
+    rectangle(canvas,
+              boxes.panel.x + 3 * scale,
+              boxes.panel.y + 3 * scale,
+              boxes.panel.width,
+              boxes.panel.height,
+              0x55000000);
+    rectangle(
+        canvas, boxes.panel.x, boxes.panel.y, boxes.panel.width, boxes.panel.height, border_color);
+    rectangle(canvas,
+              boxes.panel.x + scale,
+              boxes.panel.y + scale,
+              std::max(0.0F, boxes.panel.width - 2 * scale),
+              std::max(0.0F, boxes.panel.height - 2 * scale),
+              sidebar_background);
+    canvas->save();
+    canvas->clipRect(
+        SkRect::MakeXYWH(boxes.panel.x, boxes.panel.y, boxes.panel.width, boxes.panel.height));
+    elided_label(
+        canvas, form.title(), boxes.title.x, boxes.title.y, 12, boxes.title.width, foreground);
+    if (boxes.close.contains(mouse_x, mouse_y))
+        rectangle(canvas,
+                  boxes.close.x,
+                  boxes.close.y,
+                  boxes.close.width,
+                  boxes.close.height,
+                  hover_color);
+    draw_icon(canvas,
+              Icon::close,
+              boxes.close.x + 6 * scale,
+              boxes.close.y + 5 * scale,
+              14 * scale,
+              muted);
+    for (std::size_t i = 0; i < form.fields().size(); ++i) {
+        const auto& field = form.fields()[i];
+        const auto box = boxes.fields[i];
+        const auto focused = form.focus() == i;
+        auto& cached = form_fields[field.id];
+        const auto text = field.text.text().str();
+        if (!cached.layout || cached.text != text || cached.scale != scale) {
+            TextLayoutOptions style;
+            style.font_size = ui_font_size;
+            style.dpi_scale = scale;
+            style.line_height = 1.0F;
+            style.color = foreground;
+            style.font_families = {"Segoe UI", "Microsoft YaHei UI", "Segoe UI Emoji"};
+            style.direction = TextDirection::automatic;
+            cached.layout = fonts.layout(text, style);
+            cached.text = text;
+            cached.scale = scale;
         }
-        rectangle(canvas,box.x,box.y,box.width,box.height,form.error() ? error_color : (focused ? accent : border_color));
-        rectangle(canvas,box.x+scale,box.y+scale,std::max(0.0F,box.width-2*scale),std::max(0.0F,box.height-2*scale),input_color);
-        const auto selection=field.text.selections().front();const auto caret=cached.layout->caret(selection.head.value);
-        const auto available=std::max(0.0F,box.width-12*scale);
-        if(focused) {
-            if(caret.x<cached.horizontal)cached.horizontal=caret.x;
-            if(caret.x>cached.horizontal+available)cached.horizontal=caret.x-available;
+        rectangle(canvas,
+                  box.x,
+                  box.y,
+                  box.width,
+                  box.height,
+                  form.error() ? error_color : (focused ? accent : border_color));
+        rectangle(canvas,
+                  box.x + scale,
+                  box.y + scale,
+                  std::max(0.0F, box.width - 2 * scale),
+                  std::max(0.0F, box.height - 2 * scale),
+                  input_color);
+        const auto selection = field.text.selections().front();
+        const auto caret = cached.layout->caret(selection.head.value);
+        const auto available = std::max(0.0F, box.width - 12 * scale);
+        if (focused) {
+            if (caret.x < cached.horizontal)
+                cached.horizontal = caret.x;
+            if (caret.x > cached.horizontal + available)
+                cached.horizontal = caret.x - available;
         }
-        cached.horizontal=std::clamp(cached.horizontal,0.0F,std::max(0.0F,cached.layout->width()-available));
-        const auto x=box.x+6*scale-cached.horizontal,y=box.y+5*scale;
-        canvas->save();canvas->clipRect(SkRect::MakeXYWH(box.x+2*scale,box.y+scale,std::max(0.0F,box.width-4*scale),std::max(0.0F,box.height-2*scale)));
-        if(text.empty() && (!focused || preedit.empty()))elided_label(canvas,field.placeholder,box.x+6*scale,box.y+6*scale,13,available,muted);
-        for(const auto& rect:cached.layout->selection_rects(selection.begin().value,selection.end().value)) {
-            rectangle(canvas,x+rect.x,y+rect.y,rect.width,rect.height,focused ? selection_color : hover_color);
+        cached.horizontal =
+            std::clamp(cached.horizontal, 0.0F, std::max(0.0F, cached.layout->width() - available));
+        const auto x = box.x + 6 * scale - cached.horizontal, y = box.y + 5 * scale;
+        canvas->save();
+        canvas->clipRect(SkRect::MakeXYWH(box.x + 2 * scale,
+                                          box.y + scale,
+                                          std::max(0.0F, box.width - 4 * scale),
+                                          std::max(0.0F, box.height - 2 * scale)));
+        if (text.empty() && (!focused || preedit.empty()))
+            elided_label(canvas,
+                         field.placeholder,
+                         box.x + 6 * scale,
+                         box.y + 6 * scale,
+                         13,
+                         available,
+                         muted);
+        for (const auto& rect :
+             cached.layout->selection_rects(selection.begin().value, selection.end().value)) {
+            rectangle(canvas,
+                      x + rect.x,
+                      y + rect.y,
+                      rect.width,
+                      rect.height,
+                      focused ? selection_color : hover_color);
         }
-        cached.layout->draw(canvas,x,y);
-        if(focused) {
-            rectangle(canvas,x+caret.x,y+caret.y,scale,std::min(caret.height,std::max(0.0F,box.height-8*scale)),foreground);
-            int logical_width{},logical_height{},pixels_width{},pixels_height{};
-            if(!SDL_GetWindowSize(renderer.window(),&logical_width,&logical_height) ||
-                !SDL_GetWindowSizeInPixels(renderer.window(),&pixels_width,&pixels_height) || logical_width<=0 || logical_height<=0)throw std::runtime_error(SDL_GetError());
-            const auto rx=static_cast<float>(pixels_width)/static_cast<float>(logical_width),ry=static_cast<float>(pixels_height)/static_cast<float>(logical_height);
-            renderer.set_text_input_area(SDL_Rect{static_cast<int>((x+caret.x)/rx),static_cast<int>((y+caret.y)/ry),
-                2,std::max(1,static_cast<int>(caret.height/ry))},0);
-            if(!preedit.empty()) {
-                TextLayoutOptions style;style.font_size=ui_font_size;style.dpi_scale=scale;style.line_height=1.0F;style.color=foreground;
-                const auto composition=fonts.layout(preedit,style);composition.draw(canvas,x+caret.x,y);
-                rectangle(canvas,x+caret.x,y+20*scale,composition.width(),scale,accent);
+        cached.layout->draw(canvas, x, y);
+        if (focused) {
+            rectangle(canvas,
+                      x + caret.x,
+                      y + caret.y,
+                      scale,
+                      std::min(caret.height, std::max(0.0F, box.height - 8 * scale)),
+                      foreground);
+            int logical_width{}, logical_height{}, pixels_width{}, pixels_height{};
+            if (!SDL_GetWindowSize(renderer.window(), &logical_width, &logical_height) ||
+                !SDL_GetWindowSizeInPixels(renderer.window(), &pixels_width, &pixels_height) ||
+                logical_width <= 0 || logical_height <= 0)
+                throw std::runtime_error(SDL_GetError());
+            const auto rx = static_cast<float>(pixels_width) / static_cast<float>(logical_width),
+                       ry = static_cast<float>(pixels_height) / static_cast<float>(logical_height);
+            renderer.set_text_input_area(SDL_Rect{static_cast<int>((x + caret.x) / rx),
+                                                  static_cast<int>((y + caret.y) / ry),
+                                                  2,
+                                                  std::max(1, static_cast<int>(caret.height / ry))},
+                                         0);
+            if (!preedit.empty()) {
+                TextLayoutOptions style;
+                style.font_size = ui_font_size;
+                style.dpi_scale = scale;
+                style.line_height = 1.0F;
+                style.color = foreground;
+                const auto composition = fonts.layout(preedit, style);
+                composition.draw(canvas, x + caret.x, y);
+                rectangle(canvas, x + caret.x, y + 20 * scale, composition.width(), scale, accent);
             }
         }
         canvas->restore();
     }
-    for(std::size_t i=0;i<form.toggles().size();++i) {
-        const auto& toggle=form.toggles()[i];const auto box=boxes.toggles[i];const auto focused=form.focus()==form.fields().size()+i;
-        rectangle(canvas,box.x,box.y,box.width,box.height,toggle.value ? selection_color : (box.contains(mouse_x,mouse_y) ? hover_color : sidebar_background));
-        if(focused)rectangle(canvas,box.x,box.bottom()-scale,box.width,scale,accent);
-        elided_label(canvas,toggle.label,box.x+6*scale,box.y+5*scale,11,std::max(0.0F,box.width-12*scale),toggle.value ? foreground : muted);
+    for (std::size_t i = 0; i < form.toggles().size(); ++i) {
+        const auto& toggle = form.toggles()[i];
+        const auto box = boxes.toggles[i];
+        const auto focused = form.focus() == form.fields().size() + i;
+        rectangle(canvas,
+                  box.x,
+                  box.y,
+                  box.width,
+                  box.height,
+                  toggle.value
+                      ? selection_color
+                      : (box.contains(mouse_x, mouse_y) ? hover_color : sidebar_background));
+        if (focused)
+            rectangle(canvas, box.x, box.bottom() - scale, box.width, scale, accent);
+        elided_label(canvas,
+                     toggle.label,
+                     box.x + 6 * scale,
+                     box.y + 5 * scale,
+                     11,
+                     std::max(0.0F, box.width - 12 * scale),
+                     toggle.value ? foreground : muted);
     }
-    elided_label(canvas,form.busy() ? "Searching…" : form.message(),boxes.message.x,boxes.message.y,11,boxes.message.width,form.error() ? error_color : muted);
-    for(std::size_t i=0;i<form.actions().size();++i) {
-        const auto box=boxes.actions[i];const auto focused=form.focus()==form.fields().size()+form.toggles().size()+i;
-        rectangle(canvas,box.x,box.y,box.width,box.height,focused ? selection_color : (box.contains(mouse_x,mouse_y) ? hover_color : input_color));
-        elided_label(canvas,form.actions()[i].label,box.x+6*scale,box.y+7*scale,11,std::max(0.0F,box.width-12*scale),foreground);
+    elided_label(canvas,
+                 form.busy() ? "Searching…" : form.message(),
+                 boxes.message.x,
+                 boxes.message.y,
+                 11,
+                 boxes.message.width,
+                 form.error() ? error_color : muted);
+    for (std::size_t i = 0; i < form.actions().size(); ++i) {
+        const auto box = boxes.actions[i];
+        const auto focused = form.focus() == form.fields().size() + form.toggles().size() + i;
+        rectangle(canvas,
+                  box.x,
+                  box.y,
+                  box.width,
+                  box.height,
+                  focused ? selection_color
+                          : (box.contains(mouse_x, mouse_y) ? hover_color : input_color));
+        elided_label(canvas,
+                     form.actions()[i].label,
+                     box.x + 6 * scale,
+                     box.y + 7 * scale,
+                     11,
+                     std::max(0.0F, box.width - 12 * scale),
+                     foreground);
     }
     canvas->restore();
 }
 
 void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height) {
-    if (prompt == Prompt::none) { return; }
+    if (prompt == Prompt::none) {
+        return;
+    }
     rectangle(canvas, 0, 0, width, height, SkColorSetA(background, 160));
-    if(prompt==Prompt::policy_choice && dialog) {
-        const auto& choices=dialog->spec.at("items");
-        const auto layout=ChoiceLayout::measure(width,height,scale,choices.size());
-        rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,layout.panel.height,panel_background);
-        rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,2*scale,accent);
-        elided_label(canvas,dialog->spec.at("title").get<std::string>(),layout.title.x,layout.title.y,16,layout.title.width,foreground);
-        TextLayoutOptions style;style.font_size=13;style.dpi_scale=scale;style.color=muted;style.wrap_width=layout.detail.width;
-        style.font_families={"Segoe UI","Microsoft YaHei UI","sans-serif"};
-        if(dialog->detail_width!=style.wrap_width || dialog->detail_scale!=scale){dialog->detail_layout.clear();dialog->detail_width=style.wrap_width;dialog->detail_scale=scale;}
-        canvas->save();canvas->clipRect(SkRect::MakeXYWH(layout.detail.x,layout.detail.y,layout.detail.width,layout.detail.height));
-        float y=layout.detail.y;
-        dialog->detail_lines.for_each_range(0,std::min(dialog->detail_lines.size(),std::size_t{8}),[&](std::size_t row,const std::string& text) {
-            if(y>=layout.detail.bottom())return;
-            auto found=dialog->detail_layout.find(row);
-            if(found==dialog->detail_layout.end())found=dialog->detail_layout.emplace(row,fonts.layout(text,style)).first;
-            found->second.draw(canvas,layout.detail.x,y);y+=found->second.height();
-        });canvas->restore();
-        for(std::size_t i=0;i<choices.size();++i) {
-            const auto& box=layout.buttons[i];
-            rectangle(canvas,box.x,box.y,box.width,box.height,i==prompt_choice ? accent : border_color);
-            elided_label(canvas,choices[i].get<std::string>(),box.x+12*scale,box.y+8*scale,13,box.width-24*scale,foreground);
+    if (prompt == Prompt::policy_choice && dialog) {
+        const auto& choices = dialog->spec.at("items");
+        const auto layout = ChoiceLayout::measure(width, height, scale, choices.size());
+        rectangle(canvas,
+                  layout.panel.x,
+                  layout.panel.y,
+                  layout.panel.width,
+                  layout.panel.height,
+                  panel_background);
+        rectangle(canvas, layout.panel.x, layout.panel.y, layout.panel.width, 2 * scale, accent);
+        elided_label(canvas,
+                     dialog->spec.at("title").get<std::string>(),
+                     layout.title.x,
+                     layout.title.y,
+                     16,
+                     layout.title.width,
+                     foreground);
+        TextLayoutOptions style;
+        style.font_size = 13;
+        style.dpi_scale = scale;
+        style.color = muted;
+        style.wrap_width = layout.detail.width;
+        style.font_families = {"Segoe UI", "Microsoft YaHei UI", "sans-serif"};
+        if (dialog->detail_width != style.wrap_width || dialog->detail_scale != scale) {
+            dialog->detail_layout.clear();
+            dialog->detail_width = style.wrap_width;
+            dialog->detail_scale = scale;
+        }
+        canvas->save();
+        canvas->clipRect(SkRect::MakeXYWH(
+            layout.detail.x, layout.detail.y, layout.detail.width, layout.detail.height));
+        float y = layout.detail.y;
+        dialog->detail_lines.for_each_range(
+            0,
+            std::min(dialog->detail_lines.size(), std::size_t{8}),
+            [&](std::size_t row, const std::string& text) {
+                if (y >= layout.detail.bottom())
+                    return;
+                auto found = dialog->detail_layout.find(row);
+                if (found == dialog->detail_layout.end())
+                    found = dialog->detail_layout.emplace(row, fonts.layout(text, style)).first;
+                found->second.draw(canvas, layout.detail.x, y);
+                y += found->second.height();
+            });
+        canvas->restore();
+        for (std::size_t i = 0; i < choices.size(); ++i) {
+            const auto& box = layout.buttons[i];
+            rectangle(canvas,
+                      box.x,
+                      box.y,
+                      box.width,
+                      box.height,
+                      i == prompt_choice ? accent : border_color);
+            elided_label(canvas,
+                         choices[i].get<std::string>(),
+                         box.x + 12 * scale,
+                         box.y + 8 * scale,
+                         13,
+                         box.width - 24 * scale,
+                         foreground);
         }
         return;
     }
     if (prompt == Prompt::policy_text && dialog) {
-        const auto layout=TextPanelLayout::measure(width,height,scale,dialog->detail_lines.size());
-        rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,layout.panel.height,panel_background);
-        rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,2*scale,accent);
-        elided_label(canvas,dialog->spec.at("title").get<std::string>(),layout.title.x,layout.title.y,11,layout.title.width,muted);
-        TextLayoutOptions style;style.font_size=13;style.dpi_scale=scale;style.color=foreground;
-        style.font_families={"Segoe UI","Microsoft YaHei UI","sans-serif"};
-        if(dialog->detail_scale!=scale){dialog->detail_layout.clear();dialog->detail_scale=scale;}
-        prompt_choice=std::min(prompt_choice,dialog->detail_lines.size()-1);
-        const auto count=static_cast<std::size_t>(std::ceil(layout.content.height/(18*scale)))+1;
-        canvas->save();canvas->clipRect(SkRect::MakeXYWH(layout.content.x,layout.content.y,layout.content.width,layout.content.height));
-        float y=layout.content.y;
-        dialog->detail_lines.for_each_range(prompt_choice,std::min(dialog->detail_lines.size(),prompt_choice+count),[&](std::size_t row,const std::string& text){
-            if(y>=layout.content.bottom())return;
-            auto found=dialog->detail_layout.find(row);
-            if(found==dialog->detail_layout.end()){
-                if(dialog->detail_layout.size()>=256)dialog->detail_layout.erase(dialog->detail_layout.begin());
-                found=dialog->detail_layout.emplace(row,fonts.layout(text,style)).first;
-            }
-            found->second.draw(canvas,layout.content.x-dialog->horizontal,y);y+=found->second.height();
-        });canvas->restore();return;
+        const auto layout =
+            TextPanelLayout::measure(width, height, scale, dialog->detail_lines.size());
+        rectangle(canvas,
+                  layout.panel.x,
+                  layout.panel.y,
+                  layout.panel.width,
+                  layout.panel.height,
+                  panel_background);
+        rectangle(canvas, layout.panel.x, layout.panel.y, layout.panel.width, 2 * scale, accent);
+        elided_label(canvas,
+                     dialog->spec.at("title").get<std::string>(),
+                     layout.title.x,
+                     layout.title.y,
+                     11,
+                     layout.title.width,
+                     muted);
+        TextLayoutOptions style;
+        style.font_size = 13;
+        style.dpi_scale = scale;
+        style.color = foreground;
+        style.font_families = {"Segoe UI", "Microsoft YaHei UI", "sans-serif"};
+        if (dialog->detail_scale != scale) {
+            dialog->detail_layout.clear();
+            dialog->detail_scale = scale;
+        }
+        prompt_choice = std::min(prompt_choice, dialog->detail_lines.size() - 1);
+        const auto count =
+            static_cast<std::size_t>(std::ceil(layout.content.height / (18 * scale))) + 1;
+        canvas->save();
+        canvas->clipRect(SkRect::MakeXYWH(
+            layout.content.x, layout.content.y, layout.content.width, layout.content.height));
+        float y = layout.content.y;
+        dialog->detail_lines.for_each_range(
+            prompt_choice,
+            std::min(dialog->detail_lines.size(), prompt_choice + count),
+            [&](std::size_t row, const std::string& text) {
+                if (y >= layout.content.bottom())
+                    return;
+                auto found = dialog->detail_layout.find(row);
+                if (found == dialog->detail_layout.end()) {
+                    if (dialog->detail_layout.size() >= 256)
+                        dialog->detail_layout.erase(dialog->detail_layout.begin());
+                    found = dialog->detail_layout.emplace(row, fonts.layout(text, style)).first;
+                }
+                found->second.draw(canvas, layout.content.x - dialog->horizontal, y);
+                y += found->second.height();
+            });
+        canvas->restore();
+        return;
     }
-    if ((prompt == Prompt::policy_confirm || prompt==Prompt::policy_progress) && dialog) {
-        const auto layout=ConfirmationLayout::measure(width,height,scale,dialog->items.size());
-        const auto fill=[&](const Box& box,SkColor color){rectangle(canvas,box.x,box.y,box.width,box.height,color);};
-        fill(layout.panel,panel_background);
-        rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,2*scale,accent);
-        elided_label(canvas,dialog->spec.at("title").get<std::string>(),layout.title.x,layout.title.y,16,layout.title.width,foreground);
-        TextLayoutOptions style; style.font_size=13; style.dpi_scale=scale; style.color=muted; style.wrap_width=layout.detail.width;
-        style.font_families={"Segoe UI","Microsoft YaHei UI","sans-serif"};
-        if(dialog->detail_width!=style.wrap_width || dialog->detail_scale!=scale){dialog->detail_layout.clear();dialog->detail_width=style.wrap_width;dialog->detail_scale=scale;}
-        canvas->save(); canvas->clipRect(SkRect::MakeXYWH(layout.detail.x,layout.detail.y,layout.detail.width,layout.detail.height));
-        float detail_y=layout.detail.y;
-        dialog->detail_lines.for_each_range(0,std::min(dialog->detail_lines.size(),std::size_t{8}),[&](std::size_t row,const std::string& text){
-            if(detail_y>=layout.detail.bottom())return;
-            auto found=dialog->detail_layout.find(row);
-            if(found==dialog->detail_layout.end())found=dialog->detail_layout.emplace(row,fonts.layout(text,style)).first;
-            found->second.draw(canvas,layout.detail.x,detail_y);detail_y+=found->second.height();
-        });canvas->restore();
-        if(dialog->items.size()>0){
-            prompt_choice=std::min(prompt_choice,dialog->items.size()-1);
-            const auto count=static_cast<std::size_t>(std::ceil(layout.items.height/(28*scale)))+1;
-            canvas->save();canvas->clipRect(SkRect::MakeXYWH(layout.items.x,layout.items.y,layout.items.width,layout.items.height));
-            dialog->items.for_each_range(prompt_choice,std::min(dialog->items.size(),prompt_choice+count),[&](std::size_t row,const std::string& text){
-                const auto y=layout.items.y+static_cast<float>(row-prompt_choice)*28*scale;
-                elided_label(canvas,text,layout.items.x,y+4*scale,13,layout.items.width,foreground);
-            });canvas->restore();
+    if ((prompt == Prompt::policy_confirm || prompt == Prompt::policy_progress) && dialog) {
+        const auto layout = ConfirmationLayout::measure(width, height, scale, dialog->items.size());
+        const auto fill = [&](const Box& box, SkColor color) {
+            rectangle(canvas, box.x, box.y, box.width, box.height, color);
+        };
+        fill(layout.panel, panel_background);
+        rectangle(canvas, layout.panel.x, layout.panel.y, layout.panel.width, 2 * scale, accent);
+        elided_label(canvas,
+                     dialog->spec.at("title").get<std::string>(),
+                     layout.title.x,
+                     layout.title.y,
+                     16,
+                     layout.title.width,
+                     foreground);
+        TextLayoutOptions style;
+        style.font_size = 13;
+        style.dpi_scale = scale;
+        style.color = muted;
+        style.wrap_width = layout.detail.width;
+        style.font_families = {"Segoe UI", "Microsoft YaHei UI", "sans-serif"};
+        if (dialog->detail_width != style.wrap_width || dialog->detail_scale != scale) {
+            dialog->detail_layout.clear();
+            dialog->detail_width = style.wrap_width;
+            dialog->detail_scale = scale;
         }
-        if(prompt==Prompt::policy_confirm) {
-            fill(layout.accept,accent);
-            elided_label(canvas,dialog->spec.value("accept",std::string("Confirm")),layout.accept.x+16*scale,layout.accept.y+8*scale,13,layout.accept.width-32*scale,foreground);
+        canvas->save();
+        canvas->clipRect(SkRect::MakeXYWH(
+            layout.detail.x, layout.detail.y, layout.detail.width, layout.detail.height));
+        float detail_y = layout.detail.y;
+        dialog->detail_lines.for_each_range(
+            0,
+            std::min(dialog->detail_lines.size(), std::size_t{8}),
+            [&](std::size_t row, const std::string& text) {
+                if (detail_y >= layout.detail.bottom())
+                    return;
+                auto found = dialog->detail_layout.find(row);
+                if (found == dialog->detail_layout.end())
+                    found = dialog->detail_layout.emplace(row, fonts.layout(text, style)).first;
+                found->second.draw(canvas, layout.detail.x, detail_y);
+                detail_y += found->second.height();
+            });
+        canvas->restore();
+        if (dialog->items.size() > 0) {
+            prompt_choice = std::min(prompt_choice, dialog->items.size() - 1);
+            const auto count =
+                static_cast<std::size_t>(std::ceil(layout.items.height / (28 * scale))) + 1;
+            canvas->save();
+            canvas->clipRect(SkRect::MakeXYWH(
+                layout.items.x, layout.items.y, layout.items.width, layout.items.height));
+            dialog->items.for_each_range(
+                prompt_choice,
+                std::min(dialog->items.size(), prompt_choice + count),
+                [&](std::size_t row, const std::string& text) {
+                    const auto y =
+                        layout.items.y + static_cast<float>(row - prompt_choice) * 28 * scale;
+                    elided_label(canvas,
+                                 text,
+                                 layout.items.x,
+                                 y + 4 * scale,
+                                 13,
+                                 layout.items.width,
+                                 foreground);
+                });
+            canvas->restore();
         }
-        fill(layout.cancel,border_color);
-        elided_label(canvas,dialog->spec.value("cancel",std::string("Cancel")),layout.cancel.x+16*scale,layout.cancel.y+8*scale,13,layout.cancel.width-32*scale,foreground);
+        if (prompt == Prompt::policy_confirm) {
+            fill(layout.accept, accent);
+            elided_label(canvas,
+                         dialog->spec.value("accept", std::string("Confirm")),
+                         layout.accept.x + 16 * scale,
+                         layout.accept.y + 8 * scale,
+                         13,
+                         layout.accept.width - 32 * scale,
+                         foreground);
+        }
+        fill(layout.cancel, border_color);
+        elided_label(canvas,
+                     dialog->spec.value("cancel", std::string("Cancel")),
+                     layout.cancel.x + 16 * scale,
+                     layout.cancel.y + 8 * scale,
+                     13,
+                     layout.cancel.width - 32 * scale,
+                     foreground);
         return;
     }
     if ((prompt == Prompt::policy_input || prompt == Prompt::policy_pick) && dialog) {
-        const auto picking=prompt==Prompt::policy_pick;
-        if(picking)dialog->picker.filter(prompt_text);
-        const auto layout=PickerLayout::measure(width,height,scale,picking ? dialog->picker.size() : 0);
-        rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,picking ? layout.panel.height : layout.input.bottom()-layout.panel.y+16*scale,panel_background);
-        rectangle(canvas,layout.panel.x,layout.panel.y,layout.panel.width,2*scale,accent);
-        elided_label(canvas,dialog->spec.at("title").get<std::string>(),layout.title.x+4*scale,layout.title.y,10,layout.title.width-8*scale,muted);
-        rectangle(canvas,layout.input.x,layout.input.y,layout.input.width,layout.input.height,input_color);
-        if(prompt_select_all&&!prompt_text.empty())rectangle(canvas,layout.input.x+8*scale,layout.input.y+3*scale,layout.input.width-16*scale,25*scale,selection_color);
-        TextLayoutOptions style;style.font_size=14;style.dpi_scale=scale;style.color=foreground;
-        style.font_families={"Segoe UI","Microsoft YaHei UI","sans-serif"};
-        if(!dialog->input_layout || dialog->input_text!=prompt_text || dialog->input_scale!=scale){
-            dialog->input_layout=fonts.layout(prompt_text,style);dialog->input_text=prompt_text;dialog->input_scale=scale;
-        }
-        const auto& input=*dialog->input_layout;
-        const auto horizontal=std::max(0.0F,input.width()-(layout.input.width-40*scale));
-        const auto input_x=layout.input.x+10*scale+input.width()-horizontal,input_y=layout.input.y+6*scale;
-        canvas->save();canvas->clipRect(SkRect::MakeXYWH(layout.input.x+8*scale,layout.input.y+3*scale,layout.input.width-16*scale,27*scale));
-        if(prompt_text.empty())label(canvas,dialog->spec.value("placeholder",std::string(picking ? "Type to filter; Enter to choose" : "Type text, then press Enter")),layout.input.x+10*scale,input_y,14,muted);
-        else input.draw(canvas,layout.input.x+10*scale-horizontal,input_y);
-        if(!preedit.empty()){const auto composition=fonts.layout(preedit,style);composition.draw(canvas,input_x,input_y);rectangle(canvas,input_x,input_y+20*scale,composition.width(),scale,accent);}
-        else rectangle(canvas,input_x,input_y,scale,20*scale,cursor_color);
-        canvas->restore();
-        int logical_width{},logical_height{};
-        if(SDL_GetWindowSize(renderer.window(),&logical_width,&logical_height)&&logical_width>0&&logical_height>0){
-            renderer.set_text_input_area({static_cast<int>(input_x*static_cast<float>(logical_width)/width),static_cast<int>(input_y*static_cast<float>(logical_height)/height),2,static_cast<int>(26*scale*static_cast<float>(logical_height)/height)},0);
-        }
-        if(picking){
+        const auto picking = prompt == Prompt::policy_pick;
+        if (picking)
             dialog->picker.filter(prompt_text);
-            if(dialog->picker.size())prompt_choice=std::min(prompt_choice,dialog->picker.size()-1);
-            else prompt_choice=0;
-            const auto first=layout.capacity && prompt_choice>=layout.capacity ? prompt_choice-layout.capacity+1 : 0;
-            canvas->save();canvas->clipRect(SkRect::MakeXYWH(layout.rows.x,layout.rows.y,layout.rows.width,layout.rows.height));
-            dialog->picker.for_each_range(first,std::min(dialog->picker.size(),first+layout.capacity),[&](std::size_t row,const PickerIndex::Row& item){
-                const auto y=layout.rows.y+static_cast<float>(row-first)*layout.row_height;
-                if(row==prompt_choice)rectangle(canvas,layout.rows.x,y,layout.rows.width,layout.row_height-2*scale,hover_color);
-                elided_label(canvas,item.label,layout.rows.x+8*scale,y+7*scale,13,layout.rows.width-16*scale,foreground);
-            });
-            if(!dialog->picker.size())label(canvas,"No matching items",layout.rows.x+8*scale,layout.rows.y+7*scale,13,muted);
+        const auto layout =
+            PickerLayout::measure(width, height, scale, picking ? dialog->picker.size() : 0);
+        rectangle(canvas,
+                  layout.panel.x,
+                  layout.panel.y,
+                  layout.panel.width,
+                  picking ? layout.panel.height
+                          : layout.input.bottom() - layout.panel.y + 16 * scale,
+                  panel_background);
+        rectangle(canvas, layout.panel.x, layout.panel.y, layout.panel.width, 2 * scale, accent);
+        elided_label(canvas,
+                     dialog->spec.at("title").get<std::string>(),
+                     layout.title.x + 4 * scale,
+                     layout.title.y,
+                     10,
+                     layout.title.width - 8 * scale,
+                     muted);
+        rectangle(canvas,
+                  layout.input.x,
+                  layout.input.y,
+                  layout.input.width,
+                  layout.input.height,
+                  input_color);
+        if (prompt_select_all && !prompt_text.empty())
+            rectangle(canvas,
+                      layout.input.x + 8 * scale,
+                      layout.input.y + 3 * scale,
+                      layout.input.width - 16 * scale,
+                      25 * scale,
+                      selection_color);
+        TextLayoutOptions style;
+        style.font_size = 14;
+        style.dpi_scale = scale;
+        style.color = foreground;
+        style.font_families = {"Segoe UI", "Microsoft YaHei UI", "sans-serif"};
+        if (!dialog->input_layout || dialog->input_text != prompt_text ||
+            dialog->input_scale != scale) {
+            dialog->input_layout = fonts.layout(prompt_text, style);
+            dialog->input_text = prompt_text;
+            dialog->input_scale = scale;
+        }
+        const auto& input = *dialog->input_layout;
+        const auto horizontal = std::max(0.0F, input.width() - (layout.input.width - 40 * scale));
+        const auto input_x = layout.input.x + 10 * scale + input.width() - horizontal,
+                   input_y = layout.input.y + 6 * scale;
+        canvas->save();
+        canvas->clipRect(SkRect::MakeXYWH(layout.input.x + 8 * scale,
+                                          layout.input.y + 3 * scale,
+                                          layout.input.width - 16 * scale,
+                                          27 * scale));
+        if (prompt_text.empty())
+            label(canvas,
+                  dialog->spec.value("placeholder",
+                                     std::string(picking ? "Type to filter; Enter to choose"
+                                                         : "Type text, then press Enter")),
+                  layout.input.x + 10 * scale,
+                  input_y,
+                  14,
+                  muted);
+        else
+            input.draw(canvas, layout.input.x + 10 * scale - horizontal, input_y);
+        if (!preedit.empty()) {
+            const auto composition = fonts.layout(preedit, style);
+            composition.draw(canvas, input_x, input_y);
+            rectangle(canvas, input_x, input_y + 20 * scale, composition.width(), scale, accent);
+        } else
+            rectangle(canvas, input_x, input_y, scale, 20 * scale, cursor_color);
+        canvas->restore();
+        int logical_width{}, logical_height{};
+        if (SDL_GetWindowSize(renderer.window(), &logical_width, &logical_height) &&
+            logical_width > 0 && logical_height > 0) {
+            renderer.set_text_input_area(
+                {static_cast<int>(input_x * static_cast<float>(logical_width) / width),
+                 static_cast<int>(input_y * static_cast<float>(logical_height) / height),
+                 2,
+                 static_cast<int>(26 * scale * static_cast<float>(logical_height) / height)},
+                0);
+        }
+        if (picking) {
+            dialog->picker.filter(prompt_text);
+            if (dialog->picker.size())
+                prompt_choice = std::min(prompt_choice, dialog->picker.size() - 1);
+            else
+                prompt_choice = 0;
+            const auto first = layout.capacity && prompt_choice >= layout.capacity
+                                   ? prompt_choice - layout.capacity + 1
+                                   : 0;
+            canvas->save();
+            canvas->clipRect(SkRect::MakeXYWH(
+                layout.rows.x, layout.rows.y, layout.rows.width, layout.rows.height));
+            dialog->picker.for_each_range(first,
+                                          std::min(dialog->picker.size(), first + layout.capacity),
+                                          [&](std::size_t row, const PickerIndex::Row& item) {
+                                              const auto y =
+                                                  layout.rows.y + static_cast<float>(row - first) *
+                                                                      layout.row_height;
+                                              if (row == prompt_choice)
+                                                  rectangle(canvas,
+                                                            layout.rows.x,
+                                                            y,
+                                                            layout.rows.width,
+                                                            layout.row_height - 2 * scale,
+                                                            hover_color);
+                                              elided_label(canvas,
+                                                           item.label,
+                                                           layout.rows.x + 8 * scale,
+                                                           y + 7 * scale,
+                                                           13,
+                                                           layout.rows.width - 16 * scale,
+                                                           foreground);
+                                          });
+            if (!dialog->picker.size())
+                label(canvas,
+                      "No matching items",
+                      layout.rows.x + 8 * scale,
+                      layout.rows.y + 7 * scale,
+                      13,
+                      muted);
             canvas->restore();
         }
         return;
@@ -2115,54 +3804,120 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         const auto x = (width - 680 * scale) / 2;
         const auto panel_bottom = std::min(height - 70 * scale, 610 * scale);
         rectangle(canvas, x, 70 * scale, 680 * scale, panel_bottom - 70 * scale, panel_background);
-        label(canvas, "DIFF — " + git_path + (git_staged ? " [staged]" : " [working tree]"), x + 18 * scale, 83 * scale, 11, muted);
-        if (prompt == Prompt::git_diff) { label(canvas, "S: Stage  ·  U: Unstage  ·  D: Discard  ·  Esc: Close", x + 18 * scale, 100 * scale, 10, accent); }
-        canvas->save(); canvas->clipRect(SkRect::MakeLTRB(x + 14 * scale, 115 * scale, x + 666 * scale, panel_bottom - 12 * scale));
-        if(prompt==Prompt::git_diff){
-            if(git_diff_layout_scale!=scale){git_diff_layouts.clear();git_diff_layout_scale=scale;}
-            prompt_choice=std::min(prompt_choice,git_diff_lines.size()-1);
-            float y=115*scale;
-            const auto rows=static_cast<std::size_t>(std::ceil((panel_bottom-y)/(14*scale)))+1;
-            git_diff_lines.for_each_range(prompt_choice,std::min(git_diff_lines.size(),prompt_choice+rows),[&](std::size_t row,const std::string& text){
-                if(y>=panel_bottom-12*scale)return;
-                auto found=git_diff_layouts.find(row);
-                if(found==git_diff_layouts.end()){
-                    TextLayoutOptions style;style.font_size=14;style.dpi_scale=scale;style.color=foreground;style.wrap_width=630*scale;
-                    if(text.starts_with('+')&&!text.starts_with("+++"))style.color=added_color;
-                    else if(text.starts_with('-')&&!text.starts_with("---"))style.color=error_color;
-                    else if(text.starts_with("@@"))style.color=accent;
-                    if(git_diff_layouts.size()>=256)git_diff_layouts.erase(git_diff_layouts.begin());
-                    found=git_diff_layouts.emplace(row,fonts.layout(text,style)).first;
-                }
-                found->second.draw(canvas,x+22*scale,y);y+=found->second.height()+5*scale;
-            });
-            canvas->restore();return;
+        label(canvas,
+              "DIFF — " + git_path + (git_staged ? " [staged]" : " [working tree]"),
+              x + 18 * scale,
+              83 * scale,
+              11,
+              muted);
+        if (prompt == Prompt::git_diff) {
+            label(canvas,
+                  "S: Stage  ·  U: Unstage  ·  D: Discard  ·  Esc: Close",
+                  x + 18 * scale,
+                  100 * scale,
+                  10,
+                  accent);
+        }
+        canvas->save();
+        canvas->clipRect(SkRect::MakeLTRB(
+            x + 14 * scale, 115 * scale, x + 666 * scale, panel_bottom - 12 * scale));
+        if (prompt == Prompt::git_diff) {
+            if (git_diff_layout_scale != scale) {
+                git_diff_layouts.clear();
+                git_diff_layout_scale = scale;
+            }
+            prompt_choice = std::min(prompt_choice, git_diff_lines.size() - 1);
+            float y = 115 * scale;
+            const auto rows =
+                static_cast<std::size_t>(std::ceil((panel_bottom - y) / (14 * scale))) + 1;
+            git_diff_lines.for_each_range(
+                prompt_choice,
+                std::min(git_diff_lines.size(), prompt_choice + rows),
+                [&](std::size_t row, const std::string& text) {
+                    if (y >= panel_bottom - 12 * scale)
+                        return;
+                    auto found = git_diff_layouts.find(row);
+                    if (found == git_diff_layouts.end()) {
+                        TextLayoutOptions style;
+                        style.font_size = 14;
+                        style.dpi_scale = scale;
+                        style.color = foreground;
+                        style.wrap_width = 630 * scale;
+                        if (text.starts_with('+') && !text.starts_with("+++"))
+                            style.color = added_color;
+                        else if (text.starts_with('-') && !text.starts_with("---"))
+                            style.color = error_color;
+                        else if (text.starts_with("@@"))
+                            style.color = accent;
+                        if (git_diff_layouts.size() >= 256)
+                            git_diff_layouts.erase(git_diff_layouts.begin());
+                        found = git_diff_layouts.emplace(row, fonts.layout(text, style)).first;
+                    }
+                    found->second.draw(canvas, x + 22 * scale, y);
+                    y += found->second.height() + 5 * scale;
+                });
+            canvas->restore();
+            return;
         }
         return;
     }
     const auto x = (width - 600 * scale) / 2;
-    rectangle(canvas, x, 64 * scale, 600 * scale, (76 + (search_prompt() ? 32 : 0)) * scale, panel_background);
+    rectangle(canvas,
+              x,
+              64 * scale,
+              600 * scale,
+              (76 + (search_prompt() ? 32 : 0)) * scale,
+              panel_background);
     rectangle(canvas, x, 64 * scale, 600 * scale, 2 * scale, accent);
     const char* hint = "SAVE AS — WORKSPACE RELATIVE PATH";
-    if (prompt == Prompt::workspace_replace_value) { hint = "REPLACEMENT TEXT — ENTER TO CONTINUE"; }
-    else if (prompt == Prompt::search) { hint = "SEARCH WORKSPACE AND UNSAVED BUFFERS"; }
-    else if (prompt == Prompt::workspace_replace_query) { hint = "REPLACE ACROSS WORKSPACE — FIND TEXT"; }
-    label(canvas, prompt == Prompt::policy_input && dialog ? dialog->spec.at("title").get<std::string>() : hint, x + 16 * scale, 73 * scale, 10, muted);
+    if (prompt == Prompt::workspace_replace_value) {
+        hint = "REPLACEMENT TEXT — ENTER TO CONTINUE";
+    } else if (prompt == Prompt::search) {
+        hint = "SEARCH WORKSPACE AND UNSAVED BUFFERS";
+    } else if (prompt == Prompt::workspace_replace_query) {
+        hint = "REPLACE ACROSS WORKSPACE — FIND TEXT";
+    }
+    label(canvas,
+          prompt == Prompt::policy_input && dialog ? dialog->spec.at("title").get<std::string>()
+                                                   : hint,
+          x + 16 * scale,
+          73 * scale,
+          10,
+          muted);
     rectangle(canvas, x + 12 * scale, 94 * scale, 576 * scale, 30 * scale, background);
-    if (prompt_select_all && !prompt_text.empty()) { rectangle(canvas, x + 20 * scale, 97 * scale, 560 * scale, 25 * scale, selection_color); }
+    if (prompt_select_all && !prompt_text.empty()) {
+        rectangle(canvas, x + 20 * scale, 97 * scale, 560 * scale, 25 * scale, selection_color);
+    }
     const auto placeholder = "Type text, then press Enter";
-    label(canvas, prompt_text.empty() ? placeholder : prompt_text,
-          x + 22 * scale, 100 * scale, 14, prompt_text.empty() ? muted : foreground);
+    label(canvas,
+          prompt_text.empty() ? placeholder : prompt_text,
+          x + 22 * scale,
+          100 * scale,
+          14,
+          prompt_text.empty() ? muted : foreground);
     if (search_prompt()) {
         const bool selected[] = {search_case_sensitive, search_regex, search_whole_word};
         const char* titles[] = {"Match case (Alt+C)", "Regex (Alt+R)", "Whole word (Alt+W)"};
         for (std::size_t i = 0; i < 3; ++i) {
             const auto bx = x + (12 + static_cast<float>(i) * 194) * scale;
-            rectangle(canvas, bx, 132 * scale, 184 * scale, 26 * scale, selected[i] ? accent : border_color);
-            label(canvas, titles[i], bx + 10 * scale, 138 * scale, 11, selected[i] ? foreground : muted);
+            rectangle(canvas,
+                      bx,
+                      132 * scale,
+                      184 * scale,
+                      26 * scale,
+                      selected[i] ? accent : border_color);
+            label(canvas,
+                  titles[i],
+                  bx + 10 * scale,
+                  138 * scale,
+                  11,
+                  selected[i] ? foreground : muted);
         }
     }
-    TextLayoutOptions input_style; input_style.font_size = 14; input_style.dpi_scale = scale; input_style.color = foreground;
+    TextLayoutOptions input_style;
+    input_style.font_size = 14;
+    input_style.dpi_scale = scale;
+    input_style.color = foreground;
     const auto input_layout = fonts.layout(prompt_text, input_style);
     const auto input_x = std::min(x + 570 * scale, x + 22 * scale + input_layout.width());
     if (!preedit.empty()) {
@@ -2171,167 +3926,383 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         rectangle(canvas, input_x, 120 * scale, composition.width(), scale, accent);
     }
     int logical_width{}, logical_height{};
-    if (SDL_GetWindowSize(renderer.window(), &logical_width, &logical_height) && logical_width > 0 && logical_height > 0) {
+    if (SDL_GetWindowSize(renderer.window(), &logical_width, &logical_height) &&
+        logical_width > 0 && logical_height > 0) {
         const auto rx = width / static_cast<float>(logical_width);
         const auto ry = height / static_cast<float>(logical_height);
-        renderer.set_text_input_area({static_cast<int>(input_x / rx), static_cast<int>(98 * scale / ry), 2, static_cast<int>(26 * scale / ry)}, 0);
+        renderer.set_text_input_area({static_cast<int>(input_x / rx),
+                                      static_cast<int>(98 * scale / ry),
+                                      2,
+                                      static_cast<int>(26 * scale / ry)},
+                                     0);
     }
 }
 
 void EditorWindow::Impl::draw() {
     auto* canvas = renderer.begin_frame();
-    if (!canvas) { return; }
+    if (!canvas) {
+        return;
+    }
     const auto pixels = renderer.pixel_size();
     const auto width = static_cast<float>(pixels.width);
     const auto height = static_cast<float>(pixels.height);
     scale = renderer.dpi_scale();
-    row_height = std::ceil(options.font_size * scale * std::clamp(editor_settings.value("lineHeight", 1.4F), 1.0F, 4.0F) + 3 * scale);
+    row_height = std::ceil(options.font_size * scale *
+                               std::clamp(editor_settings.value("lineHeight", 1.4F), 1.0F, 4.0F) +
+                           3 * scale);
     measure_layout();
     gutter = 60 * scale;
     canvas->clear(background);
-    const auto fill = [&](const Box& box, SkColor color) { rectangle(canvas,box.x,box.y,box.width,box.height,color); };
+    const auto fill = [&](const Box& box, SkColor color) {
+        rectangle(canvas, box.x, box.y, box.width, box.height, color);
+    };
     const auto file_icon = [&](std::string_view path, float x, float y, float size) {
         const auto dot = path.find_last_of('.');
-        const auto extension = dot == std::string_view::npos ? std::string_view{} : path.substr(dot);
-        const bool code = extension==".cpp" || extension==".hpp" || extension==".c" || extension==".h";
-        const bool script = extension==".js" || extension==".ts" || extension==".json";
-        draw_icon(canvas,code ? Icon::code : (script ? Icon::braces : Icon::document),x,y,size,
+        const auto extension =
+            dot == std::string_view::npos ? std::string_view{} : path.substr(dot);
+        const bool code =
+            extension == ".cpp" || extension == ".hpp" || extension == ".c" || extension == ".h";
+        const bool script = extension == ".js" || extension == ".ts" || extension == ".json";
+        draw_icon(canvas,
+                  code ? Icon::code : (script ? Icon::braces : Icon::document),
+                  x,
+                  y,
+                  size,
                   code ? code_icon_color : (script ? script_icon_color : muted));
     };
     fill(geometry.header, activity_background);
-    rectangle(canvas,0,geometry.header.bottom()-scale,width,scale,border_color);
-    label(canvas,"Astra",14*scale,8*scale,12,muted);
-    const auto search_width = std::min(480*scale,width*0.44F);
-    const auto search_x = (width-search_width)/2;
-    SkPaint search_paint; search_paint.setColor(input_color); search_paint.setAntiAlias(true);
-    canvas->drawRoundRect(SkRect::MakeXYWH(search_x,5*scale,search_width,22*scale),4*scale,4*scale,search_paint);
-    draw_icon(canvas,Icon::search,search_x+9*scale,8*scale,15*scale,muted);
-    canvas->save(); canvas->clipRect(SkRect::MakeXYWH(search_x+30*scale,5*scale,search_width-115*scale,22*scale));
-    label(canvas,options.workspace_name,search_x+31*scale,8*scale,12,foreground);
+    rectangle(canvas, 0, geometry.header.bottom() - scale, width, scale, border_color);
+    label(canvas, "Astra", 14 * scale, 8 * scale, 12, muted);
+    const auto search_width = std::min(480 * scale, width * 0.44F);
+    const auto search_x = (width - search_width) / 2;
+    SkPaint search_paint;
+    search_paint.setColor(input_color);
+    search_paint.setAntiAlias(true);
+    canvas->drawRoundRect(SkRect::MakeXYWH(search_x, 5 * scale, search_width, 22 * scale),
+                          4 * scale,
+                          4 * scale,
+                          search_paint);
+    draw_icon(canvas, Icon::search, search_x + 9 * scale, 8 * scale, 15 * scale, muted);
+    canvas->save();
+    canvas->clipRect(
+        SkRect::MakeXYWH(search_x + 30 * scale, 5 * scale, search_width - 115 * scale, 22 * scale));
+    label(canvas, options.workspace_name, search_x + 31 * scale, 8 * scale, 12, foreground);
     canvas->restore();
-    if (search_width>260*scale) label(canvas,"Ctrl+Shift+P",search_x+search_width-85*scale,9*scale,10,muted);
-    fill(geometry.activity,activity_background);
+    if (search_width > 260 * scale)
+        label(canvas, "Ctrl+Shift+P", search_x + search_width - 85 * scale, 9 * scale, 10, muted);
+    fill(geometry.activity, activity_background);
     const auto selected_activity = git_view ? 2 : (search_view ? 1 : 0);
-    if (geometry.sidebar.width>0) rectangle(canvas,0,geometry.header.bottom()+static_cast<float>(selected_activity)*48*scale,2*scale,48*scale,accent);
-    const Icon activity_icons[]={Icon::files,Icon::search,Icon::branch,Icon::braces};
-    for (int index=0;index<4;++index) draw_icon(canvas,activity_icons[index],10*scale,geometry.header.bottom()+(13+static_cast<float>(index)*48)*scale,24*scale,
-                  selected_activity==index ? foreground : muted);
-    draw_icon(canvas,Icon::settings,10*scale,geometry.status.y-32*scale,22*scale,muted);
-    rectangle(canvas,geometry.activity.right()-scale,geometry.activity.y,scale,geometry.activity.height,border_color);
-    if (geometry.sidebar.width>0) {
-        fill(geometry.sidebar,sidebar_background);
-        const auto sx=geometry.sidebar.x;
-        label(canvas,git_view ? "SOURCE CONTROL" : (search_view ? "SEARCH" : "EXPLORER"),sx+16*scale,geometry.sidebar.y+12*scale,11,foreground);
-        const auto busy=busy_views.value(git_view ? "git" : (search_view ? "search" : "explorer"),false);
-        const Box refresh{left-34*scale,geometry.sidebar.y+5*scale,28*scale,26*scale};
-        draw_icon(canvas,busy && refresh.contains(mouse_x,mouse_y) ? Icon::close : Icon::refresh,left-29*scale,geometry.sidebar.y+9*scale,16*scale,busy ? accent : muted);
-        rectangle(canvas,sx,geometry.sidebar.y+32*scale,geometry.sidebar.width,24*scale,panel_background);
-        if (!git_view && !search_view) draw_icon(canvas,explorer_expanded ? Icon::chevron_down : Icon::chevron_right,sx+6*scale,geometry.sidebar.y+36*scale,16*scale,muted);
-        canvas->save(); canvas->clipRect(SkRect::MakeXYWH(sx+22*scale,geometry.sidebar.y+32*scale,geometry.sidebar.width-30*scale,24*scale));
-        label(canvas,git_view ? git_status.value("branch",std::string("Loading repository...")) :
-              (search_view ? std::to_string(search_results.size())+" matches: "+search_query : options.workspace_name),
-              sx+24*scale,geometry.sidebar.y+37*scale,12,foreground);
+    if (geometry.sidebar.width > 0)
+        rectangle(canvas,
+                  0,
+                  geometry.header.bottom() + static_cast<float>(selected_activity) * 48 * scale,
+                  2 * scale,
+                  48 * scale,
+                  accent);
+    const Icon activity_icons[] = {Icon::files, Icon::search, Icon::branch, Icon::braces};
+    for (int index = 0; index < 4; ++index)
+        draw_icon(canvas,
+                  activity_icons[index],
+                  10 * scale,
+                  geometry.header.bottom() + (13 + static_cast<float>(index) * 48) * scale,
+                  24 * scale,
+                  selected_activity == index ? foreground : muted);
+    draw_icon(
+        canvas, Icon::settings, 10 * scale, geometry.status.y - 32 * scale, 22 * scale, muted);
+    rectangle(canvas,
+              geometry.activity.right() - scale,
+              geometry.activity.y,
+              scale,
+              geometry.activity.height,
+              border_color);
+    if (geometry.sidebar.width > 0) {
+        fill(geometry.sidebar, sidebar_background);
+        const auto sx = geometry.sidebar.x;
+        label(canvas,
+              git_view ? "SOURCE CONTROL" : (search_view ? "SEARCH" : "EXPLORER"),
+              sx + 16 * scale,
+              geometry.sidebar.y + 12 * scale,
+              11,
+              foreground);
+        const auto busy =
+            busy_views.value(git_view ? "git" : (search_view ? "search" : "explorer"), false);
+        const Box refresh{
+            left - 34 * scale, geometry.sidebar.y + 5 * scale, 28 * scale, 26 * scale};
+        draw_icon(canvas,
+                  busy && refresh.contains(mouse_x, mouse_y) ? Icon::close : Icon::refresh,
+                  left - 29 * scale,
+                  geometry.sidebar.y + 9 * scale,
+                  16 * scale,
+                  busy ? accent : muted);
+        rectangle(canvas,
+                  sx,
+                  geometry.sidebar.y + 32 * scale,
+                  geometry.sidebar.width,
+                  24 * scale,
+                  panel_background);
+        if (!git_view && !search_view)
+            draw_icon(canvas,
+                      explorer_expanded ? Icon::chevron_down : Icon::chevron_right,
+                      sx + 6 * scale,
+                      geometry.sidebar.y + 36 * scale,
+                      16 * scale,
+                      muted);
+        canvas->save();
+        canvas->clipRect(SkRect::MakeXYWH(sx + 22 * scale,
+                                          geometry.sidebar.y + 32 * scale,
+                                          geometry.sidebar.width - 30 * scale,
+                                          24 * scale));
+        label(canvas,
+              git_view ? git_status.value("branch", std::string("Loading repository..."))
+                       : (search_view
+                              ? std::to_string(search_results.size()) + " matches: " + search_query
+                              : options.workspace_name),
+              sx + 24 * scale,
+              geometry.sidebar.y + 37 * scale,
+              12,
+              foreground);
         canvas->restore();
-        const Json empty_entries=Json::array();
-        const auto& git_entries=git_status.contains("entries") ? git_status.at("entries") : empty_entries;
-        const auto count=git_view ? git_entries.size() : (search_view ? search_results.size() : (explorer_expanded ? file_tree.size() : 0));
-        if (tree_scroll>=count) tree_scroll=count ? count-1 : 0;
-        const auto visible_count=static_cast<std::size_t>(std::ceil(geometry.sidebar_rows.height/geometry.sidebar_row_height))+1;
-        const auto end=std::min(count,tree_scroll+visible_count);
+        const Json empty_entries = Json::array();
+        const auto& git_entries =
+            git_status.contains("entries") ? git_status.at("entries") : empty_entries;
+        const auto count = git_view ? git_entries.size()
+                                    : (search_view ? search_results.size()
+                                                   : (explorer_expanded ? file_tree.size() : 0));
+        if (tree_scroll >= count)
+            tree_scroll = count ? count - 1 : 0;
+        const auto visible_count =
+            static_cast<std::size_t>(
+                std::ceil(geometry.sidebar_rows.height / geometry.sidebar_row_height)) +
+            1;
+        const auto end = std::min(count, tree_scroll + visible_count);
         std::vector<const Json*> rows;
-        if (!git_view && !search_view) file_tree.for_each_range(tree_scroll,end,[&](std::size_t,const Json& row){rows.push_back(&row);});
-        canvas->save(); canvas->clipRect(SkRect::MakeXYWH(geometry.sidebar_rows.x,geometry.sidebar_rows.y,geometry.sidebar_rows.width,geometry.sidebar_rows.height));
-        for (auto i=tree_scroll;i<end;++i) {
-            const auto y=geometry.sidebar_rows.y+static_cast<float>(i-tree_scroll)*geometry.sidebar_row_height;
-            const auto& item=git_view ? git_entries[i] : (search_view ? search_results[i] : *rows[i-tree_scroll]);
-            const auto path=item.at("path").get<std::string>();
-            if (geometry.sidebar_rows.contains(mouse_x,mouse_y) && mouse_y>=y && mouse_y<y+geometry.sidebar_row_height)
-                rectangle(canvas,sx,y,geometry.sidebar.width,geometry.sidebar_row_height,hover_color);
+        if (!git_view && !search_view)
+            file_tree.for_each_range(tree_scroll, end, [&](std::size_t, const Json& row) {
+                rows.push_back(&row);
+            });
+        canvas->save();
+        canvas->clipRect(SkRect::MakeXYWH(geometry.sidebar_rows.x,
+                                          geometry.sidebar_rows.y,
+                                          geometry.sidebar_rows.width,
+                                          geometry.sidebar_rows.height));
+        for (auto i = tree_scroll; i < end; ++i) {
+            const auto y = geometry.sidebar_rows.y +
+                           static_cast<float>(i - tree_scroll) * geometry.sidebar_row_height;
+            const auto& item = git_view
+                                   ? git_entries[i]
+                                   : (search_view ? search_results[i] : *rows[i - tree_scroll]);
+            const auto path = item.at("path").get<std::string>();
+            if (geometry.sidebar_rows.contains(mouse_x, mouse_y) && mouse_y >= y &&
+                mouse_y < y + geometry.sidebar_row_height)
+                rectangle(canvas,
+                          sx,
+                          y,
+                          geometry.sidebar.width,
+                          geometry.sidebar_row_height,
+                          hover_color);
             if (git_view) {
-                const auto change=item.at("unstaged")!="unchanged" ? item.at("unstaged").get<std::string>() : item.at("staged").get<std::string>();
-                file_icon(path,sx+13*scale,y+4*scale,16*scale);
-                label(canvas,basename(path),sx+38*scale,y+4*scale,13,foreground);
-                const auto mark=change=="untracked" ? "U" : (change.empty() ? " " : std::string(1,static_cast<char>(std::toupper(static_cast<unsigned char>(change.front())))));
-                label(canvas,mark,left-25*scale,y+4*scale,12,item.value("conflict",false) ? error_color : added_color);
+                const auto change = item.at("unstaged") != "unchanged"
+                                        ? item.at("unstaged").get<std::string>()
+                                        : item.at("staged").get<std::string>();
+                file_icon(path, sx + 13 * scale, y + 4 * scale, 16 * scale);
+                label(canvas, basename(path), sx + 38 * scale, y + 4 * scale, 13, foreground);
+                const auto mark =
+                    change == "untracked"
+                        ? "U"
+                        : (change.empty()
+                               ? " "
+                               : std::string(1,
+                                             static_cast<char>(std::toupper(
+                                                 static_cast<unsigned char>(change.front())))));
+                label(canvas,
+                      mark,
+                      left - 25 * scale,
+                      y + 4 * scale,
+                      12,
+                      item.value("conflict", false) ? error_color : added_color);
             } else if (search_view) {
-                file_icon(path,sx+13*scale,y+4*scale,16*scale);
-                label(canvas,basename(path)+":"+std::to_string(item.at("line").get<std::size_t>()+1),sx+38*scale,y+4*scale,13);
+                file_icon(path, sx + 13 * scale, y + 4 * scale, 16 * scale);
+                label(canvas,
+                      basename(path) + ":" + std::to_string(item.at("line").get<std::size_t>() + 1),
+                      sx + 38 * scale,
+                      y + 4 * scale,
+                      13);
             } else {
-                const auto depth=static_cast<float>(std::count(path.begin(),path.end(),'/')+std::count(path.begin(),path.end(),'\\'));
-                const auto x=sx+(8+12*depth)*scale;
-                if (const auto* document=current();document && document->path==path)
-                    rectangle(canvas,sx,y,geometry.sidebar.width,geometry.sidebar_row_height,selection_color);
+                const auto depth = static_cast<float>(std::count(path.begin(), path.end(), '/') +
+                                                      std::count(path.begin(), path.end(), '\\'));
+                const auto x = sx + (8 + 12 * depth) * scale;
+                if (const auto* document = current(); document && document->path == path)
+                    rectangle(canvas,
+                              sx,
+                              y,
+                              geometry.sidebar.width,
+                              geometry.sidebar_row_height,
+                              selection_color);
                 if (item.at("directory").get<bool>()) {
-                    draw_icon(canvas,file_tree.collapsed(path) ? Icon::chevron_right : Icon::chevron_down,x,y+4*scale,16*scale,muted);
-                    draw_icon(canvas,Icon::folder,x+18*scale,y+4*scale,16*scale,folder_color);
-                } else file_icon(path,x+18*scale,y+4*scale,16*scale);
-                label(canvas,basename(path),x+42*scale,y+4*scale,13,foreground);
+                    draw_icon(canvas,
+                              file_tree.collapsed(path) ? Icon::chevron_right : Icon::chevron_down,
+                              x,
+                              y + 4 * scale,
+                              16 * scale,
+                              muted);
+                    draw_icon(canvas,
+                              Icon::folder,
+                              x + 18 * scale,
+                              y + 4 * scale,
+                              16 * scale,
+                              folder_color);
+                } else
+                    file_icon(path, x + 18 * scale, y + 4 * scale, 16 * scale);
+                label(canvas, basename(path), x + 42 * scale, y + 4 * scale, 13, foreground);
             }
         }
-        if (!count && (git_view || search_view || explorer_expanded)) label(canvas,git_view ? "No changes" : (search_view ? "No search results" : "No files in this workspace"),sx+16*scale,geometry.sidebar_rows.y+12*scale,12,muted);
+        if (!count && (git_view || search_view || explorer_expanded))
+            label(canvas,
+                  git_view ? "No changes"
+                           : (search_view ? "No search results" : "No files in this workspace"),
+                  sx + 16 * scale,
+                  geometry.sidebar_rows.y + 12 * scale,
+                  12,
+                  muted);
         canvas->restore();
-        if (geometry.outline_header.height>0) {
-            fill(geometry.outline_header,panel_background);
-            draw_icon(canvas,show_outline ? Icon::chevron_down : Icon::chevron_right,sx+6*scale,geometry.outline_header.y+5*scale,16*scale,muted);
-            label(canvas,"OUTLINE",sx+27*scale,geometry.outline_header.y+7*scale,11,foreground);
+        if (geometry.outline_header.height > 0) {
+            fill(geometry.outline_header, panel_background);
+            draw_icon(canvas,
+                      show_outline ? Icon::chevron_down : Icon::chevron_right,
+                      sx + 6 * scale,
+                      geometry.outline_header.y + 5 * scale,
+                      16 * scale,
+                      muted);
+            label(canvas,
+                  "OUTLINE",
+                  sx + 27 * scale,
+                  geometry.outline_header.y + 7 * scale,
+                  11,
+                  foreground);
         }
-        rectangle(canvas,left-scale,geometry.sidebar.y,scale,geometry.sidebar.height,border_color);
+        rectangle(
+            canvas, left - scale, geometry.sidebar.y, scale, geometry.sidebar.height, border_color);
     }
-    fill(geometry.tabs,panel_background);
+    fill(geometry.tabs, panel_background);
     for (const auto& tab : tab_strip.visible) {
-        const auto& document=documents.at(tabs[tab.index]);
-        const bool active=tabs[tab.index]==active_id;
+        const auto& document = documents.at(tabs[tab.index]);
+        const bool active = tabs[tab.index] == active_id;
         if (active) {
-            fill(tab.bounds,active_tab_background);
-            rectangle(canvas,tab.bounds.x,tab.bounds.y,tab.bounds.width,2*scale,accent);
+            fill(tab.bounds, active_tab_background);
+            rectangle(canvas, tab.bounds.x, tab.bounds.y, tab.bounds.width, 2 * scale, accent);
         }
-        rectangle(canvas,tab.bounds.right()-scale,tab.bounds.y,scale,tab.bounds.height,border_color);
-        file_icon(document.path,tab.bounds.x+12*scale,tab.bounds.y+9*scale,16*scale);
-        canvas->save(); canvas->clipRect(SkRect::MakeXYWH(tab.bounds.x+34*scale,tab.bounds.y,tab.bounds.width-62*scale,tab.bounds.height));
-        elided_label(canvas,document.path.empty() ? "Untitled" : basename(document.path),tab.bounds.x+34*scale,tab.bounds.y+10*scale,13,tab.bounds.width-62*scale,active ? foreground : muted);
+        rectangle(canvas,
+                  tab.bounds.right() - scale,
+                  tab.bounds.y,
+                  scale,
+                  tab.bounds.height,
+                  border_color);
+        file_icon(document.path, tab.bounds.x + 12 * scale, tab.bounds.y + 9 * scale, 16 * scale);
+        canvas->save();
+        canvas->clipRect(SkRect::MakeXYWH(tab.bounds.x + 34 * scale,
+                                          tab.bounds.y,
+                                          tab.bounds.width - 62 * scale,
+                                          tab.bounds.height));
+        elided_label(canvas,
+                     document.path.empty() ? "Untitled" : basename(document.path),
+                     tab.bounds.x + 34 * scale,
+                     tab.bounds.y + 10 * scale,
+                     13,
+                     tab.bounds.width - 62 * scale,
+                     active ? foreground : muted);
         canvas->restore();
-        if (document.metadata.value("dirty",false)) {
-            SkPaint dirty; dirty.setColor(active ? foreground : muted); dirty.setAntiAlias(true);
-            canvas->drawCircle(tab.close.x+13*scale,tab.close.y+17*scale,3*scale,dirty);
-        } else draw_icon(canvas,Icon::close,tab.close.x+6*scale,tab.close.y+10*scale,14*scale,muted);
+        if (document.metadata.value("dirty", false)) {
+            SkPaint dirty;
+            dirty.setColor(active ? foreground : muted);
+            dirty.setAntiAlias(true);
+            canvas->drawCircle(
+                tab.close.x + 13 * scale, tab.close.y + 17 * scale, 3 * scale, dirty);
+        } else
+            draw_icon(canvas,
+                      Icon::close,
+                      tab.close.x + 6 * scale,
+                      tab.close.y + 10 * scale,
+                      14 * scale,
+                      muted);
     }
-    if (tab_strip.previous.width>0) {
-        fill(tab_strip.previous,panel_background); fill(tab_strip.next,panel_background);
-        canvas->save(); canvas->translate(tab_strip.previous.x+18*scale,tab_strip.previous.y+10*scale); canvas->scale(-1,1);
-        draw_icon(canvas,Icon::chevron_right,0,0,14*scale,muted); canvas->restore();
-        draw_icon(canvas,Icon::chevron_right,tab_strip.next.x+6*scale,tab_strip.next.y+10*scale,14*scale,muted);
+    if (tab_strip.previous.width > 0) {
+        fill(tab_strip.previous, panel_background);
+        fill(tab_strip.next, panel_background);
+        canvas->save();
+        canvas->translate(tab_strip.previous.x + 18 * scale, tab_strip.previous.y + 10 * scale);
+        canvas->scale(-1, 1);
+        draw_icon(canvas, Icon::chevron_right, 0, 0, 14 * scale, muted);
+        canvas->restore();
+        draw_icon(canvas,
+                  Icon::chevron_right,
+                  tab_strip.next.x + 6 * scale,
+                  tab_strip.next.y + 10 * scale,
+                  14 * scale,
+                  muted);
     }
-    fill(geometry.breadcrumb,background);
-    if (const auto* document=current()) {
-        canvas->save(); canvas->clipRect(SkRect::MakeXYWH(geometry.breadcrumb.x,geometry.breadcrumb.y,geometry.breadcrumb.width,geometry.breadcrumb.height));
-        label(canvas,document->path.empty() ? "Untitled" : document->path,left+18*scale,geometry.breadcrumb.y+5*scale,12,muted);
+    fill(geometry.breadcrumb, background);
+    if (const auto* document = current()) {
+        canvas->save();
+        canvas->clipRect(SkRect::MakeXYWH(geometry.breadcrumb.x,
+                                          geometry.breadcrumb.y,
+                                          geometry.breadcrumb.width,
+                                          geometry.breadcrumb.height));
+        label(canvas,
+              document->path.empty() ? "Untitled" : document->path,
+              left + 18 * scale,
+              geometry.breadcrumb.y + 5 * scale,
+              12,
+              muted);
         canvas->restore();
     }
-    rectangle(canvas,left,geometry.breadcrumb.bottom()-scale,right-left,scale,border_color);
+    rectangle(
+        canvas, left, geometry.breadcrumb.bottom() - scale, right - left, scale, border_color);
 
     if (auto* document = current()) {
         const auto& selections = document->metadata.at("selections");
-        const auto& positions = document->metadata.contains("selectionPositions") ? document->metadata["selectionPositions"] : selections;
-        const auto active_line = positions.empty() ? std::size_t{0} : positions.front().value("line", std::size_t{0});
-        canvas->save(); canvas->clipRect(SkRect::MakeLTRB(left, content_top, right, content_bottom));
+        const auto& positions = document->metadata.contains("selectionPositions")
+                                    ? document->metadata["selectionPositions"]
+                                    : selections;
+        const auto active_line =
+            positions.empty() ? std::size_t{0} : positions.front().value("line", std::size_t{0});
+        canvas->save();
+        canvas->clipRect(SkRect::MakeLTRB(left, content_top, right, content_bottom));
         for (auto& [number, line] : document->lines) {
-            if (number < document->first_line) { continue; }
-            const auto y = content_top + static_cast<float>(number - document->first_line) * row_height;
-            if (y >= content_bottom) { break; }
+            if (number < document->first_line) {
+                continue;
+            }
+            const auto y =
+                content_top + static_cast<float>(number - document->first_line) * row_height;
+            if (y >= content_bottom) {
+                break;
+            }
             if (!line.layout) {
-                TextLayoutOptions style; style.font_size = options.font_size; style.dpi_scale = scale;
-                style.line_height = std::clamp(editor_settings.value("lineHeight", 1.4F), 1.0F, 4.0F);
-                style.tab_size = editor_settings.value("tabSize", 4U); style.color = foreground;
-                if (document->editor_config.contains("tab_width")) { style.tab_size = static_cast<unsigned>(std::stoul(document->editor_config.at("tab_width").get<std::string>())); }
-                if (editor_settings.contains("fontFamilies")) { style.font_families = editor_settings.at("fontFamilies").get<std::vector<std::string>>(); }
+                TextLayoutOptions style;
+                style.font_size = options.font_size;
+                style.dpi_scale = scale;
+                style.line_height =
+                    std::clamp(editor_settings.value("lineHeight", 1.4F), 1.0F, 4.0F);
+                style.tab_size = editor_settings.value("tabSize", 4U);
+                style.color = foreground;
+                if (document->editor_config.contains("tab_width")) {
+                    style.tab_size = static_cast<unsigned>(
+                        std::stoul(document->editor_config.at("tab_width").get<std::string>()));
+                }
+                if (editor_settings.contains("fontFamilies")) {
+                    style.font_families =
+                        editor_settings.at("fontFamilies").get<std::vector<std::string>>();
+                }
                 if (document->syntax_revision == document->view_revision) {
-                    document->decorations.highlights.intersect(line.begin,line.end,[&](const auto& highlight) {
-                        const auto begin = std::max(line.begin, highlight.begin);
-                        const auto end = std::min(line.end, highlight.end);
-                        const auto found = syntax_colors.find(highlight.value);
-                        const auto color = found == syntax_colors.end() ? foreground : found->second;
-                        style.color_spans.push_back({begin - line.begin, end - line.begin, color});
-                    });
+                    document->decorations.highlights.intersect(
+                        line.begin, line.end, [&](const auto& highlight) {
+                            const auto begin = std::max(line.begin, highlight.begin);
+                            const auto end = std::min(line.end, highlight.end);
+                            const auto found = syntax_colors.find(highlight.value);
+                            const auto color =
+                                found == syntax_colors.end() ? foreground : found->second;
+                            style.color_spans.push_back(
+                                {begin - line.begin, end - line.begin, color});
+                        });
                 }
                 line.layout.emplace(fonts.layout(line.text, style));
             }
@@ -2340,69 +4311,141 @@ void EditorWindow::Impl::draw() {
                 if (head >= line.begin && head <= line.end) {
                     const auto x = line.layout->caret(head - line.begin).x;
                     const auto available = std::max(20 * scale, right - left - gutter - 25 * scale);
-                    if (x < document->horizontal) { document->horizontal = std::max(0.0F, x - 20 * scale); }
-                    else if (x > document->horizontal + available) { document->horizontal = x - available; }
+                    if (x < document->horizontal) {
+                        document->horizontal = std::max(0.0F, x - 20 * scale);
+                    } else if (x > document->horizontal + available) {
+                        document->horizontal = x - available;
+                    }
                     document->reveal_horizontal = false;
                 }
             }
-            if (number == active_line) { rectangle(canvas, left, y, right - left, row_height, current_line_color); }
-            document->decorations.gutter.intersect(number,number+1,[&](const auto& change) {
-                const auto& kind=change.value;
-                rectangle(canvas,left+3*scale,y,3*scale,kind=="deleted" ? 4*scale : row_height,
-                    kind=="added" ? added_color : (kind=="deleted" ? error_color : changed_color));
+            if (number == active_line) {
+                rectangle(canvas, left, y, right - left, row_height, current_line_color);
+            }
+            document->decorations.gutter.intersect(number, number + 1, [&](const auto& change) {
+                const auto& kind = change.value;
+                rectangle(canvas,
+                          left + 3 * scale,
+                          y,
+                          3 * scale,
+                          kind == "deleted" ? 4 * scale : row_height,
+                          kind == "added" ? added_color
+                                          : (kind == "deleted" ? error_color : changed_color));
             });
-            label(canvas, std::to_string(number + 1), left + 15 * scale, y + 3 * scale, 12, number == active_line ? foreground : muted);
+            label(canvas,
+                  std::to_string(number + 1),
+                  left + 15 * scale,
+                  y + 3 * scale,
+                  12,
+                  number == active_line ? foreground : muted);
             const auto text_x = left + gutter - document->horizontal;
-            canvas->save(); canvas->clipRect(SkRect::MakeLTRB(left + gutter - 5 * scale, y, right, y + row_height));
+            canvas->save();
+            canvas->clipRect(SkRect::MakeLTRB(left + gutter - 5 * scale, y, right, y + row_height));
             for (const auto& selection : selections) {
                 const auto anchor = selection.at("anchor").get<std::size_t>();
                 const auto head = selection.at("head").get<std::size_t>();
                 const auto begin = std::max(std::min(anchor, head), line.begin);
                 const auto end = std::min(std::max(anchor, head), line.end);
                 if (begin < end) {
-                    for (const auto& box : line.layout->selection_rects(begin - line.begin, end - line.begin)) {
-                        rectangle(canvas, text_x + box.x, y + box.y, box.width, box.height, selection_color);
+                    for (const auto& box :
+                         line.layout->selection_rects(begin - line.begin, end - line.begin)) {
+                        rectangle(canvas,
+                                  text_x + box.x,
+                                  y + box.y,
+                                  box.width,
+                                  box.height,
+                                  selection_color);
                     }
                 }
-                if (std::min(anchor, head) <= line.end && std::max(anchor, head) > line.end && line.complete) {
-                    rectangle(canvas, text_x + line.layout->width(), y, 8 * scale, row_height, selection_color);
+                if (std::min(anchor, head) <= line.end && std::max(anchor, head) > line.end &&
+                    line.complete) {
+                    rectangle(canvas,
+                              text_x + line.layout->width(),
+                              y,
+                              8 * scale,
+                              row_height,
+                              selection_color);
                 }
             }
             line.layout->draw(canvas, text_x, y);
-            document->decorations.diagnostics.intersect(number,number+1,[&](const auto& diagnostic) {
-                const auto begin = number == diagnostic.begin ? line.layout->byte_offset_from_utf16(diagnostic.value.start_utf16) : 0;
-                const auto end = number == diagnostic.end-1 ? line.layout->byte_offset_from_utf16(diagnostic.value.end_utf16) : line.text.size();
-                const auto color = diagnostic.value.severity == 1 ? error_color : warning_color;
-                for (const auto& box : line.layout->selection_rects(begin, end)) {
-                    rectangle(canvas, text_x + box.x, y + box.y + box.height - 2 * scale, std::max(scale, box.width), scale, color);
-                }
-            });
+            document->decorations.diagnostics.intersect(
+                number, number + 1, [&](const auto& diagnostic) {
+                    const auto begin =
+                        number == diagnostic.begin
+                            ? line.layout->byte_offset_from_utf16(diagnostic.value.start_utf16)
+                            : 0;
+                    const auto end =
+                        number == diagnostic.end - 1
+                            ? line.layout->byte_offset_from_utf16(diagnostic.value.end_utf16)
+                            : line.text.size();
+                    const auto color = diagnostic.value.severity == 1 ? error_color : warning_color;
+                    for (const auto& box : line.layout->selection_rects(begin, end)) {
+                        rectangle(canvas,
+                                  text_x + box.x,
+                                  y + box.y + box.height - 2 * scale,
+                                  std::max(scale, box.width),
+                                  scale,
+                                  color);
+                    }
+                });
             for (std::size_t index = 0; index < selections.size(); ++index) {
                 const auto head = selections[index].at("head").get<std::size_t>();
-                if (head < line.begin || head > line.end) { continue; }
+                if (head < line.begin || head > line.end) {
+                    continue;
+                }
                 const auto caret = line.layout->caret(head - line.begin);
                 const auto cursor_x = text_x + caret.x;
                 const auto cursor_y = y + caret.y;
-                if (!editor_settings.value("cursorBlink", true) || (SDL_GetTicks() / 550) % 2 == 0 || !requests.empty() || active_request) {
-                    rectangle(canvas, cursor_x, cursor_y, std::max(1.0F, 1.5F * scale), caret.height, cursor_color);
+                if (!editor_settings.value("cursorBlink", true) ||
+                    (SDL_GetTicks() / 550) % 2 == 0 || !requests.empty() || active_request) {
+                    rectangle(canvas,
+                              cursor_x,
+                              cursor_y,
+                              std::max(1.0F, 1.5F * scale),
+                              caret.height,
+                              cursor_color);
                 }
                 if (index == 0) {
                     int logical_width{}, logical_height{};
-                    if (SDL_GetWindowSize(renderer.window(), &logical_width, &logical_height) && logical_width > 0 && logical_height > 0) {
+                    if (SDL_GetWindowSize(renderer.window(), &logical_width, &logical_height) &&
+                        logical_width > 0 && logical_height > 0) {
                         const auto rx = width / static_cast<float>(logical_width);
                         const auto ry = height / static_cast<float>(logical_height);
-                        renderer.set_text_input_area(SDL_Rect{static_cast<int>(cursor_x / rx), static_cast<int>(cursor_y / ry),
-                            2, std::max(1, static_cast<int>(caret.height / ry))}, 0);
+                        renderer.set_text_input_area(
+                            SDL_Rect{static_cast<int>(cursor_x / rx),
+                                     static_cast<int>(cursor_y / ry),
+                                     2,
+                                     std::max(1, static_cast<int>(caret.height / ry))},
+                            0);
                     }
-                    if (!preedit.empty() && prompt == Prompt::none && (!inline_form || !inline_form->focus())) {
-                        auto composition = fonts.layout(preedit, TextLayoutOptions{options.font_size, scale, 1.5F});
-                        rectangle(canvas, cursor_x, cursor_y, composition.width() + 4 * scale, composition.height(), background);
+                    if (!preedit.empty() && prompt == Prompt::none &&
+                        (!inline_form || !inline_form->focus())) {
+                        auto composition = fonts.layout(
+                            preedit, TextLayoutOptions{options.font_size, scale, 1.5F});
+                        rectangle(canvas,
+                                  cursor_x,
+                                  cursor_y,
+                                  composition.width() + 4 * scale,
+                                  composition.height(),
+                                  background);
                         composition.draw(canvas, cursor_x, cursor_y);
-                        rectangle(canvas, cursor_x, cursor_y + composition.height() - scale, composition.width(), scale, accent);
+                        rectangle(canvas,
+                                  cursor_x,
+                                  cursor_y + composition.height() - scale,
+                                  composition.width(),
+                                  scale,
+                                  accent);
                     }
                 }
             }
-            if (!line.complete) { label(canvas, "  … loading long line", text_x + line.layout->width(), y + 3 * scale, 12, muted); }
+            if (!line.complete) {
+                label(canvas,
+                      "  … loading long line",
+                      text_x + line.layout->width(),
+                      y + 3 * scale,
+                      12,
+                      muted);
+            }
             canvas->restore();
         }
         canvas->restore();
@@ -2411,124 +4454,286 @@ void EditorWindow::Impl::draw() {
         if (static_cast<float>(lines) > rows) {
             const auto track = content_bottom - content_top;
             const auto thumb = std::max(28 * scale, track * rows / static_cast<float>(lines));
-            const auto y = content_top + (track - thumb) * static_cast<float>(document->first_line) / static_cast<float>(std::max(std::size_t{1}, lines - 1));
+            const auto y =
+                content_top + (track - thumb) * static_cast<float>(document->first_line) /
+                                  static_cast<float>(std::max(std::size_t{1}, lines - 1));
             rectangle(canvas, right - 7 * scale, y, 5 * scale, thumb, scrollbar_color);
         }
     } else {
         label(canvas, "ASTRA", left + 85 * scale, content_top + 96 * scale, 40, muted);
-        label(canvas, "A focused place to write code.", left + 88 * scale, content_top + 159 * scale, 15, muted);
-        label(canvas, "New file        Ctrl+N", left + 90 * scale, content_top + 211 * scale, 13, muted);
-        label(canvas, "Open file       Ctrl+P", left + 90 * scale, content_top + 248 * scale, 13, muted);
-        label(canvas, "Commands        Ctrl+Shift+P", left + 90 * scale, content_top + 285 * scale, 13, muted);
+        label(canvas,
+              "A focused place to write code.",
+              left + 88 * scale,
+              content_top + 159 * scale,
+              15,
+              muted);
+        label(canvas,
+              "New file        Ctrl+N",
+              left + 90 * scale,
+              content_top + 211 * scale,
+              13,
+              muted);
+        label(canvas,
+              "Open file       Ctrl+P",
+              left + 90 * scale,
+              content_top + 248 * scale,
+              13,
+              muted);
+        label(canvas,
+              "Commands        Ctrl+Shift+P",
+              left + 90 * scale,
+              content_top + 285 * scale,
+              13,
+              muted);
     }
 
-    if (geometry.outline_rows.height>0 && geometry.sidebar.width>0) {
+    if (geometry.outline_rows.height > 0 && geometry.sidebar.width > 0) {
         if (const auto* document = current()) {
-            const auto ox=geometry.outline_rows.x+16*scale, oy=geometry.outline_rows.y;
-            canvas->save(); canvas->clipRect(SkRect::MakeXYWH(geometry.outline_rows.x,oy,geometry.outline_rows.width,geometry.outline_rows.height));
-            if (document->syntax_revision != document->view_revision || document->syntax_state == "pending" || document->outline_begin!=document->outline_scroll) {
-                label(canvas, "Parsing document...", ox, oy+6*scale, 12, muted);
+            const auto ox = geometry.outline_rows.x + 16 * scale, oy = geometry.outline_rows.y;
+            canvas->save();
+            canvas->clipRect(SkRect::MakeXYWH(geometry.outline_rows.x,
+                                              oy,
+                                              geometry.outline_rows.width,
+                                              geometry.outline_rows.height));
+            if (document->syntax_revision != document->view_revision ||
+                document->syntax_state == "pending" ||
+                document->outline_begin != document->outline_scroll) {
+                label(canvas, "Parsing document...", ox, oy + 6 * scale, 12, muted);
             } else if (document->outline.empty()) {
-                label(canvas, document->syntax_state == "unsupported" ? "No parser for this file type" : "No symbols", ox, oy+6*scale, 12, muted);
-            } else for (std::size_t i = 0; i < document->outline.size(); ++i) {
-                const auto y = oy+static_cast<float>(i)*geometry.sidebar_row_height;
-                if (y >= geometry.outline_rows.bottom()) { break; }
-                const auto& symbol = document->outline[i];
-                const auto depth = std::min(symbol.value("depth", 0U), 8U);
-                const auto x = ox+static_cast<float>(depth)*10*scale;
-                draw_icon(canvas,symbol.at("kind")=="function" ? Icon::function : Icon::symbol,x,y+4*scale,16*scale,accent);
-                label(canvas, symbol.at("name").get<std::string>(), x + 22 * scale, y+4*scale, 13, foreground);
-            }
+                label(canvas,
+                      document->syntax_state == "unsupported" ? "No parser for this file type"
+                                                              : "No symbols",
+                      ox,
+                      oy + 6 * scale,
+                      12,
+                      muted);
+            } else
+                for (std::size_t i = 0; i < document->outline.size(); ++i) {
+                    const auto y = oy + static_cast<float>(i) * geometry.sidebar_row_height;
+                    if (y >= geometry.outline_rows.bottom()) {
+                        break;
+                    }
+                    const auto& symbol = document->outline[i];
+                    const auto depth = std::min(symbol.value("depth", 0U), 8U);
+                    const auto x = ox + static_cast<float>(depth) * 10 * scale;
+                    draw_icon(canvas,
+                              symbol.at("kind") == "function" ? Icon::function : Icon::symbol,
+                              x,
+                              y + 4 * scale,
+                              16 * scale,
+                              accent);
+                    label(canvas,
+                          symbol.at("name").get<std::string>(),
+                          x + 22 * scale,
+                          y + 4 * scale,
+                          13,
+                          foreground);
+                }
             canvas->restore();
         }
     }
-    fill(geometry.status,status_color);
-    rectangle(canvas,0,geometry.status.y,width,scale,border_color);
-    const auto status_y=geometry.status.y+6*scale;
-    draw_icon(canvas,Icon::branch,12*scale,geometry.status.y+4*scale,16*scale,status_foreground);
-    const auto branch=git_status.value("branch",std::string("Astra"));
-    elided_label(canvas,branch,34*scale,status_y,11,90*scale,status_foreground);
-    canvas->save(); canvas->clipRect(SkRect::MakeXYWH(130*scale,geometry.status.y,std::max(0.0F,width-600*scale),geometry.status.height));
-    label(canvas,status,140*scale,status_y,11,status_foreground); canvas->restore();
+    fill(geometry.status, status_color);
+    rectangle(canvas, 0, geometry.status.y, width, scale, border_color);
+    const auto status_y = geometry.status.y + 6 * scale;
+    draw_icon(canvas,
+              Icon::branch,
+              12 * scale,
+              geometry.status.y + 4 * scale,
+              16 * scale,
+              status_foreground);
+    const auto branch = git_status.value("branch", std::string("Astra"));
+    elided_label(canvas, branch, 34 * scale, status_y, 11, 90 * scale, status_foreground);
+    canvas->save();
+    canvas->clipRect(SkRect::MakeXYWH(130 * scale,
+                                      geometry.status.y,
+                                      std::max(0.0F, width - 600 * scale),
+                                      geometry.status.height));
+    label(canvas, status, 140 * scale, status_y, 11, status_foreground);
+    canvas->restore();
     if (const auto* document = current()) {
-        const auto& positions = document->metadata.contains("selectionPositions") ? document->metadata["selectionPositions"] : document->metadata["selections"];
-        const auto line = positions.empty() ? std::size_t{0} : positions.front().value("line", std::size_t{0});
-        auto column=positions.empty() ? std::size_t{0} : positions.front().value("utf16Column",std::size_t{0});
-        std::string unit="UTF16 Col ";
-        auto tab_size=editor_settings.value("tabSize",4U);
-        if (document->editor_config.contains("tab_width")) tab_size=static_cast<unsigned>(std::stoul(document->editor_config.at("tab_width").get<std::string>()));
-        const auto found=document->lines.find(line);
-        if (found!=document->lines.end() && found->second.layout) {
-            const auto head=document->metadata.at("selections").front().at("head").get<std::size_t>();
-            if (head>=found->second.begin && head<=found->second.end) {
-                const auto advance=found->second.layout->tab_stop_width()/static_cast<float>(tab_size);
-                if (advance>0) { column=static_cast<std::size_t>(std::round(found->second.layout->caret(head-found->second.begin).x/advance)); unit="Col "; }
+        const auto& positions = document->metadata.contains("selectionPositions")
+                                    ? document->metadata["selectionPositions"]
+                                    : document->metadata["selections"];
+        const auto line =
+            positions.empty() ? std::size_t{0} : positions.front().value("line", std::size_t{0});
+        auto column = positions.empty() ? std::size_t{0}
+                                        : positions.front().value("utf16Column", std::size_t{0});
+        std::string unit = "UTF16 Col ";
+        auto tab_size = editor_settings.value("tabSize", 4U);
+        if (document->editor_config.contains("tab_width"))
+            tab_size = static_cast<unsigned>(
+                std::stoul(document->editor_config.at("tab_width").get<std::string>()));
+        const auto found = document->lines.find(line);
+        if (found != document->lines.end() && found->second.layout) {
+            const auto head =
+                document->metadata.at("selections").front().at("head").get<std::size_t>();
+            if (head >= found->second.begin && head <= found->second.end) {
+                const auto advance =
+                    found->second.layout->tab_stop_width() / static_cast<float>(tab_size);
+                if (advance > 0) {
+                    column = static_cast<std::size_t>(std::round(
+                        found->second.layout->caret(head - found->second.begin).x / advance));
+                    unit = "Col ";
+                }
             }
         }
-        const auto spaces=document->editor_config.value("indent_style",std::string(editor_settings.value("insertSpaces",true) ? "space" : "tab"))=="space";
-        auto detail="Ln "+std::to_string(line+1)+", "+unit+std::to_string(column+1);
-        if (width>500*scale) detail+="    "+document->encoding;
-        if (width>820*scale) detail+="    "+std::string(spaces ? "Spaces: " : "Tab Size: ")+std::to_string(tab_size)+(document->language_active ? "    LSP" : "");
-        const auto detail_width=label_layout(detail,11,status_foreground).width();
-        label(canvas,detail,std::max(130*scale,width-detail_width-16*scale),status_y,11,status_foreground);
+        const auto spaces =
+            document->editor_config.value(
+                "indent_style",
+                std::string(editor_settings.value("insertSpaces", true) ? "space" : "tab")) ==
+            "space";
+        auto detail = "Ln " + std::to_string(line + 1) + ", " + unit + std::to_string(column + 1);
+        if (width > 500 * scale)
+            detail += "    " + document->encoding;
+        if (width > 820 * scale)
+            detail += "    " + std::string(spaces ? "Spaces: " : "Tab Size: ") +
+                      std::to_string(tab_size) + (document->language_active ? "    LSP" : "");
+        const auto detail_width = label_layout(detail, 11, status_foreground).width();
+        label(canvas,
+              detail,
+              std::max(130 * scale, width - detail_width - 16 * scale),
+              status_y,
+              11,
+              status_foreground);
     }
     if (recovery_available) {
-        rectangle(canvas, left + 12 * scale, content_bottom - 100 * scale, std::max(100 * scale, right - left - 24 * scale), 36 * scale, recovery_background);
-        label(canvas, "Unsaved recovery sessions are available — click to review", left + 24 * scale, content_bottom - 91 * scale, 12, foreground);
+        rectangle(canvas,
+                  left + 12 * scale,
+                  content_bottom - 100 * scale,
+                  std::max(100 * scale, right - left - 24 * scale),
+                  36 * scale,
+                  recovery_background);
+        label(canvas,
+              "Unsaved recovery sessions are available — click to review",
+              left + 24 * scale,
+              content_bottom - 91 * scale,
+              12,
+              foreground);
     }
     if (const auto notice = workspace_notice(); !notice.empty()) {
-        rectangle(canvas, left + 12 * scale, content_bottom - 142 * scale, std::max(100 * scale, right - left - 24 * scale), 36 * scale, notice_background);
-        canvas->save(); canvas->clipRect(SkRect::MakeLTRB(left + 24 * scale, content_bottom - 142 * scale, right - 44 * scale, content_bottom - 106 * scale));
-        label(canvas, notice, left + 24 * scale, content_bottom - 133 * scale, 12, warning_color); canvas->restore();
+        rectangle(canvas,
+                  left + 12 * scale,
+                  content_bottom - 142 * scale,
+                  std::max(100 * scale, right - left - 24 * scale),
+                  36 * scale,
+                  notice_background);
+        canvas->save();
+        canvas->clipRect(SkRect::MakeLTRB(left + 24 * scale,
+                                          content_bottom - 142 * scale,
+                                          right - 44 * scale,
+                                          content_bottom - 106 * scale));
+        label(canvas, notice, left + 24 * scale, content_bottom - 133 * scale, 12, warning_color);
+        canvas->restore();
         label(canvas, "×", right - 34 * scale, content_bottom - 133 * scale, 13, warning_color);
     }
     if (!error.empty()) {
-        rectangle(canvas, left + 12 * scale, content_bottom - 58 * scale, std::max(100 * scale, right - left - 24 * scale), 46 * scale, error_background);
+        rectangle(canvas,
+                  left + 12 * scale,
+                  content_bottom - 58 * scale,
+                  std::max(100 * scale, right - left - 24 * scale),
+                  46 * scale,
+                  error_background);
         label(canvas, error, left + 24 * scale, content_bottom - 44 * scale, 12, foreground);
     }
     draw_inline_form(canvas);
     draw_prompt(canvas, width, height);
-    if (screenshot) { renderer.capture_png(*screenshot); screenshot.reset(); }
+    if (screenshot) {
+        renderer.capture_png(*screenshot);
+        screenshot.reset();
+    }
     renderer.end_frame();
 }
 
 EditorWindow::EditorWindow(std::shared_ptr<EditorChannel> channel, EditorWindowOptions options)
-    : impl_(std::make_unique<Impl>(std::move(channel), std::move(options))) {}
+    : impl_(std::make_unique<Impl>(std::move(channel), std::move(options))) {
+}
+
 EditorWindow::~EditorWindow() = default;
-SDL_Window* EditorWindow::window() const noexcept { return impl_->renderer.window(); }
-void EditorWindow::request_screenshot(std::filesystem::path destination) { impl_->screenshot = std::move(destination); }
-void EditorWindow::execute_ui_command(std::string_view command) { impl_->command(command); }
-void EditorWindow::open_path(std::string path) { impl_->open_path(std::move(path)); }
-std::string EditorWindow::active_document_id() const { return impl_->active_id; }
+
+SDL_Window* EditorWindow::window() const noexcept {
+    return impl_->renderer.window();
+}
+
+void EditorWindow::request_screenshot(std::filesystem::path destination) {
+    impl_->screenshot = std::move(destination);
+}
+
+void EditorWindow::execute_ui_command(std::string_view command) {
+    impl_->command(command);
+}
+
+void EditorWindow::open_path(std::string path) {
+    impl_->open_path(std::move(path));
+}
+
+std::string EditorWindow::active_document_id() const {
+    return impl_->active_id;
+}
+
 bool EditorWindow::idle() const noexcept {
     const auto* document = impl_->current();
     return !impl_->quit_requested && impl_->pending_fences.empty() && impl_->native_idle() &&
-        (impl_->workbench->idle() || (impl_->dialog && impl_->workbench->awaiting_input())) &&
-        (!document || (!document->needs_lines && !document->loading && !document->needs_syntax && !document->syntax_loading));
+           (impl_->workbench->idle() || (impl_->dialog && impl_->workbench->awaiting_input())) &&
+           (!document || (!document->needs_lines && !document->loading && !document->needs_syntax &&
+                          !document->syntax_loading));
 }
-std::string EditorWindow::last_error() const { return impl_->error; }
-std::string EditorWindow::status_text() const { return impl_->status; }
-std::string EditorWindow::workspace_notice() const { return impl_->workspace_notice(); }
-WorkbenchLayout EditorWindow::layout() const { return impl_->geometry; }
+
+std::string EditorWindow::last_error() const {
+    return impl_->error;
+}
+
+std::string EditorWindow::status_text() const {
+    return impl_->status;
+}
+
+std::string EditorWindow::workspace_notice() const {
+    return impl_->workspace_notice();
+}
+
+WorkbenchLayout EditorWindow::layout() const {
+    return impl_->geometry;
+}
+
 WorkbenchViewState EditorWindow::view_state() const {
-    WorkbenchViewState result{impl_->geometry,impl_->tab_strip,impl_->tabs,impl_->file_tree.size()};
-    result.file_first=impl_->tree_scroll;
-    if(impl_->inline_form) {
-        const auto& form=*impl_->inline_form;
-        result.inline_form_layout=InlineFormLayout::measure(impl_->geometry.editor,impl_->scale,form.fields().size(),form.toggles().size(),form.actions().size());
-        result.inline_form=form.state();result.inline_form["busy"]=form.busy();result.inline_form["error"]=form.error();result.inline_form["message"]=form.message();
+    WorkbenchViewState result{
+        impl_->geometry, impl_->tab_strip, impl_->tabs, impl_->file_tree.size()};
+    result.file_first = impl_->tree_scroll;
+    if (impl_->inline_form) {
+        const auto& form = *impl_->inline_form;
+        result.inline_form_layout = InlineFormLayout::measure(impl_->geometry.editor,
+                                                              impl_->scale,
+                                                              form.fields().size(),
+                                                              form.toggles().size(),
+                                                              form.actions().size());
+        result.inline_form = form.state();
+        result.inline_form["busy"] = form.busy();
+        result.inline_form["error"] = form.error();
+        result.inline_form["message"] = form.message();
     }
-    if(const auto* document=impl_->current()){result.outline_first=document->outline_begin;result.outline_total=document->outline_total;result.visible_outline_rows=document->outline.size();}
+    if (const auto* document = impl_->current()) {
+        result.outline_first = document->outline_begin;
+        result.outline_total = document->outline_total;
+        result.visible_outline_rows = document->outline.size();
+    }
     return result;
 }
+
 bool EditorWindow::pump() {
     if (!impl_->running) {
         if (!impl_->stopping_workbench) {
             impl_->finish_dialog(nullptr);
-            while(!impl_->pending_edits.empty()){const auto edit=impl_->pending_edits.begin()->second;impl_->cancel_edit(edit);}
-            while(!impl_->pending_reads.empty()){const auto read=impl_->pending_reads.begin()->second;impl_->settle_read(read,nullptr);}
-            while(!impl_->pending_fences.empty()) {
-                auto found=impl_->pending_fences.begin();auto pending=std::move(found->second);impl_->pending_fences.erase(found);
+            while (!impl_->pending_edits.empty()) {
+                const auto edit = impl_->pending_edits.begin()->second;
+                impl_->cancel_edit(edit);
+            }
+            while (!impl_->pending_reads.empty()) {
+                const auto read = impl_->pending_reads.begin()->second;
+                impl_->settle_read(read, nullptr);
+            }
+            while (!impl_->pending_fences.empty()) {
+                auto found = impl_->pending_fences.begin();
+                auto pending = std::move(found->second);
+                impl_->pending_fences.erase(found);
                 pending.completion.set_value(false);
             }
             impl_->stopping_workbench = true;
@@ -2536,38 +4741,69 @@ bool EditorWindow::pump() {
             impl_->workbench->shutdown();
         }
         impl_->workbench->poll();
-        if (impl_->workbench->idle()) { return false; }
-        if (Clock::now() >= impl_->workbench_shutdown_deadline) { throw std::runtime_error("Workbench transport did not drain on shutdown"); }
+        if (impl_->workbench->idle()) {
+            return false;
+        }
+        if (Clock::now() >= impl_->workbench_shutdown_deadline) {
+            throw std::runtime_error("Workbench transport did not drain on shutdown");
+        }
         return true;
     }
     try {
         impl_->renderer.poll_events([this](const SDL_Event& event) {
-            try { impl_->event(event); }
-            catch (const std::exception& error) { impl_->error = error.what(); }
+            try {
+                impl_->event(event);
+            } catch (const std::exception& error) {
+                impl_->error = error.what();
+            }
         });
         impl_->service_responses();
-        const auto form_deadline=Clock::now()+std::chrono::milliseconds(4);
-        for(int count=0;count<8 && !impl_->form_events.empty() && Clock::now()<form_deadline;++count) {
-            auto event=std::move(impl_->form_events.front());impl_->form_events.pop_front();
-            impl_->workbench->emit(event.first,event.second);
+        const auto form_deadline = Clock::now() + std::chrono::milliseconds(4);
+        for (int count = 0;
+             count < 8 && !impl_->form_events.empty() && Clock::now() < form_deadline;
+             ++count) {
+            auto event = std::move(impl_->form_events.front());
+            impl_->form_events.pop_front();
+            impl_->workbench->emit(event.first, event.second);
         }
         impl_->workbench->poll();
-        if(impl_->finish_fences())impl_->workbench->poll();
-        if(impl_->quit_requested && impl_->workbench->idle() && impl_->native_idle()) {
-            if(impl_->tabs.empty())impl_->running=false;
-            else { impl_->quit_requested=false;impl_->quitting_fences.clear();impl_->error="Documents opened during teardown; window kept open"; }
-        }
-        for (const auto& error : impl_->workbench->take_errors()) { impl_->error = error.value("message", std::string("Workbench event failed")); }
-        if (impl_->dragging && (impl_->mouse_y < impl_->content_top || impl_->mouse_y > impl_->content_bottom) && Clock::now() >= impl_->drag_scroll_after) {
-            impl_->drag_scroll_after = Clock::now() + std::chrono::milliseconds(50);
-            if (auto* document = impl_->current(); document && !document->loading) {
-                if (impl_->mouse_y < impl_->content_top && document->first_line > 0) { --document->first_line; }
-                else if (impl_->mouse_y > impl_->content_bottom) { document->first_line = std::min(document->first_line + 1, document->metadata.at("lineCount").get<std::size_t>() - 1); }
-                document->needs_lines = true;
-                impl_->point(std::clamp(impl_->mouse_x, impl_->left, impl_->right), std::clamp(impl_->mouse_y, impl_->content_top + 1, impl_->content_bottom - 1), true, false);
+        if (impl_->finish_fences())
+            impl_->workbench->poll();
+        if (impl_->quit_requested && impl_->workbench->idle() && impl_->native_idle()) {
+            if (impl_->tabs.empty())
+                impl_->running = false;
+            else {
+                impl_->quit_requested = false;
+                impl_->quitting_fences.clear();
+                impl_->error = "Documents opened during teardown; window kept open";
             }
         }
-        if (impl_->running) { impl_->draw(); }
+        for (const auto& error : impl_->workbench->take_errors()) {
+            impl_->error = error.value("message", std::string("Workbench event failed"));
+        }
+        if (impl_->dragging &&
+            (impl_->mouse_y < impl_->content_top || impl_->mouse_y > impl_->content_bottom) &&
+            Clock::now() >= impl_->drag_scroll_after) {
+            impl_->drag_scroll_after = Clock::now() + std::chrono::milliseconds(50);
+            if (auto* document = impl_->current(); document && !document->loading) {
+                if (impl_->mouse_y < impl_->content_top && document->first_line > 0) {
+                    --document->first_line;
+                } else if (impl_->mouse_y > impl_->content_bottom) {
+                    document->first_line =
+                        std::min(document->first_line + 1,
+                                 document->metadata.at("lineCount").get<std::size_t>() - 1);
+                }
+                document->needs_lines = true;
+                impl_->point(
+                    std::clamp(impl_->mouse_x, impl_->left, impl_->right),
+                    std::clamp(impl_->mouse_y, impl_->content_top + 1, impl_->content_bottom - 1),
+                    true,
+                    false);
+            }
+        }
+        if (impl_->running) {
+            impl_->draw();
+        }
     } catch (const std::exception& error) {
         impl_->error = error.what();
         // A renderer failure cannot be presented as a functional blank editor.
@@ -2575,8 +4811,11 @@ bool EditorWindow::pump() {
     }
     return true;
 }
+
 int EditorWindow::run() {
-    while (pump()) { SDL_Delay(4); }
+    while (pump()) {
+        SDL_Delay(4);
+    }
     return 0;
 }
 

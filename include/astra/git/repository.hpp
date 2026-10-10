@@ -33,19 +33,32 @@ struct RepositoryOptions {
 };
 
 class GitError : public std::runtime_error {
-public:
+  public:
     GitError(std::string message, std::int64_t exit_status);
     [[nodiscard]] std::int64_t exit_status() const noexcept;
-private:
+
+  private:
     std::int64_t exit_status_;
 };
 
 class GitCancelled final : public std::runtime_error {
-public:
+  public:
     GitCancelled();
 };
 
-enum class FileState { unchanged, modified, added, deleted, renamed, copied, unmerged, untracked, ignored, type_changed };
+enum class FileState {
+    unchanged,
+    modified,
+    added,
+    deleted,
+    renamed,
+    copied,
+    unmerged,
+    untracked,
+    ignored,
+    type_changed
+};
+
 struct StatusEntry {
     std::filesystem::path path;
     std::optional<std::filesystem::path> original_path;
@@ -67,6 +80,7 @@ struct RepositoryStatus {
 };
 
 enum class DiffBase { index, head };
+
 struct DiffHunk {
     // Git unified-diff coordinates: one-based starts; zero is valid for an
     // empty side. Counts are explicit even when Git omits ",1" in its output.
@@ -76,12 +90,14 @@ struct DiffHunk {
     std::size_t new_count{};
 };
 enum class GutterKind { added, modified, deleted };
+
 struct GutterMark {
     std::size_t line{}; // Zero-based new-text line, or deletion gap after N lines.
     std::size_t count{};
     std::size_t removed_lines{};
     GutterKind kind;
 };
+
 struct DiffResult {
     std::string patch;
     std::vector<DiffHunk> hunks;
@@ -116,25 +132,30 @@ struct StagePath {
 // Synchronous worker service over the shared asynchronous libuv process adapter.
 // An explicit canonical working-tree root is required: no parent-repo discovery.
 // Git receives an argv array and sanitized child-only environment. System/global
-// Git config may be explicitly isolated; hooks and fsmonitor are disabled. Repository config/attributes and
-// explicitly requested add/restore filters retain standard Git behavior.
+// Git config may be explicitly isolated; hooks and fsmonitor are disabled. Repository
+// config/attributes and explicitly requested add/restore filters retain standard Git behavior.
 class Repository {
-public:
-    explicit Repository(std::filesystem::path root, std::string executable = "git",
+  public:
+    explicit Repository(std::filesystem::path root,
+                        std::string executable = "git",
                         RepositoryOptions settings = {});
     [[nodiscard]] const std::filesystem::path& root() const noexcept;
     [[nodiscard]] RepositoryStatus status(const GitOptions& options = {}) const;
     [[nodiscard]] DiffResult diff(const std::filesystem::path& path,
-        DiffBase base = DiffBase::index, bool staged = false,
-        const GitOptions& options = {}) const;
+                                  DiffBase base = DiffBase::index,
+                                  bool staged = false,
+                                  const GitOptions& options = {}) const;
     [[nodiscard]] std::vector<CommitInfo> log(std::size_t limit = 100,
-        const GitOptions& options = {}) const;
+                                              const GitOptions& options = {}) const;
     [[nodiscard]] std::vector<BranchInfo> branches(const GitOptions& options = {}) const;
     [[nodiscard]] std::string read_blob(const std::filesystem::path& path,
-        DiffBase source = DiffBase::index, const GitOptions& options = {}) const;
+                                        DiffBase source = DiffBase::index,
+                                        const GitOptions& options = {}) const;
     void stage(std::span<const StagePath> paths, const GitOptions& options = {}) const;
-    void unstage(std::span<const std::filesystem::path> paths, const GitOptions& options = {}) const;
-    void create_branch(std::string name, bool checkout = false, const GitOptions& options = {}) const;
+    void unstage(std::span<const std::filesystem::path> paths,
+                 const GitOptions& options = {}) const;
+    void
+    create_branch(std::string name, bool checkout = false, const GitOptions& options = {}) const;
     void switch_branch(std::string name, const GitOptions& options = {}) const;
     // Commits only the existing index. Does not stage files, run hooks, or run
     // network operations. User signing config remains effective; failures retain
@@ -144,25 +165,33 @@ public:
     // Git's working-tree filters/EOL rules, then atomically save iff expected
     // still matches. nullopt explicitly means the path must remain absent.
     // Binary content, unmerged index entries and index deletions fail intact.
-    [[nodiscard]] io::FileSnapshot discard(const std::filesystem::path& path,
-        std::optional<io::FileVersion> expected,
-        std::optional<io::TextEncoding> encoding_override = std::nullopt,
-        const GitOptions& options = {}) const;
+    [[nodiscard]] io::FileSnapshot
+    discard(const std::filesystem::path& path,
+            std::optional<io::FileVersion> expected,
+            std::optional<io::TextEncoding> encoding_override = std::nullopt,
+            const GitOptions& options = {}) const;
 
-private:
-    struct Output { std::string out; std::string error; std::int64_t status; };
+  private:
+    struct Output {
+        std::string out;
+        std::string error;
+        std::int64_t status;
+    };
+
     std::filesystem::path root_;
     std::string executable_;
     RepositoryOptions settings_;
-    [[nodiscard]] Output run(std::vector<std::string> arguments, const GitOptions& options,
-                            std::string input = {}, bool allow_failure = false) const;
+    [[nodiscard]] Output run(std::vector<std::string> arguments,
+                             const GitOptions& options,
+                             std::string input = {},
+                             bool allow_failure = false) const;
     [[nodiscard]] std::string relative_path(const std::filesystem::path& path) const;
     void verify_branch(const std::string& name, const GitOptions& options) const;
 };
 
 // Pure parsers are public for protocol/failure-path tests and fuzzing.
 [[nodiscard]] RepositoryStatus parse_status(std::string_view porcelain,
-                                           std::size_t max_entries = 100'000);
+                                            std::size_t max_entries = 100'000);
 [[nodiscard]] DiffResult parse_diff(std::string patch, std::size_t max_hunks = 100'000);
 
 } // namespace astra::git

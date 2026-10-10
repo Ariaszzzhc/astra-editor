@@ -24,7 +24,7 @@ struct ServiceHostOptions {
 // Local GUI, TCP clients, scripts, and external automation all enter one loop.
 // Destruction waits for outstanding disk workers before releasing JS/documents.
 class ServiceHost final : public ui::EditorChannel {
-public:
+  public:
     explicit ServiceHost(ServiceHostOptions options);
     ~ServiceHost() override;
     ServiceHost(const ServiceHost&) = delete;
@@ -37,7 +37,7 @@ public:
     // An explicit shutdown reports a checkpoint failure to the caller.
     void shutdown();
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

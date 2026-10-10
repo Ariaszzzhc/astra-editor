@@ -60,7 +60,7 @@ struct TextCaret {
 // One logical UTF-8 line (without CR/LF). Drawing and hit testing share the same
 // shaped paragraph. Offsets always address the original, unexpanded UTF-8 text.
 class TextLayout final {
-public:
+  public:
     ~TextLayout();
     TextLayout(TextLayout&&) noexcept;
     TextLayout& operator=(TextLayout&&) noexcept;
@@ -87,7 +87,7 @@ public:
     [[nodiscard]] std::vector<std::string> resolved_font_families() const;
     void draw(SkCanvas* canvas, float x, float y) const;
 
-private:
+  private:
     struct Impl;
     explicit TextLayout(std::unique_ptr<Impl> impl);
     std::unique_ptr<Impl> impl_;
@@ -97,14 +97,14 @@ private:
 // Keep one engine per UI thread. Its native font manager and shaped-run caches
 // are shared by its layouts; layouts may safely outlive the engine object.
 class TextLayoutEngine final {
-public:
+  public:
     TextLayoutEngine();
     ~TextLayoutEngine();
     TextLayoutEngine(const TextLayoutEngine&) = delete;
     TextLayoutEngine& operator=(const TextLayoutEngine&) = delete;
     [[nodiscard]] TextLayout layout(std::string text, const TextLayoutOptions& options = {}) const;
 
-private:
+  private:
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };

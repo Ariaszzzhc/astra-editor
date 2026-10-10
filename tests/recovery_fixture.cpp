@@ -11,7 +11,9 @@
 #include <io.h>
 
 int wmain(int count, wchar_t** arguments) {
-    if (count != 2) { return 71; }
+    if (count != 2) {
+        return 71;
+    }
     (void)_setmode(_fileno(stdout), _O_BINARY);
     try {
         astra::recovery::RecoveryStore store{std::filesystem::path(arguments[1])};

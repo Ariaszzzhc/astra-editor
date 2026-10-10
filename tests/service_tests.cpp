@@ -20,8 +20,10 @@ using astra::protocol::Json;
 using astra::service::EditorService;
 
 Json service_request(std::string method, Json params = Json::object(), Json id = "request") {
-    return Json{{"jsonrpc", "2.0"}, {"method", std::move(method)},
-                {"params", std::move(params)}, {"id", std::move(id)}};
+    return Json{{"jsonrpc", "2.0"},
+                {"method", std::move(method)},
+                {"params", std::move(params)},
+                {"id", std::move(id)}};
 }
 
 Json call(EditorService& service, std::string method, Json params = Json::object()) {
@@ -43,15 +45,16 @@ void service_error(EditorService& service, std::string method, Json params, int 
 }
 
 std::string create_document(EditorService& service, std::string text = {}) {
-    return call(service, "document.create", Json{{"text", std::move(text)}})["id"].get<std::string>();
+    return call(service, "document.create", Json{{"text", std::move(text)}})["id"]
+        .get<std::string>();
 }
 
 Json get_document(EditorService& service, const std::string& id) {
     return call(service, "document.get", Json{{"id", id}});
 }
 
-std::optional<Json> framed_dispatch(EditorService& service, const Json& request,
-                                    std::mt19937& random) {
+std::optional<Json>
+framed_dispatch(EditorService& service, const Json& request, std::mt19937& random) {
     const auto frame = astra::protocol::encode_frame(request.dump());
     astra::protocol::FrameDecoder decoder;
     std::vector<std::string> bodies;
@@ -88,15 +91,16 @@ TEST_CASE("service viewport pages long Unicode lines without losing bytes") {
     CHECK_FALSE(view["lines"][0]["complete"].get<bool>());
     REQUIRE(view.contains("continuation"));
     CHECK(view["continuation"]["begin"] == 65534);
-    view = call(service, "document.lines", {{"id", id}, {"firstLine", 0},
-                                           {"begin", 65534}, {"count", 3}});
+    view = call(
+        service, "document.lines", {{"id", id}, {"firstLine", 0}, {"begin", 65534}, {"count", 3}});
     REQUIRE(view["lines"].size() == 3);
     CHECK(view["lines"][0]["text"] == "\xF0\x9F\x98\x80tail");
     CHECK(view["lines"][0]["nextBegin"] == line.size() + 2);
     CHECK(view["lines"][1]["text"] == "next");
     CHECK(view["lines"][2]["text"] == "");
     CHECK(view["nextLine"] == 3);
-    service_error(service, "document.lines", {{"id", id}, {"firstLine", 0}, {"begin", 65535}}, -32602);
+    service_error(
+        service, "document.lines", {{"id", id}, {"firstLine", 0}, {"begin", 65535}}, -32602);
     service_error(service, "document.lines", {{"id", id}, {"firstLine", 3}}, -32602);
     service_error(service, "document.lines", {{"id", id}, {"count", 0}}, -32602);
 }
@@ -104,16 +108,28 @@ TEST_CASE("service viewport pages long Unicode lines without losing bytes") {
 TEST_CASE("service editing commands preserve revision and Unicode semantics") {
     EditorService service;
     const auto id = create_document(service, "a\xCC\x81\nword");
-    auto result = call(service, "document.command", {{"id", id}, {"baseRevision", "0"}, {"command", "move_right"}});
+    auto result = call(service,
+                       "document.command",
+                       {{"id", id}, {"baseRevision", "0"}, {"command", "move_right"}});
     CHECK(result["revision"] == "0");
     CHECK(result["selections"][0]["head"] == 3);
     CHECK(result["selectionPositions"][0]["utf16Column"] == 2);
-    result = call(service, "document.command", {{"id", id}, {"baseRevision", "0"}, {"command", "backspace"}});
+    result = call(
+        service, "document.command", {{"id", id}, {"baseRevision", "0"}, {"command", "backspace"}});
     CHECK(result["revision"] == "1");
     CHECK(get_document(service, id)["text"] == "\nword");
-    service_error(service, "document.command", {{"id", id}, {"baseRevision", "0"}, {"command", "backspace"}}, -32001);
-    service_error(service, "document.command", {{"id", id}, {"baseRevision", "1"}, {"command", "unknown"}}, -32602);
-    service_error(service, "document.command", {{"id", id}, {"baseRevision", "1"}, {"command", "move_left"}, {"extend", 1}}, -32602);
+    service_error(service,
+                  "document.command",
+                  {{"id", id}, {"baseRevision", "0"}, {"command", "backspace"}},
+                  -32001);
+    service_error(service,
+                  "document.command",
+                  {{"id", id}, {"baseRevision", "1"}, {"command", "unknown"}},
+                  -32602);
+    service_error(service,
+                  "document.command",
+                  {{"id", id}, {"baseRevision", "1"}, {"command", "move_left"}, {"extend", 1}},
+                  -32602);
     const auto listed = call(service, "document.list");
     REQUIRE(listed.size() == 1);
     CHECK(listed[0]["revision"] == "1");
@@ -153,20 +169,24 @@ TEST_CASE("service creates isolated documents and exposes complete small snapsho
 TEST_CASE("service multicursor insertion undo and redo share Document semantics") {
     EditorService service;
     const auto id = create_document(service, "abcd");
-    const auto selected = call(service, "document.setSelections",
-        Json{{"id", id}, {"baseRevision", "0"}, {"selections", Json::array({
-            Json{{"anchor", 1}, {"head", 1}}, Json{{"anchor", 3}, {"head", 3}}})}});
+    const auto selected = call(
+        service,
+        "document.setSelections",
+        Json{{"id", id},
+             {"baseRevision", "0"},
+             {"selections",
+              Json::array({Json{{"anchor", 1}, {"head", 1}}, Json{{"anchor", 3}, {"head", 3}}})}});
     CHECK(selected["revision"] == "0");
-    const auto inserted = call(service, "document.insert",
-        Json{{"id", id}, {"baseRevision", "0"}, {"text", "!"}});
+    const auto inserted =
+        call(service, "document.insert", Json{{"id", id}, {"baseRevision", "0"}, {"text", "!"}});
     CHECK(inserted["revision"] == "1");
     CHECK(inserted["dirty"] == true);
     CHECK(inserted["canUndo"] == true);
     CHECK(inserted["canRedo"] == false);
     CHECK_FALSE(inserted.contains("text"));
     CHECK(get_document(service, id)["text"] == "a!bc!d");
-    CHECK(inserted["selections"] == Json::array({Json{{"anchor", 2}, {"head", 2}},
-                                                 Json{{"anchor", 5}, {"head", 5}}}));
+    CHECK(inserted["selections"] ==
+          Json::array({Json{{"anchor", 2}, {"head", 2}}, Json{{"anchor", 5}, {"head", 5}}}));
     const auto undone = call(service, "document.undo", Json{{"id", id}, {"baseRevision", "1"}});
     CHECK(undone["revision"] == "2");
     CHECK(undone["dirty"] == false);
@@ -187,11 +207,15 @@ TEST_CASE("service multicursor insertion undo and redo share Document semantics"
 TEST_CASE("service edits use one base snapshot and restore selection history") {
     EditorService service;
     const auto id = create_document(service, "abcdef");
-    const auto result = call(service, "document.edit", Json{
-        {"id", id}, {"baseRevision", "0"},
-        {"edits", Json::array({Json{{"begin", 4}, {"end", 6}, {"text", "Y"}},
+    const auto result =
+        call(service,
+             "document.edit",
+             Json{{"id", id},
+                  {"baseRevision", "0"},
+                  {"edits",
+                   Json::array({Json{{"begin", 4}, {"end", 6}, {"text", "Y"}},
                                 Json{{"begin", 0}, {"end", 2}, {"text", "XX"}}})},
-        {"selectionsAfter", Json::array({Json{{"anchor", 5}, {"head", 2}}})}});
+                  {"selectionsAfter", Json::array({Json{{"anchor", 5}, {"head", 2}}})}});
     CHECK(result["revision"] == "1");
     CHECK(result["selections"] == Json::array({Json{{"anchor", 5}, {"head", 2}}}));
     CHECK(get_document(service, id)["text"] == "XXcdY");
@@ -200,14 +224,15 @@ TEST_CASE("service edits use one base snapshot and restore selection history") {
     (void)call(service, "document.redo", Json{{"id", id}, {"baseRevision", "2"}});
     CHECK(get_document(service, id)["text"] == "XXcdY");
     (void)call(service, "document.undo", Json{{"id", id}, {"baseRevision", "3"}});
-    const auto branch = call(service, "document.insert",
-        Json{{"id", id}, {"baseRevision", "4"}, {"text", "new "}});
+    const auto branch =
+        call(service, "document.insert", Json{{"id", id}, {"baseRevision", "4"}, {"text", "new "}});
     CHECK(branch["canRedo"] == false);
     const auto no_redo = call(service, "document.redo", Json{{"id", id}, {"baseRevision", "5"}});
     CHECK(no_redo["revision"] == "5");
 }
 
-TEST_CASE("service invalid and stale transactions leave text selection history and events unchanged") {
+TEST_CASE(
+    "service invalid and stale transactions leave text selection history and events unchanged") {
     EditorService service;
     const std::string emoji = "\xF0\x9F\x98\x80";
     const auto id = create_document(service, "abc" + emoji + "def");
@@ -225,18 +250,25 @@ TEST_CASE("service invalid and stale transactions leave text selection history a
         Json::array({Json{{"begin", 0}, {"end", 0}, {"text", "A"}},
                      Json{{"begin", 0}, {"end", 0}, {"text", "B"}}})};
     for (const auto& edits : invalid_edits) {
-        service_error(service, "document.edit",
-            Json{{"id", id}, {"baseRevision", "0"}, {"edits", edits}}, -32602);
+        service_error(service,
+                      "document.edit",
+                      Json{{"id", id}, {"baseRevision", "0"}, {"edits", edits}},
+                      -32602);
         CHECK(get_document(service, id) == before);
         CHECK(service.take_notifications().empty());
     }
-    service_error(service, "document.edit", Json{
-        {"id", id}, {"baseRevision", "0"},
-        {"edits", Json::array({Json{{"begin", 0}, {"end", 1}, {"text", "valid"}}})},
-        {"selectionsAfter", Json::array({Json{{"anchor", 999}, {"head", 999}}})}}, -32602);
+    service_error(service,
+                  "document.edit",
+                  Json{{"id", id},
+                       {"baseRevision", "0"},
+                       {"edits", Json::array({Json{{"begin", 0}, {"end", 1}, {"text", "valid"}}})},
+                       {"selectionsAfter", Json::array({Json{{"anchor", 999}, {"head", 999}}})}},
+                  -32602);
     CHECK(get_document(service, id) == before);
-    service_error(service, "document.insert",
-        Json{{"id", id}, {"baseRevision", "99"}, {"text", "stale"}}, -32001);
+    service_error(service,
+                  "document.insert",
+                  Json{{"id", id}, {"baseRevision", "99"}, {"text", "stale"}},
+                  -32001);
     CHECK(get_document(service, id) == before);
     CHECK(service.take_notifications().empty());
 }
@@ -244,16 +276,18 @@ TEST_CASE("service invalid and stale transactions leave text selection history a
 TEST_CASE("service requires canonical string IDs revisions and safe integer byte coordinates") {
     EditorService service;
     const auto id = create_document(service, "abc");
-    const std::vector<Json> invalid_ids{1, -1, 1.0, true, nullptr, "", "01", "-1", "+1",
-                                       " 1", "1 ", "18446744073709551616"};
+    const std::vector<Json> invalid_ids{
+        1, -1, 1.0, true, nullptr, "", "01", "-1", "+1", " 1", "1 ", "18446744073709551616"};
     for (const auto& value : invalid_ids) {
         service_error(service, "document.get", Json{{"id", value}}, -32602);
     }
     service_error(service, "document.get", Json{{"id", "18446744073709551615"}}, -32002);
     service_error(service, "document.undo", Json{{"id", id}, {"baseRevision", 0}}, -32602);
     service_error(service, "document.undo", Json{{"id", id}, {"baseRevision", "00"}}, -32602);
-    service_error(service, "document.undo",
-        Json{{"id", id}, {"baseRevision", "18446744073709551615"}}, -32001);
+    service_error(service,
+                  "document.undo",
+                  Json{{"id", id}, {"baseRevision", "18446744073709551615"}},
+                  -32001);
     const std::vector<Json> invalid_offsets{-1, 0.5, 1.0, true, "0", nullptr, 9007199254740992ULL};
     for (const auto& value : invalid_offsets) {
         service_error(service, "document.get", Json{{"id", id}, {"begin", value}}, -32602);
@@ -276,18 +310,24 @@ TEST_CASE("service read paging is UTF-8 aligned and explicit invalid ranges are 
     CHECK(first["range"]["end"] == EditorService::max_read_bytes - 1);
     CHECK(first["sizeBytes"] == text.size());
     CHECK(first["full"] == false);
-    const auto next = call(service, "document.get", Json{
-        {"id", id}, {"begin", first["range"]["end"]}, {"end", text.size()}});
+    const auto next =
+        call(service,
+             "document.get",
+             Json{{"id", id}, {"begin", first["range"]["end"]}, {"end", text.size()}});
     CHECK(next["text"] == emoji + "tail");
     CHECK(next["range"]["end"] == text.size());
     CHECK(next["full"] == false);
-    const auto empty = call(service, "document.get", Json{
-        {"id", id}, {"begin", text.size()}, {"end", text.size()}});
+    const auto empty = call(
+        service, "document.get", Json{{"id", id}, {"begin", text.size()}, {"end", text.size()}});
     CHECK(empty["text"] == "");
     service_error(service, "document.get", Json{{"id", id}, {"begin", 4}, {"end", 2}}, -32602);
     service_error(service, "document.get", Json{{"id", id}, {"end", text.size() + 1}}, -32602);
-    service_error(service, "document.get", Json{{"id", id}, {"begin", EditorService::max_read_bytes}}, -32602);
-    service_error(service, "document.get", Json{{"id", id}, {"end", EditorService::max_read_bytes}}, -32602);
+    service_error(service,
+                  "document.get",
+                  Json{{"id", id}, {"begin", EditorService::max_read_bytes}},
+                  -32602);
+    service_error(
+        service, "document.get", Json{{"id", id}, {"end", EditorService::max_read_bytes}}, -32602);
 }
 
 TEST_CASE("service documents can grow beyond the frame limit without flattening mutation results") {
@@ -295,8 +335,10 @@ TEST_CASE("service documents can grow beyond the frame limit without flattening 
     const auto id = create_document(service);
     const std::string chunk(3 * 1024 * 1024, 'x');
     for (std::size_t index = 0; index < 3; ++index) {
-        const auto result = call(service, "document.insert", Json{
-            {"id", id}, {"baseRevision", std::to_string(index)}, {"text", chunk}});
+        const auto result =
+            call(service,
+                 "document.insert",
+                 Json{{"id", id}, {"baseRevision", std::to_string(index)}, {"text", chunk}});
         CHECK(result["sizeBytes"] == (index + 1) * chunk.size());
         CHECK_FALSE(result.contains("text"));
         CHECK(result.dump().size() < 1024);
@@ -321,8 +363,8 @@ TEST_CASE("service notifications execute edits without protocol responses") {
     EditorService service;
     const auto id = create_document(service, "abc");
     (void)service.take_notifications();
-    auto insert = service_request("document.insert",
-        Json{{"id", id}, {"baseRevision", "0"}, {"text", "!"}});
+    auto insert =
+        service_request("document.insert", Json{{"id", id}, {"baseRevision", "0"}, {"text", "!"}});
     insert.erase("id");
     CHECK_FALSE(service.dispatch(insert));
     CHECK(get_document(service, id)["text"] == "!abc");
@@ -344,12 +386,15 @@ TEST_CASE("service close protects unsaved documents and reports closed identitie
     (void)service.take_notifications();
     service_error(service, "document.close", Json{{"id", id}, {"baseRevision", "0"}}, -32001);
     service_error(service, "document.close", Json{{"id", id}, {"baseRevision", "1"}}, -32003);
-    service_error(service, "document.close",
-        Json{{"id", id}, {"baseRevision", "1"}, {"discardChanges", 1}}, -32602);
+    service_error(service,
+                  "document.close",
+                  Json{{"id", id}, {"baseRevision", "1"}, {"discardChanges", 1}},
+                  -32602);
     CHECK(service.document_count() == 1);
     CHECK(service.take_notifications().empty());
-    const auto closed = call(service, "document.close", Json{
-        {"id", id}, {"baseRevision", "1"}, {"discardChanges", true}});
+    const auto closed = call(service,
+                             "document.close",
+                             Json{{"id", id}, {"baseRevision", "1"}, {"discardChanges", true}});
     CHECK(closed == Json{{"id", id}, {"closed", true}});
     CHECK(service.document_count() == 0);
     const auto events = service.take_notifications();
@@ -359,7 +404,8 @@ TEST_CASE("service close protects unsaved documents and reports closed identitie
     service_error(service, "document.get", Json{{"id", id}}, -32002);
     const auto next = create_document(service);
     CHECK(next != id);
-    CHECK(call(service, "document.close", Json{{"id", next}, {"baseRevision", "0"}})["closed"] == true);
+    CHECK(call(service, "document.close", Json{{"id", next}, {"baseRevision", "0"}})["closed"] ==
+          true);
 }
 
 TEST_CASE("service no-op commands do not advance revision or enqueue changes") {
@@ -370,10 +416,12 @@ TEST_CASE("service no-op commands do not advance revision or enqueue changes") {
     (void)call(service, "document.undo", Json{{"id", id}, {"baseRevision", "0"}});
     (void)call(service, "document.redo", Json{{"id", id}, {"baseRevision", "0"}});
     (void)call(service, "document.insert", Json{{"id", id}, {"baseRevision", "0"}, {"text", ""}});
-    (void)call(service, "document.edit", Json{
-        {"id", id}, {"baseRevision", "0"}, {"edits", Json::array()}});
-    (void)call(service, "document.setSelections", Json{
-        {"id", id}, {"baseRevision", "0"}, {"selections", before["selections"]}});
+    (void)call(service,
+               "document.edit",
+               Json{{"id", id}, {"baseRevision", "0"}, {"edits", Json::array()}});
+    (void)call(service,
+               "document.setSelections",
+               Json{{"id", id}, {"baseRevision", "0"}, {"selections", before["selections"]}});
     CHECK(get_document(service, id) == before);
     CHECK(service.take_notifications().empty());
 }
@@ -386,14 +434,17 @@ TEST_CASE("service bounds events and refuses mutations before committing when th
     REQUIRE(service.document_count() == EditorService::max_pending_notifications);
     const auto before = get_document(service, "1");
     service_error(service, "document.create", Json::object(), -32004);
-    service_error(service, "document.insert", Json{{"id", "1"}, {"baseRevision", "0"}, {"text", "x"}}, -32004);
+    service_error(service,
+                  "document.insert",
+                  Json{{"id", "1"}, {"baseRevision", "0"}, {"text", "x"}},
+                  -32004);
     service_error(service, "document.close", Json{{"id", "1"}, {"baseRevision", "0"}}, -32004);
     CHECK(get_document(service, "1") == before);
     CHECK(service.document_count() == EditorService::max_pending_notifications);
     CHECK(service.take_notifications().size() == EditorService::max_pending_notifications);
     CHECK(create_document(service) == std::to_string(EditorService::max_pending_notifications + 1));
-    const auto inserted = call(service, "document.insert",
-        Json{{"id", "1"}, {"baseRevision", "0"}, {"text", "x"}});
+    const auto inserted =
+        call(service, "document.insert", Json{{"id", "1"}, {"baseRevision", "0"}, {"text", "x"}});
     CHECK(inserted["revision"] == "1");
 }
 
@@ -405,16 +456,22 @@ TEST_CASE("service validates bounded edit and selection collections atomically")
     for (std::size_t index = 0; index <= EditorService::max_selections; ++index) {
         selections.push_back(Json{{"anchor", 0}, {"head", 0}});
     }
-    service_error(service, "document.setSelections", Json{
-        {"id", id}, {"baseRevision", "0"}, {"selections", selections}}, -32602);
-    service_error(service, "document.setSelections", Json{
-        {"id", id}, {"baseRevision", "0"}, {"selections", Json::array()}}, -32602);
+    service_error(service,
+                  "document.setSelections",
+                  Json{{"id", id}, {"baseRevision", "0"}, {"selections", selections}},
+                  -32602);
+    service_error(service,
+                  "document.setSelections",
+                  Json{{"id", id}, {"baseRevision", "0"}, {"selections", Json::array()}},
+                  -32602);
     auto edits = Json::array();
     for (std::size_t index = 0; index <= EditorService::max_transaction_edits; ++index) {
         edits.push_back(Json{{"begin", 0}, {"end", 0}, {"text", ""}});
     }
-    service_error(service, "document.edit", Json{
-        {"id", id}, {"baseRevision", "0"}, {"edits", edits}}, -32602);
+    service_error(service,
+                  "document.edit",
+                  Json{{"id", id}, {"baseRevision", "0"}, {"edits", edits}},
+                  -32602);
     CHECK(get_document(service, id) == before);
 }
 
@@ -427,18 +484,26 @@ TEST_CASE("service in-process dispatch equals fragmented framed JSON dispatch") 
     const std::vector<Json> script{
         service_request("document.create", Json{{"text", "abc\nxyz"}}),
         service_request("document.get", Json{{"id", "1"}}),
-        service_request("document.setSelections", Json{{"id", "1"}, {"baseRevision", "0"},
-            {"selections", Json::array({Json{{"anchor", 1}, {"head", 1}},
-                                        Json{{"anchor", 5}, {"head", 5}}})}}),
+        service_request("document.setSelections",
+                        Json{{"id", "1"},
+                             {"baseRevision", "0"},
+                             {"selections",
+                              Json::array({Json{{"anchor", 1}, {"head", 1}},
+                                           Json{{"anchor", 5}, {"head", 5}}})}}),
         service_request("document.insert", Json{{"id", "1"}, {"baseRevision", "0"}, {"text", "!"}}),
         service_request("document.undo", Json{{"id", "1"}, {"baseRevision", "1"}}),
         service_request("document.redo", Json{{"id", "1"}, {"baseRevision", "2"}}),
-        service_request("document.edit", Json{{"id", "1"}, {"baseRevision", "3"},
-            {"edits", Json::array({Json{{"begin", 0}, {"end", 1}, {"text", "A"}}})}}),
+        service_request(
+            "document.edit",
+            Json{{"id", "1"},
+                 {"baseRevision", "3"},
+                 {"edits", Json::array({Json{{"begin", 0}, {"end", 1}, {"text", "A"}}})}}),
         service_request("document.get", Json{{"id", "1"}, {"begin", 1}, {"end", 6}}),
-        service_request("document.insert", Json{{"id", "1"}, {"baseRevision", "0"}, {"text", "stale"}}),
+        service_request("document.insert",
+                        Json{{"id", "1"}, {"baseRevision", "0"}, {"text", "stale"}}),
         service_request("document.close", Json{{"id", "1"}, {"baseRevision", "4"}}),
-        service_request("document.close", Json{{"id", "1"}, {"baseRevision", "4"}, {"discardChanges", true}}),
+        service_request("document.close",
+                        Json{{"id", "1"}, {"baseRevision", "4"}, {"discardChanges", true}}),
         service_request("document.get", Json{{"id", "1"}})};
     for (const auto& request : script) {
         CAPTURE(request.dump());
@@ -452,12 +517,15 @@ TEST_CASE("service in-process dispatch equals fragmented framed JSON dispatch") 
 TEST_CASE("service batches execute in order and only respond to requests") {
     EditorService service;
     const auto id = create_document(service, "a");
-    auto notification = service_request("document.insert",
-        Json{{"id", id}, {"baseRevision", "0"}, {"text", "!"}});
+    auto notification =
+        service_request("document.insert", Json{{"id", id}, {"baseRevision", "0"}, {"text", "!"}});
     notification.erase("id");
-    const auto batch = Json::array({notification,
-        service_request("document.get", Json{{"id", id}}, "read"),
-        service_request("document.insert", Json{{"id", id}, {"baseRevision", "0"}, {"text", "stale"}}, "stale")});
+    const auto batch =
+        Json::array({notification,
+                     service_request("document.get", Json{{"id", id}}, "read"),
+                     service_request("document.insert",
+                                     Json{{"id", id}, {"baseRevision", "0"}, {"text", "stale"}},
+                                     "stale")});
     const auto response = service.dispatch(batch);
     REQUIRE(response);
     REQUIRE(response->size() == 2);
@@ -468,11 +536,13 @@ TEST_CASE("service batches execute in order and only respond to requests") {
     CHECK(get_document(service, id)["text"] == "!a");
 }
 
-TEST_CASE("service large paged-read batches remain within one frame including control-character escaping") {
+TEST_CASE("service large paged-read batches remain within one frame including control-character "
+          "escaping") {
     for (const auto character : {'x', '\0'}) {
         CAPTURE(static_cast<int>(character));
         EditorService service;
-        const auto id = create_document(service, std::string(EditorService::max_read_bytes, character));
+        const auto id =
+            create_document(service, std::string(EditorService::max_read_bytes, character));
         (void)service.take_notifications();
         auto batch = Json::array();
         for (std::size_t index = 0; index < astra::protocol::Dispatcher::max_batch_size; ++index) {
@@ -519,9 +589,10 @@ TEST_CASE("service metadata and versioned edits survive a preceding oversized re
     for (std::size_t index = 0; index < astra::protocol::Dispatcher::max_batch_size - 2; ++index) {
         batch.push_back(service_request("document.get", Json{{"id", id}}, index));
     }
-    batch.push_back(service_request("document.insert",
-        Json{{"id", id}, {"baseRevision", "0"}, {"text", "changed"}}, "edit"));
-    batch.push_back(service_request("document.get", Json{{"id", id}, {"begin", 0}, {"end", 7}}, "snapshot"));
+    batch.push_back(service_request(
+        "document.insert", Json{{"id", id}, {"baseRevision", "0"}, {"text", "changed"}}, "edit"));
+    batch.push_back(
+        service_request("document.get", Json{{"id", id}, {"begin", 0}, {"end", 7}}, "snapshot"));
     const auto response = service.dispatch_text(batch.dump());
     REQUIRE(response);
     CHECK(response->size() <= astra::protocol::Dispatcher::max_body_bytes);
@@ -539,6 +610,8 @@ TEST_CASE("service metadata and versioned edits survive a preceding oversized re
     const auto events = service.take_notifications();
     REQUIRE(events.size() == 1);
     CHECK(events[0]["params"]["revision"] == "1");
-    service_error(service, "document.insert",
-        Json{{"id", id}, {"baseRevision", "0"}, {"text", "changed"}}, -32001);
+    service_error(service,
+                  "document.insert",
+                  Json{{"id", id}, {"baseRevision", "0"}, {"text", "changed"}},
+                  -32001);
 }

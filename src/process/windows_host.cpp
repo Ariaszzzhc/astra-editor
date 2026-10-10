@@ -13,14 +13,31 @@
 namespace {
 
 class Handle {
-public:
-    explicit Handle(HANDLE value = nullptr) : value_(value) {}
-    ~Handle() { if (value_ && value_ != INVALID_HANDLE_VALUE) { (void)CloseHandle(value_); } }
+  public:
+    explicit Handle(HANDLE value = nullptr) : value_(value) {
+    }
+
+    ~Handle() {
+        if (value_ && value_ != INVALID_HANDLE_VALUE) {
+            (void)CloseHandle(value_);
+        }
+    }
+
     Handle(const Handle&) = delete;
     Handle& operator=(const Handle&) = delete;
-    [[nodiscard]] HANDLE get() const noexcept { return value_; }
-    void reset() noexcept { if (value_) { (void)CloseHandle(value_); value_ = nullptr; } }
-private:
+
+    [[nodiscard]] HANDLE get() const noexcept {
+        return value_;
+    }
+
+    void reset() noexcept {
+        if (value_) {
+            (void)CloseHandle(value_);
+            value_ = nullptr;
+        }
+    }
+
+  private:
     HANDLE value_;
 };
 
@@ -39,7 +56,10 @@ std::wstring quote(std::wstring_view argument) {
     std::wstring result(1, L'"');
     std::size_t slashes = 0;
     for (const auto character : argument) {
-        if (character == L'\\') { ++slashes; continue; }
+        if (character == L'\\') {
+            ++slashes;
+            continue;
+        }
         if (character == L'"') {
             result.append(slashes * 2 + 1, L'\\');
             result.push_back(character);
@@ -58,18 +78,26 @@ std::wstring quote(std::wstring_view argument) {
 
 int wmain(int count, wchar_t** arguments) {
     (void)_setmode(3, _O_BINARY);
-    if (count < 3) { return fail(ERROR_INVALID_PARAMETER); }
+    if (count < 3) {
+        return fail(ERROR_INVALID_PARAMETER);
+    }
     const auto control = reinterpret_cast<HANDLE>(_get_osfhandle(3));
     if (control == INVALID_HANDLE_VALUE || !SetHandleInformation(control, HANDLE_FLAG_INHERIT, 0)) {
         return fail(GetLastError());
     }
     Handle job(OpenJobObjectW(JOB_OBJECT_ASSIGN_PROCESS | JOB_OBJECT_QUERY, FALSE, arguments[1]));
-    if (!job.get()) { return fail(GetLastError()); }
-    if (!AssignProcessToJobObject(job.get(), GetCurrentProcess())) { return fail(GetLastError()); }
+    if (!job.get()) {
+        return fail(GetLastError());
+    }
+    if (!AssignProcessToJobObject(job.get(), GetCurrentProcess())) {
+        return fail(GetLastError());
+    }
 
     std::wstring command;
     for (int index = 2; index < count; ++index) {
-        if (!command.empty()) { command.push_back(L' '); }
+        if (!command.empty()) {
+            command.push_back(L' ');
+        }
         command += quote(arguments[index]);
     }
     STARTUPINFOW startup{};
@@ -80,9 +108,16 @@ int wmain(int count, wchar_t** arguments) {
     startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
     startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
     PROCESS_INFORMATION created{};
-    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
-        CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | CREATE_SUSPENDED,
-        nullptr, nullptr, &startup, &created)) {
+    if (!CreateProcessW(nullptr,
+                        command.data(),
+                        nullptr,
+                        nullptr,
+                        TRUE,
+                        CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | CREATE_SUSPENDED,
+                        nullptr,
+                        nullptr,
+                        &startup,
+                        &created)) {
         return fail(GetLastError());
     }
     const Handle process(created.hProcess);
@@ -110,7 +145,9 @@ int wmain(int count, wchar_t** arguments) {
         return static_cast<int>(error);
     }
     DWORD result = 127;
-    if (!GetExitCodeProcess(process.get(), &result)) { return 127; }
+    if (!GetExitCodeProcess(process.get(), &result)) {
+        return 127;
+    }
     return static_cast<int>(result);
 }
 #else

@@ -37,21 +37,27 @@ struct GitFixture {
     GitFixture() {
         base = fs::weakly_canonical(fs::current_path() / "build");
         (void)fs::create_directories(base);
-        const auto nonce = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
-            "-" + std::to_string(std::random_device{}());
+        const auto nonce =
+            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
+            std::to_string(std::random_device{}());
         directory = base / ("git-tests-" + nonce);
-        if (!fs::create_directory(directory)) { throw std::runtime_error("Git fixture already exists"); }
+        if (!fs::create_directory(directory)) {
+            throw std::runtime_error("Git fixture already exists");
+        }
         (void)command({"init", "--initial-branch=main"});
         (void)command({"config", "core.autocrlf", "false"});
         (void)command({"config", "commit.gpgsign", "false"});
     }
 
     ~GitFixture() {
-        const auto issues = astra::test::cleanup_owned_directory(directory, base, "git-tests-", std::chrono::seconds(1));
+        const auto issues = astra::test::cleanup_owned_directory(
+            directory, base, "git-tests-", std::chrono::seconds(1));
         for (const auto& issue : issues) {
-            CHECK_MESSAGE(false, "Git fixture cleanup ", utf8_path(issue.path), ": ", issue.message);
+            CHECK_MESSAGE(
+                false, "Git fixture cleanup ", utf8_path(issue.path), ": ", issue.message);
         }
     }
+
     void write(const fs::path& path, std::string_view text) const {
         (void)fs::create_directories((directory / path).parent_path());
         std::ofstream file(directory / path, std::ios::binary | std::ios::trunc);
@@ -59,10 +65,21 @@ struct GitFixture {
         file.write(text.data(), static_cast<std::streamsize>(text.size()));
     }
 
-    [[nodiscard]] std::string command(std::vector<std::string> arguments, bool allow_failure = false) const {
+    [[nodiscard]] std::string command(std::vector<std::string> arguments,
+                                      bool allow_failure = false) const {
         astra::process::ProcessOptions options;
-        options.argv = {"git", "--no-pager", "-c", "user.name=Astra Tests", "-c", "user.email=tests@astra.invalid",
-            "-c", "core.fsmonitor=false", "-c", "core.hooksPath=NUL", "-c", "commit.gpgsign=false"};
+        options.argv = {"git",
+                        "--no-pager",
+                        "-c",
+                        "user.name=Astra Tests",
+                        "-c",
+                        "user.email=tests@astra.invalid",
+                        "-c",
+                        "core.fsmonitor=false",
+                        "-c",
+                        "core.hooksPath=NUL",
+                        "-c",
+                        "commit.gpgsign=false"};
         options.argv.insert(options.argv.end(), arguments.begin(), arguments.end());
         options.cwd = utf8_path(directory);
         options.shutdown_timeout = std::chrono::seconds(10);
@@ -70,12 +87,21 @@ struct GitFixture {
         std::erase_if(*options.env, [](const std::string& item) {
             return item.starts_with("GIT_") || item.starts_with("LC_ALL=");
         });
-        options.env->insert(options.env->end(), {"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=NUL",
-            "GIT_CONFIG_SYSTEM=NUL", "GIT_ATTR_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0", "LC_ALL=C"});
+        options.env->insert(options.env->end(),
+                            {"GIT_CONFIG_NOSYSTEM=1",
+                             "GIT_CONFIG_GLOBAL=NUL",
+                             "GIT_CONFIG_SYSTEM=NUL",
+                             "GIT_ATTR_NOSYSTEM=1",
+                             "GIT_TERMINAL_PROMPT=0",
+                             "LC_ALL=C"});
         std::string output, errors;
         astra::process::ProcessCallbacks callbacks;
-        callbacks.on_stdout = [&](std::string_view bytes) { output += bytes; };
-        callbacks.on_stderr = [&](std::string_view bytes) { errors += bytes; };
+        callbacks.on_stdout = [&](std::string_view bytes) {
+            output += bytes;
+        };
+        callbacks.on_stderr = [&](std::string_view bytes) {
+            errors += bytes;
+        };
         astra::process::Process child(std::move(options), std::move(callbacks));
         child.start().get();
         child.close();
@@ -98,7 +124,9 @@ struct GitFixture {
 };
 
 [[nodiscard]] const StatusEntry* entry(const RepositoryStatus& status, const fs::path& path) {
-    const auto found = std::ranges::find_if(status.entries, [&](const auto& item) { return item.path == path; });
+    const auto found = std::ranges::find_if(status.entries, [&](const auto& item) {
+        return item.path == path;
+    });
     return found == status.entries.end() ? nullptr : &*found;
 }
 
@@ -176,7 +204,8 @@ TEST_CASE("Git status recognizes staged rename and deleted path") {
     fs::rename(fixture.directory / "old name.txt", fixture.directory / "new name.txt");
     (void)fs::remove(fixture.directory / "delete.txt");
     Repository repository(fixture.directory, "git", {false});
-    const std::vector<StagePath> paths{{"old name.txt", {}}, {"new name.txt", {}}, {"delete.txt", {}}};
+    const std::vector<StagePath> paths{
+        {"old name.txt", {}}, {"new name.txt", {}}, {"delete.txt", {}}};
     repository.stage(paths);
     const auto status = repository.status();
     const auto renamed = entry(status, "new name.txt");
@@ -309,7 +338,8 @@ TEST_CASE("Git commit rejects invalid messages and identity without writing a co
     CHECK_THROWS_AS(repository.commit(" \r\n\t", identity), std::invalid_argument);
     CHECK_THROWS_AS(repository.commit("\xc0\xaf", identity), std::invalid_argument);
     CHECK_THROWS_AS(repository.commit(std::string("a\0b", 3), identity), std::invalid_argument);
-    CHECK_THROWS_AS(repository.commit(std::string(1024 * 1024 + 1, 'x'), identity), std::invalid_argument);
+    CHECK_THROWS_AS(repository.commit(std::string(1024 * 1024 + 1, 'x'), identity),
+                    std::invalid_argument);
     identity.author_name = "line\nbreak";
     CHECK_THROWS_AS(repository.commit("valid message", identity), std::invalid_argument);
     CHECK(repository.status().unborn);
@@ -333,7 +363,8 @@ TEST_CASE("Git status reports actual merge conflicts without losing their worktr
     CHECK(conflict->conflict);
     CHECK(conflict->staged == FileState::unmerged);
     CHECK(conflict->unstaged == FileState::unmerged);
-    CHECK(astra::io::read_file(fixture.directory / "file.txt").text.find("<<<<<<<") != std::string::npos);
+    CHECK(astra::io::read_file(fixture.directory / "file.txt").text.find("<<<<<<<") !=
+          std::string::npos);
 }
 
 TEST_CASE("Git stage expected versions reject external changes before index mutation") {
@@ -367,7 +398,8 @@ TEST_CASE("Git path branch cancellation and output limits are enforced") {
     CHECK_THROWS_AS((void)repository.status(bounded), GitError);
     CHECK_FALSE(repository.status().entries.empty());
     (void)fs::create_directories(fixture.directory / "nested");
-    CHECK_THROWS_AS((void)Repository(fixture.directory / "nested", "git", {false}), std::invalid_argument);
+    CHECK_THROWS_AS((void)Repository(fixture.directory / "nested", "git", {false}),
+                    std::invalid_argument);
 }
 
 TEST_CASE("Git discard restores filtered CRLF bytes atomically with a version guard") {
@@ -382,7 +414,8 @@ TEST_CASE("Git discard restores filtered CRLF bytes atomically with a version gu
     CHECK(restored.text == "original\r\n");
     CHECK(astra::io::read_file(fixture.directory / "file.txt").text == "original\r\n");
     fixture.write("file.txt", "new external\r\n");
-    CHECK_THROWS_AS((void)repository.discard("file.txt", restored.version), astra::io::FileConflict);
+    CHECK_THROWS_AS((void)repository.discard("file.txt", restored.version),
+                    astra::io::FileConflict);
     CHECK(astra::io::read_file(fixture.directory / "file.txt").text == "new external\r\n");
 }
 
@@ -418,7 +451,8 @@ TEST_CASE("Git discard filter failure leaves the original worktree version uncha
     fixture.write("file.txt", "committed\n");
     fixture.commit();
     fixture.write(".gitattributes", "*.txt filter=astra-failing-filter\n");
-    (void)fixture.command({"config", "filter.astra-failing-filter.smudge", "astra-nonexistent-filter-test-command"});
+    (void)fixture.command(
+        {"config", "filter.astra-failing-filter.smudge", "astra-nonexistent-filter-test-command"});
     (void)fixture.command({"config", "filter.astra-failing-filter.required", "true"});
     fixture.write("file.txt", "preserve me\n");
     Repository repository(fixture.directory, "git", {false});
@@ -429,9 +463,13 @@ TEST_CASE("Git discard filter failure leaves the original worktree version uncha
 
 TEST_CASE("Git porcelain parser preserves rename order names and branch metadata") {
     std::string input;
-    for (const auto line : {"# branch.oid abc123", "# branch.head main", "# branch.upstream origin/main",
-        "# branch.ab +3 -2", "2 R. N... 100644 100644 100644 aaaa bbbb R100 new name.txt",
-        "old name.txt", "? odd\nname.txt"}) {
+    for (const auto line : {"# branch.oid abc123",
+                            "# branch.head main",
+                            "# branch.upstream origin/main",
+                            "# branch.ab +3 -2",
+                            "2 R. N... 100644 100644 100644 aaaa bbbb R100 new name.txt",
+                            "old name.txt",
+                            "? odd\nname.txt"}) {
         input += line;
         input.push_back('\0');
     }

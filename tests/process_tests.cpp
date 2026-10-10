@@ -33,7 +33,9 @@ using namespace std::chrono_literals;
 #ifdef _WIN32
     std::wstring path(32768, L'\0');
     const auto count = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-    if (count == 0 || count >= path.size()) { throw std::runtime_error("cannot locate process test fixture"); }
+    if (count == 0 || count >= path.size()) {
+        throw std::runtime_error("cannot locate process test fixture");
+    }
     path.resize(count);
     const auto fixture = std::filesystem::path(path).parent_path() / "astra-process-fixture.exe";
     const auto utf8 = fixture.u8string();
@@ -45,13 +47,15 @@ using namespace std::chrono_literals;
         const auto status = uv_exepath(path.data(), &size);
         if (status == 0 && size < path.size() - 1) {
             return (std::filesystem::path(std::string(path.data(), size)).parent_path() /
-                "astra-process-fixture").string();
+                    "astra-process-fixture")
+                .string();
         }
         if (path.size() >= 1024 * 1024) {
             throw std::length_error("process test executable path exceeds one MiB");
         }
         if (status != 0 && status != UV_ENOBUFS) {
-            throw std::runtime_error(std::string("cannot locate process test fixture: ") + uv_strerror(status));
+            throw std::runtime_error(std::string("cannot locate process test fixture: ") +
+                                     uv_strerror(status));
         }
         path.resize(path.size() * 2);
     }
@@ -75,25 +79,32 @@ using namespace std::chrono_literals;
 
 TEST_CASE("process argv preserves Unicode spaces quotes metacharacters and empty arguments") {
     auto settings = options("arguments");
-    const std::vector<std::string> values{"two words", "a\"b", "trailing\\", "", "$(literal)&|;", "\xe6\x98\x9f\xf0\x9f\x98\x80"};
+    const std::vector<std::string> values{
+        "two words", "a\"b", "trailing\\", "", "$(literal)&|;", "\xe6\x98\x9f\xf0\x9f\x98\x80"};
     settings.argv.insert(settings.argv.end(), values.begin(), values.end());
     std::string output;
     ProcessCallbacks callbacks;
-    callbacks.on_stdout = [&](std::string_view bytes) { output += bytes; };
+    callbacks.on_stdout = [&](std::string_view bytes) {
+        output += bytes;
+    };
     Process process(std::move(settings), std::move(callbacks));
     process.start().get();
     const auto result = finish(process);
     CHECK(result.exit_status == 0);
     CHECK(result.error.empty());
     std::string expected;
-    for (const auto& value : values) { expected += std::to_string(value.size()) + ":" + value + "\n"; }
+    for (const auto& value : values) {
+        expected += std::to_string(value.size()) + ":" + value + "\n";
+    }
     CHECK(output == expected);
 }
 
 TEST_CASE("process stdin writes drain before graceful close and preserve binary bytes") {
     std::string output;
     ProcessCallbacks callbacks;
-    callbacks.on_stdout = [&](std::string_view bytes) { output += bytes; };
+    callbacks.on_stdout = [&](std::string_view bytes) {
+        output += bytes;
+    };
     Process process(options("echo"), std::move(callbacks));
     process.start().get();
     const std::string binary("a\0b\r\n", 5);
@@ -114,9 +125,16 @@ TEST_CASE("process completion and exit callback occur after all trailing output"
     std::size_t stdout_at_exit = 0;
     std::string stderr_at_exit;
     ProcessCallbacks callbacks;
-    callbacks.on_stdout = [&](std::string_view bytes) { output += bytes; };
-    callbacks.on_stderr = [&](std::string_view bytes) { errors += bytes; };
-    callbacks.on_exit = [&](const ProcessExit&) { stdout_at_exit = output.size(); stderr_at_exit = errors; };
+    callbacks.on_stdout = [&](std::string_view bytes) {
+        output += bytes;
+    };
+    callbacks.on_stderr = [&](std::string_view bytes) {
+        errors += bytes;
+    };
+    callbacks.on_exit = [&](const ProcessExit&) {
+        stdout_at_exit = output.size();
+        stderr_at_exit = errors;
+    };
     Process process(options("tail"), std::move(callbacks));
     process.start().get();
     const auto result = finish(process);
@@ -131,11 +149,15 @@ TEST_CASE("process completion and exit callback occur after all trailing output"
 TEST_CASE("process explicit environment replaces inherited environment") {
     auto settings = options("environment");
     settings.env = astra::process::current_environment();
-    std::erase_if(*settings.env, [](const std::string& item) { return item.starts_with("ASTRA_PROCESS_TEST="); });
+    std::erase_if(*settings.env, [](const std::string& item) {
+        return item.starts_with("ASTRA_PROCESS_TEST=");
+    });
     settings.env->push_back("ASTRA_PROCESS_TEST=isolated-child");
     std::string output;
     ProcessCallbacks callbacks;
-    callbacks.on_stdout = [&](std::string_view bytes) { output += bytes; };
+    callbacks.on_stdout = [&](std::string_view bytes) {
+        output += bytes;
+    };
     Process process(std::move(settings), std::move(callbacks));
     process.start().get();
     CHECK(finish(process).error.empty());
@@ -147,11 +169,18 @@ TEST_CASE("process failed spawn resolves start completion and queued cancellatio
     settings.argv[0] += ".does-not-exist";
     std::atomic<int> errors{};
     ProcessCallbacks callbacks;
-    callbacks.on_error = [&](std::exception_ptr) { ++errors; };
+    callbacks.on_error = [&](std::exception_ptr) {
+        ++errors;
+    };
     Process process(std::move(settings), std::move(callbacks));
     auto starting = process.start();
     std::atomic<int> cancellations{};
-    auto queued = process.post([] {}, [&](std::exception_ptr) { ++cancellations; });
+    auto queued = process.post(
+        [] {
+        },
+        [&](std::exception_ptr) {
+            ++cancellations;
+        });
     CHECK_THROWS_AS(starting.get(), std::runtime_error);
     const auto result = finish(process);
     CHECK_FALSE(result.error.empty());
@@ -166,21 +195,35 @@ TEST_CASE("process callbacks posts writes and ticks execute on one owner thread"
     std::atomic<int> ticks{};
     Process* borrowed = nullptr;
     ProcessCallbacks callbacks;
-    callbacks.on_started = [&] { threads.push_back(std::this_thread::get_id()); borrowed->write_now("owned"); };
-    callbacks.on_stdout = [&](std::string_view bytes) { threads.push_back(std::this_thread::get_id()); output += bytes; };
+    callbacks.on_started = [&] {
+        threads.push_back(std::this_thread::get_id());
+        borrowed->write_now("owned");
+    };
+    callbacks.on_stdout = [&](std::string_view bytes) {
+        threads.push_back(std::this_thread::get_id());
+        output += bytes;
+    };
     callbacks.on_tick = [&] {
         threads.push_back(std::this_thread::get_id());
-        if (++ticks == 2) { borrowed->close(); }
+        if (++ticks == 2) {
+            borrowed->close();
+        }
     };
-    callbacks.on_exit = [&](const ProcessExit&) { threads.push_back(std::this_thread::get_id()); };
+    callbacks.on_exit = [&](const ProcessExit&) {
+        threads.push_back(std::this_thread::get_id());
+    };
     Process process(options("echo"), std::move(callbacks));
     borrowed = &process;
     process.start().get();
-    auto posted = process.post([&] { threads.push_back(std::this_thread::get_id()); });
+    auto posted = process.post([&] {
+        threads.push_back(std::this_thread::get_id());
+    });
     posted.get();
     CHECK(finish(process).error.empty());
     REQUIRE_FALSE(threads.empty());
-    CHECK(std::ranges::all_of(threads, [&](auto thread) { return thread == threads.front(); }));
+    CHECK(std::ranges::all_of(threads, [&](auto thread) {
+        return thread == threads.front();
+    }));
     CHECK(threads.front() != std::this_thread::get_id());
     CHECK(output == "owned");
     CHECK_THROWS_AS(process.write_now("wrong-thread"), std::logic_error);
@@ -193,7 +236,13 @@ TEST_CASE("process pending post is explicitly cancelled when close wins") {
     std::atomic<int> cancelled{};
     ProcessCallbacks callbacks;
     callbacks.on_started = [&] {
-        posted = borrowed->post([&] { ran = true; }, [&](std::exception_ptr) { ++cancelled; });
+        posted = borrowed->post(
+            [&] {
+                ran = true;
+            },
+            [&](std::exception_ptr) {
+                ++cancelled;
+            });
         borrowed->close();
     };
     Process process(options("echo"), std::move(callbacks));
@@ -203,7 +252,12 @@ TEST_CASE("process pending post is explicitly cancelled when close wins") {
     CHECK_THROWS_AS(posted.get(), std::runtime_error);
     CHECK_FALSE(ran);
     CHECK(cancelled == 1);
-    auto late = process.post([] {}, [&](std::exception_ptr) { ++cancelled; });
+    auto late = process.post(
+        [] {
+        },
+        [&](std::exception_ptr) {
+            ++cancelled;
+        });
     CHECK_THROWS_AS(late.get(), std::runtime_error);
     CHECK(cancelled == 2);
 }
@@ -213,7 +267,9 @@ TEST_CASE("process stdin bounds reject excessive writes without terminating usef
     settings.max_queued_stdin_bytes = 4;
     std::string output;
     ProcessCallbacks callbacks;
-    callbacks.on_stdout = [&](std::string_view bytes) { output += bytes; };
+    callbacks.on_stdout = [&](std::string_view bytes) {
+        output += bytes;
+    };
     Process process(std::move(settings), std::move(callbacks));
     process.start().get();
     auto rejected = process.write("12345");
@@ -229,7 +285,9 @@ TEST_CASE("process output limits terminate excessive children with a reported er
     settings.max_stdout_bytes = 1024;
     std::size_t delivered = 0;
     ProcessCallbacks callbacks;
-    callbacks.on_stdout = [&](std::string_view bytes) { delivered += bytes.size(); };
+    callbacks.on_stdout = [&](std::string_view bytes) {
+        delivered += bytes.size();
+    };
     Process process(std::move(settings), std::move(callbacks));
     process.start().get();
     const auto result = finish(process);
@@ -242,7 +300,9 @@ TEST_CASE("process zero stderr limit supports streaming long-lived protocol serv
     settings.max_stderr_bytes = 0;
     std::size_t delivered = 0;
     ProcessCallbacks callbacks;
-    callbacks.on_stderr = [&](std::string_view bytes) { delivered += bytes.size(); };
+    callbacks.on_stderr = [&](std::string_view bytes) {
+        delivered += bytes.size();
+    };
     Process process(std::move(settings), std::move(callbacks));
     process.start().get();
     CHECK(finish(process).error.empty());
@@ -274,7 +334,9 @@ TEST_CASE("process terminate and destructor reap children and resolve completion
 
 TEST_CASE("process callback errors surface without escaping the libuv callback boundary") {
     ProcessCallbacks callbacks;
-    callbacks.on_stdout = [](std::string_view) { throw std::runtime_error("consumer failed"); };
+    callbacks.on_stdout = [](std::string_view) {
+        throw std::runtime_error("consumer failed");
+    };
     Process process(options("emit"), std::move(callbacks));
     process.start().get();
     const auto result = finish(process);
@@ -305,25 +367,31 @@ TEST_CASE("process options and lifecycle reject invalid input") {
 }
 
 #ifdef _WIN32
-TEST_CASE("Windows process completion releases target and descendant working directories immediately") {
+TEST_CASE(
+    "Windows process completion releases target and descendant working directories immediately") {
     namespace fs = std::filesystem;
     const auto base = fs::weakly_canonical(fs::current_path() / "build");
     for (const auto mode : {"arguments", "tree", "arguments", "tree"}) {
-        const auto nonce = std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
-            "-" + std::to_string(std::random_device{}());
+        const auto nonce =
+            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
+            std::to_string(std::random_device{}());
         const auto directory = base / ("process-cwd-tests-" + nonce);
         const auto renamed = base / ("process-cwd-tests-" + nonce + "-renamed");
         REQUIRE(fs::create_directory(directory));
+
         struct Cleanup {
             fs::path base, directory, renamed;
+
             ~Cleanup() {
                 for (const auto& path : {directory, renamed}) {
-                    for (const auto& issue : astra::test::cleanup_owned_directory(path, base, "process-cwd-tests-")) {
+                    for (const auto& issue :
+                         astra::test::cleanup_owned_directory(path, base, "process-cwd-tests-")) {
                         CHECK_MESSAGE(false, "Process cwd cleanup: ", issue.message);
                     }
                 }
             }
         } cleanup{base, directory, renamed};
+
         auto settings = options(mode);
         const auto path = directory.u8string();
         settings.cwd.assign(reinterpret_cast<const char*>(path.data()), path.size());
@@ -344,7 +412,9 @@ TEST_CASE("Windows process job reaps grandchildren retaining pipes after target 
     settings.shutdown_timeout = 400ms;
     std::string output;
     ProcessCallbacks callbacks;
-    callbacks.on_stdout = [&](std::string_view bytes) { output += bytes; };
+    callbacks.on_stdout = [&](std::string_view bytes) {
+        output += bytes;
+    };
     Process process(std::move(settings), std::move(callbacks));
     const auto began = std::chrono::steady_clock::now();
     process.start().get();
@@ -358,11 +428,14 @@ TEST_CASE("Windows process job reaps grandchildren retaining pipes after target 
     std::size_t children = 0;
     while (records >> prefix >> pid) {
         REQUIRE(prefix == "PID");
-        const auto handle = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        const auto handle =
+            OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
         if (handle) {
             CHECK(WaitForSingleObject(handle, 0) == WAIT_OBJECT_0);
             CHECK(CloseHandle(handle) != FALSE);
-        } else { CHECK(GetLastError() == ERROR_INVALID_PARAMETER); }
+        } else {
+            CHECK(GetLastError() == ERROR_INVALID_PARAMETER);
+        }
         ++children;
     }
     CHECK(children == 2);

@@ -13,8 +13,8 @@
 namespace {
 
 using astra::editing::Command;
-using astra::editing::Options;
 using astra::editing::execute;
+using astra::editing::Options;
 
 astra::Selection selection(std::size_t anchor, std::size_t head) {
     return {astra::ByteOffset{anchor}, astra::ByteOffset{head}};
@@ -27,18 +27,23 @@ std::size_t caret(const astra::Document& document) {
 }
 
 const std::vector<std::string> clusters{
-    "A", "e\xcc\x81", "\xf0\x9f\x87\xad\xf0\x9f\x87\xb0", // Hong Kong RI pair
+    "A",
+    "e\xcc\x81",
+    "\xf0\x9f\x87\xad\xf0\x9f\x87\xb0",             // Hong Kong RI pair
     "\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x92\xbb", // woman technologist
-    "\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbd", // emoji + skin tone
-    "\r\n", "\xe4\xb8\xad"
-};
+    "\xf0\x9f\x91\x8d\xf0\x9f\x8f\xbd",             // emoji + skin tone
+    "\r\n",
+    "\xe4\xb8\xad"};
 
 } // namespace
 
 TEST_CASE("editing arrow movement respects combining emoji ZWJ RI and CRLF graphemes") {
     std::string text;
     std::vector<std::size_t> boundaries{0};
-    for (const auto& cluster : clusters) { text += cluster; boundaries.push_back(text.size()); }
+    for (const auto& cluster : clusters) {
+        text += cluster;
+        boundaries.push_back(text.size());
+    }
     astra::Document document(astra::BufferId{1}, text);
     for (std::size_t index = 1; index < boundaries.size(); ++index) {
         REQUIRE(execute(document, Command::move_right));
@@ -61,7 +66,8 @@ TEST_CASE("editing next occurrence selects words wraps and edits all matches in 
     CHECK(document.selections() == std::vector{selection(8, 11)});
     REQUIRE(execute(document, Command::select_next_occurrence));
     REQUIRE(execute(document, Command::select_next_occurrence));
-    CHECK(document.selections() == std::vector{selection(0, 3), selection(8, 11), selection(12, 15)});
+    CHECK(document.selections() ==
+          std::vector{selection(0, 3), selection(8, 11), selection(12, 15)});
     CHECK_FALSE(execute(document, Command::select_next_occurrence));
     CHECK_FALSE(document.can_undo());
     CHECK(document.revision() == astra::Revision{0});
@@ -74,7 +80,8 @@ TEST_CASE("editing next occurrence selects words wraps and edits all matches in 
 
 TEST_CASE("editing occurrence search crosses windows and never selects part of a grapheme") {
     const std::string cluster = "e\xcc\x81";
-    astra::Document document(astra::BufferId{2}, cluster + " " + std::string(65533, '.') + cluster + " end");
+    astra::Document document(astra::BufferId{2},
+                             cluster + " " + std::string(65533, '.') + cluster + " end");
     document.set_selections({selection(0, 3)});
     REQUIRE(execute(document, Command::select_next_occurrence));
     CHECK(document.selections().back() == selection(65537, 65540));
@@ -93,11 +100,14 @@ TEST_CASE("editing occurrence limit rejects without changing current selections"
     std::vector<astra::Selection> selections;
     for (std::size_t i = 0; i < 4097; ++i) {
         text += "x ";
-        if (i < 4096) { selections.push_back(selection(i * 2, i * 2 + 1)); }
+        if (i < 4096) {
+            selections.push_back(selection(i * 2, i * 2 + 1));
+        }
     }
     astra::Document document(astra::BufferId{5}, text);
     document.set_selections(selections);
-    CHECK_THROWS_AS(static_cast<void>(execute(document, Command::select_next_occurrence)), std::length_error);
+    CHECK_THROWS_AS(static_cast<void>(execute(document, Command::select_next_occurrence)),
+                    std::length_error);
     CHECK(document.selections() == selections);
     CHECK_FALSE(document.dirty());
 }
@@ -201,7 +211,8 @@ TEST_CASE("editing word motion and deletion classify Unicode words and punctuati
     REQUIRE(execute(document, Command::move_word_left));
     CHECK(caret(document) == 13);
     REQUIRE(execute(document, Command::delete_word_backward));
-    CHECK(document.text().str() == "one  \xe4\xb8\xad\xe6\x96\x87" "e\xcc\x81");
+    CHECK(document.text().str() == "one  \xe4\xb8\xad\xe6\x96\x87"
+                                   "e\xcc\x81");
     REQUIRE(document.undo());
     document.set_selections({selection(3, 3)});
     REQUIRE(execute(document, Command::delete_word_forward));
@@ -222,7 +233,10 @@ TEST_CASE("editing select word and select all do not mutate text history") {
 }
 
 TEST_CASE("editing vertical motion uses UTF16 columns without splitting supplementary characters") {
-    astra::Document document(astra::BufferId{1}, "ab\nx\xf0\x9f\x98\x80" "z\ne\xcc\x81" "ab\n");
+    astra::Document document(astra::BufferId{1},
+                             "ab\nx\xf0\x9f\x98\x80"
+                             "z\ne\xcc\x81"
+                             "ab\n");
     document.set_selections({selection(2, 2)}); // UTF-16 col 2, interior of emoji on next line.
     REQUIRE(execute(document, Command::move_down));
     CHECK(caret(document) == 4); // Snaps to before emoji, UTF-16 col 1.
@@ -398,7 +412,8 @@ TEST_CASE("editing insertion is atomic for all cursors and rejects invalid optio
     Options options;
     options.text = "\xf0\x9f\x98\x80";
     REQUIRE(execute(document, Command::insert_text, options));
-    CHECK(document.text().str() == "\xf0\x9f\x98\x80" "ab\xf0\x9f\x98\x80");
+    CHECK(document.text().str() == "\xf0\x9f\x98\x80"
+                                   "ab\xf0\x9f\x98\x80");
     REQUIRE(document.undo());
     CHECK(document.selections() == before.selections);
     options.text = "\xc0\xaf";
@@ -422,11 +437,15 @@ TEST_CASE("editing randomized grapheme deletion matches a flat cluster model") {
             parts.push_back(clusters[random() % clusters.size()]);
             parts.push_back("|");
         }
-        for (const auto& part : parts) { text += part; }
+        for (const auto& part : parts) {
+            text += part;
+        }
         astra::Document document(astra::BufferId{1}, text);
         const auto selected = static_cast<std::size_t>(random() % parts.size());
         std::size_t begin = 0;
-        for (std::size_t index = 0; index < selected; ++index) { begin += parts[index].size(); }
+        for (std::size_t index = 0; index < selected; ++index) {
+            begin += parts[index].size();
+        }
         document.set_selections({selection(begin, begin)});
         REQUIRE(execute(document, Command::delete_forward));
         text.erase(begin, parts[selected].size());

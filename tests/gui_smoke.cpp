@@ -18,7 +18,9 @@ using Json = nlohmann::json;
 using Clock = std::chrono::steady_clock;
 
 void require(bool condition, const std::string& message) {
-    if (!condition) { throw std::runtime_error(message); }
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
 }
 
 void settle(astra::ui::EditorWindow& window) {
@@ -26,116 +28,167 @@ void settle(astra::ui::EditorWindow& window) {
     do {
         require(window.pump(), "Window closed before acceptance completed");
         require(window.last_error().empty(), "GUI action failed: " + window.last_error());
-        if (window.idle()) { return; }
+        if (window.idle()) {
+            return;
+        }
         SDL_Delay(1);
     } while (Clock::now() < deadline);
     throw std::runtime_error("GUI did not become idle within 15 seconds");
 }
 
-void key(astra::ui::EditorWindow& window, SDL_Keycode keycode, SDL_Keymod modifiers = SDL_KMOD_NONE) {
+void key(astra::ui::EditorWindow& window,
+         SDL_Keycode keycode,
+         SDL_Keymod modifiers = SDL_KMOD_NONE) {
     SDL_Event event{};
-    event.type = SDL_EVENT_KEY_DOWN; event.key.key = keycode; event.key.mod = modifiers;
-    event.key.down = true; event.key.windowID = SDL_GetWindowID(window.window());
+    event.type = SDL_EVENT_KEY_DOWN;
+    event.key.key = keycode;
+    event.key.mod = modifiers;
+    event.key.down = true;
+    event.key.windowID = SDL_GetWindowID(window.window());
     require(SDL_PushEvent(&event), "Push production keyboard event failed");
     settle(window);
 }
 
 void text(astra::ui::EditorWindow& window, const std::string& input) {
     SDL_Event event{};
-    event.type = SDL_EVENT_TEXT_INPUT; event.text.text = input.c_str();
+    event.type = SDL_EVENT_TEXT_INPUT;
+    event.text.text = input.c_str();
     event.text.windowID = SDL_GetWindowID(window.window());
     require(SDL_PushEvent(&event), "Push production text input event failed");
     settle(window);
 }
 
-void pointer(astra::ui::EditorWindow& window,Uint32 type,float x,float y) {
-    int width{},height{},pixels_x{},pixels_y{};
-    require(SDL_GetWindowSize(window.window(),&width,&height) && SDL_GetWindowSizeInPixels(window.window(),&pixels_x,&pixels_y),"Cannot read pointer scale");
-    SDL_Event event{};event.type=type;
-    if(type==SDL_EVENT_MOUSE_MOTION) {
-        event.motion.windowID=SDL_GetWindowID(window.window());event.motion.state=SDL_BUTTON_LMASK;
-        event.motion.x=x*static_cast<float>(width)/static_cast<float>(pixels_x);event.motion.y=y*static_cast<float>(height)/static_cast<float>(pixels_y);
+void pointer(astra::ui::EditorWindow& window, Uint32 type, float x, float y) {
+    int width{}, height{}, pixels_x{}, pixels_y{};
+    require(SDL_GetWindowSize(window.window(), &width, &height) &&
+                SDL_GetWindowSizeInPixels(window.window(), &pixels_x, &pixels_y),
+            "Cannot read pointer scale");
+    SDL_Event event{};
+    event.type = type;
+    if (type == SDL_EVENT_MOUSE_MOTION) {
+        event.motion.windowID = SDL_GetWindowID(window.window());
+        event.motion.state = SDL_BUTTON_LMASK;
+        event.motion.x = x * static_cast<float>(width) / static_cast<float>(pixels_x);
+        event.motion.y = y * static_cast<float>(height) / static_cast<float>(pixels_y);
     } else {
-        event.button.windowID=SDL_GetWindowID(window.window());event.button.button=SDL_BUTTON_LEFT;event.button.down=type==SDL_EVENT_MOUSE_BUTTON_DOWN;
-        event.button.x=x*static_cast<float>(width)/static_cast<float>(pixels_x);event.button.y=y*static_cast<float>(height)/static_cast<float>(pixels_y);
+        event.button.windowID = SDL_GetWindowID(window.window());
+        event.button.button = SDL_BUTTON_LEFT;
+        event.button.down = type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+        event.button.x = x * static_cast<float>(width) / static_cast<float>(pixels_x);
+        event.button.y = y * static_cast<float>(height) / static_cast<float>(pixels_y);
     }
-    require(SDL_PushEvent(&event),"Cannot enqueue pointer input");
-}
-void click(astra::ui::EditorWindow& window,astra::ui::Box box) {
-    pointer(window,SDL_EVENT_MOUSE_BUTTON_DOWN,box.x+box.width/2,box.y+box.height/2);
-    pointer(window,SDL_EVENT_MOUSE_BUTTON_UP,box.x+box.width/2,box.y+box.height/2);settle(window);
+    require(SDL_PushEvent(&event), "Cannot enqueue pointer input");
 }
 
-Json call(const std::shared_ptr<astra::service::ServiceHost>& host, const std::string& method, const Json& params) {
-    const auto response = host->submit(Json{{"jsonrpc", "2.0"}, {"id", "acceptance"}, {"method", method}, {"params", params}}.dump()).get();
+void click(astra::ui::EditorWindow& window, astra::ui::Box box) {
+    pointer(window, SDL_EVENT_MOUSE_BUTTON_DOWN, box.x + box.width / 2, box.y + box.height / 2);
+    pointer(window, SDL_EVENT_MOUSE_BUTTON_UP, box.x + box.width / 2, box.y + box.height / 2);
+    settle(window);
+}
+
+Json call(const std::shared_ptr<astra::service::ServiceHost>& host,
+          const std::string& method,
+          const Json& params) {
+    const auto response =
+        host
+            ->submit(Json{
+                {"jsonrpc", "2.0"}, {"id", "acceptance"}, {"method", method}, {"params", params}}
+                         .dump())
+            .get();
     require(response.has_value(), "Document verification returned no response");
     const auto parsed = Json::parse(*response);
     require(!parsed.contains("error"), "Document verification returned an error");
     return parsed.at("result");
 }
-Json read_document(const std::shared_ptr<astra::service::ServiceHost>& host, const std::string& id) {
-    return call(host,"document.get",{{"id",id}});
+
+Json read_document(const std::shared_ptr<astra::service::ServiceHost>& host,
+                   const std::string& id) {
+    return call(host, "document.get", {{"id", id}});
 }
+
 class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
-public:
-    ConcurrentSyntaxChannel(std::shared_ptr<astra::ui::EditorChannel> channel,std::shared_ptr<astra::service::ServiceHost> host)
-        :channel_(std::move(channel)),host_(std::move(host)) {}
+  public:
+    ConcurrentSyntaxChannel(std::shared_ptr<astra::ui::EditorChannel> channel,
+                            std::shared_ptr<astra::service::ServiceHost> host)
+        : channel_(std::move(channel)), host_(std::move(host)) {
+    }
+
     std::future<std::optional<std::string>> submit(std::string body) override {
-        const auto request=Json::parse(body);
-        const auto method=request.at("method").get<std::string>();
-        if(method=="document.find") {
-            if(request.at("params").value("select",false))++find_requests;
-            else ++preview_requests;
+        const auto request = Json::parse(body);
+        const auto method = request.at("method").get<std::string>();
+        if (method == "document.find") {
+            if (request.at("params").value("select", false))
+                ++find_requests;
+            else
+                ++preview_requests;
         }
-        if(method=="document.replaceAll")++replace_requests;
-        if(method=="document.get" && request.at("params").value("end",std::size_t{0})>
-            request.at("params").value("begin",std::size_t{0}))++text_downloads;
-        if(method=="document.find" && hold_next_find) {
-            hold_next_find=false;held_find.emplace();held_find->body=std::move(body);
+        if (method == "document.replaceAll")
+            ++replace_requests;
+        if (method == "document.get" && request.at("params").value("end", std::size_t{0}) >
+                                            request.at("params").value("begin", std::size_t{0}))
+            ++text_downloads;
+        if (method == "document.find" && hold_next_find) {
+            hold_next_find = false;
+            held_find.emplace();
+            held_find->body = std::move(body);
             return held_find->reply.get_future();
         }
-        if(!changed && request.at("method")=="document.syntax") {
-            changed=true;
-            const auto id=request.at("params").at("id").get<std::string>();
-            const auto original=read_document(host_,id);
-            const auto edited=call(host_,"document.command",{{"id",id},{"baseRevision",original.at("revision")},
-                {"command","insert_text"},{"text","other client"}});
-            static_cast<void>(call(host_,"document.undo",{{"id",id},{"baseRevision",edited.at("revision")}}));
+        if (!changed && request.at("method") == "document.syntax") {
+            changed = true;
+            const auto id = request.at("params").at("id").get<std::string>();
+            const auto original = read_document(host_, id);
+            const auto edited = call(host_,
+                                     "document.command",
+                                     {{"id", id},
+                                      {"baseRevision", original.at("revision")},
+                                      {"command", "insert_text"},
+                                      {"text", "other client"}});
+            static_cast<void>(call(
+                host_, "document.undo", {{"id", id}, {"baseRevision", edited.at("revision")}}));
         }
         return channel_->submit(std::move(body));
     }
+
     std::vector<std::string> take_notifications() override {
-        if(held_find && held_find->future && held_find->future->wait_for(std::chrono::seconds(0))==std::future_status::ready) {
-            held_find->reply.set_value(held_find->future->get());held_find.reset();
+        if (held_find && held_find->future &&
+            held_find->future->wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            held_find->reply.set_value(held_find->future->get());
+            held_find.reset();
         }
         return channel_->take_notifications();
     }
+
     void release_find() {
-        require(held_find.has_value(),"No withheld search request to release");
+        require(held_find.has_value(), "No withheld search request to release");
         held_find->future.emplace(channel_->submit(std::move(held_find->body)));
     }
+
     bool changed{};
     bool hold_next_find{};
-    unsigned find_requests{},preview_requests{},replace_requests{},text_downloads{};
-private:
+    unsigned find_requests{}, preview_requests{}, replace_requests{}, text_downloads{};
+
+  private:
     struct HeldFind {
         std::string body;
         std::promise<std::optional<std::string>> reply;
         std::optional<std::future<std::optional<std::string>>> future;
     };
+
     std::optional<HeldFind> held_find;
     std::shared_ptr<astra::ui::EditorChannel> channel_;
     std::shared_ptr<astra::service::ServiceHost> host_;
 };
-template<class Predicate>
+
+template <class Predicate>
 void pump_until(astra::ui::EditorWindow& window, Predicate ready, const std::string& failure) {
-    const auto deadline=Clock::now()+std::chrono::seconds(15);
+    const auto deadline = Clock::now() + std::chrono::seconds(15);
     do {
-        require(window.pump(),"Window closed during deferred editing acceptance");
-        require(window.last_error().empty(),"GUI action failed: "+window.last_error());
-        if(ready())return;
+        require(window.pump(), "Window closed during deferred editing acceptance");
+        require(window.last_error().empty(), "GUI action failed: " + window.last_error());
+        if (ready())
+            return;
         SDL_Delay(1);
-    } while(Clock::now()<deadline);
+    } while (Clock::now() < deadline);
     throw std::runtime_error(failure);
 }
 } // namespace
@@ -145,23 +198,48 @@ int main(int argc, char* argv[]) {
         const bool remote = argc == 2 && std::string_view(argv[1]) == "--tcp";
         require(argc == 1 || remote, "Usage: gui-smoke [--tcp]");
         std::cerr << std::unitbuf << "GUI acceptance: starting service\n";
-        const auto name = "gui-workspace-" + std::to_string(Clock::now().time_since_epoch().count());
-        const auto workspace = std::filesystem::absolute(std::filesystem::path("build/graphics") / name);
+        const auto name =
+            "gui-workspace-" + std::to_string(Clock::now().time_since_epoch().count());
+        const auto workspace =
+            std::filesystem::absolute(std::filesystem::path("build/graphics") / name);
         std::filesystem::create_directories(workspace / "src");
-        { std::ofstream file(workspace / "src/main.cpp", std::ios::binary); file << "// GUI acceptance\nint main() { return 0; }\n"; }
-        { std::ofstream file(workspace / "README.md", std::ios::binary); file << "# Astra GUI acceptance\n"; }
-        { std::ofstream file(workspace / "rename.txt", std::ios::binary); file << "needle and needle\n"; }
-        { std::ofstream file(workspace / "closing.txt", std::ios::binary); file << "baseline"; }
+        {
+            std::ofstream file(workspace / "src/main.cpp", std::ios::binary);
+            file << "// GUI acceptance\nint main() { return 0; }\n";
+        }
+        {
+            std::ofstream file(workspace / "README.md", std::ios::binary);
+            file << "# Astra GUI acceptance\n";
+        }
+        {
+            std::ofstream file(workspace / "rename.txt", std::ios::binary);
+            file << "needle and needle\n";
+        }
+        {
+            std::ofstream file(workspace / "closing.txt", std::ios::binary);
+            file << "baseline";
+        }
         const auto long_line = std::string(70'000, 'a') + "\t中文🙂";
-        { std::ofstream file(workspace / "long.txt", std::ios::binary); file << long_line; }
-        { std::ofstream file(workspace / ".editorconfig", std::ios::binary); file << "root = true\n[*]\nindent_style = space\nindent_size = 4\nend_of_line = lf\n[README.md]\nend_of_line = crlf\n"; }
-        { std::ofstream file(workspace / ".clangd", std::ios::binary); file << "CompileFlags:\n  Add: [-nostdinc, -nostdinc++]\n"; }
+        {
+            std::ofstream file(workspace / "long.txt", std::ios::binary);
+            file << long_line;
+        }
+        {
+            std::ofstream file(workspace / ".editorconfig", std::ios::binary);
+            file << "root = true\n[*]\nindent_style = space\nindent_size = 4\nend_of_line = "
+                    "lf\n[README.md]\nend_of_line = crlf\n";
+        }
+        {
+            std::ofstream file(workspace / ".clangd", std::ios::binary);
+            file << "CompileFlags:\n  Add: [-nostdinc, -nostdinc++]\n";
+        }
         astra::service::ServiceHostOptions service_options;
         service_options.workspace = workspace;
         service_options.recovery_directory = workspace.parent_path() / (name + "-recovery");
         service_options.resource_directory = std::filesystem::current_path();
-        service_options.defaults_script = astra::io::read_file("data/defaults.js", 1024 * 1024).text;
-        service_options.user_script=R"js(let releaseInput,observedRead=null;
+        service_options.defaults_script =
+            astra::io::read_file("data/defaults.js", 1024 * 1024).text;
+        service_options.user_script = R"js(let releaseInput,observedRead=null;
         astra.registerCommand('acceptance.inputState',()=>({waiting:!!releaseInput,observedRead}));
         astra.registerCommand('acceptance.observeRead',parameters=>{observedRead=parameters;return true;});
         astra.registerCommand('acceptance.releaseInput',()=>{releaseInput();releaseInput=undefined;return true;});
@@ -173,8 +251,11 @@ int main(int argc, char* argv[]) {
         auto host = std::make_shared<astra::service::ServiceHost>(std::move(service_options));
         std::cerr << "GUI acceptance: creating window\n";
         astra::ui::EditorWindowOptions options;
-        options.title = "Astra — GUI acceptance"; options.workspace_name = "GUI ACCEPTANCE";
-        options.open_paths = {"src/main.cpp"}; options.width = 1400; options.height = 860;
+        options.title = "Astra — GUI acceptance";
+        options.workspace_name = "GUI ACCEPTANCE";
+        options.open_paths = {"src/main.cpp"};
+        options.width = 1400;
+        options.height = 860;
         options.user_script = R"js(if(astra.context==='client') {
             astra.registerCommand('acceptance.findWithoutInput',()=>astra.ui.execute('ui.find',{query:'beta'}));
             astra.registerCommand('acceptance.readInput',async()=>{
@@ -219,112 +300,202 @@ int main(int argc, char* argv[]) {
             });
         })js";
         std::shared_ptr<astra::ui::EditorChannel> channel = host;
-        if (remote) { channel = std::make_shared<astra::transport::TcpEditorChannel>("127.0.0.1", host->port()); }
-        const auto concurrent=std::make_shared<ConcurrentSyntaxChannel>(channel,host);channel=concurrent;
+        if (remote) {
+            channel =
+                std::make_shared<astra::transport::TcpEditorChannel>("127.0.0.1", host->port());
+        }
+        const auto concurrent = std::make_shared<ConcurrentSyntaxChannel>(channel, host);
+        channel = concurrent;
         astra::ui::EditorWindow window(channel, std::move(options));
         settle(window);
         std::cerr << "GUI acceptance: initial viewport and syntax ready\n";
-        require(concurrent->changed,"Concurrent syntax revision acceptance did not run");
+        require(concurrent->changed, "Concurrent syntax revision acceptance did not run");
         const auto id = window.active_document_id();
         require(!id.empty(), "Workspace file did not open in the editor");
-        require(read_document(host, id).at("text") == "// GUI acceptance\nint main() { return 0; }\n", "Opened wrong file");
+        require(read_document(host, id).at("text") ==
+                    "// GUI acceptance\nint main() { return 0; }\n",
+                "Opened wrong file");
         key(window, SDLK_B, SDL_KMOD_CTRL);
-        require(window.status_text() == "User sidebar policy", "Native UI command bypassed the user JS override");
+        require(window.status_text() == "User sidebar policy",
+                "Native UI command bypassed the user JS override");
         key(window, SDLK_B, SDL_KMOD_CTRL);
 
-        key(window,SDLK_A,SDL_KMOD_CTRL);
-        for(const auto* input:{"A","中🙂"}) {
-            SDL_Event event{};event.type=SDL_EVENT_TEXT_INPUT;event.text.text=input;event.text.windowID=SDL_GetWindowID(window.window());
-            require(SDL_PushEvent(&event),"Cannot enqueue delayed script editing intents");
+        key(window, SDLK_A, SDL_KMOD_CTRL);
+        for (const auto* input : {"A", "中🙂"}) {
+            SDL_Event event{};
+            event.type = SDL_EVENT_TEXT_INPUT;
+            event.text.text = input;
+            event.text.windowID = SDL_GetWindowID(window.window());
+            require(SDL_PushEvent(&event), "Cannot enqueue delayed script editing intents");
         }
-        pump_until(window,[&]{return call(host,"script.command",{{"name","acceptance.inputState"}}).at("waiting").get<bool>();},
+        pump_until(
+            window,
+            [&] {
+                return call(host, "script.command", {{"name", "acceptance.inputState"}})
+                    .at("waiting")
+                    .get<bool>();
+            },
             "The user editing policy did not reach its asynchronous gate");
         window.execute_ui_command("acceptance.readInput");
         window.execute_ui_command("acceptance.cancelRead");
-        pump_until(window,[&]{return window.status_text()=="Read fence cancelled";},"Cancelling a read remained blocked behind editing");
-        require(call(host,"script.command",{{"name","acceptance.inputState"}}).at("observedRead").is_null(),
-            "A document read bypassed preceding suspended input");
+        pump_until(
+            window,
+            [&] {
+                return window.status_text() == "Read fence cancelled";
+            },
+            "Cancelling a read remained blocked behind editing");
+        require(call(host, "script.command", {{"name", "acceptance.inputState"}})
+                    .at("observedRead")
+                    .is_null(),
+                "A document read bypassed preceding suspended input");
         window.open_path("README.md");
-        pump_until(window,[&]{return !window.active_document_id().empty() && window.active_document_id()!=id;},
+        pump_until(
+            window,
+            [&] {
+                return !window.active_document_id().empty() && window.active_document_id() != id;
+            },
             "A suspended editing policy blocked opening another document");
-        const auto independent_id=window.active_document_id();
-        SDL_Event independent{};independent.type=SDL_EVENT_TEXT_INPUT;independent.text.text="Independent";
-        independent.text.windowID=SDL_GetWindowID(window.window());
-        require(SDL_PushEvent(&independent),"Cannot enqueue independent document input");
-        pump_until(window,[&]{return read_document(host,independent_id).at("text").get<std::string>().find("Independent")!=std::string::npos;},
+        const auto independent_id = window.active_document_id();
+        SDL_Event independent{};
+        independent.type = SDL_EVENT_TEXT_INPUT;
+        independent.text.text = "Independent";
+        independent.text.windowID = SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&independent), "Cannot enqueue independent document input");
+        pump_until(
+            window,
+            [&] {
+                return read_document(host, independent_id)
+                           .at("text")
+                           .get<std::string>()
+                           .find("Independent") != std::string::npos;
+            },
             "A suspended editing policy blocked input in another document");
-        require(read_document(host,id).at("text")=="// GUI acceptance\nint main() { return 0; }\n",
-            "A later input bypassed the suspended command for the same document");
-        require(call(host,"script.command",{{"name","acceptance.releaseInput"}})==true,"Cannot release the editing policy gate");
+        require(read_document(host, id).at("text") ==
+                    "// GUI acceptance\nint main() { return 0; }\n",
+                "A later input bypassed the suspended command for the same document");
+        require(call(host, "script.command", {{"name", "acceptance.releaseInput"}}) == true,
+                "Cannot release the editing policy gate");
         settle(window);
-        require(read_document(host,id).at("text")=="A中🙂","Deferred user editing commands lost order or reused a stale revision");
-        const auto observed=call(host,"script.command",{{"name","acceptance.inputState"}}).at("observedRead");
-        require(observed.at("document").at("id")==id && observed.at("document").at("revision")==read_document(host,id).at("revision"),
-            "An awaited document read lost its captured identity or revision");
-        require(observed.at("newline")=="\n","An awaited document read used another document's line ending");
-        require(window.active_document_id()==independent_id,"Completed input changed the active document across await");
-        key(window,SDLK_Z,SDL_KMOD_CTRL);
-        require(read_document(host,independent_id).at("text")=="# Astra GUI acceptance\n","Independent input did not preserve its own history");
-        window.execute_ui_command("ui.closeTab");settle(window);
-        require(window.active_document_id()==id,"Closing the independent clean tab did not restore the original tab");
-        key(window,SDLK_Z,SDL_KMOD_CTRL);require(read_document(host,id).at("text")=="A","Deferred editing did not preserve one transaction per input");
-        key(window,SDLK_Z,SDL_KMOD_CTRL);
-        require(read_document(host,id).at("text")=="// GUI acceptance\nint main() { return 0; }\n","Deferred editing history lost the original source");
-        key(window,SDLK_A,SDL_KMOD_CTRL);
-        SDL_Event saved_input{};saved_input.type=SDL_EVENT_TEXT_INPUT;saved_input.text.text="Saved batch 中🙂";
-        saved_input.text.windowID=SDL_GetWindowID(window.window());
-        require(SDL_PushEvent(&saved_input),"Cannot enqueue same-batch save input");
-        SDL_Event saved_key{};saved_key.type=SDL_EVENT_KEY_DOWN;saved_key.key.key=SDLK_S;saved_key.key.mod=SDL_KMOD_CTRL;
-        saved_key.key.down=true;saved_key.key.windowID=SDL_GetWindowID(window.window());
-        require(SDL_PushEvent(&saved_key),"Cannot enqueue same-batch save shortcut");
+        require(read_document(host, id).at("text") == "A中🙂",
+                "Deferred user editing commands lost order or reused a stale revision");
+        const auto observed =
+            call(host, "script.command", {{"name", "acceptance.inputState"}}).at("observedRead");
+        require(observed.at("document").at("id") == id &&
+                    observed.at("document").at("revision") ==
+                        read_document(host, id).at("revision"),
+                "An awaited document read lost its captured identity or revision");
+        require(observed.at("newline") == "\n",
+                "An awaited document read used another document's line ending");
+        require(window.active_document_id() == independent_id,
+                "Completed input changed the active document across await");
+        key(window, SDLK_Z, SDL_KMOD_CTRL);
+        require(read_document(host, independent_id).at("text") == "# Astra GUI acceptance\n",
+                "Independent input did not preserve its own history");
+        window.execute_ui_command("ui.closeTab");
         settle(window);
-        require(astra::io::read_file(workspace/"src/main.cpp").text=="Saved batch 中🙂","Save captured a revision before preceding input committed");
-        require(!read_document(host,id).at("dirty").get<bool>(),"Same-batch save did not persist its captured input");
-        SDL_Event copy_input{};copy_input.type=SDL_EVENT_TEXT_INPUT;copy_input.text.text=" Copy";
-        copy_input.text.windowID=SDL_GetWindowID(window.window());
-        require(SDL_PushEvent(&copy_input),"Cannot enqueue same-batch line copy input");
-        SDL_Event copy_key{};copy_key.type=SDL_EVENT_KEY_DOWN;copy_key.key.key=SDLK_C;copy_key.key.mod=SDL_KMOD_CTRL;
-        copy_key.key.down=true;copy_key.key.windowID=SDL_GetWindowID(window.window());
-        require(SDL_PushEvent(&copy_key),"Cannot enqueue same-batch line copy shortcut");
+        require(window.active_document_id() == id,
+                "Closing the independent clean tab did not restore the original tab");
+        key(window, SDLK_Z, SDL_KMOD_CTRL);
+        require(read_document(host, id).at("text") == "A",
+                "Deferred editing did not preserve one transaction per input");
+        key(window, SDLK_Z, SDL_KMOD_CTRL);
+        require(read_document(host, id).at("text") ==
+                    "// GUI acceptance\nint main() { return 0; }\n",
+                "Deferred editing history lost the original source");
+        key(window, SDLK_A, SDL_KMOD_CTRL);
+        SDL_Event saved_input{};
+        saved_input.type = SDL_EVENT_TEXT_INPUT;
+        saved_input.text.text = "Saved batch 中🙂";
+        saved_input.text.windowID = SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&saved_input), "Cannot enqueue same-batch save input");
+        SDL_Event saved_key{};
+        saved_key.type = SDL_EVENT_KEY_DOWN;
+        saved_key.key.key = SDLK_S;
+        saved_key.key.mod = SDL_KMOD_CTRL;
+        saved_key.key.down = true;
+        saved_key.key.windowID = SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&saved_key), "Cannot enqueue same-batch save shortcut");
         settle(window);
-        char* copied=SDL_GetClipboardText();require(copied!=nullptr,"Cannot read copied line");
-        const std::string copied_line(copied);SDL_free(copied);
-        require(copied_line=="Saved batch 中🙂 Copy","Line copy read an old selection or relied on the stale native viewport");
+        require(astra::io::read_file(workspace / "src/main.cpp").text == "Saved batch 中🙂",
+                "Save captured a revision before preceding input committed");
+        require(!read_document(host, id).at("dirty").get<bool>(),
+                "Same-batch save did not persist its captured input");
+        SDL_Event copy_input{};
+        copy_input.type = SDL_EVENT_TEXT_INPUT;
+        copy_input.text.text = " Copy";
+        copy_input.text.windowID = SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&copy_input), "Cannot enqueue same-batch line copy input");
+        SDL_Event copy_key{};
+        copy_key.type = SDL_EVENT_KEY_DOWN;
+        copy_key.key.key = SDLK_C;
+        copy_key.key.mod = SDL_KMOD_CTRL;
+        copy_key.key.down = true;
+        copy_key.key.windowID = SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&copy_key), "Cannot enqueue same-batch line copy shortcut");
+        settle(window);
+        char* copied = SDL_GetClipboardText();
+        require(copied != nullptr, "Cannot read copied line");
+        const std::string copied_line(copied);
+        SDL_free(copied);
+        require(copied_line == "Saved batch 中🙂 Copy",
+                "Line copy read an old selection or relied on the stale native viewport");
         key(window, SDLK_A, SDL_KMOD_CTRL);
         text(window, "alpha\nbeta");
         key(window, SDLK_HOME, SDL_KMOD_CTRL);
         key(window, SDLK_DOWN, SDL_KMOD_CTRL | SDL_KMOD_ALT);
-        require(read_document(host, id).at("selections").size() == 2, "Add cursor shortcut did not reach the service");
+        require(read_document(host, id).at("selections").size() == 2,
+                "Add cursor shortcut did not reach the service");
         text(window, "X");
-        require(read_document(host, id).at("text") == "Xalpha\nXbeta", "Multicursor text entry was not atomic");
+        require(read_document(host, id).at("text") == "Xalpha\nXbeta",
+                "Multicursor text entry was not atomic");
         key(window, SDLK_Z, SDL_KMOD_CTRL);
-        require(read_document(host, id).at("text") == "alpha\nbeta", "One undo did not restore every cursor edit");
+        require(read_document(host, id).at("text") == "alpha\nbeta",
+                "One undo did not restore every cursor edit");
         key(window, SDLK_Y, SDL_KMOD_CTRL);
-        require(read_document(host, id).at("text") == "Xalpha\nXbeta", "Redo did not restore multicursor text");
-        window.execute_ui_command("acceptance.awaitEdits");settle(window);
-        require(window.status_text()=="Awaited editing passed","Composed editing Promise resolved before actual service completion");
-        const auto before_cancel=read_document(host,id);
-        window.execute_ui_command("acceptance.cancelEdit");settle(window);
-        require(window.status_text()=="Queued edit cancelled","Queued editor action did not settle after cancellation");
-        const auto after_cancel=read_document(host,id);
-        require(before_cancel.at("revision")==after_cancel.at("revision") && before_cancel.at("text")==after_cancel.at("text"),"Cancelled queued editor action mutated the document");
-        for(unsigned pair=0;pair<3;++pair)for(const auto keycode:{SDLK_Z,SDLK_Y}) {
-            SDL_Event event{};event.type=SDL_EVENT_KEY_DOWN;event.key.key=keycode;event.key.mod=SDL_KMOD_CTRL;
-            event.key.down=true;event.key.windowID=SDL_GetWindowID(window.window());
-            require(SDL_PushEvent(&event),"Cannot queue rapid history shortcuts");
-        }
+        require(read_document(host, id).at("text") == "Xalpha\nXbeta",
+                "Redo did not restore multicursor text");
+        window.execute_ui_command("acceptance.awaitEdits");
         settle(window);
-        const auto after_batch=read_document(host,id);
-        require(after_batch.at("text")==after_cancel.at("text") &&
-            std::stoull(after_batch.at("revision").get<std::string>())==std::stoull(after_cancel.at("revision").get<std::string>())+6,
-            "Rapid queued history commands lost order or used stale revisions");
+        require(window.status_text() == "Awaited editing passed",
+                "Composed editing Promise resolved before actual service completion");
+        const auto before_cancel = read_document(host, id);
+        window.execute_ui_command("acceptance.cancelEdit");
+        settle(window);
+        require(window.status_text() == "Queued edit cancelled",
+                "Queued editor action did not settle after cancellation");
+        const auto after_cancel = read_document(host, id);
+        require(before_cancel.at("revision") == after_cancel.at("revision") &&
+                    before_cancel.at("text") == after_cancel.at("text"),
+                "Cancelled queued editor action mutated the document");
+        for (unsigned pair = 0; pair < 3; ++pair)
+            for (const auto keycode : {SDLK_Z, SDLK_Y}) {
+                SDL_Event event{};
+                event.type = SDL_EVENT_KEY_DOWN;
+                event.key.key = keycode;
+                event.key.mod = SDL_KMOD_CTRL;
+                event.key.down = true;
+                event.key.windowID = SDL_GetWindowID(window.window());
+                require(SDL_PushEvent(&event), "Cannot queue rapid history shortcuts");
+            }
+        settle(window);
+        const auto after_batch = read_document(host, id);
+        require(after_batch.at("text") == after_cancel.at("text") &&
+                    std::stoull(after_batch.at("revision").get<std::string>()) ==
+                        std::stoull(after_cancel.at("revision").get<std::string>()) + 6,
+                "Rapid queued history commands lost order or used stale revisions");
 
         key(window, SDLK_A, SDL_KMOD_CTRL);
         key(window, SDLK_C, SDL_KMOD_CTRL);
-        SDL_Event composing{}; composing.type = SDL_EVENT_TEXT_EDITING; composing.edit.text = "中文";
-        composing.edit.start = 0; composing.edit.length = 2; composing.edit.windowID = SDL_GetWindowID(window.window());
-        require(SDL_PushEvent(&composing), "IME composition event could not be queued"); settle(window);
-        require(read_document(host, id).at("text") == "Xalpha\nXbeta", "IME preedit modified the document before commit");
+        SDL_Event composing{};
+        composing.type = SDL_EVENT_TEXT_EDITING;
+        composing.edit.text = "中文";
+        composing.edit.start = 0;
+        composing.edit.length = 2;
+        composing.edit.windowID = SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&composing), "IME composition event could not be queued");
+        settle(window);
+        require(read_document(host, id).at("text") == "Xalpha\nXbeta",
+                "IME preedit modified the document before commit");
         text(window, "中文🙂 e\xCC\x81");
         require(read_document(host, id).at("text") == "中文🙂 e\xCC\x81", "Unicode input failed");
         key(window, SDLK_A, SDL_KMOD_CTRL);
@@ -333,184 +504,366 @@ int main(int argc, char* argv[]) {
         require(pasted == "Xalpha\nXbeta", "Production clipboard paste failed: " + pasted.dump());
         std::cerr << "GUI acceptance: clipboard and multicursor passed\n";
 
-        const auto search_downloads=concurrent->text_downloads;
-        const auto search_requests=concurrent->find_requests;
-        const auto replacement_requests=concurrent->replace_requests;
+        const auto search_downloads = concurrent->text_downloads;
+        const auto search_requests = concurrent->find_requests;
+        const auto replacement_requests = concurrent->replace_requests;
         key(window, SDLK_HOME, SDL_KMOD_CTRL);
-        const auto before_find=read_document(host,id);
+        const auto before_find = read_document(host, id);
         key(window, SDLK_F, SDL_KMOD_CTRL);
-        require(window.view_state().inline_form_layout.has_value(),"Find did not open a nonmodal component");
-        require(window.idle(),"Visible nonmodal find incorrectly holds an input task");
-        SDL_Rect ime_area{};int ime_cursor{},ime_logical_width{},ime_logical_height{},ime_pixels_width{},ime_pixels_height{};
-        require(SDL_GetTextInputArea(window.window(),&ime_area,&ime_cursor) &&
-            SDL_GetWindowSize(window.window(),&ime_logical_width,&ime_logical_height) &&
-            SDL_GetWindowSizeInPixels(window.window(),&ime_pixels_width,&ime_pixels_height),"Cannot verify native IME input area");
-        const auto ime_box=window.view_state().inline_form_layout->fields[0];
-        require(ime_box.contains(static_cast<float>(ime_area.x)*static_cast<float>(ime_pixels_width)/static_cast<float>(ime_logical_width),
-            static_cast<float>(ime_area.y)*static_cast<float>(ime_pixels_height)/static_cast<float>(ime_logical_height)),"IME candidate area remained at the document instead of find input");
-        composing.edit.text="中🙂";require(SDL_PushEvent(&composing),"Cannot enqueue input-field IME preedit");settle(window);
-        require(window.view_state().inline_form.at("values").at("query")=="","IME preedit changed find input before commit");
-        text(window,"中🙂e\xCC\x81");key(window,SDLK_BACKSPACE);
-        require(window.view_state().inline_form.at("values").at("query")=="中🙂","Find backspace split a grapheme");
-        key(window,SDLK_Z,SDL_KMOD_CTRL);
-        require(window.view_state().inline_form.at("values").at("query")=="中🙂e\xCC\x81","Find input undo changed the service document");
-        const auto input_box=window.view_state().inline_form_layout->fields[0];
-        pointer(window,SDL_EVENT_MOUSE_BUTTON_DOWN,input_box.x+3*window.layout().scale,input_box.y+input_box.height/2);
-        pointer(window,SDL_EVENT_MOUSE_MOTION,input_box.right()-4*window.layout().scale,input_box.y+input_box.height/2);
-        pointer(window,SDL_EVENT_MOUSE_BUTTON_UP,input_box.right()-4*window.layout().scale,input_box.y+input_box.height/2);settle(window);
-        key(window,SDLK_C,SDL_KMOD_CTRL);
-        const std::unique_ptr<char,decltype(&SDL_free)> copied_query(SDL_GetClipboardText(),SDL_free);
-        require(copied_query!=nullptr,"Cannot inspect input-field clipboard");const std::string query_clipboard(copied_query.get());
-        require(query_clipboard=="中🙂e\xCC\x81","Find input mouse drag and clipboard split Unicode selection");
-        require(read_document(host,id)==before_find,"Find input modified editor content or selections");
-        key(window,SDLK_A,SDL_KMOD_CTRL);text(window,"alpha");
-        require(read_document(host,id)==before_find,"Search preview moved the document selection");
-        key(window,SDLK_C,SDL_KMOD_ALT);
-        require(window.view_state().inline_form.at("values").at("caseSensitive")==false,"Alt+C did not toggle find case sensitivity");
-        key(window,SDLK_TAB);key(window,SDLK_SPACE);
-        require(window.view_state().inline_form.at("values").at("caseSensitive")==true,"Focused toggle did not handle Space");
-        key(window,SDLK_TAB,SDL_KMOD_SHIFT);
-        key(window,SDLK_R,SDL_KMOD_ALT);key(window,SDLK_A,SDL_KMOD_CTRL);text(window,"(");
-        require(window.view_state().inline_form.at("error")==true && window.last_error().empty(),"Invalid find regex did not report a component error");
-        key(window,SDLK_A,SDL_KMOD_CTRL);text(window,"alpha");key(window,SDLK_R,SDL_KMOD_ALT);
-        require(window.view_state().inline_form.at("error")==false,"Corrected query retained a stale component error");
-        key(window,SDLK_RETURN);
-        require(read_document(host, id).at("selections").front().at("anchor") == 1, "Find selected the wrong UTF-8 match");
-        key(window,SDLK_RETURN,SDL_KMOD_SHIFT);
-        require(read_document(host,id).at("selections").front().at("anchor")==1,"Previous match did not wrap");
-        require(window.view_state().inline_form.at("message")=="Match found · wrapped","Backward wrap did not update find component");
-        click(window,window.view_state().inline_form_layout->actions[1]);
-        require(read_document(host,id).at("selections").front().at("anchor")==1,"Mouse Next did not use the same search policy");
-        key(window, SDLK_H, SDL_KMOD_CTRL);text(window,"ALPHA");
-        require(window.view_state().inline_form.at("values").at("query")=="alpha","Find-to-replace lost query state");
-        window.request_screenshot(remote ? "build/graphics/gui-inline-replace-tcp.png" : "build/graphics/gui-inline-replace.png");settle(window);
-        key(window, SDLK_RETURN);
-        require(read_document(host, id).at("text") == "XALPHA\nXbeta", "Replace did not edit the document");
-        key(window,SDLK_ESCAPE);
+        require(window.view_state().inline_form_layout.has_value(),
+                "Find did not open a nonmodal component");
+        require(window.idle(), "Visible nonmodal find incorrectly holds an input task");
+        SDL_Rect ime_area{};
+        int ime_cursor{}, ime_logical_width{}, ime_logical_height{}, ime_pixels_width{},
+            ime_pixels_height{};
+        require(
+            SDL_GetTextInputArea(window.window(), &ime_area, &ime_cursor) &&
+                SDL_GetWindowSize(window.window(), &ime_logical_width, &ime_logical_height) &&
+                SDL_GetWindowSizeInPixels(window.window(), &ime_pixels_width, &ime_pixels_height),
+            "Cannot verify native IME input area");
+        const auto ime_box = window.view_state().inline_form_layout->fields[0];
+        require(ime_box.contains(
+                    static_cast<float>(ime_area.x) * static_cast<float>(ime_pixels_width) /
+                        static_cast<float>(ime_logical_width),
+                    static_cast<float>(ime_area.y) * static_cast<float>(ime_pixels_height) /
+                        static_cast<float>(ime_logical_height)),
+                "IME candidate area remained at the document instead of find input");
+        composing.edit.text = "中🙂";
+        require(SDL_PushEvent(&composing), "Cannot enqueue input-field IME preedit");
+        settle(window);
+        require(window.view_state().inline_form.at("values").at("query") == "",
+                "IME preedit changed find input before commit");
+        text(window, "中🙂e\xCC\x81");
+        key(window, SDLK_BACKSPACE);
+        require(window.view_state().inline_form.at("values").at("query") == "中🙂",
+                "Find backspace split a grapheme");
         key(window, SDLK_Z, SDL_KMOD_CTRL);
-        require(read_document(host, id).at("text") == "Xalpha\nXbeta", "Document replace was not one undo transaction");
-        require(concurrent->find_requests==search_requests+3 && concurrent->replace_requests==replacement_requests+1 && concurrent->preview_requests>0,
-            "Document find/replace bypassed the asynchronous service APIs");
-        require(concurrent->text_downloads==search_downloads,"Document search downloaded full text to the GUI");
-        concurrent->hold_next_find=true;
+        require(window.view_state().inline_form.at("values").at("query") == "中🙂e\xCC\x81",
+                "Find input undo changed the service document");
+        const auto input_box = window.view_state().inline_form_layout->fields[0];
+        pointer(window,
+                SDL_EVENT_MOUSE_BUTTON_DOWN,
+                input_box.x + 3 * window.layout().scale,
+                input_box.y + input_box.height / 2);
+        pointer(window,
+                SDL_EVENT_MOUSE_MOTION,
+                input_box.right() - 4 * window.layout().scale,
+                input_box.y + input_box.height / 2);
+        pointer(window,
+                SDL_EVENT_MOUSE_BUTTON_UP,
+                input_box.right() - 4 * window.layout().scale,
+                input_box.y + input_box.height / 2);
+        settle(window);
+        key(window, SDLK_C, SDL_KMOD_CTRL);
+        const std::unique_ptr<char, decltype(&SDL_free)> copied_query(SDL_GetClipboardText(),
+                                                                      SDL_free);
+        require(copied_query != nullptr, "Cannot inspect input-field clipboard");
+        const std::string query_clipboard(copied_query.get());
+        require(query_clipboard == "中🙂e\xCC\x81",
+                "Find input mouse drag and clipboard split Unicode selection");
+        require(read_document(host, id) == before_find,
+                "Find input modified editor content or selections");
+        key(window, SDLK_A, SDL_KMOD_CTRL);
+        text(window, "alpha");
+        require(read_document(host, id) == before_find,
+                "Search preview moved the document selection");
+        key(window, SDLK_C, SDL_KMOD_ALT);
+        require(window.view_state().inline_form.at("values").at("caseSensitive") == false,
+                "Alt+C did not toggle find case sensitivity");
+        key(window, SDLK_TAB);
+        key(window, SDLK_SPACE);
+        require(window.view_state().inline_form.at("values").at("caseSensitive") == true,
+                "Focused toggle did not handle Space");
+        key(window, SDLK_TAB, SDL_KMOD_SHIFT);
+        key(window, SDLK_R, SDL_KMOD_ALT);
+        key(window, SDLK_A, SDL_KMOD_CTRL);
+        text(window, "(");
+        require(window.view_state().inline_form.at("error") == true && window.last_error().empty(),
+                "Invalid find regex did not report a component error");
+        key(window, SDLK_A, SDL_KMOD_CTRL);
+        text(window, "alpha");
+        key(window, SDLK_R, SDL_KMOD_ALT);
+        require(window.view_state().inline_form.at("error") == false,
+                "Corrected query retained a stale component error");
+        key(window, SDLK_RETURN);
+        require(read_document(host, id).at("selections").front().at("anchor") == 1,
+                "Find selected the wrong UTF-8 match");
+        key(window, SDLK_RETURN, SDL_KMOD_SHIFT);
+        require(read_document(host, id).at("selections").front().at("anchor") == 1,
+                "Previous match did not wrap");
+        require(window.view_state().inline_form.at("message") == "Match found · wrapped",
+                "Backward wrap did not update find component");
+        click(window, window.view_state().inline_form_layout->actions[1]);
+        require(read_document(host, id).at("selections").front().at("anchor") == 1,
+                "Mouse Next did not use the same search policy");
+        key(window, SDLK_H, SDL_KMOD_CTRL);
+        text(window, "ALPHA");
+        require(window.view_state().inline_form.at("values").at("query") == "alpha",
+                "Find-to-replace lost query state");
+        window.request_screenshot(remote ? "build/graphics/gui-inline-replace-tcp.png"
+                                         : "build/graphics/gui-inline-replace.png");
+        settle(window);
+        key(window, SDLK_RETURN);
+        require(read_document(host, id).at("text") == "XALPHA\nXbeta",
+                "Replace did not edit the document");
+        key(window, SDLK_ESCAPE);
+        key(window, SDLK_Z, SDL_KMOD_CTRL);
+        require(read_document(host, id).at("text") == "Xalpha\nXbeta",
+                "Document replace was not one undo transaction");
+        require(concurrent->find_requests == search_requests + 3 &&
+                    concurrent->replace_requests == replacement_requests + 1 &&
+                    concurrent->preview_requests > 0,
+                "Document find/replace bypassed the asynchronous service APIs");
+        require(concurrent->text_downloads == search_downloads,
+                "Document search downloaded full text to the GUI");
+        concurrent->hold_next_find = true;
         window.execute_ui_command("acceptance.findWithoutInput");
-        pump_until(window,[&]{return concurrent->find_requests==search_requests+4;},"Document search was not dispatched");
-        SDL_Event live_input{};live_input.type=SDL_EVENT_TEXT_INPUT;live_input.text.text="live";
-        live_input.text.windowID=SDL_GetWindowID(window.window());
-        require(SDL_PushEvent(&live_input),"Push editing during search failed");
-        pump_until(window,[&]{return read_document(host,id).at("text")=="Xlive\nXbeta";},"Pending search blocked SDL editing");
-        const auto live_document=read_document(host,id);
+        pump_until(
+            window,
+            [&] {
+                return concurrent->find_requests == search_requests + 4;
+            },
+            "Document search was not dispatched");
+        SDL_Event live_input{};
+        live_input.type = SDL_EVENT_TEXT_INPUT;
+        live_input.text.text = "live";
+        live_input.text.windowID = SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&live_input), "Push editing during search failed");
+        pump_until(
+            window,
+            [&] {
+                return read_document(host, id).at("text") == "Xlive\nXbeta";
+            },
+            "Pending search blocked SDL editing");
+        const auto live_document = read_document(host, id);
         window.execute_ui_command("ui.cancel");
-        for(int tick=0;tick<16;++tick)require(window.pump(),"Search cancellation closed the window");
-        concurrent->release_find();settle(window);
-        require(read_document(host,id)==live_document,"Late cancelled search changed live editing or selections");
-        key(window,SDLK_Z,SDL_KMOD_CTRL);
-        require(read_document(host,id).at("text")=="Xalpha\nXbeta","Editing during search did not retain undo history");
-        key(window,SDLK_F,SDL_KMOD_CTRL);
-        const auto previews=concurrent->preview_requests;concurrent->hold_next_find=true;
-        live_input.text.text="Xbeta";require(SDL_PushEvent(&live_input),"Cannot update query during nonmodal acceptance");
-        pump_until(window,[&]{return concurrent->preview_requests==previews+1;},"Nonmodal query did not start an asynchronous preview");
-        const auto editing_area=window.layout().editor;
-        pointer(window,SDL_EVENT_MOUSE_BUTTON_DOWN,editing_area.x+120*window.layout().scale,editing_area.y+10*window.layout().scale);
-        pointer(window,SDL_EVENT_MOUSE_BUTTON_UP,editing_area.x+120*window.layout().scale,editing_area.y+10*window.layout().scale);
-        live_input.text.text="live";require(SDL_PushEvent(&live_input),"Cannot enqueue editor input with visible search");
-        pump_until(window,[&]{return read_document(host,id).at("text").get<std::string>().find("live")!=std::string::npos;},"Visible pending find component blocked editor input");
-        require(window.view_state().inline_form_layout.has_value(),"Editing outside find unexpectedly closed its component");
-        const auto edited_with_find=read_document(host,id);
-        window.execute_ui_command("ui.cancel");for(int tick=0;tick<16;++tick)require(window.pump(),"Find cancellation closed editor");
-        concurrent->release_find();settle(window);
-        require(read_document(host,id)==edited_with_find,"Late preview overwrote editing after closing the find component");
-        key(window,SDLK_Z,SDL_KMOD_CTRL);require(read_document(host,id).at("text")=="Xalpha\nXbeta","Nonmodal editing lost its undo transaction");
-        key(window,SDLK_F,SDL_KMOD_CTRL);
-        live_input.text.text="remembered 中🙂";require(SDL_PushEvent(&live_input),"Cannot enqueue last query before immediate cancellation");
-        SDL_Event immediate_cancel{};immediate_cancel.type=SDL_EVENT_KEY_DOWN;immediate_cancel.key.windowID=SDL_GetWindowID(window.window());
-        immediate_cancel.key.key=SDLK_ESCAPE;immediate_cancel.key.down=true;
-        require(SDL_PushEvent(&immediate_cancel),"Cannot enqueue same-batch find cancellation");settle(window);
-        require(!window.view_state().inline_form_layout,"Immediate cancellation kept find open");
-        key(window,SDLK_F,SDL_KMOD_CTRL);
-        require(window.view_state().inline_form.at("values").at("query")=="remembered 中🙂","Same-batch cancellation lost the latest find input");
-        key(window,SDLK_ESCAPE);
+        for (int tick = 0; tick < 16; ++tick)
+            require(window.pump(), "Search cancellation closed the window");
+        concurrent->release_find();
+        settle(window);
+        require(read_document(host, id) == live_document,
+                "Late cancelled search changed live editing or selections");
+        key(window, SDLK_Z, SDL_KMOD_CTRL);
+        require(read_document(host, id).at("text") == "Xalpha\nXbeta",
+                "Editing during search did not retain undo history");
+        key(window, SDLK_F, SDL_KMOD_CTRL);
+        const auto previews = concurrent->preview_requests;
+        concurrent->hold_next_find = true;
+        live_input.text.text = "Xbeta";
+        require(SDL_PushEvent(&live_input), "Cannot update query during nonmodal acceptance");
+        pump_until(
+            window,
+            [&] {
+                return concurrent->preview_requests == previews + 1;
+            },
+            "Nonmodal query did not start an asynchronous preview");
+        const auto editing_area = window.layout().editor;
+        pointer(window,
+                SDL_EVENT_MOUSE_BUTTON_DOWN,
+                editing_area.x + 120 * window.layout().scale,
+                editing_area.y + 10 * window.layout().scale);
+        pointer(window,
+                SDL_EVENT_MOUSE_BUTTON_UP,
+                editing_area.x + 120 * window.layout().scale,
+                editing_area.y + 10 * window.layout().scale);
+        live_input.text.text = "live";
+        require(SDL_PushEvent(&live_input), "Cannot enqueue editor input with visible search");
+        pump_until(
+            window,
+            [&] {
+                return read_document(host, id).at("text").get<std::string>().find("live") !=
+                       std::string::npos;
+            },
+            "Visible pending find component blocked editor input");
+        require(window.view_state().inline_form_layout.has_value(),
+                "Editing outside find unexpectedly closed its component");
+        const auto edited_with_find = read_document(host, id);
+        window.execute_ui_command("ui.cancel");
+        for (int tick = 0; tick < 16; ++tick)
+            require(window.pump(), "Find cancellation closed editor");
+        concurrent->release_find();
+        settle(window);
+        require(read_document(host, id) == edited_with_find,
+                "Late preview overwrote editing after closing the find component");
+        key(window, SDLK_Z, SDL_KMOD_CTRL);
+        require(read_document(host, id).at("text") == "Xalpha\nXbeta",
+                "Nonmodal editing lost its undo transaction");
+        key(window, SDLK_F, SDL_KMOD_CTRL);
+        live_input.text.text = "remembered 中🙂";
+        require(SDL_PushEvent(&live_input),
+                "Cannot enqueue last query before immediate cancellation");
+        SDL_Event immediate_cancel{};
+        immediate_cancel.type = SDL_EVENT_KEY_DOWN;
+        immediate_cancel.key.windowID = SDL_GetWindowID(window.window());
+        immediate_cancel.key.key = SDLK_ESCAPE;
+        immediate_cancel.key.down = true;
+        require(SDL_PushEvent(&immediate_cancel), "Cannot enqueue same-batch find cancellation");
+        settle(window);
+        require(!window.view_state().inline_form_layout, "Immediate cancellation kept find open");
+        key(window, SDLK_F, SDL_KMOD_CTRL);
+        require(window.view_state().inline_form.at("values").at("query") == "remembered 中🙂",
+                "Same-batch cancellation lost the latest find input");
+        key(window, SDLK_ESCAPE);
         std::cerr << "GUI acceptance: document search passed\n";
 
-        window.execute_ui_command("ui.workspaceReplace"); settle(window);
+        window.execute_ui_command("ui.workspaceReplace");
+        settle(window);
         key(window, SDLK_A, SDL_KMOD_CTRL);
-        text(window, "needle"); key(window, SDLK_RETURN); text(window, "thread"); key(window, SDLK_RETURN);
-        require(astra::io::read_file(workspace / "rename.txt").text == "needle and needle\n", "Workspace replace ran before confirmation");
-        window.request_screenshot("build/graphics/gui-replace-confirm.png"); settle(window);
-        window.execute_ui_command("ui.confirmReplace"); settle(window);
-        require(astra::io::read_file(workspace / "rename.txt").text == "thread and thread\n", "Workspace replace did not update disk");
+        text(window, "needle");
+        key(window, SDLK_RETURN);
+        text(window, "thread");
+        key(window, SDLK_RETURN);
+        require(astra::io::read_file(workspace / "rename.txt").text == "needle and needle\n",
+                "Workspace replace ran before confirmation");
+        window.request_screenshot("build/graphics/gui-replace-confirm.png");
+        settle(window);
+        window.execute_ui_command("ui.confirmReplace");
+        settle(window);
+        require(astra::io::read_file(workspace / "rename.txt").text == "thread and thread\n",
+                "Workspace replace did not update disk");
         std::cerr << "GUI acceptance: workspace replace passed\n";
 
         window.execute_ui_command("ui.closeTab");
         window.request_screenshot("build/graphics/gui-dirty-close.png");
         settle(window);
         require(window.active_document_id() == id, "Dirty close silently discarded a document");
-        window.execute_ui_command("ui.cancel"); settle(window);
+        window.execute_ui_command("ui.cancel");
+        settle(window);
         key(window, SDLK_S, SDL_KMOD_CTRL);
-        require(!read_document(host, id).at("dirty").get<bool>(), "Save did not mark the persisted revision clean");
-        require(astra::io::read_file(workspace / "src/main.cpp").text == "Xalpha\nXbeta", "Save output differs from the service document");
+        require(!read_document(host, id).at("dirty").get<bool>(),
+                "Save did not mark the persisted revision clean");
+        require(astra::io::read_file(workspace / "src/main.cpp").text == "Xalpha\nXbeta",
+                "Save output differs from the service document");
 
-        window.execute_ui_command("ui.closeTab"); settle(window);
+        window.execute_ui_command("ui.closeTab");
+        settle(window);
         require(window.active_document_id().empty(), "Clean close did not close the tab");
-        window.open_path("src/main.cpp"); settle(window);
-        require(read_document(host, window.active_document_id()).at("text") == "Xalpha\nXbeta", "Reopen lost saved text");
+        window.open_path("src/main.cpp");
+        settle(window);
+        require(read_document(host, window.active_document_id()).at("text") == "Xalpha\nXbeta",
+                "Reopen lost saved text");
         key(window, SDLK_A, SDL_KMOD_CTRL);
-        text(window, "// Astra · real editing, real pixels\n\n#include <iostream>\n\nint main() {\n    // 中文、emoji 🙂 与组合字符 e\xCC\x81\n    std::cout << \"Hello, Astra\" << '\\n';\n    return 0;\n}\n");
+        text(window,
+             "// Astra · real editing, real pixels\n\n#include <iostream>\n\nint main() {\n    // "
+             "中文、emoji 🙂 与组合字符 e\xCC\x81\n    std::cout << \"Hello, Astra\" << '\\n';\n   "
+             " return 0;\n}\n");
         key(window, SDLK_HOME, SDL_KMOD_CTRL);
-        for (unsigned i = 0; i < 4; ++i) { key(window, SDLK_DOWN); }
-        window.execute_ui_command("ui.selectFunction"); settle(window);
-        const auto selected_function = read_document(host, window.active_document_id()).at("selections").front();
-        require(selected_function.at("head") != selected_function.at("anchor"), "Syntax object selection did not use the parsed function");
+        for (unsigned i = 0; i < 4; ++i) {
+            key(window, SDLK_DOWN);
+        }
+        window.execute_ui_command("ui.selectFunction");
+        settle(window);
+        const auto selected_function =
+            read_document(host, window.active_document_id()).at("selections").front();
+        require(selected_function.at("head") != selected_function.at("anchor"),
+                "Syntax object selection did not use the parsed function");
         key(window, SDLK_HOME, SDL_KMOD_CTRL);
-        window.execute_ui_command("ui.explorer"); settle(window);
-        window.request_screenshot(remote ? "build/graphics/gui-editor-tcp.png" : "build/graphics/gui-editor.png"); settle(window);
+        window.execute_ui_command("ui.explorer");
+        settle(window);
+        window.request_screenshot(remote ? "build/graphics/gui-editor-tcp.png"
+                                         : "build/graphics/gui-editor.png");
+        settle(window);
         window.execute_ui_command("ui.commandPalette");
-        window.request_screenshot("build/graphics/gui-palette.png"); settle(window);
+        window.request_screenshot("build/graphics/gui-palette.png");
+        settle(window);
         key(window, SDLK_ESCAPE);
-        window.execute_ui_command("ui.commandPalette");settle(window);
-        text(window,"User sidebar policy");key(window,SDLK_RETURN);
-        require(window.status_text()=="User sidebar policy","JS command palette bypassed the current user command");
-        key(window,SDLK_B,SDL_KMOD_CTRL);
-        key(window,SDLK_END,SDL_KMOD_CTRL);
-        window.execute_ui_command("ui.commandPalette");settle(window);
-        text(window,"Move to document start");key(window,SDLK_RETURN);
-        require(read_document(host,window.active_document_id()).at("selections").front().at("head")==0,
+        window.execute_ui_command("ui.commandPalette");
+        settle(window);
+        text(window, "User sidebar policy");
+        key(window, SDLK_RETURN);
+        require(window.status_text() == "User sidebar policy",
+                "JS command palette bypassed the current user command");
+        key(window, SDLK_B, SDL_KMOD_CTRL);
+        key(window, SDLK_END, SDL_KMOD_CTRL);
+        window.execute_ui_command("ui.commandPalette");
+        settle(window);
+        text(window, "Move to document start");
+        key(window, SDLK_RETURN);
+        require(
+            read_document(host, window.active_document_id()).at("selections").front().at("head") ==
+                0,
             "JS command palette did not await and publish a service editing command");
-        window.open_path("closing.txt");settle(window);key(window,SDLK_END,SDL_KMOD_CTRL);
-        const auto closing_id=window.active_document_id();
-        SDL_Event closing_input{};closing_input.type=SDL_EVENT_TEXT_INPUT;closing_input.text.text=" change";
-        closing_input.text.windowID=SDL_GetWindowID(window.window());
-        SDL_Event closing_key{};closing_key.type=SDL_EVENT_KEY_DOWN;closing_key.key.key=SDLK_W;closing_key.key.mod=SDL_KMOD_CTRL;
-        closing_key.key.down=true;closing_key.key.windowID=SDL_GetWindowID(window.window());
-        require(SDL_PushEvent(&closing_input)&&SDL_PushEvent(&closing_key),"Cannot enqueue same-batch input and close");settle(window);
-        require(window.active_document_id()==closing_id && read_document(host,closing_id).at("text")=="baseline change",
-            "Close bypassed preceding input or discarded newly dirty content");
-        require(astra::io::read_file(workspace/"closing.txt").text=="baseline","Close saved before its explicit choice");
-        window.request_screenshot("build/graphics/gui-close-choice.png");settle(window);
-        key(window,SDLK_RETURN);
-        require(window.active_document_id()!=closing_id && astra::io::read_file(workspace/"closing.txt").text=="baseline change",
-            "JS save-and-close did not await durable save");
-        window.open_path("closing.txt");settle(window);key(window,SDLK_END,SDL_KMOD_CTRL);text(window," discard");
-        window.execute_ui_command("ui.closeTab");settle(window);key(window,SDLK_D);
-        require(astra::io::read_file(workspace/"closing.txt").text=="baseline change","Discard-close wrote dirty content");
-        window.open_path("closing.txt");settle(window);key(window,SDLK_END,SDL_KMOD_CTRL);text(window," cancel");
-        const auto cancelled_id=window.active_document_id();
-        window.execute_ui_command("ui.closeTab");settle(window);key(window,SDLK_ESCAPE);
-        require(window.active_document_id()==cancelled_id && read_document(host,cancelled_id).at("dirty")==true,
-            "Cancel-close discarded the captured dirty document");
-        window.execute_ui_command("ui.closeTab");settle(window);window.execute_ui_command("ui.discard");settle(window);
-        require(window.active_document_id()!=cancelled_id,"JS close decision command did not answer the matching native choice");
-        window.execute_ui_command("ui.new");settle(window);text(window,"untitled preserved");
-        const auto untitled_id=window.active_document_id();
-        window.execute_ui_command("ui.closeTab");settle(window);key(window,SDLK_RETURN);key(window,SDLK_ESCAPE);
-        require(window.active_document_id()==untitled_id && read_document(host,untitled_id).at("text")=="untitled preserved",
-            "Cancelling Save As lost an untitled buffer during close");
-        window.execute_ui_command("ui.closeTab");settle(window);key(window,SDLK_D);
-        window.open_path("long.txt"); settle(window);
-        key(window, SDLK_END, SDL_KMOD_CTRL); text(window, "!"); key(window, SDLK_S, SDL_KMOD_CTRL);
-        require(astra::io::read_file(workspace / "long.txt").text == long_line + "!", "Long-line continuation or caret clipped text beyond 64 KiB");
-        window.execute_ui_command("ui.closeTab"); settle(window);
-        std::cout << "GUI " << (remote ? "TCP" : "local") << " real SDL input -> JS policy -> shared dispatcher: open, Unicode, multicursor, undo/redo, clipboard, find/replace, workspace replace, syntax objects, dirty close, save/reopen: PASS\n";
+        window.open_path("closing.txt");
+        settle(window);
+        key(window, SDLK_END, SDL_KMOD_CTRL);
+        const auto closing_id = window.active_document_id();
+        SDL_Event closing_input{};
+        closing_input.type = SDL_EVENT_TEXT_INPUT;
+        closing_input.text.text = " change";
+        closing_input.text.windowID = SDL_GetWindowID(window.window());
+        SDL_Event closing_key{};
+        closing_key.type = SDL_EVENT_KEY_DOWN;
+        closing_key.key.key = SDLK_W;
+        closing_key.key.mod = SDL_KMOD_CTRL;
+        closing_key.key.down = true;
+        closing_key.key.windowID = SDL_GetWindowID(window.window());
+        require(SDL_PushEvent(&closing_input) && SDL_PushEvent(&closing_key),
+                "Cannot enqueue same-batch input and close");
+        settle(window);
+        require(window.active_document_id() == closing_id &&
+                    read_document(host, closing_id).at("text") == "baseline change",
+                "Close bypassed preceding input or discarded newly dirty content");
+        require(astra::io::read_file(workspace / "closing.txt").text == "baseline",
+                "Close saved before its explicit choice");
+        window.request_screenshot("build/graphics/gui-close-choice.png");
+        settle(window);
+        key(window, SDLK_RETURN);
+        require(window.active_document_id() != closing_id &&
+                    astra::io::read_file(workspace / "closing.txt").text == "baseline change",
+                "JS save-and-close did not await durable save");
+        window.open_path("closing.txt");
+        settle(window);
+        key(window, SDLK_END, SDL_KMOD_CTRL);
+        text(window, " discard");
+        window.execute_ui_command("ui.closeTab");
+        settle(window);
+        key(window, SDLK_D);
+        require(astra::io::read_file(workspace / "closing.txt").text == "baseline change",
+                "Discard-close wrote dirty content");
+        window.open_path("closing.txt");
+        settle(window);
+        key(window, SDLK_END, SDL_KMOD_CTRL);
+        text(window, " cancel");
+        const auto cancelled_id = window.active_document_id();
+        window.execute_ui_command("ui.closeTab");
+        settle(window);
+        key(window, SDLK_ESCAPE);
+        require(window.active_document_id() == cancelled_id &&
+                    read_document(host, cancelled_id).at("dirty") == true,
+                "Cancel-close discarded the captured dirty document");
+        window.execute_ui_command("ui.closeTab");
+        settle(window);
+        window.execute_ui_command("ui.discard");
+        settle(window);
+        require(window.active_document_id() != cancelled_id,
+                "JS close decision command did not answer the matching native choice");
+        window.execute_ui_command("ui.new");
+        settle(window);
+        text(window, "untitled preserved");
+        const auto untitled_id = window.active_document_id();
+        window.execute_ui_command("ui.closeTab");
+        settle(window);
+        key(window, SDLK_RETURN);
+        key(window, SDLK_ESCAPE);
+        require(window.active_document_id() == untitled_id &&
+                    read_document(host, untitled_id).at("text") == "untitled preserved",
+                "Cancelling Save As lost an untitled buffer during close");
+        window.execute_ui_command("ui.closeTab");
+        settle(window);
+        key(window, SDLK_D);
+        window.open_path("long.txt");
+        settle(window);
+        key(window, SDLK_END, SDL_KMOD_CTRL);
+        text(window, "!");
+        key(window, SDLK_S, SDL_KMOD_CTRL);
+        require(astra::io::read_file(workspace / "long.txt").text == long_line + "!",
+                "Long-line continuation or caret clipped text beyond 64 KiB");
+        window.execute_ui_command("ui.closeTab");
+        settle(window);
+        std::cout << "GUI " << (remote ? "TCP" : "local")
+                  << " real SDL input -> JS policy -> shared dispatcher: open, Unicode, "
+                     "multicursor, undo/redo, clipboard, find/replace, workspace replace, syntax "
+                     "objects, dirty close, save/reopen: PASS\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "GUI smoke failed: " << error.what() << '\n';

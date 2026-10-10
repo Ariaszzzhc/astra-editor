@@ -45,8 +45,7 @@ using namespace astra::language;
     return spans.empty() ? std::nullopt : std::optional(spans.front().kind);
 }
 
-[[nodiscard]] bool named(const SyntaxSnapshot& snapshot, std::string_view name,
-                          OutlineKind kind) {
+[[nodiscard]] bool named(const SyntaxSnapshot& snapshot, std::string_view name, OutlineKind kind) {
     return std::ranges::any_of(snapshot.outline(), [&](const auto& item) {
         return item.name == name && item.kind == kind;
     });
@@ -55,18 +54,31 @@ using namespace astra::language;
 void check_same_analysis(const SyntaxSnapshot& incremental, const SyntaxSnapshot& full) {
     CHECK(incremental.text().str() == full.text().str());
     CHECK(incremental.has_errors() == full.has_errors());
-    const auto actual=all_highlights(incremental),expected=all_highlights(full);
-    if(actual!=expected){
-        std::size_t index{};while(index<std::min(actual.size(),expected.size()) && actual[index]==expected[index])++index;
-        const auto describe=[](const auto& spans,std::size_t item){return item<spans.size() ? std::to_string(spans[item].range.begin.value)+".."+std::to_string(spans[item].range.end.value)+" kind "+std::to_string(static_cast<int>(spans[item].kind)) : std::string("end");};
-        INFO("actual ",describe(actual,index));INFO("expected ",describe(expected,index));
-        const auto point=index<actual.size() ? actual[index].range.begin.value : 0;
-        auto source_begin=point>50 ? point-50 : 0,source_end=std::min(point+100,incremental.text().size_bytes());
-        while(!incremental.text().is_boundary(source_begin))--source_begin;
-        while(!incremental.text().is_boundary(source_end))--source_end;
-        INFO(incremental.text().slice(source_begin,source_end));
-        CHECK(actual==expected);
-    }else CHECK(actual==expected);
+    const auto actual = all_highlights(incremental), expected = all_highlights(full);
+    if (actual != expected) {
+        std::size_t index{};
+        while (index < std::min(actual.size(), expected.size()) && actual[index] == expected[index])
+            ++index;
+        const auto describe = [](const auto& spans, std::size_t item) {
+            return item < spans.size()
+                       ? std::to_string(spans[item].range.begin.value) + ".." +
+                             std::to_string(spans[item].range.end.value) + " kind " +
+                             std::to_string(static_cast<int>(spans[item].kind))
+                       : std::string("end");
+        };
+        INFO("actual ", describe(actual, index));
+        INFO("expected ", describe(expected, index));
+        const auto point = index < actual.size() ? actual[index].range.begin.value : 0;
+        auto source_begin = point > 50 ? point - 50 : 0,
+             source_end = std::min(point + 100, incremental.text().size_bytes());
+        while (!incremental.text().is_boundary(source_begin))
+            --source_begin;
+        while (!incremental.text().is_boundary(source_end))
+            --source_end;
+        INFO(incremental.text().slice(source_begin, source_end));
+        CHECK(actual == expected);
+    } else
+        CHECK(actual == expected);
     CHECK(incremental.outline() == full.outline());
     CHECK(incremental.text_objects() == full.text_objects());
     CHECK(incremental.highlights().validate());
@@ -95,14 +107,16 @@ TEST_CASE("syntax extension selection uses explicit supported grammars") {
 TEST_CASE("every bundled grammar parses actual language syntax") {
     const std::array cases{
         std::pair(LanguageId::c, "int main(void) { return 0; }\n"),
-        std::pair(LanguageId::cpp, "namespace app { class Box { public: int value() const { return 1; } }; }\n"),
+        std::pair(LanguageId::cpp,
+                  "namespace app { class Box { public: int value() const { return 1; } }; }\n"),
         std::pair(LanguageId::javascript, "export function sum(a, b) { return a + b; }\n"),
-        std::pair(LanguageId::typescript, "interface Item { name: string; }\nconst item: Item = { name: 'x' };\n"),
+        std::pair(LanguageId::typescript,
+                  "interface Item { name: string; }\nconst item: Item = { name: 'x' };\n"),
         std::pair(LanguageId::tsx, "const App = () => <div title='x'>hello</div>;\n"),
         std::pair(LanguageId::json, "{\"items\": [1, true, null, \"text\"]}\n"),
         std::pair(LanguageId::python, "class Box:\n    def value(self):\n        return 1\n"),
-        std::pair(LanguageId::markdown, "# Title\n\nA `code` span and [link](https://example.com).\n")
-    };
+        std::pair(LanguageId::markdown,
+                  "# Title\n\nA `code` span and [link](https://example.com).\n")};
     for (const auto& [language, source] : cases) {
         INFO(language_name(language));
         astra::Document document({1}, source);
@@ -148,7 +162,8 @@ TEST_CASE("JSON syntactic colors distinguish properties strings numbers and lite
 }
 
 TEST_CASE("C and C++ outline preserves declaration hierarchy and function names") {
-    astra::Document document({1}, "namespace app { struct Box { int get() { return 1; } }; int run() { return 0; } }");
+    astra::Document document(
+        {1}, "namespace app { struct Box { int get() { return 1; } }; int run() { return 0; } }");
     SyntaxParser parser(LanguageId::cpp);
     const auto syntax = parser.parse(document.snapshot(), relaxed());
     CHECK_FALSE(syntax.has_errors());
@@ -175,7 +190,9 @@ TEST_CASE("Python and TypeScript declarations form real syntax outline entries")
         CHECK(syntax.outline()[1].depth == 1);
     }
     SUBCASE("TypeScript") {
-        astra::Document document({1}, "interface Item { name: string; }\ntype Key = string;\nfunction read(): Key { return 'x'; }\n");
+        astra::Document document({1},
+                                 "interface Item { name: string; }\ntype Key = string;\nfunction "
+                                 "read(): Key { return 'x'; }\n");
         SyntaxParser parser(LanguageId::typescript);
         const auto syntax = parser.parse(document.snapshot());
         CHECK(named(syntax, "Item", OutlineKind::class_));
@@ -223,7 +240,9 @@ TEST_CASE("string comment and parameter text objects retain exact UTF-8 byte bou
     const auto parameter = syntax.enclosing_object(bytes(name, name), TextObjectKind::parameter);
     REQUIRE(parameter);
     CHECK(*parameter == bytes(name, name + 4));
-    CHECK_THROWS_AS((void)syntax.enclosing_object(bytes(emoji + 1, emoji + 1), TextObjectKind::string), std::invalid_argument);
+    CHECK_THROWS_AS(
+        (void)syntax.enclosing_object(bytes(emoji + 1, emoji + 1), TextObjectKind::string),
+        std::invalid_argument);
 }
 
 TEST_CASE("Markdown uses block headings and genuine inline code parsing") {
@@ -240,7 +259,8 @@ TEST_CASE("Markdown uses block headings and genuine inline code parsing") {
     CHECK(at(syntax, source.find("Title")) == HighlightKind::heading);
     CHECK(at(syntax, source.find("code")) == HighlightKind::string);
     const auto offset = source.find("code");
-    const auto object = syntax.enclosing_object(bytes(offset, offset), TextObjectKind::string, true);
+    const auto object =
+        syntax.enclosing_object(bytes(offset, offset), TextObjectKind::string, true);
     REQUIRE(object);
     CHECK(syntax.text().slice(object->begin.value, object->end.value) == "code");
 }
@@ -273,7 +293,8 @@ TEST_CASE("incremental syntax applies original-coordinate multicursor edits atom
     const auto before_text = old.text().str();
     auto edits = transaction(document, {edit(17, 18, "300"), edit(5, 6, "10")});
     REQUIRE(document.apply(edits));
-    const auto updated = parser.update(old, edits, document.revision(), document.content_identity());
+    const auto updated =
+        parser.update(old, edits, document.revision(), document.content_identity());
     const auto full = parser.parse(document.snapshot());
     CHECK(updated.incremental());
     CHECK(updated.matches(document.snapshot()));
@@ -284,15 +305,19 @@ TEST_CASE("incremental syntax applies original-coordinate multicursor edits atom
 }
 
 TEST_CASE("incremental syntax handles Unicode byte columns CRLF and multiline replacements") {
-    const std::string source = "{\r\n  \"\xe5\x90\x8d\xe5\xad\x97\": \"\xf0\x9f\x98\x80\",\r\n  \"v\": 1\r\n}";
+    const std::string source =
+        "{\r\n  \"\xe5\x90\x8d\xe5\xad\x97\": \"\xf0\x9f\x98\x80\",\r\n  \"v\": 1\r\n}";
     astra::Document document({1}, source);
     SyntaxParser parser(LanguageId::json);
     const auto old = parser.parse(document.snapshot());
     const auto emoji = source.find("\xf0\x9f\x98\x80");
     const auto digit = source.find('1');
-    auto edits = transaction(document, {edit(emoji, emoji + 4, "\xe6\x98\x9f"), edit(digit, digit + 1, "[\r\n    2, 3\r\n  ]")});
+    auto edits = transaction(
+        document,
+        {edit(emoji, emoji + 4, "\xe6\x98\x9f"), edit(digit, digit + 1, "[\r\n    2, 3\r\n  ]")});
     REQUIRE(document.apply(edits));
-    const auto updated = parser.update(old, edits, document.revision(), document.content_identity());
+    const auto updated =
+        parser.update(old, edits, document.revision(), document.content_identity());
     check_same_analysis(updated, parser.parse(document.snapshot()));
     CHECK_FALSE(updated.has_errors());
 }
@@ -303,7 +328,8 @@ TEST_CASE("incremental rename invalidates changed bytes even when tree shape is 
     const auto old = parser.parse(document.snapshot());
     auto edits = transaction(document, {edit(9, 12, "newName")});
     REQUIRE(document.apply(edits));
-    const auto updated = parser.update(old, edits, document.revision(), document.content_identity());
+    const auto updated =
+        parser.update(old, edits, document.revision(), document.content_identity());
     CHECK(named(updated, "newName", OutlineKind::function));
     CHECK(std::ranges::any_of(updated.changed_ranges(), [](auto changed) {
         return changed.begin.value <= 9 && changed.end.value >= 16;
@@ -319,23 +345,35 @@ TEST_CASE("incremental syntax rejects stale invalid and overlapping edit batches
         CHECK_THROWS_AS((void)parser.update(old, {{99}, {}, {}}, {1}, {1}), astra::StaleRevision);
     }
     SUBCASE("revision must advance") {
-        CHECK_THROWS_AS((void)parser.update(old, transaction(document, {}), {0}, {1}), std::invalid_argument);
+        CHECK_THROWS_AS((void)parser.update(old, transaction(document, {}), {0}, {1}),
+                        std::invalid_argument);
     }
     SUBCASE("out of bounds") {
-        CHECK_THROWS_AS((void)parser.update(old, transaction(document, {edit(0, 80, "")}), {1}, {1}), std::invalid_argument);
+        CHECK_THROWS_AS(
+            (void)parser.update(old, transaction(document, {edit(0, 80, "")}), {1}, {1}),
+            std::invalid_argument);
     }
     SUBCASE("overlap") {
-        CHECK_THROWS_AS((void)parser.update(old, transaction(document, {edit(1, 3, "a"), edit(2, 4, "b")}), {1}, {1}), std::invalid_argument);
+        CHECK_THROWS_AS(
+            (void)parser.update(
+                old, transaction(document, {edit(1, 3, "a"), edit(2, 4, "b")}), {1}, {1}),
+            std::invalid_argument);
     }
     SUBCASE("ambiguous adjacent insertion") {
-        CHECK_THROWS_AS((void)parser.update(old, transaction(document, {edit(1, 3, "a"), edit(3, 3, "b")}), {1}, {1}), std::invalid_argument);
+        CHECK_THROWS_AS(
+            (void)parser.update(
+                old, transaction(document, {edit(1, 3, "a"), edit(3, 3, "b")}), {1}, {1}),
+            std::invalid_argument);
     }
     SUBCASE("invalid UTF-8") {
-        CHECK_THROWS_AS((void)parser.update(old, transaction(document, {edit(1, 1, "\xc0\xaf")}), {1}, {1}), std::invalid_argument);
+        CHECK_THROWS_AS(
+            (void)parser.update(old, transaction(document, {edit(1, 1, "\xc0\xaf")}), {1}, {1}),
+            std::invalid_argument);
     }
     SUBCASE("different language") {
         SyntaxParser other(LanguageId::javascript);
-        CHECK_THROWS_AS((void)other.update(old, transaction(document, {}), {1}, {1}), std::invalid_argument);
+        CHECK_THROWS_AS((void)other.update(old, transaction(document, {}), {1}, {1}),
+                        std::invalid_argument);
     }
     CHECK(old.text().str() == "{\"x\":1}");
     CHECK(old.matches(document.snapshot()));
@@ -391,22 +429,27 @@ TEST_CASE("cancelled incremental parse keeps old result usable by another parser
     (void)cancel.request_stop();
     auto options = relaxed();
     options.stop = cancel.get_token();
-    CHECK_THROWS_AS((void)parser.update(old, edits, document.revision(), document.content_identity(), options), ParseCancelled);
+    CHECK_THROWS_AS(
+        (void)parser.update(old, edits, document.revision(), document.content_identity(), options),
+        ParseCancelled);
     SyntaxParser recovered(LanguageId::json);
-    const auto updated = recovered.update(old, edits, document.revision(), document.content_identity());
+    const auto updated =
+        recovered.update(old, edits, document.revision(), document.content_identity());
     check_same_analysis(updated, recovered.parse(document.snapshot()));
     CHECK(old.text().str() == "{\"x\":1}");
 }
 
 TEST_CASE("highlight index seeks clipped viewport ranges and retains old copies") {
-    HighlightIndex index({{3, std::nullopt}, {4, HighlightKind::string},
-        {2, std::nullopt}, {5, HighlightKind::number}});
+    HighlightIndex index({{3, std::nullopt},
+                          {4, HighlightKind::string},
+                          {2, std::nullopt},
+                          {5, HighlightKind::number}});
     const auto old = index;
     CHECK(index.size_bytes() == 14);
     CHECK(index.run_count() == 4);
     CHECK(index.validate());
     const std::vector expected{HighlightSpan{bytes(5, 7), HighlightKind::string},
-                              HighlightSpan{bytes(9, 11), HighlightKind::number}};
+                               HighlightSpan{bytes(9, 11), HighlightKind::number}};
     CHECK(index.intersecting(bytes(5, 11)) == expected);
     CHECK(index.intersecting(bytes(14, 14)).empty());
     CHECK_THROWS_AS((void)index.intersecting(bytes(0, 15)), std::out_of_range);
@@ -446,10 +489,13 @@ TEST_CASE("Markdown incremental inline edits equal a fresh two-stage parse") {
     SyntaxParser parser(LanguageId::markdown);
     const auto old = parser.parse(document.snapshot());
     const auto source = document.text().str();
-    auto edits = transaction(document, {edit(source.find("one"), source.find("one") + 3, "new"),
-        edit(source.find("Second"), source.find("Second") + 6, "**Second**")});
+    auto edits =
+        transaction(document,
+                    {edit(source.find("one"), source.find("one") + 3, "new"),
+                     edit(source.find("Second"), source.find("Second") + 6, "**Second**")});
     REQUIRE(document.apply(edits));
-    const auto updated = parser.update(old, edits, document.revision(), document.content_identity());
+    const auto updated =
+        parser.update(old, edits, document.revision(), document.content_identity());
     check_same_analysis(updated, parser.parse(document.snapshot()));
 }
 
@@ -472,112 +518,203 @@ TEST_CASE("independent workers can derive new syntax from one immutable snapshot
 
 TEST_CASE("incremental semantic indexes reuse large declaration interiors and byte runs") {
     std::string source;
-    for(std::size_t i=0;i<400;++i)source+="int function"+std::to_string(i)+"(int value) { return value + "+std::to_string(i)+"; } // 中🙂\n";
-    astra::Document document({1},source);
-    SyntaxParser parser(LanguageId::cpp),reference(LanguageId::cpp);
-    auto options=relaxed(),full_options=options;full_options.incremental_analysis=false;
-    const auto old=parser.parse(document.snapshot(),options);
-    check_same_analysis(old,reference.parse(document.snapshot(),full_options));
-    const auto begin=source.find("+ 200")+2;
-    auto edits=transaction(document,{edit(begin,begin+3,"999")});REQUIRE(document.apply(edits));
-    const auto updated=parser.update(old,edits,document.revision(),document.content_identity(),options);
-    const auto full=reference.parse(document.snapshot(),full_options);
-    check_same_analysis(updated,full);
-    const auto stats=updated.analysis_statistics();
-    CHECK(stats.reused_units>300);CHECK(stats.reused_bytes>source.size()*3/4);
-    CHECK(stats.visited_nodes<full.analysis_statistics().visited_nodes/10);
-    CHECK(updated.highlights().shared_prefix_bytes(old.highlights())>source.size()/3);
-    CHECK(updated.highlights().shared_suffix_bytes(old.highlights())>source.size()/3);
-    REQUIRE(updated.outline_size()==400);
-    const auto page=updated.outline_range(390,400);
-    CHECK(page==std::vector<OutlineItem>(full.outline().begin()+390,full.outline().end()));
-    CHECK_THROWS_AS((void)updated.outline_range(400,401),std::out_of_range);
-    CHECK(updated.outline_range(400,400).empty());
-    for(std::size_t i=0;i<400;++i){
-        const auto caret=document.text().str().find("function"+std::to_string(i)+"(");
-        CHECK(updated.enclosing_object(bytes(caret,caret),TextObjectKind::function)==full.enclosing_object(bytes(caret,caret),TextObjectKind::function));
+    for (std::size_t i = 0; i < 400; ++i)
+        source += "int function" + std::to_string(i) + "(int value) { return value + " +
+                  std::to_string(i) + "; } // 中🙂\n";
+    astra::Document document({1}, source);
+    SyntaxParser parser(LanguageId::cpp), reference(LanguageId::cpp);
+    auto options = relaxed(), full_options = options;
+    full_options.incremental_analysis = false;
+    const auto old = parser.parse(document.snapshot(), options);
+    check_same_analysis(old, reference.parse(document.snapshot(), full_options));
+    const auto begin = source.find("+ 200") + 2;
+    auto edits = transaction(document, {edit(begin, begin + 3, "999")});
+    REQUIRE(document.apply(edits));
+    const auto updated =
+        parser.update(old, edits, document.revision(), document.content_identity(), options);
+    const auto full = reference.parse(document.snapshot(), full_options);
+    check_same_analysis(updated, full);
+    const auto stats = updated.analysis_statistics();
+    CHECK(stats.reused_units > 300);
+    CHECK(stats.reused_bytes > source.size() * 3 / 4);
+    CHECK(stats.visited_nodes < full.analysis_statistics().visited_nodes / 10);
+    CHECK(updated.highlights().shared_prefix_bytes(old.highlights()) > source.size() / 3);
+    CHECK(updated.highlights().shared_suffix_bytes(old.highlights()) > source.size() / 3);
+    REQUIRE(updated.outline_size() == 400);
+    const auto page = updated.outline_range(390, 400);
+    CHECK(page == std::vector<OutlineItem>(full.outline().begin() + 390, full.outline().end()));
+    CHECK_THROWS_AS((void)updated.outline_range(400, 401), std::out_of_range);
+    CHECK(updated.outline_range(400, 400).empty());
+    for (std::size_t i = 0; i < 400; ++i) {
+        const auto caret = document.text().str().find("function" + std::to_string(i) + "(");
+        CHECK(updated.enclosing_object(bytes(caret, caret), TextObjectKind::function) ==
+              full.enclosing_object(bytes(caret, caret), TextObjectKind::function));
     }
-    CHECK(old.text().str()==source);CHECK(old.outline().at(200).name=="function200");
-    SUBCASE("cached units still honor stricter node limits"){
-        options.max_nodes=1;
-        CHECK_THROWS_AS((void)parser.update(updated,{updated.revision(),{},std::nullopt},{updated.revision().value+1},document.content_identity(),options),std::length_error);
+    CHECK(old.text().str() == source);
+    CHECK(old.outline().at(200).name == "function200");
+    SUBCASE("cached units still honor stricter node limits") {
+        options.max_nodes = 1;
+        CHECK_THROWS_AS((void)parser.update(updated,
+                                            {updated.revision(), {}, std::nullopt},
+                                            {updated.revision().value + 1},
+                                            document.content_identity(),
+                                            options),
+                        std::length_error);
     }
-    SUBCASE("cached units still honor stricter span limits"){
-        options.max_spans=1;
-        CHECK_THROWS_AS((void)parser.update(updated,{updated.revision(),{},std::nullopt},{updated.revision().value+1},document.content_identity(),options),std::length_error);
+    SUBCASE("cached units still honor stricter span limits") {
+        options.max_spans = 1;
+        CHECK_THROWS_AS((void)parser.update(updated,
+                                            {updated.revision(), {}, std::nullopt},
+                                            {updated.revision().value + 1},
+                                            document.content_identity(),
+                                            options),
+                        std::length_error);
     }
 }
 
 TEST_CASE("incremental semantic partitions inside a large function equal full traversal") {
-    constexpr unsigned int seed=0xA57A5E;
-    INFO(seed);std::mt19937 random(seed);
-    std::string source="namespace app { struct Box { int compute(int value) {\n";
-    for(int i=0;i<180;++i)source+="{ int local"+std::to_string(i)+" = value + "+std::to_string(i)+"; value += local"+std::to_string(i)+"; } // 中🙂\n";
-    source+="return value; } }; }\n";
-    astra::Document document({1},source);
-    SyntaxParser parser(LanguageId::cpp),reference(LanguageId::cpp);
-    auto options=relaxed(),full_options=options;full_options.incremental_analysis=false;
-    auto syntax=parser.parse(document.snapshot(),options);
-    check_same_analysis(syntax,reference.parse(document.snapshot(),full_options));
+    constexpr unsigned int seed = 0xA57A5E;
+    INFO(seed);
+    std::mt19937 random(seed);
+    std::string source = "namespace app { struct Box { int compute(int value) {\n";
+    for (int i = 0; i < 180; ++i)
+        source += "{ int local" + std::to_string(i) + " = value + " + std::to_string(i) +
+                  "; value += local" + std::to_string(i) + "; } // 中🙂\n";
+    source += "return value; } }; }\n";
+    astra::Document document({1}, source);
+    SyntaxParser parser(LanguageId::cpp), reference(LanguageId::cpp);
+    auto options = relaxed(), full_options = options;
+    full_options.incremental_analysis = false;
+    auto syntax = parser.parse(document.snapshot(), options);
+    check_same_analysis(syntax, reference.parse(document.snapshot(), full_options));
     std::vector<SyntaxSnapshot> retained;
-    for(int iteration=0;iteration<40;++iteration){
+    for (int iteration = 0; iteration < 40; ++iteration) {
         INFO(iteration);
-        const auto text=document.text().str(),needle="local"+std::to_string(random()%180)+" = value + ";
-        const auto begin=text.find(needle)+needle.size(),end=text.find(';',begin);
-        auto edits=transaction(document,{edit(begin,end,std::to_string(random()%100000))});
-        if(!document.apply(edits))continue;
-        if(iteration%10==0)retained.push_back(syntax);
-        syntax=parser.update(syntax,edits,document.revision(),document.content_identity(),options);
-        const auto full=reference.parse(document.snapshot(),full_options);check_same_analysis(syntax,full);
-        CHECK(syntax.analysis_statistics().reused_bytes>source.size()/2);
-        CHECK(syntax.analysis_statistics().visited_nodes<full.analysis_statistics().visited_nodes/10);
-        const auto caret=begin;
-        for(const auto kind:{TextObjectKind::function,TextObjectKind::class_,TextObjectKind::block})
-            CHECK(syntax.enclosing_object(bytes(caret,caret),kind)==full.enclosing_object(bytes(caret,caret),kind));
+        const auto text = document.text().str(),
+                   needle = "local" + std::to_string(random() % 180) + " = value + ";
+        const auto begin = text.find(needle) + needle.size(), end = text.find(';', begin);
+        auto edits = transaction(document, {edit(begin, end, std::to_string(random() % 100000))});
+        if (!document.apply(edits))
+            continue;
+        if (iteration % 10 == 0)
+            retained.push_back(syntax);
+        syntax =
+            parser.update(syntax, edits, document.revision(), document.content_identity(), options);
+        const auto full = reference.parse(document.snapshot(), full_options);
+        check_same_analysis(syntax, full);
+        CHECK(syntax.analysis_statistics().reused_bytes > source.size() / 2);
+        CHECK(syntax.analysis_statistics().visited_nodes <
+              full.analysis_statistics().visited_nodes / 10);
+        const auto caret = begin;
+        for (const auto kind :
+             {TextObjectKind::function, TextObjectKind::class_, TextObjectKind::block})
+            CHECK(syntax.enclosing_object(bytes(caret, caret), kind) ==
+                  full.enclosing_object(bytes(caret, caret), kind));
     }
-    for(const auto& snapshot:retained){
-        CHECK(snapshot.highlights().validate());CHECK(snapshot.outline().size()==3);CHECK_FALSE(snapshot.matches(document.snapshot()));
+    for (const auto& snapshot : retained) {
+        CHECK(snapshot.highlights().validate());
+        CHECK(snapshot.outline().size() == 3);
+        CHECK_FALSE(snapshot.matches(document.snapshot()));
     }
 }
 
-TEST_CASE("incremental semantic reuse matches independent full analysis across grammars and errors") {
-    constexpr unsigned int seed=0xA57A6A;
-    INFO(seed);std::mt19937 random(seed);
-    for(const auto language:{LanguageId::c,LanguageId::cpp,LanguageId::javascript,LanguageId::typescript,LanguageId::tsx,LanguageId::json,LanguageId::python}){
-        INFO(language_name(language));std::string source;
-        for(int i=0;i<60;++i){
-            const auto suffix=std::to_string(i);
-            if(language==LanguageId::json)source+=(i ? ",\n" : "[\n")+std::string("{\"name\":\"中🙂\",\"value\":")+suffix+"}";
-            else if(language==LanguageId::python)source+="def function"+suffix+"(value):\n    text = '中🙂'\n    return value + "+suffix+"\n\n";
-            else if(language==LanguageId::c || language==LanguageId::cpp)source+="int function"+suffix+"(int value) { return value + "+suffix+"; } // 中🙂\n";
-            else if(language==LanguageId::tsx)source+="const View"+suffix+" = () => <div data-id={"+suffix+"}>中🙂</div>;\n";
-            else if(language==LanguageId::typescript)source+="function function"+suffix+"(value: number): number { const text = '中🙂'; return value + "+suffix+"; }\n";
-            else source+="function function"+suffix+"(value) { const object = {name: '中🙂'}; return object.name + value; }\n";
+TEST_CASE(
+    "incremental semantic reuse matches independent full analysis across grammars and errors") {
+    constexpr unsigned int seed = 0xA57A6A;
+    INFO(seed);
+    std::mt19937 random(seed);
+    for (const auto language : {LanguageId::c,
+                                LanguageId::cpp,
+                                LanguageId::javascript,
+                                LanguageId::typescript,
+                                LanguageId::tsx,
+                                LanguageId::json,
+                                LanguageId::python}) {
+        INFO(language_name(language));
+        std::string source;
+        for (int i = 0; i < 60; ++i) {
+            const auto suffix = std::to_string(i);
+            if (language == LanguageId::json)
+                source += (i ? ",\n" : "[\n") + std::string("{\"name\":\"中🙂\",\"value\":") +
+                          suffix + "}";
+            else if (language == LanguageId::python)
+                source += "def function" + suffix +
+                          "(value):\n    text = '中🙂'\n    return value + " + suffix + "\n\n";
+            else if (language == LanguageId::c || language == LanguageId::cpp)
+                source += "int function" + suffix + "(int value) { return value + " + suffix +
+                          "; } // 中🙂\n";
+            else if (language == LanguageId::tsx)
+                source +=
+                    "const View" + suffix + " = () => <div data-id={" + suffix + "}>中🙂</div>;\n";
+            else if (language == LanguageId::typescript)
+                source += "function function" + suffix +
+                          "(value: number): number { const text = '中🙂'; return value + " +
+                          suffix + "; }\n";
+            else
+                source +=
+                    "function function" + suffix +
+                    "(value) { const object = {name: '中🙂'}; return object.name + value; }\n";
         }
-        if(language==LanguageId::json)source+="\n]";
-        astra::Document document({1},source);
-        SyntaxParser parser(language),reference(language);
-        auto options=relaxed(),full_options=options;full_options.incremental_analysis=false;
-        auto syntax=parser.parse(document.snapshot(),options);
-        check_same_analysis(syntax,reference.parse(document.snapshot(),full_options));
-        for(int iteration=0;iteration<24;++iteration){
+        if (language == LanguageId::json)
+            source += "\n]";
+        astra::Document document({1}, source);
+        SyntaxParser parser(language), reference(language);
+        auto options = relaxed(), full_options = options;
+        full_options.incremental_analysis = false;
+        auto syntax = parser.parse(document.snapshot(), options);
+        check_same_analysis(syntax, reference.parse(document.snapshot(), full_options));
+        for (int iteration = 0; iteration < 24; ++iteration) {
             INFO(iteration);
-            const auto& rope=document.text();
-            auto begin=static_cast<std::size_t>(random()%(rope.size_bytes()+1));while(!rope.is_boundary(begin))--begin;
-            auto end=std::min(rope.size_bytes(),begin+random()%7);while(!rope.is_boundary(end))++end;
-            const std::array<std::string,6> replacements{"中🙂","'", "}\n", "/*", "", "new_name"};
-            const auto previous_full=reference.parse(document.snapshot(),full_options);
-            const auto previous_semantic=syntax;
-            auto edits=transaction(document,{edit(begin,end,replacements[random()%replacements.size()])});
-            if(!document.apply(edits))continue;
-            syntax=parser.update(syntax,edits,document.revision(),document.content_identity(),options);
-            const auto full=reference.parse(document.snapshot(),full_options);
-            {INFO("actual incremental tree full traversal");check_same_analysis(reference.update(previous_semantic,edits,document.revision(),document.content_identity(),full_options),full);}
-            {INFO("incremental full traversal");check_same_analysis(reference.update(previous_full,edits,document.revision(),document.content_identity(),full_options),full);}
-            {INFO("fresh partition");check_same_analysis(reference.parse(document.snapshot(),options),full);}
-            {INFO("incremental reuse");check_same_analysis(syntax,full);}
-            for(const auto kind:{TextObjectKind::function,TextObjectKind::class_,TextObjectKind::string,TextObjectKind::comment,TextObjectKind::block})
-                CHECK(syntax.enclosing_object(bytes(begin,begin),kind)==full.enclosing_object(bytes(begin,begin),kind));
+            const auto& rope = document.text();
+            auto begin = static_cast<std::size_t>(random() % (rope.size_bytes() + 1));
+            while (!rope.is_boundary(begin))
+                --begin;
+            auto end = std::min(rope.size_bytes(), begin + random() % 7);
+            while (!rope.is_boundary(end))
+                ++end;
+            const std::array<std::string, 6> replacements{"中🙂", "'", "}\n", "/*", "", "new_name"};
+            const auto previous_full = reference.parse(document.snapshot(), full_options);
+            const auto previous_semantic = syntax;
+            auto edits = transaction(
+                document, {edit(begin, end, replacements[random() % replacements.size()])});
+            if (!document.apply(edits))
+                continue;
+            syntax = parser.update(
+                syntax, edits, document.revision(), document.content_identity(), options);
+            const auto full = reference.parse(document.snapshot(), full_options);
+            {
+                INFO("actual incremental tree full traversal");
+                check_same_analysis(reference.update(previous_semantic,
+                                                     edits,
+                                                     document.revision(),
+                                                     document.content_identity(),
+                                                     full_options),
+                                    full);
+            }
+            {
+                INFO("incremental full traversal");
+                check_same_analysis(reference.update(previous_full,
+                                                     edits,
+                                                     document.revision(),
+                                                     document.content_identity(),
+                                                     full_options),
+                                    full);
+            }
+            {
+                INFO("fresh partition");
+                check_same_analysis(reference.parse(document.snapshot(), options), full);
+            }
+            {
+                INFO("incremental reuse");
+                check_same_analysis(syntax, full);
+            }
+            for (const auto kind : {TextObjectKind::function,
+                                    TextObjectKind::class_,
+                                    TextObjectKind::string,
+                                    TextObjectKind::comment,
+                                    TextObjectKind::block})
+                CHECK(syntax.enclosing_object(bytes(begin, begin), kind) ==
+                      full.enclosing_object(bytes(begin, begin), kind));
         }
     }
 }
@@ -596,11 +733,15 @@ TEST_CASE("randomized incremental syntax matches fresh parsing after every edit"
         const auto begin = source.find('[');
         const auto end = source.find(']') + 1;
         const auto replacement = "[" + std::to_string(random() % 10000) + ", " +
-            std::to_string(random() % 10000) + ", " + std::to_string(iteration) + "]";
+                                 std::to_string(random() % 10000) + ", " +
+                                 std::to_string(iteration) + "]";
         auto edits = transaction(document, {edit(begin, end, replacement)});
         REQUIRE(document.apply(edits));
-        if (iteration % 20 == 0) { retained.push_back(syntax); }
-        syntax = parser.update(syntax, edits, document.revision(), document.content_identity(), relaxed());
+        if (iteration % 20 == 0) {
+            retained.push_back(syntax);
+        }
+        syntax = parser.update(
+            syntax, edits, document.revision(), document.content_identity(), relaxed());
         check_same_analysis(syntax, parser.parse(document.snapshot(), relaxed()));
         CHECK(syntax.matches(document.snapshot()));
     }

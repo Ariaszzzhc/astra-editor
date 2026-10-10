@@ -15,20 +15,27 @@ static_assert(Dispatcher::max_batch_size * (error_reserve_bytes + 1) + 2 <
               Dispatcher::max_body_bytes);
 
 struct BodyLimit {};
+
 struct DepthLimit {};
 
 // nlohmann's compact ostream serializer counts UTF-8 and JSON escaping exactly.
 // This sink never writes beyond its limit; the counting mode allocates no output
 // string, while the collecting mode cannot grow beyond the permitted body size.
 class BoundedJsonSink final : public std::streambuf {
-public:
+  public:
     explicit BoundedJsonSink(std::size_t limit, std::string* output = nullptr)
-        : remaining_(limit), output_(output) {}
+        : remaining_(limit), output_(output) {
+    }
 
-    [[nodiscard]] std::size_t size() const noexcept { return size_; }
-    [[nodiscard]] bool exceeded() const noexcept { return exceeded_; }
+    [[nodiscard]] std::size_t size() const noexcept {
+        return size_;
+    }
 
-private:
+    [[nodiscard]] bool exceeded() const noexcept {
+        return exceeded_;
+    }
+
+  private:
     void consume(std::size_t count) {
         if (count > remaining_) {
             exceeded_ = true;
@@ -67,8 +74,7 @@ private:
     bool exceeded_{};
 };
 
-std::size_t serialize_limited(const Json& value, std::size_t limit,
-                              std::string* output = nullptr) {
+std::size_t serialize_limited(const Json& value, std::size_t limit, std::string* output = nullptr) {
     BoundedJsonSink sink(limit, output);
     std::ostream stream(&sink);
     stream.exceptions(std::ios::badbit | std::ios::failbit);
@@ -89,7 +95,9 @@ std::string serialize_reply(const Json& value) {
     return result;
 }
 
-Json error_response(const Json& id, int code, std::string_view message,
+Json error_response(const Json& id,
+                    int code,
+                    std::string_view message,
                     const std::optional<Json>& data = std::nullopt) {
     Json error{{"code", code}, {"message", message}};
     if (data) {
@@ -133,8 +141,8 @@ bool valid_structure(const Json& value, std::size_t depth = 0) {
     return true;
 }
 
-std::pair<Json, std::size_t> bounded_response(Json response, std::size_t budget,
-                                             std::size_t nesting_depth) {
+std::pair<Json, std::size_t>
+bounded_response(Json response, std::size_t budget, std::size_t nesting_depth) {
     const Json id = response["id"];
     if (!valid_structure(response, nesting_depth)) {
         response = error_response(id, -32603, "Internal error");
@@ -143,9 +151,12 @@ std::pair<Json, std::size_t> bounded_response(Json response, std::size_t budget,
         const auto size = serialize_limited(response, budget);
         return {std::move(response), size};
     } catch (const BodyLimit&) {
-        response = error_response(id, -32005, "Response exceeds size limit",
-            Json{{"handlerCompleted", true}, {"resyncRequired", true},
-                 {"maxBodyBytes", Dispatcher::max_body_bytes}});
+        response = error_response(id,
+                                  -32005,
+                                  "Response exceeds size limit",
+                                  Json{{"handlerCompleted", true},
+                                       {"resyncRequired", true},
+                                       {"maxBodyBytes", Dispatcher::max_body_bytes}});
     } catch (const Json::exception&) {
         response = error_response(id, -32603, "Internal error");
     }
@@ -158,11 +169,16 @@ std::pair<Json, std::size_t> bounded_response(Json response, std::size_t budget,
 } // namespace
 
 RpcError::RpcError(int code, std::string message, std::optional<Json> data)
-    : std::runtime_error(std::move(message)), code_(code), data_(std::move(data)) {}
+    : std::runtime_error(std::move(message)), code_(code), data_(std::move(data)) {
+}
 
-int RpcError::code() const noexcept { return code_; }
+int RpcError::code() const noexcept {
+    return code_;
+}
 
-const std::optional<Json>& RpcError::data() const noexcept { return data_; }
+const std::optional<Json>& RpcError::data() const noexcept {
+    return data_;
+}
 
 void Dispatcher::register_method(std::string method, Handler handler) {
     if (method.empty() || method.starts_with("rpc.") || !handler) {
@@ -173,22 +189,24 @@ void Dispatcher::register_method(std::string method, Handler handler) {
     }
 }
 
-std::optional<Dispatcher::Reply> Dispatcher::dispatch_one(
-    const Json& request, std::size_t response_budget, std::size_t nesting_depth) const {
-    if (!request.is_object() || !request.contains("jsonrpc") ||
-        request["jsonrpc"] != "2.0" || !request.contains("method") ||
-        !request["method"].is_string() ||
+std::optional<Dispatcher::Reply> Dispatcher::dispatch_one(const Json& request,
+                                                          std::size_t response_budget,
+                                                          std::size_t nesting_depth) const {
+    if (!request.is_object() || !request.contains("jsonrpc") || request["jsonrpc"] != "2.0" ||
+        !request.contains("method") || !request["method"].is_string() ||
         (request.contains("id") && !valid_id(request["id"]))) {
         return bounded_response(invalid_request(), response_budget, nesting_depth);
     }
     const bool notification = !request.contains("id");
     const Json id = notification ? Json(nullptr) : request["id"];
-    const auto fail = [&](int code, std::string_view message,
+    const auto fail = [&](int code,
+                          std::string_view message,
                           const std::optional<Json>& data = std::nullopt) -> std::optional<Reply> {
         if (notification) {
             return std::nullopt;
         }
-        return bounded_response(error_response(id, code, message, data), response_budget, nesting_depth);
+        return bounded_response(
+            error_response(id, code, message, data), response_budget, nesting_depth);
     };
     if (request.contains("params") && !request["params"].is_structured()) {
         return fail(-32602, "Invalid params");
@@ -206,7 +224,8 @@ std::optional<Dispatcher::Reply> Dispatcher::dispatch_one(
             return std::nullopt;
         }
         return bounded_response(Json{{"jsonrpc", "2.0"}, {"id", id}, {"result", std::move(result)}},
-                                response_budget, nesting_depth);
+                                response_budget,
+                                nesting_depth);
     } catch (const RpcError& error) {
         return fail(error.code(), error.what(), error.data());
     } catch (...) {
@@ -260,8 +279,8 @@ std::optional<std::string> Dispatcher::dispatch_text(std::string_view body) cons
     }
     Json request;
     try {
-        request = Json::parse(body.begin(), body.end(),
-            [](int depth, Json::parse_event_t event, Json&) {
+        request =
+            Json::parse(body.begin(), body.end(), [](int depth, Json::parse_event_t event, Json&) {
                 if ((event == Json::parse_event_t::object_start ||
                      event == Json::parse_event_t::array_start) &&
                     depth >= static_cast<int>(max_depth)) {
@@ -282,8 +301,7 @@ Json make_notification(std::string method, Json params) {
     if (method.empty() || !params.is_structured()) {
         throw std::invalid_argument("RPC notification requires a method and structured params");
     }
-    return Json{{"jsonrpc", "2.0"}, {"method", std::move(method)},
-                {"params", std::move(params)}};
+    return Json{{"jsonrpc", "2.0"}, {"method", std::move(method)}, {"params", std::move(params)}};
 }
 
 } // namespace astra::protocol

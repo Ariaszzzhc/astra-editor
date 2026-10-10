@@ -17,8 +17,7 @@ namespace astra {
 // measures one immutable item. Measure must be a stateless function object.
 // Each mutation copies O(log n) branch nodes; untouched leaves and branches
 // remain shared by all snapshots. Items themselves are never mutated.
-template <typename Item, typename Summary, typename Measure>
-class SumTree {
+template <typename Item, typename Summary, typename Measure> class SumTree {
     struct Node;
     using NodePtr = std::shared_ptr<const Node>;
 
@@ -31,18 +30,21 @@ class SumTree {
         std::size_t height;
 
         explicit Node(Item value)
-            : item(std::move(value)), summary(Measure{}(*item)), count(1), height(1) {}
+            : item(std::move(value)), summary(Measure{}(*item)), count(1), height(1) {
+        }
 
         Node(NodePtr before, NodePtr after)
             : left(std::move(before)), right(std::move(after)),
               summary(left->summary + right->summary),
               count(joined_count(left->count, right->count)),
-              height(1 + std::max(left->height, right->height)) {}
+              height(1 + std::max(left->height, right->height)) {
+        }
 
-        [[nodiscard]] bool is_leaf() const noexcept { return item.has_value(); }
+        [[nodiscard]] bool is_leaf() const noexcept {
+            return item.has_value();
+        }
 
-        [[nodiscard]] static std::size_t joined_count(std::size_t before,
-                                                     std::size_t after) {
+        [[nodiscard]] static std::size_t joined_count(std::size_t before, std::size_t after) {
             if (after > std::numeric_limits<std::size_t>::max() - before) {
                 throw std::length_error("SumTree item count overflow");
             }
@@ -50,7 +52,7 @@ class SumTree {
         }
     };
 
-public:
+  public:
     struct SeekResult {
         std::size_t index{};
         Summary prefix{};
@@ -59,16 +61,24 @@ public:
 
     SumTree() = default;
 
-    explicit SumTree(std::vector<Item> items)
-        : root_(build(items, 0, items.size())) {}
+    explicit SumTree(std::vector<Item> items) : root_(build(items, 0, items.size())) {
+    }
 
     [[nodiscard]] static SumTree singleton(Item item) {
         return SumTree(std::make_shared<Node>(std::move(item)));
     }
 
-    [[nodiscard]] bool empty() const noexcept { return !root_; }
-    [[nodiscard]] std::size_t size() const noexcept { return count(root_); }
-    [[nodiscard]] std::size_t height() const noexcept { return height(root_); }
+    [[nodiscard]] bool empty() const noexcept {
+        return !root_;
+    }
+
+    [[nodiscard]] std::size_t size() const noexcept {
+        return count(root_);
+    }
+
+    [[nodiscard]] std::size_t height() const noexcept {
+        return height(root_);
+    }
 
     [[nodiscard]] const Summary& summary() const noexcept {
         static const Summary identity{};
@@ -81,6 +91,7 @@ public:
     [[nodiscard]] Summary shared_prefix_summary(const SumTree& other) const {
         return shared_edge(other, false);
     }
+
     [[nodiscard]] Summary shared_suffix_summary(const SumTree& other) const {
         return shared_edge(other, true);
     }
@@ -138,8 +149,8 @@ public:
         SeekResult result;
         auto node = root_.get();
         while (!node->is_leaf()) {
-            const auto left_size = static_cast<std::size_t>(
-                std::invoke(projection, node->left->summary));
+            const auto left_size =
+                static_cast<std::size_t>(std::invoke(projection, node->left->summary));
             if (offset < left_size) {
                 node = node->left.get();
             } else {
@@ -164,15 +175,17 @@ public:
     // First item whose inclusive prefix satisfies a monotone predicate.
     // Supports ordered summaries (for example the largest source ordinal),
     // whose projection is not an additive distance. O(log n), no flattening.
-    template <typename Predicate>
-    [[nodiscard]] SeekResult seek_prefix(Predicate predicate) const {
-        if (!root_ || !std::invoke(predicate, summary())) { return {size(), summary(), nullptr}; }
+    template <typename Predicate> [[nodiscard]] SeekResult seek_prefix(Predicate predicate) const {
+        if (!root_ || !std::invoke(predicate, summary())) {
+            return {size(), summary(), nullptr};
+        }
         SeekResult result;
         auto node = root_.get();
         while (!node->is_leaf()) {
             const auto before = result.prefix + node->left->summary;
-            if (std::invoke(predicate, before)) { node = node->left.get(); }
-            else {
+            if (std::invoke(predicate, before)) {
+                node = node->left.get();
+            } else {
                 result.index += node->left->count;
                 result.prefix = before;
                 node = node->right.get();
@@ -200,8 +213,7 @@ public:
         return before.concat(after);
     }
 
-    template <typename Function>
-    void for_each(Function&& function) const {
+    template <typename Function> void for_each(Function&& function) const {
         visit(root_, function);
     }
 
@@ -224,22 +236,34 @@ public:
     }
 
     // Intended for tests and diagnostics; deliberately O(n).
-    [[nodiscard]] bool validate() const { return validate_node(root_).valid; }
+    [[nodiscard]] bool validate() const {
+        return validate_node(root_).valid;
+    }
 
-private:
+  private:
     NodePtr root_;
 
     template <typename Predicate, typename Function>
-    static void visit_pruned(const NodePtr& node, std::size_t ordinal, Predicate& predicate, Function& function) {
-        if (!node || !std::invoke(predicate, node->summary)) { return; }
-        if (node->is_leaf()) { std::invoke(function, ordinal, *node->item); return; }
+    static void visit_pruned(const NodePtr& node,
+                             std::size_t ordinal,
+                             Predicate& predicate,
+                             Function& function) {
+        if (!node || !std::invoke(predicate, node->summary)) {
+            return;
+        }
+        if (node->is_leaf()) {
+            std::invoke(function, ordinal, *node->item);
+            return;
+        }
         visit_pruned(node->left, ordinal, predicate, function);
         visit_pruned(node->right, ordinal + node->left->count, predicate, function);
     }
 
     [[nodiscard]] Summary shared_edge(const SumTree& other, bool reverse) const {
         Summary result{};
-        if (!root_ || !other.root_) { return result; }
+        if (!root_ || !other.root_) {
+            return result;
+        }
         std::vector<const Node*> left{root_.get()};
         std::vector<const Node*> right{other.root_.get()};
         const auto expand = [reverse](std::vector<const Node*>& stack) {
@@ -259,12 +283,15 @@ private:
                 break;
             } else if (!a->is_leaf() && (b->is_leaf() || a->height >= b->height)) {
                 expand(left);
-            } else { expand(right); }
+            } else {
+                expand(right);
+            }
         }
         return result;
     }
 
-    explicit SumTree(NodePtr root) : root_(std::move(root)) {}
+    explicit SumTree(NodePtr root) : root_(std::move(root)) {
+    }
 
     [[nodiscard]] static std::size_t height(const NodePtr& node) noexcept {
         return node ? node->height : 0;
@@ -290,16 +317,14 @@ private:
                 return branch(left->left, branch(left->right, std::move(right)));
             }
             const auto& pivot = left->right;
-            return branch(branch(left->left, pivot->left),
-                          branch(pivot->right, std::move(right)));
+            return branch(branch(left->left, pivot->left), branch(pivot->right, std::move(right)));
         }
         if (height(right) > height(left) + 1) {
             if (height(right->right) >= height(right->left)) {
                 return branch(branch(std::move(left), right->left), right->right);
             }
             const auto& pivot = right->left;
-            return branch(branch(std::move(left), pivot->left),
-                          branch(pivot->right, right->right));
+            return branch(branch(std::move(left), pivot->left), branch(pivot->right, right->right));
         }
         return branch(std::move(left), std::move(right));
     }
@@ -321,7 +346,7 @@ private:
     }
 
     [[nodiscard]] static std::pair<NodePtr, NodePtr> split_node(const NodePtr& node,
-                                                              std::size_t index) {
+                                                                std::size_t index) {
         if (index == 0) {
             return {{}, node};
         }
@@ -336,8 +361,8 @@ private:
         return {join(node->left, before), std::move(after)};
     }
 
-    [[nodiscard]] static NodePtr build(std::vector<Item>& items, std::size_t begin,
-                                       std::size_t end) {
+    [[nodiscard]] static NodePtr
+    build(std::vector<Item>& items, std::size_t begin, std::size_t end) {
         if (begin == end) {
             return {};
         }
@@ -348,8 +373,7 @@ private:
         return branch(build(items, begin, middle), build(items, middle, end));
     }
 
-    template <typename Function>
-    static void visit(const NodePtr& node, Function& function) {
+    template <typename Function> static void visit(const NodePtr& node, Function& function) {
         if (!node) {
             return;
         }
@@ -362,8 +386,8 @@ private:
     }
 
     template <typename Function>
-    static void visit_range(const NodePtr& node, std::size_t begin, std::size_t end,
-                            Function& function) {
+    static void
+    visit_range(const NodePtr& node, std::size_t begin, std::size_t end, Function& function) {
         if (!node || begin == end) {
             return;
         }
@@ -376,8 +400,10 @@ private:
             visit_range(node->left, begin, std::min(end, left_count), function);
         }
         if (end > left_count) {
-            visit_range(node->right, begin > left_count ? begin - left_count : 0,
-                        end - left_count, function);
+            visit_range(node->right,
+                        begin > left_count ? begin - left_count : 0,
+                        end - left_count,
+                        function);
         }
     }
 
@@ -394,9 +420,11 @@ private:
         }
         if (node->is_leaf()) {
             const auto expected = Measure{}(*node->item);
-            return {!node->left && !node->right && node->count == 1 &&
-                        node->height == 1 && node->summary == expected,
-                    expected, 1, 1};
+            return {!node->left && !node->right && node->count == 1 && node->height == 1 &&
+                        node->summary == expected,
+                    expected,
+                    1,
+                    1};
         }
         if (!node->left || !node->right) {
             return {false, {}, 0, 0};
@@ -409,7 +437,9 @@ private:
         return {left.valid && right.valid && left.height <= right.height + 1 &&
                     right.height <= left.height + 1 && node->summary == expected &&
                     node->height == expected_height && node->count == expected_count,
-                expected, expected_count, expected_height};
+                expected,
+                expected_count,
+                expected_height};
     }
 };
 

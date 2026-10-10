@@ -9,6 +9,42 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### Code formatting and acceptance gate (2026-10-10)
+
+Repository-owned C++ and JavaScript now use checked-in `.clang-format` and
+`.prettierrc.json`. C++ uses four-space indentation, a 100-column limit and expanded
+functions, lambdas, branches and loops. JavaScript uses Prettier's consistent
+spacing and wrapping. This is a formatting-only increment; architecture and UI
+work remain in progress.
+
+`scripts/format.ps1` verifies pinned clang-format 21.1.8 and Prettier 3.6.2 archives
+against `tools/formatters.json`, prepares them in `.tools/format/`, and uses the
+repository-pinned Node runtime. It covers `include/`, `src/`, `tests/` and `data/`,
+excluding dependencies and build output. `scripts/test.ps1` runs `-Check` before
+building, and `AGENTS.md` requires formatting before each commit.
+
+Windows Debug evidence:
+
+- `./scripts/format.ps1`: passed after correcting the initial wrapper's scalar
+  `-i` splatting to an explicit array. That initial invocation reported
+  `i: no such file or directory` and did not write C++ files in place.
+- `./scripts/format.ps1 -Check -Offline`: passed for 120 C++ and 11 JS files;
+  118 C++ files are tracked in this formatting increment and two belong to
+  unfinished view work. A deliberately compressed temporary C++ file was rejected;
+  after removing only that fixture, the check passed again.
+- `./scripts/xmake.ps1 build -y astra-tests astra astra-server gui-smoke
+  gui-presentation-smoke gui-recovery-smoke`: passed.
+- `./build/windows/x64/debug/astra-tests.exe --no-version`: 506 cases /
+  446,886 assertions passed, zero failures or skips.
+- `./build/windows/x64/debug/gui-smoke.exe`, `gui-presentation-smoke.exe` and
+  `gui-recovery-smoke.exe`: passed with the real Windows graphics backend.
+- `./build/windows/x64/debug/gui-smoke.exe --tcp` and
+  `./tests/cli_smoke.ps1 -Mode debug`: passed, including real remote SDL input
+  and independent server/client processes.
+
+Logs are in `build/format-*.log`. This increment does not establish new Release
+or package acceptance, or completion of the remaining architecture revision.
+
 ### Nonmodal document find and replace (2026-10-10)
 
 The document search workflow now uses a retained inline form in the editor's

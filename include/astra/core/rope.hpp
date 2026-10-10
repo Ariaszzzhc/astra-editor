@@ -48,8 +48,7 @@ struct TextSummary {
             add(before.bytes, after.bytes),
             add(before.utf16_units, after.utf16_units),
             breaks,
-            after.line_breaks != 0 ? after.trailing_bytes
-                                   : add(before.trailing_bytes, after.bytes),
+            after.line_breaks != 0 ? after.trailing_bytes : add(before.trailing_bytes, after.bytes),
             after.line_breaks != 0 ? after.trailing_utf16
                                    : add(before.trailing_utf16, after.utf16_units),
         };
@@ -67,7 +66,7 @@ struct MeasureText {
 // boundary round trips. line_end() excludes the complete CRLF/LF sequence;
 // callers using LSP or visual columns should clamp there as appropriate.
 class Rope {
-public:
+  public:
     static constexpr std::size_t max_chunk_bytes = 1024;
 
     Rope() = default;
@@ -82,8 +81,8 @@ public:
     // Explicit materialization for output; editing never calls this method.
     [[nodiscard]] std::string str() const;
     [[nodiscard]] std::string slice(std::size_t begin, std::size_t end) const;
-    [[nodiscard]] Rope replace(std::size_t begin, std::size_t end,
-                               std::string_view replacement) const;
+    [[nodiscard]] Rope
+    replace(std::size_t begin, std::size_t end, std::string_view replacement) const;
     [[nodiscard]] std::pair<Rope, Rope> split(std::size_t byte_offset) const;
     [[nodiscard]] Rope concat(const Rope& other) const;
     // The smallest scalar-aligned replacement extent from this snapshot to
@@ -103,7 +102,7 @@ public:
     [[nodiscard]] std::size_t tree_height() const noexcept;
     [[nodiscard]] bool validate() const;
 
-private:
+  private:
     using Tree = SumTree<std::string, TextSummary, MeasureText>;
     Tree tree_;
 

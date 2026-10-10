@@ -16,6 +16,7 @@ function Invoke-AcceptanceBinary([string]$Directory, [string]$Name, [string[]]$A
 }
 Push-Location $repository
 try {
+    & "$PSScriptRoot/format.ps1" -Check
     foreach ($configuration in $configurations) {
         & "$PSScriptRoot/xmake.ps1" f -m $configuration -y
         $targets = @('astra-tests','astra-server')

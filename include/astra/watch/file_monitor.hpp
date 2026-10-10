@@ -50,7 +50,7 @@ struct EventBatch {
 // loss/unknown names explicitly require a rescan rather than pretending exactness.
 // Public methods are thread-safe. Destruction stops and joins the private loop.
 class FileMonitor {
-public:
+  public:
     explicit FileMonitor(std::filesystem::path workspace_root, MonitorOptions options = {});
     ~FileMonitor();
     FileMonitor(const FileMonitor&) = delete;
@@ -61,16 +61,16 @@ public:
     // May restart the same object after stop().get(). Paths must be relative and
     // may name missing files/directories; the nearest existing ancestors remain
     // watched so subsequent creation can establish the more specific watches.
-    [[nodiscard]] std::future<std::uint64_t> start(
-        std::vector<std::filesystem::path> relative_paths = {});
-    [[nodiscard]] std::future<std::uint64_t> replace_paths(
-        std::vector<std::filesystem::path> relative_paths);
+    [[nodiscard]] std::future<std::uint64_t>
+    start(std::vector<std::filesystem::path> relative_paths = {});
+    [[nodiscard]] std::future<std::uint64_t>
+    replace_paths(std::vector<std::filesystem::path> relative_paths);
     [[nodiscard]] EventBatch take_events();
     // Nonblocking and idempotent. Ready only after all uv_close callbacks and the
     // loop have completed. Queued updates are completed with an exception.
     [[nodiscard]] std::shared_future<void> stop() noexcept;
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

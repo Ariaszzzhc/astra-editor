@@ -50,8 +50,7 @@ struct Scalar {
         }
         value = (value << 6U) | (next & 0x3FU);
     }
-    if (value < minimum || value > 0x10FFFFU ||
-        (value >= 0xD800U && value <= 0xDFFFU)) {
+    if (value < minimum || value > 0x10FFFFU || (value >= 0xD800U && value <= 0xDFFFU)) {
         throw std::invalid_argument("Invalid Unicode scalar value");
     }
     return {static_cast<char32_t>(value), width};
@@ -75,11 +74,9 @@ inline void validate(std::string_view text) {
 }
 
 // This only checks a boundary; callers must already know text is valid UTF-8.
-[[nodiscard]] inline bool is_boundary(std::string_view text,
-                                      std::size_t offset) noexcept {
+[[nodiscard]] inline bool is_boundary(std::string_view text, std::size_t offset) noexcept {
     return offset <= text.size() &&
-           (offset == text.size() ||
-            (static_cast<unsigned char>(text[offset]) & 0xC0U) != 0x80U);
+           (offset == text.size() || (static_cast<unsigned char>(text[offset]) & 0xC0U) != 0x80U);
 }
 
 [[nodiscard]] constexpr std::size_t utf16_width(char32_t scalar) noexcept {
@@ -96,8 +93,7 @@ inline void validate(std::string_view text) {
     return length;
 }
 
-[[nodiscard]] inline std::size_t byte_offset_from_utf16(std::string_view text,
-                                                       std::size_t units) {
+[[nodiscard]] inline std::size_t byte_offset_from_utf16(std::string_view text, std::size_t units) {
     std::size_t offset = 0;
     while (units != 0 && offset < text.size()) {
         const auto scalar = decode(text, offset);

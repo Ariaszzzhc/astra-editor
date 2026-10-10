@@ -29,9 +29,12 @@ struct EntrySummary {
     std::uint64_t power{1};
 
     friend bool operator==(const EntrySummary&, const EntrySummary&) = default;
+
     friend EntrySummary operator+(const EntrySummary& left, const EntrySummary& right) {
-        return {left.count + right.count, left.weight + right.weight,
-                left.hash * right.power + right.hash, left.power * right.power};
+        return {left.count + right.count,
+                left.weight + right.weight,
+                left.hash * right.power + right.hash,
+                left.power * right.power};
     }
 };
 
@@ -53,7 +56,9 @@ EntrySummary reference_summary(const std::vector<Entry>& entries) {
 
 std::vector<Entry> flatten(const Tree& tree) {
     std::vector<Entry> result;
-    tree.for_each([&result](const Entry& entry) { result.push_back(entry); });
+    tree.for_each([&result](const Entry& entry) {
+        result.push_back(entry);
+    });
     return result;
 }
 
@@ -87,7 +92,9 @@ void check_seek(const Tree& tree, const std::vector<Entry>& expected, std::size_
 
 TEST_CASE("shared tree edges skip immutable interiors and preserve summary order") {
     std::vector<Entry> entries;
-    for (int i = 0; i < 4096; ++i) { entries.push_back({i, static_cast<std::size_t>(i % 7)}); }
+    for (int i = 0; i < 4096; ++i) {
+        entries.push_back({i, static_cast<std::size_t>(i % 7)});
+    }
     const Tree original(entries);
     CHECK(original.shared_prefix_summary(original) == original.summary());
     CHECK(original.shared_suffix_summary(original) == original.summary());
@@ -123,25 +130,63 @@ TEST_CASE("SumTree empty identity and checked ranges") {
     CHECK_THROWS_AS((void)(tree.insert(1, Entry{1, 1})), std::out_of_range);
     CHECK_THROWS_AS((void)(tree.erase(1, 0)), std::out_of_range);
     CHECK_THROWS_AS((void)(tree.erase(0, 1)), std::out_of_range);
-    CHECK_THROWS_AS((void)(tree.for_each_range(0, 1, [](const Entry&) {})), std::out_of_range);
+    CHECK_THROWS_AS((void)(tree.for_each_range(0,
+                                               1,
+                                               [](const Entry&) {
+                                               })),
+                    std::out_of_range);
 }
 
 TEST_CASE("SumTree summary pruning retains original ordinals and skips empty interiors") {
-    std::vector<Entry> entries(8192,Entry{1,0});entries[9].weight=1;entries[8000].weight=2;
-    const Tree tree(entries);std::vector<std::size_t> ordinals;std::size_t nodes{};
-    tree.for_each_pruned([&](const EntrySummary& summary){++nodes;return summary.weight!=0;},
-        [&](std::size_t ordinal,const Entry& value){CHECK(value==entries.at(ordinal));ordinals.push_back(ordinal);});
-    CHECK(ordinals==std::vector<std::size_t>{9,8000});CHECK(nodes<100);
-    const auto retained=tree;const auto changed=tree.erase(9,10);ordinals.clear();
-    changed.for_each_pruned([](const EntrySummary& summary){return summary.weight!=0;},
-        [&](std::size_t ordinal,const Entry&){ordinals.push_back(ordinal);});
-    CHECK(ordinals==std::vector<std::size_t>{7999});CHECK(retained.size()==8192);CHECK(retained.at(9).weight==1);
-    auto publishing=tree;ordinals.clear();
-    publishing.for_each_pruned([](const EntrySummary& summary){return summary.weight!=0;},
-        [&](std::size_t ordinal,const Entry&){ordinals.push_back(ordinal);publishing=Tree{};});
-    CHECK(ordinals==std::vector<std::size_t>{9,8000});CHECK(publishing.empty());
-    CHECK_THROWS_AS(tree.for_each_pruned([](const EntrySummary&)->bool{throw std::runtime_error("predicate failure");},
-        [](std::size_t,const Entry&){}),std::runtime_error);
+    std::vector<Entry> entries(8192, Entry{1, 0});
+    entries[9].weight = 1;
+    entries[8000].weight = 2;
+    const Tree tree(entries);
+    std::vector<std::size_t> ordinals;
+    std::size_t nodes{};
+    tree.for_each_pruned(
+        [&](const EntrySummary& summary) {
+            ++nodes;
+            return summary.weight != 0;
+        },
+        [&](std::size_t ordinal, const Entry& value) {
+            CHECK(value == entries.at(ordinal));
+            ordinals.push_back(ordinal);
+        });
+    CHECK(ordinals == std::vector<std::size_t>{9, 8000});
+    CHECK(nodes < 100);
+    const auto retained = tree;
+    const auto changed = tree.erase(9, 10);
+    ordinals.clear();
+    changed.for_each_pruned(
+        [](const EntrySummary& summary) {
+            return summary.weight != 0;
+        },
+        [&](std::size_t ordinal, const Entry&) {
+            ordinals.push_back(ordinal);
+        });
+    CHECK(ordinals == std::vector<std::size_t>{7999});
+    CHECK(retained.size() == 8192);
+    CHECK(retained.at(9).weight == 1);
+    auto publishing = tree;
+    ordinals.clear();
+    publishing.for_each_pruned(
+        [](const EntrySummary& summary) {
+            return summary.weight != 0;
+        },
+        [&](std::size_t ordinal, const Entry&) {
+            ordinals.push_back(ordinal);
+            publishing = Tree{};
+        });
+    CHECK(ordinals == std::vector<std::size_t>{9, 8000});
+    CHECK(publishing.empty());
+    CHECK_THROWS_AS(tree.for_each_pruned(
+                        [](const EntrySummary&) -> bool {
+                            throw std::runtime_error("predicate failure");
+                        },
+                        [](std::size_t, const Entry&) {
+                        }),
+                    std::runtime_error);
     CHECK(tree.validate());
 }
 
@@ -195,12 +240,17 @@ TEST_CASE("SumTree visits only the requested half-open range") {
     for (std::size_t begin = 0; begin <= entries.size(); ++begin) {
         for (std::size_t end = begin; end <= entries.size(); ++end) {
             std::vector<Entry> actual;
-            tree.for_each_range(begin, end,
-                                [&actual](const Entry& entry) { actual.push_back(entry); });
+            tree.for_each_range(begin, end, [&actual](const Entry& entry) {
+                actual.push_back(entry);
+            });
             CHECK(actual == std::vector<Entry>(entries.begin() + begin, entries.begin() + end));
         }
     }
-    CHECK_THROWS_AS((void)(tree.for_each_range(2, 1, [](const Entry&) {})), std::out_of_range);
+    CHECK_THROWS_AS((void)(tree.for_each_range(2,
+                                               1,
+                                               [](const Entry&) {
+                                               })),
+                    std::out_of_range);
 }
 
 TEST_CASE("SumTree AVL joins stay balanced under adversarial append and prepend") {

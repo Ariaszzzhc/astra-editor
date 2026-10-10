@@ -8,11 +8,31 @@
 namespace astra::editing {
 
 enum class Command {
-    move_left, move_right, move_word_left, move_word_right, move_up, move_down,
-    move_home, move_end, move_document_start, move_document_end,
-    select_all, select_word, select_next_occurrence, backspace, delete_forward,
-    delete_word_backward, delete_word_forward, newline, indent, outdent,
-    toggle_line_comment, duplicate_line, add_cursor_above, add_cursor_below, insert_text
+    move_left,
+    move_right,
+    move_word_left,
+    move_word_right,
+    move_up,
+    move_down,
+    move_home,
+    move_end,
+    move_document_start,
+    move_document_end,
+    select_all,
+    select_word,
+    select_next_occurrence,
+    backspace,
+    delete_forward,
+    delete_word_backward,
+    delete_word_forward,
+    newline,
+    indent,
+    outdent,
+    toggle_line_comment,
+    duplicate_line,
+    add_cursor_above,
+    add_cursor_below,
+    insert_text
 };
 
 struct Options {

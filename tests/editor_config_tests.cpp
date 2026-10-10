@@ -13,9 +13,9 @@ namespace {
 
 using astra::config::Charset;
 using astra::config::EditorConfigLayer;
+using astra::config::glob_matches;
 using astra::config::IndentStyle;
 using astra::config::LineEnding;
-using astra::config::glob_matches;
 using astra::config::parse_editor_config;
 using astra::config::resolve_editor_config;
 
@@ -43,7 +43,8 @@ TEST_CASE("EditorConfig parses BOM CRLF comments and case-insensitive standard k
 }
 
 TEST_CASE("EditorConfig reports invalid lines without losing valid pairs") {
-    const auto config = parse_editor_config("root=true\n[*.txt]\nwrong\n = bad\nvalue=\ncustom=a=b\n[unterminated\n");
+    const auto config = parse_editor_config(
+        "root=true\n[*.txt]\nwrong\n = bad\nvalue=\ncustom=a=b\n[unterminated\n");
     REQUIRE(config.diagnostics.size() == 3);
     CHECK(config.diagnostics[0].line == 3);
     CHECK(config.diagnostics[1].line == 4);
@@ -152,8 +153,10 @@ TEST_CASE("EditorConfig Unicode globs match scalars and preserve case") {
 
 TEST_CASE("EditorConfig nearest sections and layers override earlier properties") {
     const std::array layers{
-        EditorConfigLayer{"", parse_editor_config("[*]\nindent_size=8\ncharset=utf-8\n[*.cpp]\nindent_size=4\n")},
-        EditorConfigLayer{"src", parse_editor_config("[*]\nindent_size=2\n[deep/*.cpp]\nend_of_line=crlf\n")},
+        EditorConfigLayer{
+            "", parse_editor_config("[*]\nindent_size=8\ncharset=utf-8\n[*.cpp]\nindent_size=4\n")},
+        EditorConfigLayer{
+            "src", parse_editor_config("[*]\nindent_size=2\n[deep/*.cpp]\nend_of_line=crlf\n")},
         EditorConfigLayer{"unrelated", parse_editor_config("root=true\n[*]\nindent_size=99\n")},
     };
     const auto result = resolve_editor_config(layers, "src/deep/test.cpp");
@@ -168,7 +171,8 @@ TEST_CASE("EditorConfig nearest sections and layers override earlier properties"
 TEST_CASE("EditorConfig root applies only in the preamble of applicable ancestors") {
     const std::array layers{
         EditorConfigLayer{"", parse_editor_config("[*]\nindent_size=8\ncharset=utf-8\n")},
-        EditorConfigLayer{"src", parse_editor_config("root=TRUE\n[*.cpp]\nindent_size=2\nroot=false\n")},
+        EditorConfigLayer{"src",
+                          parse_editor_config("root=TRUE\n[*.cpp]\nindent_size=2\nroot=false\n")},
     };
     const auto result = resolve_editor_config(layers, "src/main.cpp");
     CHECK(result.settings.indent_size == 2);
@@ -182,8 +186,12 @@ TEST_CASE("EditorConfig root applies only in the preamble of applicable ancestor
 
 TEST_CASE("EditorConfig unset removes effects and inhibits implicit indent inheritance") {
     const std::array layers{
-        EditorConfigLayer{"", parse_editor_config("[*]\nindent_style=tab\nindent_size=4\ncharset=utf-8\ncustom=value\n")},
-        EditorConfigLayer{"src", parse_editor_config("[*]\nindent_size=UNSET\ncharset=unset\ncustom=unset\n")},
+        EditorConfigLayer{
+            "",
+            parse_editor_config(
+                "[*]\nindent_style=tab\nindent_size=4\ncharset=utf-8\ncustom=value\n")},
+        EditorConfigLayer{
+            "src", parse_editor_config("[*]\nindent_size=UNSET\ncharset=unset\ncustom=unset\n")},
     };
     const auto result = resolve_editor_config(layers, "src/main.cpp");
     CHECK(result.settings.indent_style == IndentStyle::tabs);
@@ -229,7 +237,8 @@ TEST_CASE("EditorConfig indent and tab widths resolve without overriding editor 
 
 TEST_CASE("EditorConfig resolves save policy flags encodings and spelling language") {
     const auto result = resolve("[*]\nend_of_line=CRLF\ncharset=UTF-16LE\n"
-        "trim_trailing_whitespace=TRUE\ninsert_final_newline=FALSE\nspelling_language=en-US\nmax_line_length=100\n");
+                                "trim_trailing_whitespace=TRUE\ninsert_final_newline="
+                                "FALSE\nspelling_language=en-US\nmax_line_length=100\n");
     CHECK(result.settings.end_of_line == LineEnding::crlf);
     CHECK(result.settings.charset == Charset::utf16_le);
     CHECK(result.settings.trim_trailing_whitespace == true);
@@ -244,9 +253,11 @@ TEST_CASE("EditorConfig resolves save policy flags encodings and spelling langua
 }
 
 TEST_CASE("EditorConfig typed settings ignore invalid values while preserving raw pairs") {
-    const auto result = resolve("[*]\nindent_style=other\nindent_size=0\ntab_width=-3\n"
-        "charset=unknown\nend_of_line=CRLF ; comment\ntrim_trailing_whitespace=yes\n"
-        "insert_final_newline=1\nspelling_language=english\nmax_line_length=4294967296\ncustom=MiXeD\n");
+    const auto result =
+        resolve("[*]\nindent_style=other\nindent_size=0\ntab_width=-3\n"
+                "charset=unknown\nend_of_line=CRLF ; comment\ntrim_trailing_whitespace=yes\n"
+                "insert_final_newline=1\nspelling_language=english\nmax_line_length="
+                "4294967296\ncustom=MiXeD\n");
     CHECK_FALSE(result.settings.indent_style.has_value());
     CHECK_FALSE(result.settings.indent_size.has_value());
     CHECK_FALSE(result.settings.tab_width.has_value());
@@ -273,7 +284,8 @@ TEST_CASE("EditorConfig honors required minimum key value and section lengths") 
 }
 
 TEST_CASE("EditorConfig enforces input and evaluation limits without regex backtracking") {
-    CHECK_THROWS_AS((void)parse_editor_config(std::string(1024U * 1024U + 1, 'x')), std::length_error);
+    CHECK_THROWS_AS((void)parse_editor_config(std::string(1024U * 1024U + 1, 'x')),
+                    std::length_error);
     CHECK_THROWS_AS((void)parse_editor_config("\xc0\xaf"), std::invalid_argument);
     CHECK_THROWS_AS((void)parse_editor_config(std::string("a\0b", 3)), std::invalid_argument);
     CHECK_THROWS_AS((void)glob_matches(std::string(4097, '*'), "a"), std::length_error);
@@ -281,7 +293,8 @@ TEST_CASE("EditorConfig enforces input and evaluation limits without regex backt
     CHECK_THROWS_AS((void)glob_matches("*", R"(dir\file)"), std::invalid_argument);
     CHECK_THROWS_AS((void)glob_matches("*", "C:/file"), std::invalid_argument);
     CHECK_THROWS_AS((void)glob_matches("*", "/file"), std::invalid_argument);
-    CHECK_THROWS_AS((void)glob_matches(std::string(4096, '?'), std::string(32768, 'a')), std::length_error);
+    CHECK_THROWS_AS((void)glob_matches(std::string(4096, '?'), std::string(32768, 'a')),
+                    std::length_error);
 }
 
 TEST_CASE("EditorConfig random alternative ranges agree with explicit alternatives") {
@@ -293,8 +306,10 @@ TEST_CASE("EditorConfig random alternative ranges agree with explicit alternativ
         const int maximum = minimum + 1 + static_cast<int>(random() % 10);
         const int value = static_cast<int>(random() % 40) - 15;
         const std::string prefix = random() % 2 == 0 ? "src/**/file" : "file";
-        const std::string pattern = prefix + "{" + std::to_string(minimum) + ".." + std::to_string(maximum) + "}.{cpp,hpp}";
-        const std::string path = (prefix.starts_with("src") ? "src/deep/file" : "other/file") + std::to_string(value) + ".cpp";
+        const std::string pattern =
+            prefix + "{" + std::to_string(minimum) + ".." + std::to_string(maximum) + "}.{cpp,hpp}";
+        const std::string path = (prefix.starts_with("src") ? "src/deep/file" : "other/file") +
+                                 std::to_string(value) + ".cpp";
         CHECK(glob_matches(pattern, path) == (value >= minimum && value <= maximum));
     }
 }

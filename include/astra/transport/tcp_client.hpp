@@ -42,7 +42,7 @@ struct TcpClientStats {
 // connect future still times out promptly, and close waits for resolver cleanup.
 // Lifecycle calls must be serialized. submit()/take_notifications() are thread-safe.
 class TcpClient {
-public:
+  public:
     explicit TcpClient(TcpClientOptions options = {});
     ~TcpClient();
     TcpClient(const TcpClient&) = delete;
@@ -73,7 +73,7 @@ public:
     // that marker is consumed. The consumer must fetch fresh service snapshots.
     [[nodiscard]] std::vector<std::string> take_notifications();
 
-private:
+  private:
     class Impl;
     std::unique_ptr<Impl> impl_;
 };

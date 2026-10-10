@@ -12,6 +12,7 @@ struct DiagnosticColumns {
     int severity{1};
     friend bool operator==(const DiagnosticColumns&, const DiagnosticColumns&) = default;
 };
+
 struct DecorationIndexes {
     RangeIndex<std::string, Utf8ByteUnit> highlights;
     RangeIndex<DiagnosticColumns, DocumentLineUnit> diagnostics;

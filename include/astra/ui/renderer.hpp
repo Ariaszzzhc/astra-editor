@@ -20,7 +20,7 @@ struct PixelSize {
 // Main-thread owner of the native window, IME, and Graphite/Dawn rendering state.
 // Errors are reported as exceptions; callers retain ownership of document state.
 class Renderer final {
-public:
+  public:
     explicit Renderer(std::string title = "Astra", int width = 1280, int height = 800);
     ~Renderer();
 
@@ -46,7 +46,7 @@ public:
     // SDL expects window coordinates, which can differ from physical pixels.
     void set_text_input_area(const SDL_Rect& area, int cursor_offset);
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

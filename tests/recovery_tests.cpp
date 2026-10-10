@@ -26,18 +26,32 @@ using namespace std::chrono_literals;
 
 struct Fixture {
     fs::path base = fs::weakly_canonical(fs::current_path() / "build");
-    fs::path directory = base / ("recovery-tests-" +
-        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(std::random_device{}()));
-    Fixture() { if (!fs::create_directory(directory)) { throw std::runtime_error("recovery fixture collision"); } }
+    fs::path directory =
+        base / ("recovery-tests-" +
+                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" +
+                std::to_string(std::random_device{}()));
+
+    Fixture() {
+        if (!fs::create_directory(directory)) {
+            throw std::runtime_error("recovery fixture collision");
+        }
+    }
+
     ~Fixture() {
-        for (const auto& issue : astra::test::cleanup_owned_directory(directory, base, "recovery-tests-")) {
+        for (const auto& issue :
+             astra::test::cleanup_owned_directory(directory, base, "recovery-tests-")) {
             CHECK_MESSAGE(false, "Recovery cleanup: ", issue.message);
         }
     }
-    [[nodiscard]] fs::path state() const { return directory / "state"; }
+
+    [[nodiscard]] fs::path state() const {
+        return directory / "state";
+    }
 };
 
-RecoveryRecord record(const Document& document) { return {document.snapshot(), {}, io::TextEncoding::utf8, {}}; }
+RecoveryRecord record(const Document& document) {
+    return {document.snapshot(), {}, io::TextEncoding::utf8, {}};
+}
 
 void overwrite(const fs::path& path, std::string_view bytes) {
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
@@ -47,7 +61,8 @@ void overwrite(const fs::path& path, std::string_view bytes) {
 
 } // namespace
 
-TEST_CASE("recovery checkpoints preserve Unicode text selection identity encoding and raw disk version") {
+TEST_CASE(
+    "recovery checkpoints preserve Unicode text selection identity encoding and raw disk version") {
     Fixture fixture;
     const auto path = fixture.directory / fs::path(u8"星.txt");
     const auto version = io::save_file(path, "original\r\n", io::TextEncoding::utf16_le);
@@ -93,10 +108,13 @@ TEST_CASE("recovery sessions isolate instances and reject a second live claimant
     RecoveryStore claimed(fixture.state(), abandoned);
     CHECK(claimed.load({1})->document.text.str() == "first");
     const auto sessions = RecoveryStore::discover(fixture.state());
-    CHECK(std::ranges::count_if(sessions, [](const auto& session) { return session.active; }) == 1);
+    CHECK(std::ranges::count_if(sessions, [](const auto& session) {
+              return session.active;
+          }) == 1);
 }
 
-TEST_CASE("recovery rejects stale worker checkpoints and permits selection changes at the same revision") {
+TEST_CASE("recovery rejects stale worker checkpoints and permits selection changes at the same "
+          "revision") {
     Fixture fixture;
     RecoveryStore store(fixture.state());
     Document document({4}, "old");
@@ -114,7 +132,8 @@ TEST_CASE("recovery rejects stale worker checkpoints and permits selection chang
     CHECK(store.load({4})->document.text.str() == document.text().str());
 }
 
-TEST_CASE("recovery erase is revision guarded and late snapshots cannot resurrect discarded content") {
+TEST_CASE(
+    "recovery erase is revision guarded and late snapshots cannot resurrect discarded content") {
     Fixture fixture;
     RecoveryStore store(fixture.state());
     Document document({3}, "draft");
@@ -132,7 +151,8 @@ TEST_CASE("recovery erase is revision guarded and late snapshots cannot resurrec
     CHECK_NOTHROW(store.checkpoint(record(document)));
 }
 
-TEST_CASE("recovery frame epochs allow the same revision to become dirty again and reject old frames") {
+TEST_CASE(
+    "recovery frame epochs allow the same revision to become dirty again and reject old frames") {
     Fixture fixture;
     Document document({3}, "unchanged text");
     auto first = record(document);
@@ -166,7 +186,9 @@ TEST_CASE("recovery frame epochs allow the same revision to become dirty again a
 
 TEST_CASE("recovery pruning removes abandoned empty sessions beyond the discovery limit") {
     Fixture fixture;
-    for (std::size_t index = 0; index < 257; ++index) { RecoveryStore empty(fixture.state()); }
+    for (std::size_t index = 0; index < 257; ++index) {
+        RecoveryStore empty(fixture.state());
+    }
     CHECK_THROWS_AS((void)RecoveryStore::discover(fixture.state()), std::length_error);
     const auto pruned = RecoveryStore::prune_empty_sessions(fixture.state());
     CHECK(pruned.removed == 257);
@@ -218,7 +240,8 @@ TEST_CASE("recovery pruning removes valid durable epoch tombstones after their o
     CHECK_FALSE(fs::exists(session));
 }
 
-TEST_CASE("recovery persisted disk version refuses overwriting external file changes after reopening") {
+TEST_CASE(
+    "recovery persisted disk version refuses overwriting external file changes after reopening") {
     Fixture fixture;
     const auto path = fixture.directory / "source.txt";
     const auto disk = io::save_file(path, "original");
@@ -235,12 +258,15 @@ TEST_CASE("recovery persisted disk version refuses overwriting external file cha
     RecoveryStore restored(fixture.state(), session);
     const auto draft = restored.load({1});
     REQUIRE(draft);
-    CHECK_THROWS_AS((void)io::save_file(path, draft->document.text.str(), draft->encoding, draft->disk_version), io::FileConflict);
+    CHECK_THROWS_AS(
+        (void)io::save_file(path, draft->document.text.str(), draft->encoding, draft->disk_version),
+        io::FileConflict);
     CHECK(io::read_file(path).text == "external edit");
     CHECK(restored.load({1})->document.text.str() == "unsaved");
 }
 
-TEST_CASE("recovery checksum and schema corruption are reported while good records remain recoverable") {
+TEST_CASE(
+    "recovery checksum and schema corruption are reported while good records remain recoverable") {
     Fixture fixture;
     RecoveryStore store(fixture.state());
     store.checkpoint(record(Document({1}, "keep")));
@@ -254,7 +280,8 @@ TEST_CASE("recovery checksum and schema corruption are reported while good recor
     REQUIRE(inspect.issues.size() == 1);
     CHECK(inspect.issues[0].message.find("checksum") != std::string::npos);
     CHECK_THROWS_AS((void)store.load({2}), RecoveryCorrupt);
-    CHECK_THROWS_AS(store.checkpoint(record(Document({2}, "overwrite forbidden"))), RecoveryCorrupt);
+    CHECK_THROWS_AS(store.checkpoint(record(Document({2}, "overwrite forbidden"))),
+                    RecoveryCorrupt);
     CHECK(fs::exists(path));
     data["schema"] = 99;
     overwrite(path, data.dump());
@@ -262,7 +289,8 @@ TEST_CASE("recovery checksum and schema corruption are reported while good recor
     CHECK(store.load({1})->document.text.str() == "keep");
 }
 
-TEST_CASE("recovery reports incomplete files and truncated or invalid UTF8 without deleting evidence") {
+TEST_CASE(
+    "recovery reports incomplete files and truncated or invalid UTF8 without deleting evidence") {
     Fixture fixture;
     RecoveryStore store(fixture.state());
     store.checkpoint(record(Document({1}, "safe")));
@@ -285,7 +313,8 @@ TEST_CASE("recovery validation and resource limits leave the previous checkpoint
     RecoveryStore store(fixture.state(), std::nullopt, limits);
     store.checkpoint(record(Document({1}, "safe")));
     CHECK_THROWS_AS(store.checkpoint(record(Document({2}, "other"))), std::length_error);
-    CHECK_THROWS_AS(store.checkpoint(record(Document({1}, std::string(17, 'x')))), std::length_error);
+    CHECK_THROWS_AS(store.checkpoint(record(Document({1}, std::string(17, 'x')))),
+                    std::length_error);
     auto invalid = record(Document({1}, "\xf0\x9f\x98\x80"));
     invalid.document.selections = {{{1}, {1}}};
     CHECK_THROWS_AS(store.checkpoint(invalid), std::invalid_argument);
@@ -332,14 +361,17 @@ TEST_CASE("recovery atomic checkpoint failure preserves the prior record") {
 TEST_CASE("recovery survives abrupt Windows process termination and releases its session lock") {
     Fixture fixture;
     std::wstring executable(32768, L'\0');
-    const auto size = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    const auto size =
+        GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
     REQUIRE(size > 0);
     REQUIRE(size < executable.size());
     executable.resize(size);
-    const auto child_path = (fs::path(executable).parent_path() / "astra-recovery-fixture.exe").u8string();
+    const auto child_path =
+        (fs::path(executable).parent_path() / "astra-recovery-fixture.exe").u8string();
     const auto state_path = fixture.state().u8string();
     process::ProcessOptions options;
-    options.argv = {std::string(reinterpret_cast<const char*>(child_path.data()), child_path.size()),
+    options.argv = {
+        std::string(reinterpret_cast<const char*>(child_path.data()), child_path.size()),
         std::string(reinterpret_cast<const char*>(state_path.data()), state_path.size())};
     options.shutdown_timeout = 200ms;
     std::promise<std::string> ready;
@@ -350,7 +382,10 @@ TEST_CASE("recovery survives abrupt Windows process termination and releases its
     callbacks.on_stdout = [&](std::string_view bytes) {
         line += bytes;
         const auto newline = line.find('\n');
-        if (!notified && newline != line.npos) { notified = true; ready.set_value(line.substr(0, newline)); }
+        if (!notified && newline != line.npos) {
+            notified = true;
+            ready.set_value(line.substr(0, newline));
+        }
     };
     process::Process child(std::move(options), std::move(callbacks));
     child.start().get();

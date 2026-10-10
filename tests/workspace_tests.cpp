@@ -28,26 +28,31 @@
 namespace {
 
 namespace fs = std::filesystem;
-using astra::workspace::Workspace;
-using astra::workspace::SearchOptions;
 using astra::io::TextEncoding;
+using astra::workspace::SearchOptions;
+using astra::workspace::Workspace;
 
 bool strictly_within(const fs::path& child, const fs::path& parent) {
     const auto relative = child.lexically_relative(parent);
     return !relative.empty() && relative != "." && !relative.is_absolute() &&
-        std::none_of(relative.begin(), relative.end(), [](const fs::path& part) { return part == ".."; });
+           std::none_of(relative.begin(), relative.end(), [](const fs::path& part) {
+               return part == "..";
+           });
 }
 
 class WorkspaceFixture {
-public:
+  public:
     WorkspaceFixture() {
         const auto cwd = fs::canonical(fs::current_path());
         build_ = fs::weakly_canonical(cwd / "build");
-        if (!strictly_within(build_, cwd)) { throw std::runtime_error("test build root escaped workspace"); }
+        if (!strictly_within(build_, cwd)) {
+            throw std::runtime_error("test build root escaped workspace");
+        }
         (void)fs::create_directories(build_);
         std::random_device random;
         for (int attempt = 0; attempt < 32; ++attempt) {
-            const auto candidate = build_ / ("workspace-test-" + std::to_string(random()) + "-" + std::to_string(random()));
+            const auto candidate = build_ / ("workspace-test-" + std::to_string(random()) + "-" +
+                                             std::to_string(random()));
             if (fs::create_directory(candidate)) {
                 base_ = fs::canonical(candidate);
                 project_ = base_ / "project";
@@ -57,8 +62,10 @@ public:
         }
         throw std::runtime_error("could not allocate test workspace");
     }
+
     WorkspaceFixture(const WorkspaceFixture&) = delete;
     WorkspaceFixture& operator=(const WorkspaceFixture&) = delete;
+
     ~WorkspaceFixture() {
         std::error_code error;
         const auto resolved = fs::weakly_canonical(base_, error);
@@ -67,19 +74,40 @@ public:
             return;
         }
         (void)fs::remove_all(resolved, error);
-        if (error) { std::fputs("workspace fixture cleanup failed\n", stderr); }
+        if (error) {
+            std::fputs("workspace fixture cleanup failed\n", stderr);
+        }
     }
-    [[nodiscard]] const fs::path& root() const noexcept { return project_; }
-    [[nodiscard]] const fs::path& base() const noexcept { return base_; }
-    void write(const fs::path& relative, std::string_view text) const { write_at(project_ / relative, text); }
-    void write_outside(std::string_view text) const { write_at(base_ / "outside" / "secret.txt", text); }
-    void parent_config(std::string_view text) const { write_at(base_ / ".editorconfig", text); }
+
+    [[nodiscard]] const fs::path& root() const noexcept {
+        return project_;
+    }
+
+    [[nodiscard]] const fs::path& base() const noexcept {
+        return base_;
+    }
+
+    void write(const fs::path& relative, std::string_view text) const {
+        write_at(project_ / relative, text);
+    }
+
+    void write_outside(std::string_view text) const {
+        write_at(base_ / "outside" / "secret.txt", text);
+    }
+
+    void parent_config(std::string_view text) const {
+        write_at(base_ / ".editorconfig", text);
+    }
+
     [[nodiscard]] std::string read(const fs::path& relative) const {
         std::ifstream stream(project_ / relative, std::ios::binary);
-        if (!stream) { throw std::runtime_error("cannot read fixture file"); }
+        if (!stream) {
+            throw std::runtime_error("cannot read fixture file");
+        }
         return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>{}};
     }
-private:
+
+  private:
     static void write_at(const fs::path& path, std::string_view text) {
         (void)fs::create_directories(path.parent_path());
         std::ofstream stream(path, std::ios::binary | std::ios::trunc);
@@ -87,6 +115,7 @@ private:
         stream.write(text.data(), static_cast<std::streamsize>(text.size()));
         stream.close();
     }
+
     fs::path build_;
     fs::path base_;
     fs::path project_;
@@ -102,9 +131,11 @@ TEST_CASE("workspace requires an existing explicit root and confines relative pa
     CHECK(workspace.resolve_path("file.txt") == fs::canonical(fixture.root() / "file.txt"));
     CHECK(workspace.resolve_path("new.txt") == fixture.root() / "new.txt");
     CHECK_THROWS_AS((void)workspace.resolve_path("../outside.txt"), std::invalid_argument);
-    CHECK_THROWS_AS((void)workspace.resolve_path(fixture.base() / "outside.txt"), std::invalid_argument);
+    CHECK_THROWS_AS((void)workspace.resolve_path(fixture.base() / "outside.txt"),
+                    std::invalid_argument);
     CHECK_THROWS_AS((void)workspace.resolve_path({}), std::invalid_argument);
-    CHECK_THROWS_AS((void)workspace.resolve_path(fs::path(std::string("bad\0path", 8))), std::invalid_argument);
+    CHECK_THROWS_AS((void)workspace.resolve_path(fs::path(std::string("bad\0path", 8))),
+                    std::invalid_argument);
     CHECK_THROWS_AS((void)Workspace(fixture.root() / "file.txt"), std::invalid_argument);
     CHECK_THROWS_AS((void)Workspace(fixture.root() / "missing"), fs::filesystem_error);
 }
@@ -180,12 +211,15 @@ TEST_CASE("workspace EditorConfig discovery stays inside root and layers child s
 
 TEST_CASE("workspace save applies EditorConfig policies to a copy and returns actual saved text") {
     WorkspaceFixture fixture;
-    fixture.write(".editorconfig", "[*]\nend_of_line=lf\ntrim_trailing_whitespace=true\ninsert_final_newline=true\ncharset=utf-8-bom\n");
+    fixture.write(".editorconfig",
+                  "[*]\nend_of_line=lf\ntrim_trailing_whitespace=true\ninsert_final_newline="
+                  "true\ncharset=utf-8-bom\n");
     fixture.write("file.txt", "old");
     Workspace workspace(fixture.root());
     const auto loaded = workspace.load("file.txt");
     const std::string input = "line \t\r\nnext\xc2\xa0";
-    const auto saved = workspace.save("file.txt", input, loaded.snapshot.version, loaded.snapshot.encoding);
+    const auto saved =
+        workspace.save("file.txt", input, loaded.snapshot.version, loaded.snapshot.encoding);
     CHECK(input == "line \t\r\nnext\xc2\xa0");
     CHECK(saved.text == "line\nnext\n");
     CHECK(saved.encoding == TextEncoding::utf8_bom);
@@ -216,7 +250,10 @@ TEST_CASE("workspace CR-only files use LF editor lines and preserve original CR 
     CHECK(*loaded.snapshot.version.raw_content == "one\r\xf0\x9f\x98\x80\r");
     CHECK(astra::Rope(loaded.snapshot.text).line_count() == 3);
     CHECK(astra::io::read_file(fixture.root() / "file.txt").text == "one\r\xf0\x9f\x98\x80\r");
-    const auto saved = workspace.save("file.txt", "edited\n\xf0\x9f\x98\x80\n", loaded.snapshot.version, loaded.snapshot.encoding);
+    const auto saved = workspace.save("file.txt",
+                                      "edited\n\xf0\x9f\x98\x80\n",
+                                      loaded.snapshot.version,
+                                      loaded.snapshot.encoding);
     CHECK(saved.text == "edited\n\xf0\x9f\x98\x80\n");
     CHECK(fixture.read("file.txt") == "edited\r\xf0\x9f\x98\x80\r");
     CHECK(workspace.load("file.txt").snapshot.text == saved.text);
@@ -224,19 +261,23 @@ TEST_CASE("workspace CR-only files use LF editor lines and preserve original CR 
 
 TEST_CASE("workspace EditorConfig CR formatting never collapses returned editor lines") {
     WorkspaceFixture fixture;
-    fixture.write(".editorconfig", "[*.txt]\nend_of_line=cr\ntrim_trailing_whitespace=true\ninsert_final_newline=true\n");
+    fixture.write(
+        ".editorconfig",
+        "[*.txt]\nend_of_line=cr\ntrim_trailing_whitespace=true\ninsert_final_newline=true\n");
     Workspace workspace(fixture.root());
     const auto saved = workspace.save("file.txt", "one  \r\ntwo \t");
     CHECK(saved.text == "one\ntwo\n");
     CHECK(fixture.read("file.txt") == "one\rtwo\r");
     CHECK(astra::Rope(saved.text).line_count() == 3);
     CHECK(workspace.load("file.txt").snapshot.text == saved.text);
-    const auto again = workspace.save("file.txt", saved.text + "three\n", saved.version, saved.encoding);
+    const auto again =
+        workspace.save("file.txt", saved.text + "three\n", saved.version, saved.encoding);
     CHECK(again.text == "one\ntwo\nthree\n");
     CHECK(fixture.read("file.txt") == "one\rtwo\rthree\r");
 }
 
-TEST_CASE("workspace CR-only search positions and multiline replacements share editor coordinates") {
+TEST_CASE(
+    "workspace CR-only search positions and multiline replacements share editor coordinates") {
     WorkspaceFixture fixture;
     fixture.write("file.txt", "a\rb\rc\r");
     Workspace workspace(fixture.root());
@@ -259,14 +300,16 @@ TEST_CASE("workspace CR-only search positions and multiline replacements share e
     CHECK(fixture.read("file.txt") == "z\rz\rc\r");
 }
 
-TEST_CASE("workspace preserves CR-only UTF16 encoding while explicit LF policy overrides disk endings") {
+TEST_CASE(
+    "workspace preserves CR-only UTF16 encoding while explicit LF policy overrides disk endings") {
     WorkspaceFixture fixture;
     (void)astra::io::save_file(fixture.root() / "file.txt", "one\rtwo\r", TextEncoding::utf16_be);
     Workspace workspace(fixture.root());
     const auto loaded = workspace.load("file.txt");
     CHECK(loaded.snapshot.encoding == TextEncoding::utf16_be);
     CHECK(loaded.snapshot.text == "one\ntwo\n");
-    const auto saved = workspace.save("file.txt", "edited\ntwo\n", loaded.snapshot.version, loaded.snapshot.encoding);
+    const auto saved = workspace.save(
+        "file.txt", "edited\ntwo\n", loaded.snapshot.version, loaded.snapshot.encoding);
     CHECK(astra::io::read_file(fixture.root() / "file.txt").text == "edited\rtwo\r");
     CHECK(saved.encoding == TextEncoding::utf16_be);
     fixture.write(".editorconfig", "[*.txt]\nend_of_line=lf\n");
@@ -283,10 +326,12 @@ TEST_CASE("workspace Latin-1 configuration loads legacy text and rejects unencod
     const auto loaded = workspace.load("file.txt");
     CHECK(loaded.snapshot.text == "caf\xc3\xa9");
     CHECK(loaded.snapshot.encoding == TextEncoding::latin1);
-    const auto saved = workspace.save("file.txt", "caf\xc3\xa9\n", loaded.snapshot.version, loaded.snapshot.encoding);
+    const auto saved = workspace.save(
+        "file.txt", "caf\xc3\xa9\n", loaded.snapshot.version, loaded.snapshot.encoding);
     CHECK(saved.encoding == TextEncoding::latin1);
     CHECK(fixture.read("file.txt") == "caf\xe9\n");
-    CHECK_THROWS_AS((void)workspace.save("file.txt", "\xe4\xb8\xad", saved.version, saved.encoding), std::invalid_argument);
+    CHECK_THROWS_AS((void)workspace.save("file.txt", "\xe4\xb8\xad", saved.version, saved.encoding),
+                    std::invalid_argument);
     CHECK(fixture.read("file.txt") == "caf\xe9\n");
 }
 
@@ -299,13 +344,16 @@ TEST_CASE("workspace reports invalid config and refuses stale saves") {
     REQUIRE(loaded.issues.size() == 1);
     CHECK(loaded.config.settings.indent_size == 2);
     fixture.write("file.txt", "outside");
-    CHECK_THROWS_AS((void)workspace.save("file.txt", "my edit", loaded.snapshot.version), astra::io::FileConflict);
+    CHECK_THROWS_AS((void)workspace.save("file.txt", "my edit", loaded.snapshot.version),
+                    astra::io::FileConflict);
     CHECK(fixture.read("file.txt") == "outside");
 }
 
 TEST_CASE("workspace literal search returns exact UTF8 ranges and UTF16 positions") {
     WorkspaceFixture fixture;
-    fixture.write("text.txt", "\xf0\x9f\x98\x80 cat\r\n\xe4\xb8\xad" "cat\ncat");
+    fixture.write("text.txt",
+                  "\xf0\x9f\x98\x80 cat\r\n\xe4\xb8\xad"
+                  "cat\ncat");
     fixture.write(".git/hidden", "cat");
     fixture.write("build/generated", "cat");
     Workspace workspace(fixture.root());
@@ -330,7 +378,10 @@ TEST_CASE("workspace literal search returns exact UTF8 ranges and UTF16 position
 
 TEST_CASE("workspace whole word search uses Unicode letters marks and numbers") {
     WorkspaceFixture fixture;
-    fixture.write("text.txt", "cat scatter cat_ cat2 \xc3\xa9" "cat cat\xc3\xa9 \xf0\x9f\x98\x80" "cat\xf0\x9f\x98\x80 cat\n");
+    fixture.write("text.txt",
+                  "cat scatter cat_ cat2 \xc3\xa9"
+                  "cat cat\xc3\xa9 \xf0\x9f\x98\x80"
+                  "cat\xf0\x9f\x98\x80 cat\n");
     Workspace workspace(fixture.root());
     SearchOptions options;
     options.query = "cat";
@@ -377,7 +428,8 @@ TEST_CASE("workspace search reports binary and oversized files without reading b
     CHECK(result.issues.size() == 2);
 }
 
-TEST_CASE("workspace replacement plans preserve file versions and apply all nonoverlapping matches") {
+TEST_CASE(
+    "workspace replacement plans preserve file versions and apply all nonoverlapping matches") {
     WorkspaceFixture fixture;
     fixture.write("a.txt", "cat cat\n");
     fixture.write("b.txt", "one cat");
@@ -437,13 +489,18 @@ TEST_CASE("workspace rejects stale or forged replacement matches and respects ca
     CHECK_THROWS_AS((void)workspace.plan_replace(search, "dog"), astra::io::FileConflict);
 }
 
-TEST_CASE("workspace Unicode case insensitive matches preserve original bytes and exact disk versions") {
+TEST_CASE(
+    "workspace Unicode case insensitive matches preserve original bytes and exact disk versions") {
     WorkspaceFixture fixture;
-    const std::string source = "\xF0\x9F\x98\x80 \xC3\x89" "cole \xC3\xA9" "COLE\r\n\xCE\xA3 \xCF\x83 \xCF\x82 K \xE2\x84\xAA k Stra\xC3\x9F" "e STRASSE";
+    const std::string source = "\xF0\x9F\x98\x80 \xC3\x89"
+                               "cole \xC3\xA9"
+                               "COLE\r\n\xCE\xA3 \xCF\x83 \xCF\x82 K \xE2\x84\xAA k Stra\xC3\x9F"
+                               "e STRASSE";
     fixture.write("text.txt", source);
     Workspace workspace(fixture.root());
     SearchOptions options;
-    options.query = "\xC3\xA9" "cole";
+    options.query = "\xC3\xA9"
+                    "cole";
     options.case_sensitive = false;
     const auto found = workspace.search(options);
     REQUIRE(found.matches.size() == 2);
@@ -459,7 +516,8 @@ TEST_CASE("workspace Unicode case insensitive matches preserve original bytes an
     options.query = "k";
     CHECK(workspace.search(options).matches.size() == 3);
     options.query = "strasse";
-    CHECK(workspace.search(options).matches.size() == 1); // Simple folding, not full ss/ssharp folding.
+    CHECK(workspace.search(options).matches.size() ==
+          1); // Simple folding, not full ss/ssharp folding.
     options.query = "\xC3\xA9";
     const astra::workspace::SearchPattern pattern(options);
     CHECK(pattern.find_all("e\xCC\x81").matches.empty()); // Normalization is not implicit.
@@ -479,7 +537,8 @@ TEST_CASE("workspace regex captures named groups and replacements use documented
     CHECK(found.matches[1].captures[3].has_value());
     const auto plan = workspace.plan_replace(found, R"(${name}:$2:$3:$$:$0\n)");
     REQUIRE(plan.files.size() == 1);
-    CHECK(plan.files[0].text == "\xF0\x9F\x98\x80 CAF\xC3\x89:42::$:CAF\xC3\x89=42\\n \xCE\xB1:7:x:$:\xCE\xB1=7/x\\n");
+    CHECK(plan.files[0].text ==
+          "\xF0\x9F\x98\x80 CAF\xC3\x89:42::$:CAF\xC3\x89=42\\n \xCE\xB1:7:x:$:\xCE\xB1=7/x\\n");
     const auto applied = workspace.apply_replace(plan);
     CHECK(applied.applied.size() == 1);
     CHECK(fixture.read("text.txt") == plan.files[0].text);
@@ -487,7 +546,9 @@ TEST_CASE("workspace regex captures named groups and replacements use documented
 
 TEST_CASE("workspace regex empty matches advance by scalar and replace without duplicate offsets") {
     WorkspaceFixture fixture;
-    fixture.write("text.txt", "\xF0\x9F\x98\x80" "a");
+    fixture.write("text.txt",
+                  "\xF0\x9F\x98\x80"
+                  "a");
     Workspace workspace(fixture.root());
     SearchOptions options;
     options.regex = true;
@@ -527,7 +588,8 @@ TEST_CASE("workspace regex multiline positions preserve CR only disk identity") 
     CHECK(fixture.read("text.txt") == "[one]\r[two]\r[three]\r");
 }
 
-TEST_CASE("workspace search rejects unsafe regex and malformed replacement references before mutation") {
+TEST_CASE(
+    "workspace search rejects unsafe regex and malformed replacement references before mutation") {
     SearchOptions options;
     options.regex = true;
     for (const auto* query : {"[", "(?=a)", "(a)\\1", "\\C"}) {
@@ -559,7 +621,9 @@ TEST_CASE("workspace regex and literal whole word filtering use Unicode boundari
     options.case_sensitive = false;
     options.whole_word = true;
     const astra::workspace::SearchPattern pattern(options);
-    const auto result = pattern.find_all("CAT dog \xC3\xA9" "cat cat\xCC\x81 dog_ \xF0\x9F\x98\x80" "Dog\xF0\x9F\x98\x80");
+    const auto result = pattern.find_all("CAT dog \xC3\xA9"
+                                         "cat cat\xCC\x81 dog_ \xF0\x9F\x98\x80"
+                                         "Dog\xF0\x9F\x98\x80");
     CHECK(result.matches.size() == 3);
 }
 
@@ -576,19 +640,23 @@ TEST_CASE("workspace search limits cancellation and hostile regex are bounded") 
     options.max_result_bytes = 1024;
     std::stop_source source;
     (void)source.request_stop();
-    const auto cancelled = astra::workspace::SearchPattern(options).find_all("aaa", source.get_token());
+    const auto cancelled =
+        astra::workspace::SearchPattern(options).find_all("aaa", source.get_token());
     CHECK(cancelled.cancelled);
     CHECK(cancelled.matches.empty());
-    CHECK_THROWS_AS((void)astra::workspace::SearchPattern(options).find_all("\xFF"), std::invalid_argument);
+    CHECK_THROWS_AS((void)astra::workspace::SearchPattern(options).find_all("\xFF"),
+                    std::invalid_argument);
     options.max_file_bytes = 2;
-    CHECK_THROWS_AS((void)astra::workspace::SearchPattern(options).find_all("aaa"), std::length_error);
+    CHECK_THROWS_AS((void)astra::workspace::SearchPattern(options).find_all("aaa"),
+                    std::length_error);
     options.query = std::string(astra::workspace::SearchPattern::max_query_bytes + 1, 'a');
     CHECK_THROWS_AS((void)astra::workspace::SearchPattern(options), std::invalid_argument);
     options = {};
     options.regex = true;
     options.query = "(a+)+$";
     const auto started = std::chrono::steady_clock::now();
-    const auto hostile = astra::workspace::SearchPattern(options).find_all(std::string(200000, 'a') + "!");
+    const auto hostile =
+        astra::workspace::SearchPattern(options).find_all(std::string(200000, 'a') + "!");
     CHECK(hostile.matches.empty());
     CHECK(std::chrono::steady_clock::now() - started < std::chrono::seconds(5));
 }
@@ -596,99 +664,168 @@ TEST_CASE("workspace search limits cancellation and hostile regex are bounded") 
 TEST_CASE("workspace find next preserves full regex context and Unicode boundaries") {
     using astra::ByteOffset;
     using astra::workspace::SearchPattern;
-    SearchOptions options; options.regex = true; options.query = "^cat";
+    SearchOptions options;
+    options.regex = true;
+    options.query = "^cat";
     auto found = SearchPattern(options).find_next("cat cat", ByteOffset{4}, false);
     CHECK_FALSE(found.match);
     found = SearchPattern(options).find_next("cat cat", ByteOffset{4});
-    REQUIRE(found.match); CHECK(found.match->begin.value == 0); CHECK(found.wrapped);
+    REQUIRE(found.match);
+    CHECK(found.match->begin.value == 0);
+    CHECK(found.wrapped);
     options.query = "\\bcat\\b";
     CHECK_FALSE(SearchPattern(options).find_next("xcat", ByteOffset{1}).match);
-    options.query = "cat|dog"; options.case_sensitive = false; options.whole_word = true;
-    found = SearchPattern(options).find_next("CAT \xC3\xA9" "cat dog_ Dog", ByteOffset{4});
-    REQUIRE(found.match); CHECK(found.match->begin.value == 15); CHECK_FALSE(found.wrapped);
-    options = {}; options.query = "🙂";
+    options.query = "cat|dog";
+    options.case_sensitive = false;
+    options.whole_word = true;
+    found = SearchPattern(options).find_next("CAT \xC3\xA9"
+                                             "cat dog_ Dog",
+                                             ByteOffset{4});
+    REQUIRE(found.match);
+    CHECK(found.match->begin.value == 15);
+    CHECK_FALSE(found.wrapped);
+    options = {};
+    options.query = "🙂";
     found = SearchPattern(options).find_next("中🙂中🙂", ByteOffset{7}, false);
-    REQUIRE(found.match); CHECK(found.match->begin.value == 10); CHECK(found.match->end.value == 14);
-    CHECK_THROWS_AS((void)SearchPattern(options).find_next("中🙂", ByteOffset{1}), std::invalid_argument);
-    CHECK_THROWS_AS((void)SearchPattern(options).find_next("中🙂", ByteOffset{8}), std::invalid_argument);
-    CHECK_THROWS_AS((void)SearchPattern(options).find_next("\xFF", ByteOffset{0}), std::invalid_argument);
-    std::stop_source source; (void)source.request_stop();
+    REQUIRE(found.match);
+    CHECK(found.match->begin.value == 10);
+    CHECK(found.match->end.value == 14);
+    CHECK_THROWS_AS((void)SearchPattern(options).find_next("中🙂", ByteOffset{1}),
+                    std::invalid_argument);
+    CHECK_THROWS_AS((void)SearchPattern(options).find_next("中🙂", ByteOffset{8}),
+                    std::invalid_argument);
+    CHECK_THROWS_AS((void)SearchPattern(options).find_next("\xFF", ByteOffset{0}),
+                    std::invalid_argument);
+    std::stop_source source;
+    (void)source.request_stop();
     found = SearchPattern(options).find_next("中🙂", ByteOffset{0}, true, source.get_token());
-    CHECK(found.cancelled); CHECK_FALSE(found.match);
+    CHECK(found.cancelled);
+    CHECK_FALSE(found.match);
 }
 
 TEST_CASE("workspace find next retains one match beyond the all match budget") {
     using astra::ByteOffset;
     using astra::workspace::SearchPattern;
-    SearchOptions options; options.query = "a"; options.max_matches = 0; options.max_result_bytes = 0;
-    const auto found = SearchPattern(options).find_next(std::string(100000, 'a'), ByteOffset{99999});
-    REQUIRE(found.match); CHECK(found.match->begin.value == 99999); CHECK_FALSE(found.truncated);
-    options.query = "$"; options.regex = true;
+    SearchOptions options;
+    options.query = "a";
+    options.max_matches = 0;
+    options.max_result_bytes = 0;
+    const auto found =
+        SearchPattern(options).find_next(std::string(100000, 'a'), ByteOffset{99999});
+    REQUIRE(found.match);
+    CHECK(found.match->begin.value == 99999);
+    CHECK_FALSE(found.truncated);
+    options.query = "$";
+    options.regex = true;
     const auto eof = SearchPattern(options).find_next("中🙂", ByteOffset{7});
-    REQUIRE(eof.match); CHECK(eof.match->begin.value == 7); CHECK(eof.match->end.value == 7);
+    REQUIRE(eof.match);
+    CHECK(eof.match->begin.value == 7);
+    CHECK(eof.match->end.value == 7);
     const auto empty = SearchPattern(options).find_next("", ByteOffset{0});
-    REQUIRE(empty.match); CHECK(empty.match->begin.value == 0); CHECK_FALSE(empty.wrapped);
+    REQUIRE(empty.match);
+    CHECK(empty.match->begin.value == 0);
+    CHECK_FALSE(empty.wrapped);
 }
 
 TEST_CASE("workspace find next agrees with a flat literal oracle at random scalar boundaries") {
     constexpr auto seed = 0xA57FA11U;
-    std::mt19937 random(seed); CAPTURE(seed);
-    const std::array<std::string_view,6> parts{"a","b"," ","中","🙂","e\xCC\x81"};
+    std::mt19937 random(seed);
+    CAPTURE(seed);
+    const std::array<std::string_view, 6> parts{"a", "b", " ", "中", "🙂", "e\xCC\x81"};
     for (unsigned sample = 0; sample < 300; ++sample) {
         std::string input;
-        for (unsigned i=0;i<80;++i) input += parts[random()%parts.size()];
+        for (unsigned i = 0; i < 80; ++i)
+            input += parts[random() % parts.size()];
         std::vector<std::size_t> boundaries{0};
-        for (std::size_t index=0;index<input.size();) { index += astra::utf8::decode(input,index).bytes;boundaries.push_back(index); }
-        const auto begin = boundaries[random()%boundaries.size()];
-        SearchOptions options; options.query = std::string(parts[random()%parts.size()]);
-        for (const auto wrap : {false,true}) {
-            auto expected = input.find(options.query,begin);
+        for (std::size_t index = 0; index < input.size();) {
+            index += astra::utf8::decode(input, index).bytes;
+            boundaries.push_back(index);
+        }
+        const auto begin = boundaries[random() % boundaries.size()];
+        SearchOptions options;
+        options.query = std::string(parts[random() % parts.size()]);
+        for (const auto wrap : {false, true}) {
+            auto expected = input.find(options.query, begin);
             const auto wrapped = wrap && expected == std::string::npos && begin != 0;
-            if (wrapped) expected = input.find(options.query);
-            const auto actual = astra::workspace::SearchPattern(options).find_next(input,astra::ByteOffset{begin},wrap);
+            if (wrapped)
+                expected = input.find(options.query);
+            const auto actual = astra::workspace::SearchPattern(options).find_next(
+                input, astra::ByteOffset{begin}, wrap);
             CHECK(actual.match.has_value() == (expected != std::string::npos));
             if (actual.match) {
                 CHECK(actual.match->begin.value == expected);
-                CHECK(actual.match->end.value == expected+options.query.size());
+                CHECK(actual.match->end.value == expected + options.query.size());
                 CHECK(actual.wrapped == wrapped);
             }
-            CHECK_FALSE(actual.cancelled); CHECK_FALSE(actual.truncated);
+            CHECK_FALSE(actual.cancelled);
+            CHECK_FALSE(actual.truncated);
         }
     }
 }
 
 TEST_CASE("workspace previous search agrees with a flat Unicode oracle and retains one result") {
-    constexpr auto seed=0xA57BA11U;std::mt19937 random(seed);CAPTURE(seed);
-    const std::array<std::string_view,6> parts{"a","b"," ","中","🙂","e\xCC\x81"};
-    for(unsigned sample=0;sample<300;++sample) {
-        std::string input;for(unsigned i=0;i<80;++i)input+=parts[random()%parts.size()];
+    constexpr auto seed = 0xA57BA11U;
+    std::mt19937 random(seed);
+    CAPTURE(seed);
+    const std::array<std::string_view, 6> parts{"a", "b", " ", "中", "🙂", "e\xCC\x81"};
+    for (unsigned sample = 0; sample < 300; ++sample) {
+        std::string input;
+        for (unsigned i = 0; i < 80; ++i)
+            input += parts[random() % parts.size()];
         std::vector<std::size_t> boundaries{0};
-        for(std::size_t i=0;i<input.size();){i+=astra::utf8::decode(input,i).bytes;boundaries.push_back(i);}
-        const auto begin=boundaries[random()%boundaries.size()];
-        SearchOptions options;options.query=parts[random()%parts.size()];
-        for(const auto wrap:{false,true}) {
-            auto expected=begin ? input.rfind(options.query,begin-1) : std::string::npos;
-            const bool wrapped=expected==std::string::npos && wrap;
-            if(wrapped)expected=input.rfind(options.query);
-            const auto actual=astra::workspace::SearchPattern(options).find_previous(input,astra::ByteOffset{begin},wrap);
-            CHECK(actual.match.has_value()==(expected!=std::string::npos));
-            if(actual.match){CHECK(actual.match->begin.value==expected);CHECK(actual.match->end.value==expected+options.query.size());CHECK(actual.wrapped==wrapped);}
-            CHECK_FALSE(actual.cancelled);CHECK_FALSE(actual.truncated);
+        for (std::size_t i = 0; i < input.size();) {
+            i += astra::utf8::decode(input, i).bytes;
+            boundaries.push_back(i);
+        }
+        const auto begin = boundaries[random() % boundaries.size()];
+        SearchOptions options;
+        options.query = parts[random() % parts.size()];
+        for (const auto wrap : {false, true}) {
+            auto expected = begin ? input.rfind(options.query, begin - 1) : std::string::npos;
+            const bool wrapped = expected == std::string::npos && wrap;
+            if (wrapped)
+                expected = input.rfind(options.query);
+            const auto actual = astra::workspace::SearchPattern(options).find_previous(
+                input, astra::ByteOffset{begin}, wrap);
+            CHECK(actual.match.has_value() == (expected != std::string::npos));
+            if (actual.match) {
+                CHECK(actual.match->begin.value == expected);
+                CHECK(actual.match->end.value == expected + options.query.size());
+                CHECK(actual.wrapped == wrapped);
+            }
+            CHECK_FALSE(actual.cancelled);
+            CHECK_FALSE(actual.truncated);
         }
     }
-    SearchOptions options;options.query="a";
-    const auto many=astra::workspace::SearchPattern(options).find_previous(std::string(10000,'a'),astra::ByteOffset{9999});
-    REQUIRE(many.match);CHECK(many.match->begin.value==9998);
-    options.regex=true;options.query="^|$";
-    auto found=astra::workspace::SearchPattern(options).find_previous("中🙂",astra::ByteOffset{7});
-    REQUIRE(found.match);CHECK(found.match->begin.value==0);CHECK_FALSE(found.wrapped);
-    found=astra::workspace::SearchPattern(options).find_previous("中🙂",astra::ByteOffset{0});
-    REQUIRE(found.match);CHECK(found.match->begin.value==7);CHECK(found.wrapped);
-    std::stop_source cancelled;cancelled.request_stop();
-    found=astra::workspace::SearchPattern(options).find_previous("中🙂",astra::ByteOffset{0},true,cancelled.get_token());
-    CHECK(found.cancelled);CHECK_FALSE(found.match);
-    CHECK_THROWS_AS((void)astra::workspace::SearchPattern(options).find_previous("中🙂",astra::ByteOffset{1}),std::invalid_argument);
-    CHECK_THROWS_AS((void)astra::workspace::SearchPattern(options).find_previous("\xFF",astra::ByteOffset{0}),std::invalid_argument);
+    SearchOptions options;
+    options.query = "a";
+    const auto many = astra::workspace::SearchPattern(options).find_previous(
+        std::string(10000, 'a'), astra::ByteOffset{9999});
+    REQUIRE(many.match);
+    CHECK(many.match->begin.value == 9998);
+    options.regex = true;
+    options.query = "^|$";
+    auto found =
+        astra::workspace::SearchPattern(options).find_previous("中🙂", astra::ByteOffset{7});
+    REQUIRE(found.match);
+    CHECK(found.match->begin.value == 0);
+    CHECK_FALSE(found.wrapped);
+    found = astra::workspace::SearchPattern(options).find_previous("中🙂", astra::ByteOffset{0});
+    REQUIRE(found.match);
+    CHECK(found.match->begin.value == 7);
+    CHECK(found.wrapped);
+    std::stop_source cancelled;
+    cancelled.request_stop();
+    found = astra::workspace::SearchPattern(options).find_previous(
+        "中🙂", astra::ByteOffset{0}, true, cancelled.get_token());
+    CHECK(found.cancelled);
+    CHECK_FALSE(found.match);
+    CHECK_THROWS_AS(
+        (void)astra::workspace::SearchPattern(options).find_previous("中🙂", astra::ByteOffset{1}),
+        std::invalid_argument);
+    CHECK_THROWS_AS(
+        (void)astra::workspace::SearchPattern(options).find_previous("\xFF", astra::ByteOffset{0}),
+        std::invalid_argument);
 }
 
 TEST_CASE("workspace excludes buffer overlay paths before file and byte budgets") {
@@ -717,7 +854,18 @@ TEST_CASE("workspace excludes buffer overlay paths before file and byte budgets"
 }
 
 TEST_CASE("workspace literal Unicode folding agrees with deterministic scalar reference") {
-    const std::array<std::string, 12> alphabet{"A", "a", "K", "k", "\xE2\x84\xAA", "\xCE\xA3", "\xCF\x83", "\xCF\x82", "_", "\xF0\x9F\x98\x80", "\xC3\x89", "\xC3\xA9"};
+    const std::array<std::string, 12> alphabet{"A",
+                                               "a",
+                                               "K",
+                                               "k",
+                                               "\xE2\x84\xAA",
+                                               "\xCE\xA3",
+                                               "\xCF\x83",
+                                               "\xCF\x82",
+                                               "_",
+                                               "\xF0\x9F\x98\x80",
+                                               "\xC3\x89",
+                                               "\xC3\xA9"};
     const std::array<int, 12> folded{0, 0, 1, 1, 1, 2, 2, 2, 3, 4, 5, 5};
     std::mt19937 random(0x5EAC1234U);
     for (std::size_t trial = 0; trial < 300; ++trial) {
@@ -742,11 +890,16 @@ TEST_CASE("workspace literal Unicode folding agrees with deterministic scalar re
         std::vector<astra::workspace::TextRange> expected;
         for (std::size_t index = 0; index + count <= scalars.size();) {
             bool matches = true;
-            for (std::size_t part = 0; part < count; ++part) { matches = matches && folded[scalars[index + part]] == query[part]; }
+            for (std::size_t part = 0; part < count; ++part) {
+                matches = matches && folded[scalars[index + part]] == query[part];
+            }
             if (matches) {
-                expected.push_back({astra::ByteOffset{boundaries[index]}, astra::ByteOffset{boundaries[index + count]}});
+                expected.push_back({astra::ByteOffset{boundaries[index]},
+                                    astra::ByteOffset{boundaries[index + count]}});
                 index += count;
-            } else { ++index; }
+            } else {
+                ++index;
+            }
         }
         const auto actual = astra::workspace::SearchPattern(options).find_all(input);
         REQUIRE(actual.matches.size() == expected.size());
@@ -762,10 +915,11 @@ TEST_CASE("workspace literal Unicode folding agrees with deterministic scalar re
 namespace {
 
 class Junction {
-public:
+  public:
     Junction(fs::path link, const fs::path& target) : link_(std::move(link)) {
         const auto print_name = fs::canonical(target).native();
         const auto substitute = L"\\??\\" + print_name;
+
         struct MountPoint {
             DWORD tag{};
             WORD data_length{};
@@ -776,6 +930,7 @@ public:
             WORD print_length{};
             std::array<wchar_t, 2048> path{};
         } buffer;
+
         if (substitute.size() + print_name.size() + 2 > buffer.path.size()) {
             throw std::length_error("junction test path is too long");
         }
@@ -783,49 +938,80 @@ public:
         buffer.substitute_length = static_cast<WORD>(substitute.size() * sizeof(wchar_t));
         buffer.print_offset = static_cast<WORD>((substitute.size() + 1) * sizeof(wchar_t));
         buffer.print_length = static_cast<WORD>(print_name.size() * sizeof(wchar_t));
-        buffer.data_length = static_cast<WORD>(8 + buffer.print_offset + buffer.print_length + sizeof(wchar_t));
+        buffer.data_length =
+            static_cast<WORD>(8 + buffer.print_offset + buffer.print_length + sizeof(wchar_t));
         std::ranges::copy(substitute, buffer.path.begin());
-        std::ranges::copy(print_name, buffer.path.begin() + static_cast<std::ptrdiff_t>(substitute.size() + 1));
-        if (!CreateDirectoryW(link_.c_str(), nullptr)) { throw std::runtime_error("cannot create test junction directory"); }
-        const auto handle = CreateFileW(link_.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
-            FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+        std::ranges::copy(print_name,
+                          buffer.path.begin() + static_cast<std::ptrdiff_t>(substitute.size() + 1));
+        if (!CreateDirectoryW(link_.c_str(), nullptr)) {
+            throw std::runtime_error("cannot create test junction directory");
+        }
+        const auto handle = CreateFileW(link_.c_str(),
+                                        GENERIC_WRITE,
+                                        0,
+                                        nullptr,
+                                        OPEN_EXISTING,
+                                        FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                                        nullptr);
         if (handle == INVALID_HANDLE_VALUE) {
             const auto error = GetLastError();
             (void)RemoveDirectoryW(link_.c_str());
-            throw std::system_error(static_cast<int>(error), std::system_category(), "open test junction");
+            throw std::system_error(
+                static_cast<int>(error), std::system_category(), "open test junction");
         }
         DWORD returned = 0;
-        const auto succeeded = DeviceIoControl(handle, FSCTL_SET_REPARSE_POINT, &buffer,
-            static_cast<DWORD>(buffer.data_length) + 8, nullptr, 0, &returned, nullptr);
+        const auto succeeded = DeviceIoControl(handle,
+                                               FSCTL_SET_REPARSE_POINT,
+                                               &buffer,
+                                               static_cast<DWORD>(buffer.data_length) + 8,
+                                               nullptr,
+                                               0,
+                                               &returned,
+                                               nullptr);
         const auto error = GetLastError();
-        if (!CloseHandle(handle)) { std::fputs("test junction handle close failed\n", stderr); }
+        if (!CloseHandle(handle)) {
+            std::fputs("test junction handle close failed\n", stderr);
+        }
         if (!succeeded) {
             (void)RemoveDirectoryW(link_.c_str());
-            throw std::system_error(static_cast<int>(error), std::system_category(), "create test junction");
+            throw std::system_error(
+                static_cast<int>(error), std::system_category(), "create test junction");
         }
     }
+
     Junction(const Junction&) = delete;
     Junction& operator=(const Junction&) = delete;
+
     ~Junction() {
-        if (!RemoveDirectoryW(link_.c_str())) { std::fputs("test junction cleanup failed\n", stderr); }
+        if (!RemoveDirectoryW(link_.c_str())) {
+            std::fputs("test junction cleanup failed\n", stderr);
+        }
     }
-private:
+
+  private:
     fs::path link_;
 };
 
 class ReadOnlyGuard {
-public:
-    explicit ReadOnlyGuard(fs::path path) : path_(std::move(path)), old_(GetFileAttributesW(path_.c_str())) {
-        if (old_ == INVALID_FILE_ATTRIBUTES || !SetFileAttributesW(path_.c_str(), old_ | FILE_ATTRIBUTE_READONLY)) {
+  public:
+    explicit ReadOnlyGuard(fs::path path)
+        : path_(std::move(path)), old_(GetFileAttributesW(path_.c_str())) {
+        if (old_ == INVALID_FILE_ATTRIBUTES ||
+            !SetFileAttributesW(path_.c_str(), old_ | FILE_ATTRIBUTE_READONLY)) {
             throw std::runtime_error("cannot set read-only test file");
         }
     }
+
     ReadOnlyGuard(const ReadOnlyGuard&) = delete;
     ReadOnlyGuard& operator=(const ReadOnlyGuard&) = delete;
+
     ~ReadOnlyGuard() {
-        if (!SetFileAttributesW(path_.c_str(), old_)) { std::fputs("read-only test cleanup failed\n", stderr); }
+        if (!SetFileAttributesW(path_.c_str(), old_)) {
+            std::fputs("read-only test cleanup failed\n", stderr);
+        }
     }
-private:
+
+  private:
     fs::path path_;
     DWORD old_{};
 };

@@ -14,29 +14,35 @@ namespace {
 Json echo(std::string_view method, const Json& params) {
     return Json{{"method", method}, {"params", params}};
 }
-}
+} // namespace
 
 TEST_CASE("QuickJS evaluates real JavaScript and serializes Unicode JSON") {
     Runtime runtime(echo);
-    CHECK(runtime.evaluate("[1+2, '中文🙂', {answer: 6*7}]") == Json::array({3, "中文🙂", {{"answer",42}}}));
+    CHECK(runtime.evaluate("[1+2, '中文🙂', {answer: 6*7}]") ==
+          Json::array({3, "中文🙂", {{"answer", 42}}}));
     CHECK(runtime.evaluate("undefined").is_null());
     CHECK(runtime.evaluate("astra.request('echo', {value: 42})")["params"]["value"] == 42);
 }
 
 TEST_CASE("QuickJS measures UTF-8 bytes independently of UTF-16 string length") {
     Runtime runtime(echo);
-    CHECK(runtime.evaluate("['', 'ASCII', '中文🙂', 'e\\u0301', 'a\\0b'].map(text=>astra.utf8ByteLength(text))")==Json::array({0,5,10,3,3}));
-    CHECK(runtime.evaluate("astra.utf8ByteLength('x'.repeat(65534)+'🙂')")==65538);
-    CHECK_THROWS_AS(static_cast<void>(runtime.evaluate("astra.utf8ByteLength({toString(){throw new Error('coercion')}})")),ScriptError);
-    CHECK_THROWS_AS(static_cast<void>(runtime.evaluate("astra.utf8ByteLength()")),ScriptError);
-    CHECK(runtime.evaluate("astra.utf8ByteLength('🙂')")==4);
+    CHECK(
+        runtime.evaluate(
+            "['', 'ASCII', '中文🙂', 'e\\u0301', 'a\\0b'].map(text=>astra.utf8ByteLength(text))") ==
+        Json::array({0, 5, 10, 3, 3}));
+    CHECK(runtime.evaluate("astra.utf8ByteLength('x'.repeat(65534)+'🙂')") == 65538);
+    CHECK_THROWS_AS(static_cast<void>(runtime.evaluate(
+                        "astra.utf8ByteLength({toString(){throw new Error('coercion')}})")),
+                    ScriptError);
+    CHECK_THROWS_AS(static_cast<void>(runtime.evaluate("astra.utf8ByteLength()")), ScriptError);
+    CHECK(runtime.evaluate("astra.utf8ByteLength('🙂')") == 4);
 }
 
 TEST_CASE("JavaScript commands register override and retain closure state") {
     Runtime runtime(echo);
     (void)runtime.evaluate("let count=0; astra.registerCommand('increment', p => count += p.by)");
-    CHECK(runtime.execute_command("increment", {{"by",2}}) == 2);
-    CHECK(runtime.execute_command("increment", {{"by",3}}) == 5);
+    CHECK(runtime.execute_command("increment", {{"by", 2}}) == 2);
+    CHECK(runtime.execute_command("increment", {{"by", 3}}) == 5);
     (void)runtime.evaluate("astra.registerCommand('increment', () => 9)");
     CHECK(runtime.execute_command("increment") == 9);
     CHECK(runtime.commands() == std::vector<std::string>{"increment"});
@@ -45,24 +51,31 @@ TEST_CASE("JavaScript commands register override and retain closure state") {
 
 TEST_CASE("QuickJS command composition retains callbacks that replace themselves") {
     Runtime runtime(echo);
-    static_cast<void>(runtime.evaluate("astra.registerCommand('replace',p=>{astra.registerCommand('replace',()=>9);return p.value;});"));
-    CHECK(runtime.evaluate("astra._invokeCommand('replace',{value:42})")==42);
-    CHECK(runtime.evaluate("astra._invokeCommand('replace')")==9);
-    CHECK(runtime.evaluate("astra._commandNames()")==Json::array({"replace"}));
-    CHECK_THROWS_AS(static_cast<void>(runtime.evaluate("astra._invokeCommand('missing')")),ScriptError);
-    CHECK(runtime.evaluate("6*7")==42);
+    static_cast<void>(runtime.evaluate("astra.registerCommand('replace',p=>{astra.registerCommand('"
+                                       "replace',()=>9);return p.value;});"));
+    CHECK(runtime.evaluate("astra._invokeCommand('replace',{value:42})") == 42);
+    CHECK(runtime.evaluate("astra._invokeCommand('replace')") == 9);
+    CHECK(runtime.evaluate("astra._commandNames()") == Json::array({"replace"}));
+    CHECK_THROWS_AS(static_cast<void>(runtime.evaluate("astra._invokeCommand('missing')")),
+                    ScriptError);
+    CHECK(runtime.evaluate("6*7") == 42);
 }
 
 TEST_CASE("JavaScript custom command edits the production document service") {
     astra::service::EditorService service;
     std::size_t id{};
     Runtime runtime([&](std::string_view method, const Json& params) {
-        const auto response = service.dispatch(Json{{"jsonrpc","2.0"},{"id",++id},{"method",method},{"params",params}});
-        if (!response || response->contains("error")) { throw ScriptError(response ? response->dump() : "No response"); }
+        const auto response = service.dispatch(
+            Json{{"jsonrpc", "2.0"}, {"id", ++id}, {"method", method}, {"params", params}});
+        if (!response || response->contains("error")) {
+            throw ScriptError(response ? response->dump() : "No response");
+        }
         return response->at("result");
     });
     const auto created = runtime.evaluate("astra.request('document.create', {text:'hello'})");
-    (void)runtime.evaluate("astra.registerCommand('replace', p => astra.request('document.edit', {id:p.id, baseRevision:p.revision, edits:[{begin:0,end:5,text:'你好'}]}))");
+    (void)runtime.evaluate(
+        "astra.registerCommand('replace', p => astra.request('document.edit', {id:p.id, "
+        "baseRevision:p.revision, edits:[{begin:0,end:5,text:'你好'}]}))");
     const auto edited = runtime.execute_command("replace", created);
     CHECK(edited["revision"] == "1");
     const auto read = runtime.evaluate("astra.request('document.get', {id:'1'})");
@@ -73,8 +86,10 @@ TEST_CASE("JavaScript custom command edits the production document service") {
 
 TEST_CASE("JavaScript settings and keymaps incrementally override defaults") {
     Runtime runtime(echo);
-    (void)runtime.evaluate("astra.configure({theme:{background:'#111',foreground:'#eee'},fontSize:14}); astra.bind('Ctrl+S','file.save')");
-    (void)runtime.evaluate("astra.configure({fontSize:16,theme:{foreground:'#fff'}}); astra.bind('Ctrl+S','custom.save')");
+    (void)runtime.evaluate("astra.configure({theme:{background:'#111',foreground:'#eee'},fontSize:"
+                           "14}); astra.bind('Ctrl+S','file.save')");
+    (void)runtime.evaluate("astra.configure({fontSize:16,theme:{foreground:'#fff'}}); "
+                           "astra.bind('Ctrl+S','custom.save')");
     CHECK(runtime.settings()["theme"]["background"] == "#111");
     CHECK(runtime.settings()["theme"]["foreground"] == "#fff");
     CHECK(runtime.settings()["fontSize"] == 16);
@@ -83,9 +98,13 @@ TEST_CASE("JavaScript settings and keymaps incrementally override defaults") {
 
 TEST_CASE("JavaScript errors do not corrupt the reusable host") {
     Runtime runtime(echo);
-    for (const auto* source : {"throw new Error('example')", "let = ;", "astra.request(4)",
-                              "astra.registerCommand('bad', 1)", "astra.configure([])",
-                              "astra.bind('', 'bad')", "const cycle={}; cycle.self=cycle; cycle"}) {
+    for (const auto* source : {"throw new Error('example')",
+                               "let = ;",
+                               "astra.request(4)",
+                               "astra.registerCommand('bad', 1)",
+                               "astra.configure([])",
+                               "astra.bind('', 'bad')",
+                               "const cycle={}; cycle.self=cycle; cycle"}) {
         CAPTURE(source);
         CHECK_THROWS_AS((void)runtime.evaluate(source), ScriptError);
         CHECK(runtime.evaluate("40+2") == 42);
@@ -116,7 +135,11 @@ TEST_CASE("QuickJS drains finite jobs and enforces thread affinity") {
     CHECK(runtime.evaluate("result") == 9);
     bool rejected{};
     std::thread worker([&] {
-        try { (void)runtime.evaluate("1"); } catch (const std::logic_error&) { rejected = true; }
+        try {
+            (void)runtime.evaluate("1");
+        } catch (const std::logic_error&) {
+            rejected = true;
+        }
     });
     worker.join();
     CHECK(rejected);
@@ -126,17 +149,22 @@ TEST_CASE("QuickJS bounds self-scheduling jobs and oversized JSON values") {
     Runtime::Limits limits;
     limits.max_pending_jobs = 8;
     Runtime runtime(echo, limits);
-    CHECK_THROWS_AS((void)runtime.evaluate("function repeat(){Promise.resolve().then(repeat)}; repeat()"), ScriptError);
+    CHECK_THROWS_AS(
+        (void)runtime.evaluate("function repeat(){Promise.resolve().then(repeat)}; repeat()"),
+        ScriptError);
     CHECK_THROWS_AS((void)runtime.evaluate("42"), ScriptError);
     Runtime fresh(echo);
     CHECK(fresh.evaluate("42") == 42);
-    CHECK_THROWS_AS((void)fresh.evaluate("let nested={}; for(let i=0;i<100;i++)nested={child:nested}; nested"), ScriptError);
+    CHECK_THROWS_AS(
+        (void)fresh.evaluate("let nested={}; for(let i=0;i<100;i++)nested={child:nested}; nested"),
+        ScriptError);
     CHECK(fresh.evaluate("42") == 42);
 }
 
 TEST_CASE("QuickJS retains a command while it replaces its own registration") {
     Runtime runtime(echo);
-    (void)runtime.evaluate("astra.registerCommand('self', () => {astra.registerCommand('self',()=>2); return 1;})");
+    (void)runtime.evaluate(
+        "astra.registerCommand('self', () => {astra.registerCommand('self',()=>2); return 1;})");
     CHECK(runtime.execute_command("self") == 1);
     CHECK(runtime.execute_command("self") == 2);
 }
@@ -150,7 +178,9 @@ TEST_CASE("JavaScript requests are deferred promises and independent tasks stay 
         replies.push_back(reply);
         return reply->get_future();
     }});
-    const auto first = runtime.start_evaluation("(async()=>{ const p=astra.request('slow'); if(!(p instanceof Promise)) throw Error('not Promise'); return (await p).answer; })()");
+    const auto first = runtime.start_evaluation(
+        "(async()=>{ const p=astra.request('slow'); if(!(p instanceof Promise)) throw Error('not "
+        "Promise'); return (await p).answer; })()");
     CHECK(methods.empty());
     runtime.poll();
     REQUIRE(methods == std::vector<std::string>{"slow"});
@@ -161,102 +191,160 @@ TEST_CASE("JavaScript requests are deferred promises and independent tasks stay 
     replies[1]->set_value(42);
     runtime.poll();
     auto result = runtime.take_result(second);
-    REQUIRE(result); CHECK_FALSE(result->error); CHECK(result->value == 42);
+    REQUIRE(result);
+    CHECK_FALSE(result->error);
+    CHECK(result->value == 42);
     CHECK_FALSE(runtime.take_result(first));
     replies[0]->set_value({{"answer", 9}});
     runtime.poll();
     result = runtime.take_result(first);
-    REQUIRE(result); CHECK(result->value == 9); CHECK(runtime.idle());
+    REQUIRE(result);
+    CHECK(result->value == 9);
+    CHECK(runtime.idle());
 }
 
 TEST_CASE("JavaScript async commands preserve service error codes and can recover") {
     Runtime runtime([](std::string_view method, const Json&) -> Json {
-        if (method == "fail") { throw astra::protocol::RpcError(-32001, "stale revision", Json{{"revision", "9"}}); }
+        if (method == "fail") {
+            throw astra::protocol::RpcError(-32001, "stale revision", Json{{"revision", "9"}});
+        }
         return 7;
     });
-    (void)runtime.evaluate("astra.registerCommand('recover', async()=>{try{await astra.request('fail')}catch(e){if(e.code!==-32001||e.data.revision!=='9')throw e;} return await astra.request('ok');})");
+    (void)runtime.evaluate("astra.registerCommand('recover', async()=>{try{await "
+                           "astra.request('fail')}catch(e){if(e.code!==-32001||e.data.revision!=='"
+                           "9')throw e;} return await astra.request('ok');})");
     CHECK(runtime.execute_command("recover") == 7);
-    (void)runtime.evaluate("astra.registerCommand('fail', async()=>{await astra.request('fail');})");
+    (void)runtime.evaluate(
+        "astra.registerCommand('fail', async()=>{await astra.request('fail');})");
     const auto id = runtime.start_command("fail");
     runtime.poll();
     const auto outcome = runtime.take_result(id);
-    REQUIRE(outcome); REQUIRE(outcome->error);
+    REQUIRE(outcome);
+    REQUIRE(outcome->error);
     CHECK(outcome->error->at("code") == -32001);
     CHECK(runtime.evaluate("40+2") == 42);
 }
 
 TEST_CASE("JavaScript cancellation prevents queued and later mutations") {
     int mutations{};
-    Runtime runtime([&](std::string_view, const Json&) -> Json { ++mutations; return nullptr; });
-    (void)runtime.evaluate("astra.registerCommand('change',async()=>{try{await astra.request('first')}catch(e){} await astra.request('second');})");
+    Runtime runtime([&](std::string_view, const Json&) -> Json {
+        ++mutations;
+        return nullptr;
+    });
+    (void)runtime.evaluate("astra.registerCommand('change',async()=>{try{await "
+                           "astra.request('first')}catch(e){} await astra.request('second');})");
     const auto id = runtime.start_command("change");
     runtime.cancel(id);
     const auto outcome = runtime.take_result(id);
-    REQUIRE(outcome); REQUIRE(outcome->error);
+    REQUIRE(outcome);
+    REQUIRE(outcome->error);
     CHECK(outcome->error->at("name") == "AbortError");
-    for (int tick = 0; tick < 4; ++tick) { runtime.poll(); }
-    CHECK(mutations == 0); CHECK(runtime.idle());
+    for (int tick = 0; tick < 4; ++tick) {
+        runtime.poll();
+    }
+    CHECK(mutations == 0);
+    CHECK(runtime.idle());
 }
 
 TEST_CASE("JavaScript AbortSignal and timeout reject without blocking the owner") {
     std::promise<Json> reply;
-    Runtime runtime(Runtime::AsyncRequest{[&](std::string_view, const Json&) { return reply.get_future(); }});
-    const auto id = runtime.start_evaluation("(async()=>{const c=new AbortController();const p=astra.request('read',{}, {signal:c.signal});c.abort();try{await p}catch(e){return e.name}})()");
+    Runtime runtime(Runtime::AsyncRequest{[&](std::string_view, const Json&) {
+        return reply.get_future();
+    }});
+    const auto id = runtime.start_evaluation(
+        "(async()=>{const c=new AbortController();const p=astra.request('read',{}, "
+        "{signal:c.signal});c.abort();try{await p}catch(e){return e.name}})()");
     runtime.poll();
     auto outcome = runtime.take_result(id);
-    REQUIRE(outcome); CHECK(outcome->value == "AbortError");
-    const auto timed = runtime.start_evaluation("(async()=>{try{await astra.request('read',{}, {timeoutMs:2})}catch(e){return e.name}})()");
+    REQUIRE(outcome);
+    CHECK(outcome->value == "AbortError");
+    const auto timed = runtime.start_evaluation(
+        "(async()=>{try{await astra.request('read',{}, {timeoutMs:2})}catch(e){return e.name}})()");
     runtime.poll();
     CHECK_FALSE(runtime.take_result(timed));
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
     runtime.poll();
     outcome = runtime.take_result(timed);
-    REQUIRE(outcome); CHECK(outcome->value == "TimeoutError");
-    reply.set_value(nullptr); runtime.poll(); CHECK(runtime.idle());
+    REQUIRE(outcome);
+    CHECK(outcome->value == "TimeoutError");
+    reply.set_value(nullptr);
+    runtime.poll();
+    CHECK(runtime.idle());
 }
 
 TEST_CASE("JavaScript awaits operation pages and forwards cancellation after delayed replies") {
     std::vector<std::string> cancelled;
     std::size_t pages{};
     Runtime runtime([&](std::string_view method, const Json& p) -> Json {
-        if (method == "search") { return {{"operationId", "search-1"}}; }
-        if (method == "operation.cancel") { cancelled.push_back(p.at("id").get<std::string>()); return nullptr; }
+        if (method == "search") {
+            return {{"operationId", "search-1"}};
+        }
+        if (method == "operation.cancel") {
+            cancelled.push_back(p.at("id").get<std::string>());
+            return nullptr;
+        }
         ++pages;
         const auto offset = p.at("offset").get<std::size_t>();
-        return {{"state", "completed"}, {"result", {{"matches", Json::array({offset})}}},
-                {"page", {{"nextOffset", offset+1}, {"total", 3}}}};
+        return {{"state", "completed"},
+                {"result", {{"matches", Json::array({offset})}}},
+                {"page", {{"nextOffset", offset + 1}, {"total", 3}}}};
     });
-    CHECK(runtime.evaluate("astra.request('search')")["matches"] == Json::array({0,1,2}));
+    CHECK(runtime.evaluate("astra.request('search')")["matches"] == Json::array({0, 1, 2}));
     CHECK(pages == 3);
     std::promise<Json> delayed;
     Runtime remote(Runtime::AsyncRequest{[&](std::string_view method, const Json& p) {
-        if (method == "read") { return delayed.get_future(); }
+        if (method == "read") {
+            return delayed.get_future();
+        }
         cancelled.push_back(p.at("id").get<std::string>());
-        std::promise<Json> done; done.set_value(nullptr); return done.get_future();
+        std::promise<Json> done;
+        done.set_value(nullptr);
+        return done.get_future();
     }});
-    const auto task = remote.start_evaluation("astra.request('read')"); remote.poll();
-    remote.cancel(task); static_cast<void>(remote.take_result(task)); remote.poll();
-    delayed.set_value({{"operationId", "late-1"}}); remote.poll(); remote.poll();
-    CHECK(cancelled == std::vector<std::string>{"late-1"}); CHECK(remote.idle());
+    const auto task = remote.start_evaluation("astra.request('read')");
+    remote.poll();
+    remote.cancel(task);
+    static_cast<void>(remote.take_result(task));
+    remote.poll();
+    delayed.set_value({{"operationId", "late-1"}});
+    remote.poll();
+    remote.poll();
+    CHECK(cancelled == std::vector<std::string>{"late-1"});
+    CHECK(remote.idle());
 }
 
-TEST_CASE("JavaScript cancelled request drains report service rejection and preserve transport failures") {
-    for (const auto code : {-32001,-32602,-32603}) {
+TEST_CASE("JavaScript cancelled request drains report service rejection and preserve transport "
+          "failures") {
+    for (const auto code : {-32001, -32602, -32603}) {
         CAPTURE(code);
         std::promise<Json> delayed;
-        Runtime runtime(Runtime::AsyncRequest{[&](std::string_view,const Json&){return delayed.get_future();}});
-        static_cast<void>(runtime.evaluate("let receipt=null; astra.on('runtime.requestDrained',value=>receipt=value);"));
-        const auto task=runtime.start_evaluation("astra.request('document.find',{query:'needle'})");runtime.poll();
-        runtime.cancel(task);const auto cancelled=runtime.take_result(task);REQUIRE(cancelled);
-        CHECK(cancelled->error->at("name")=="AbortError");runtime.poll();
-        delayed.set_exception(std::make_exception_ptr(astra::protocol::RpcError(code,"late rejection",Json{{"revision","8"}})));
-        if(code==-32603) {
-            CHECK_THROWS_AS(runtime.poll(),astra::protocol::RpcError);
+        Runtime runtime(Runtime::AsyncRequest{[&](std::string_view, const Json&) {
+            return delayed.get_future();
+        }});
+        static_cast<void>(runtime.evaluate(
+            "let receipt=null; astra.on('runtime.requestDrained',value=>receipt=value);"));
+        const auto task =
+            runtime.start_evaluation("astra.request('document.find',{query:'needle'})");
+        runtime.poll();
+        runtime.cancel(task);
+        const auto cancelled = runtime.take_result(task);
+        REQUIRE(cancelled);
+        CHECK(cancelled->error->at("name") == "AbortError");
+        runtime.poll();
+        delayed.set_exception(std::make_exception_ptr(
+            astra::protocol::RpcError(code, "late rejection", Json{{"revision", "8"}})));
+        if (code == -32603) {
+            CHECK_THROWS_AS(runtime.poll(), astra::protocol::RpcError);
             CHECK(runtime.evaluate("receipt").is_null());
         } else {
-            CHECK_NOTHROW(runtime.poll());runtime.poll();
-            CHECK(runtime.evaluate("receipt")==Json{{"method","document.find"},{"cancelled",true},
-                {"error",{{"code",code},{"message","late rejection"},{"data",{{"revision","8"}}}}}});
+            CHECK_NOTHROW(runtime.poll());
+            runtime.poll();
+            CHECK(runtime.evaluate("receipt") == Json{{"method", "document.find"},
+                                                      {"cancelled", true},
+                                                      {"error",
+                                                       {{"code", code},
+                                                        {"message", "late rejection"},
+                                                        {"data", {{"revision", "8"}}}}}});
             CHECK(runtime.take_errors().empty());
         }
         CHECK(runtime.idle());
@@ -265,12 +353,17 @@ TEST_CASE("JavaScript cancelled request drains report service rejection and pres
 
 TEST_CASE("JavaScript event subscriptions and registered ES modules use the same host") {
     Runtime runtime(echo);
-    runtime.define_module("astra/test", "export function setup(){let n=0; astra.registerCommand('counter',()=>++n);}");
-    CHECK(runtime.evaluate_module("import {setup} from 'astra/test'; setup();", "entry.js").is_null());
+    runtime.define_module(
+        "astra/test",
+        "export function setup(){let n=0; astra.registerCommand('counter',()=>++n);}");
+    CHECK(runtime.evaluate_module("import {setup} from 'astra/test'; setup();", "entry.js")
+              .is_null());
     CHECK(runtime.execute_command("counter") == 1);
     CHECK(runtime.execute_command("counter") == 2);
     CHECK_THROWS_AS((void)runtime.evaluate_module("import 'missing';", "bad.js"), ScriptError);
-    (void)runtime.evaluate("let events=[]; let token=astra.on('document.changed',p=>{events.push(p.revision);astra.off('document.changed',token);});");
+    (void)runtime.evaluate("let events=[]; let "
+                           "token=astra.on('document.changed',p=>{events.push(p.revision);astra."
+                           "off('document.changed',token);});");
     runtime.emit("document.changed", {{"revision", "1"}});
     runtime.emit("document.changed", {{"revision", "2"}});
     CHECK(runtime.evaluate("events") == Json::array({"1"}));
@@ -278,22 +371,33 @@ TEST_CASE("JavaScript event subscriptions and registered ES modules use the same
 
 TEST_CASE("JavaScript async event failures remain observable and release tasks") {
     Runtime runtime(echo);
-    (void)runtime.evaluate("astra.on('change',async()=>{await astra.request('read');throw Error('provider failed')})");
+    (void)runtime.evaluate(
+        "astra.on('change',async()=>{await astra.request('read');throw Error('provider failed')})");
     runtime.emit("change", Json::object());
     runtime.poll();
     const auto errors = runtime.take_errors();
-    REQUIRE(errors.size() == 1); CHECK(errors[0]["message"] == "provider failed");
-    CHECK(runtime.take_errors().empty()); CHECK(runtime.idle());
+    REQUIRE(errors.size() == 1);
+    CHECK(errors[0]["message"] == "provider failed");
+    CHECK(runtime.take_errors().empty());
+    CHECK(runtime.idle());
 }
 
 TEST_CASE("JavaScript synchronous failure cancels requests submitted before throwing") {
     int mutations{};
-    Runtime runtime([&](std::string_view, const Json&) -> Json { ++mutations; return nullptr; });
-    CHECK_THROWS_AS((void)runtime.start_evaluation("astra.request('mutate'); throw Error('failed');"), ScriptError);
-    runtime.poll(); CHECK(mutations == 0); CHECK(runtime.idle());
+    Runtime runtime([&](std::string_view, const Json&) -> Json {
+        ++mutations;
+        return nullptr;
+    });
+    CHECK_THROWS_AS(
+        (void)runtime.start_evaluation("astra.request('mutate'); throw Error('failed');"),
+        ScriptError);
+    runtime.poll();
+    CHECK(mutations == 0);
+    CHECK(runtime.idle());
     const auto id = runtime.start_evaluation("astra.request('mutate')");
     runtime.shutdown();
-    CHECK(runtime.idle()); CHECK(mutations == 0);
+    CHECK(runtime.idle());
+    CHECK(mutations == 0);
     CHECK_THROWS_AS((void)runtime.start_evaluation("1"), ScriptError);
     static_cast<void>(id);
 }
@@ -302,21 +406,32 @@ TEST_CASE("JavaScript pages deliver bounded batches and early exit cancels the o
     std::vector<std::size_t> offsets;
     std::vector<std::string> cancellations;
     Runtime runtime([&](std::string_view method, const Json& p) -> Json {
-        if (method == "search") { return {{"operationId", "pages"}}; }
-        if (method == "operation.cancel") { cancellations.push_back(p.at("id")); return nullptr; }
+        if (method == "search") {
+            return {{"operationId", "pages"}};
+        }
+        if (method == "operation.cancel") {
+            cancellations.push_back(p.at("id"));
+            return nullptr;
+        }
         const auto offset = p.at("offset").get<std::size_t>();
         offsets.push_back(offset);
-        return {{"state", "completed"}, {"result", {{"matches", Json::array({offset})}}},
-            {"page", {{"nextOffset", offset + 1}, {"total", 3}}}};
+        return {{"state", "completed"},
+                {"result", {{"matches", Json::array({offset})}}},
+                {"page", {{"nextOffset", offset + 1}, {"total", 3}}}};
     });
-    CHECK(runtime.evaluate("(async()=>{let pages=[];for await(const p of astra.operationPages('search',{}, {limit:1})){pages.push(p.matches[0]);}return pages;})()") == Json::array({0,1,2}));
-    CHECK(offsets == std::vector<std::size_t>{0,1,2}); CHECK(cancellations.empty());
+    CHECK(runtime.evaluate(
+              "(async()=>{let pages=[];for await(const p of astra.operationPages('search',{}, "
+              "{limit:1})){pages.push(p.matches[0]);}return pages;})()") == Json::array({0, 1, 2}));
+    CHECK(offsets == std::vector<std::size_t>{0, 1, 2});
+    CHECK(cancellations.empty());
     offsets.clear();
-    CHECK(runtime.evaluate("(async()=>{for await(const p of astra.operationPages('search')){return p.matches[0];}})()") == 0);
+    CHECK(runtime.evaluate("(async()=>{for await(const p of astra.operationPages('search')){return "
+                           "p.matches[0];}})()") == 0);
     // Closing an async iterator may enqueue its finally request after the
     // consumer's result. The owner-loop must still drain that request.
     runtime.poll();
     INFO(Json(cancellations).dump());
-    CHECK(offsets == std::vector<std::size_t>{0}); CHECK(cancellations == std::vector<std::string>{"pages"});
+    CHECK(offsets == std::vector<std::size_t>{0});
+    CHECK(cancellations == std::vector<std::string>{"pages"});
     CHECK(runtime.idle());
 }

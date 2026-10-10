@@ -28,21 +28,19 @@ using astra::protocol::Json;
 using astra::transport::TcpClient;
 using astra::transport::TcpClientOptions;
 using astra::transport::TcpServer;
-using astra::transport::TransportError;
 using astra::transport::TransportCancelled;
+using astra::transport::TransportError;
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
 
-template<class T>
-T ready(std::future<T> future) {
+template <class T> T ready(std::future<T> future) {
     if (future.wait_for(5s) != std::future_status::ready) {
         throw std::runtime_error("TCP client test future deadline expired");
     }
     return future.get();
 }
 
-template<class Predicate>
-void until(Predicate predicate) {
+template <class Predicate> void until(Predicate predicate) {
     const auto deadline = Clock::now() + 5s;
     while (!predicate()) {
         if (Clock::now() >= deadline) {
@@ -53,7 +51,9 @@ void until(Predicate predicate) {
 }
 
 Json request(Json id, std::string method = "echo", Json params = Json::object()) {
-    return Json{{"jsonrpc", "2.0"}, {"id", std::move(id)}, {"method", std::move(method)},
+    return Json{{"jsonrpc", "2.0"},
+                {"id", std::move(id)},
+                {"method", std::move(method)},
                 {"params", std::move(params)}};
 }
 
@@ -72,7 +72,7 @@ Json reply(std::future<std::optional<std::string>> future) {
 // A real loopback socket peer allows exact byte fragmentation and adversarial
 // protocol responses. Every operation has a deadline; no mock transport runs.
 class RawPeer {
-public:
+  public:
     explicit RawPeer(bool listen_now = true) {
         WSADATA data{};
         if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
@@ -86,7 +86,9 @@ public:
             sockaddr_in address{};
             address.sin_family = AF_INET;
             address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-            if (bind(listener_, reinterpret_cast<const sockaddr*>(&address), static_cast<int>(sizeof(address))) != 0) {
+            if (bind(listener_,
+                     reinterpret_cast<const sockaddr*>(&address),
+                     static_cast<int>(sizeof(address))) != 0) {
                 throw std::runtime_error("Bind test listener failed");
             }
             int length = static_cast<int>(sizeof(address));
@@ -104,11 +106,16 @@ public:
         }
     }
 
-    ~RawPeer() { cleanup(); }
+    ~RawPeer() {
+        cleanup();
+    }
+
     RawPeer(const RawPeer&) = delete;
     RawPeer& operator=(const RawPeer&) = delete;
 
-    std::uint16_t port() const noexcept { return port_; }
+    std::uint16_t port() const noexcept {
+        return port_;
+    }
 
     void accept_connection() {
         wait(listener_, true, Clock::now() + 5s);
@@ -118,7 +125,10 @@ public:
         }
         nonblocking(socket_);
         const BOOL enabled = TRUE;
-        if (setsockopt(socket_, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&enabled),
+        if (setsockopt(socket_,
+                       IPPROTO_TCP,
+                       TCP_NODELAY,
+                       reinterpret_cast<const char*>(&enabled),
                        static_cast<int>(sizeof(enabled))) != 0) {
             throw std::runtime_error("Configure test socket failed");
         }
@@ -164,7 +174,8 @@ public:
             if (length <= 0) {
                 throw std::runtime_error("Receive test request failed");
             }
-            for (auto& body : decoder_.feed(std::string_view(buffer.data(), static_cast<std::size_t>(length)))) {
+            for (auto& body :
+                 decoder_.feed(std::string_view(buffer.data(), static_cast<std::size_t>(length)))) {
                 bodies_.push_back(std::move(body));
             }
         }
@@ -176,7 +187,7 @@ public:
         return result;
     }
 
-private:
+  private:
     static void nonblocking(SOCKET socket_value) {
         u_long enabled = 1;
         if (ioctlsocket(socket_value, FIONBIO, &enabled) != 0) {
@@ -185,7 +196,8 @@ private:
     }
 
     static void wait(SOCKET socket_value, bool read, Clock::time_point deadline) {
-        const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - Clock::now());
+        const auto remaining =
+            std::chrono::duration_cast<std::chrono::microseconds>(deadline - Clock::now());
         if (remaining <= 0us) {
             throw std::runtime_error("Test socket deadline expired");
         }
@@ -195,7 +207,8 @@ private:
         fd_set selected{};
         FD_ZERO(&selected);
         FD_SET(socket_value, &selected);
-        if (select(0, read ? &selected : nullptr, read ? nullptr : &selected, nullptr, &timeout) <= 0) {
+        if (select(0, read ? &selected : nullptr, read ? nullptr : &selected, nullptr, &timeout) <=
+            0) {
             throw std::runtime_error("Test socket select failed or timed out");
         }
     }
@@ -238,18 +251,25 @@ TEST_CASE("TCP client validates resource limits and disconnected submissions") {
 
 TEST_CASE("TCP client resolves localhost and IPv6 on real Windows loopback") {
     astra::protocol::Dispatcher dispatcher;
-    dispatcher.register_method("echo", [](const Json& params) { return params; });
-    TcpServer server([&](std::string_view body) { return dispatcher.dispatch_text(body); });
+    dispatcher.register_method("echo", [](const Json& params) {
+        return params;
+    });
+    TcpServer server([&](std::string_view body) {
+        return dispatcher.dispatch_text(body);
+    });
     std::string address = "127.0.0.1";
     std::string host = "localhost";
-    SUBCASE("IPv4 listener with hostname candidates") {}
-    SUBCASE("IPv6 literal") { address = host = "::1"; }
+    SUBCASE("IPv4 listener with hostname candidates") {
+    }
+    SUBCASE("IPv6 literal") {
+        address = host = "::1";
+    }
     server.start(address);
     TcpClient client;
     ready(client.connect(host, server.port()));
     REQUIRE(client.connected());
-    CHECK(reply(client.submit(request("echo", "echo", {{"unicode", "\xF0\x9F\x98\x80"}}).dump()))["result"]["unicode"] ==
-          "\xF0\x9F\x98\x80");
+    CHECK(reply(client.submit(request("echo", "echo", {{"unicode", "\xF0\x9F\x98\x80"}})
+                                  .dump()))["result"]["unicode"] == "\xF0\x9F\x98\x80");
     CHECK_THROWS_AS(ready(client.connect(host, server.port())), TransportError);
     client.close();
     CHECK(client.stats().loop_close_error == 0);
@@ -276,26 +296,39 @@ TEST_CASE("TCP client rejects non-loopback resolved addresses and reports refuse
 
 TEST_CASE("TCP client preserves editor service parity with in-process submission") {
     astra::service::EditorService service;
-    TcpServer server([&](std::string_view body) { return service.dispatch_text(body); },
-                     [&] {
-                         std::vector<std::string> events;
-                         for (const auto& event : service.take_notifications()) { events.push_back(event.dump()); }
-                         return events;
-                     });
+    TcpServer server(
+        [&](std::string_view body) {
+            return service.dispatch_text(body);
+        },
+        [&] {
+            std::vector<std::string> events;
+            for (const auto& event : service.take_notifications()) {
+                events.push_back(event.dump());
+            }
+            return events;
+        });
     server.start();
     TcpClient client;
     ready(client.connect("localhost", server.port()));
     (void)reply(client.submit(request("barrier", "document.list").dump()));
-    const auto created = reply(server.submit(request("create", "document.create", {{"text", "abc"}}).dump()));
+    const auto created =
+        reply(server.submit(request("create", "document.create", {{"text", "abc"}}).dump()));
     const auto id = created["result"]["id"];
     const auto get = request("get", "document.get", {{"id", id}}).dump();
     CHECK(reply(client.submit(get)) == reply(server.submit(get)));
-    const auto edit = request("edit", "document.edit", {{"id", id}, {"baseRevision", "0"},
-        {"edits", Json::array({Json{{"begin", 1}, {"end", 2}, {"text", "\xE4\xB8\xAD"}}})}}).dump();
+    const auto edit =
+        request(
+            "edit",
+            "document.edit",
+            {{"id", id},
+             {"baseRevision", "0"},
+             {"edits", Json::array({Json{{"begin", 1}, {"end", 2}, {"text", "\xE4\xB8\xAD"}}})}})
+            .dump();
     CHECK(reply(client.submit(edit))["result"]["revision"] == "1");
     CHECK(reply(client.submit(get)) == reply(server.submit(get)));
     CHECK(reply(client.submit(edit))["error"]["code"] == -32001);
-    CHECK(reply(client.submit(get))["result"]["text"] == "a\xE4\xB8\xAD" "c");
+    CHECK(reply(client.submit(get))["result"]["text"] == "a\xE4\xB8\xAD"
+                                                         "c");
     std::vector<std::string> notifications;
     until([&] {
         auto next = client.take_notifications();
@@ -309,18 +342,31 @@ TEST_CASE("TCP client preserves editor service parity with in-process submission
 TEST_CASE("TCP client rejects uncorrelatable input without sending or poisoning connection") {
     std::atomic<std::size_t> calls{};
     astra::protocol::Dispatcher dispatcher;
-    dispatcher.register_method("echo", [](const Json& params) { return params; });
-    TcpServer server([&](std::string_view body) { ++calls; return dispatcher.dispatch_text(body); });
+    dispatcher.register_method("echo", [](const Json& params) {
+        return params;
+    });
+    TcpServer server([&](std::string_view body) {
+        ++calls;
+        return dispatcher.dispatch_text(body);
+    });
     server.start();
     TcpClient client;
     ready(client.connect("127.0.0.1", server.port()));
-    std::vector<std::string> invalid{"{", "[]", "null", "42", R"({"id":1,"method":"echo"})",
-        R"({"jsonrpc":"1.0","method":"echo","id":1})", R"({"jsonrpc":"2.0","id":1})",
-        R"({"jsonrpc":"2.0","method":12,"id":1})", R"({"jsonrpc":"2.0","method":"echo","id":true})"};
+    std::vector<std::string> invalid{"{",
+                                     "[]",
+                                     "null",
+                                     "42",
+                                     R"({"id":1,"method":"echo"})",
+                                     R"({"jsonrpc":"1.0","method":"echo","id":1})",
+                                     R"({"jsonrpc":"2.0","id":1})",
+                                     R"({"jsonrpc":"2.0","method":12,"id":1})",
+                                     R"({"jsonrpc":"2.0","method":"echo","id":true})"};
     invalid.push_back(request(std::string(257, 'x')).dump());
     invalid.push_back(Json::array({request(1), request(1)}).dump());
     auto too_many = Json::array();
-    for (int index = 0; index < 129; ++index) { too_many.push_back(request(index)); }
+    for (int index = 0; index < 129; ++index) {
+        too_many.push_back(request(index));
+    }
     invalid.push_back(too_many.dump());
     for (const auto& body : invalid) {
         CHECK_THROWS_AS((void)ready(client.submit(body)), TransportError);
@@ -333,8 +379,12 @@ TEST_CASE("TCP client rejects uncorrelatable input without sending or poisoning 
 
 TEST_CASE("TCP client invalid params and unknown methods retain server JSON-RPC errors") {
     astra::protocol::Dispatcher dispatcher;
-    dispatcher.register_method("echo", [](const Json& params) { return params; });
-    TcpServer server([&](std::string_view body) { return dispatcher.dispatch_text(body); });
+    dispatcher.register_method("echo", [](const Json& params) {
+        return params;
+    });
+    TcpServer server([&](std::string_view body) {
+        return dispatcher.dispatch_text(body);
+    });
     server.start();
     TcpClient client;
     ready(client.connect("127.0.0.1", server.port()));
@@ -351,7 +401,9 @@ TEST_CASE("TCP client correlates out-of-order replies and preserves distinct ID 
     peer.accept_connection();
     std::vector<Json> ids{nullptr, 1, "1", 1.5, -7, std::string(256, '\n')};
     std::vector<std::future<std::optional<std::string>>> futures;
-    for (const auto& id : ids) { futures.push_back(client.submit(request(id).dump())); }
+    for (const auto& id : ids) {
+        futures.push_back(client.submit(request(id).dump()));
+    }
     CHECK(peer.receive(ids.size()).size() == ids.size());
     for (std::size_t index = ids.size(); index != 0; --index) {
         peer.send_json(response(ids[index - 1], index - 1));
@@ -370,7 +422,8 @@ TEST_CASE("TCP client batches preserve request order with split replies and noti
     ready(client.connect("127.0.0.1", peer.port()));
     peer.accept_connection();
     const Json notification{{"jsonrpc", "2.0"}, {"method", "event"}, {"params", Json::object()}};
-    auto future = client.submit(Json::array({request("a"), notification, request("b"), request("c")}).dump());
+    auto future =
+        client.submit(Json::array({request("a"), notification, request("b"), request("c")}).dump());
     CHECK(peer.receive()[0].size() == 4);
     peer.send_json(Json::array({response("c", 3), response("a", 1)}));
     peer.send_json(notification, 1);
@@ -380,7 +433,9 @@ TEST_CASE("TCP client batches preserve request order with split replies and noti
     CHECK(received[0]["id"] == "a");
     CHECK(received[1]["id"] == "b");
     CHECK(received[2]["id"] == "c");
-    until([&] { return !client.take_notifications().empty(); });
+    until([&] {
+        return !client.take_notifications().empty();
+    });
 }
 
 TEST_CASE("TCP client decodes fragmented and coalesced frames") {
@@ -423,11 +478,15 @@ TEST_CASE("TCP client notifications complete on write and receive server events"
         notifications.push_back(astra::protocol::make_notification("seen", params).dump());
         return true;
     });
-    TcpServer server([&](std::string_view body) { return dispatcher.dispatch_text(body); }, [&] {
-        auto pending = std::move(notifications);
-        notifications.clear();
-        return pending;
-    });
+    TcpServer server(
+        [&](std::string_view body) {
+            return dispatcher.dispatch_text(body);
+        },
+        [&] {
+            auto pending = std::move(notifications);
+            notifications.clear();
+            return pending;
+        });
     server.start();
     TcpClient client;
     ready(client.connect("127.0.0.1", server.port()));
@@ -440,11 +499,15 @@ TEST_CASE("TCP client notifications complete on write and receive server events"
         seen.insert(seen.end(), pending.begin(), pending.end());
         return seen.size() == 3;
     });
-    for (const auto& body : seen) { CHECK(Json::parse(body)["params"]["value"] == 9); }
+    for (const auto& body : seen) {
+        CHECK(Json::parse(body)["params"]["value"] == 9);
+    }
 }
 
 TEST_CASE("TCP client request deadline closes connection and settles all pending futures") {
-    TcpServer server([](std::string_view) { return std::optional<std::string>{}; });
+    TcpServer server([](std::string_view) {
+        return std::optional<std::string>{};
+    });
     server.start();
     TcpClientOptions options;
     options.request_timeout = 50ms;
@@ -501,14 +564,18 @@ TEST_CASE("TCP client close during asynchronous connect always settles connectio
         auto connecting = client.connect("localhost", peer.port());
         client.close();
         REQUIRE(connecting.wait_for(0ms) == std::future_status::ready);
-        try { connecting.get(); }
-        catch (const TransportCancelled&) { /* Expected if connect did not finish first. */ }
+        try {
+            connecting.get();
+        } catch (const TransportCancelled&) { /* Expected if connect did not finish first. */
+        }
         CHECK(client.stats().loop_close_error == 0);
     }
 }
 
 TEST_CASE("TCP client enforces pending-count body and write-byte bounds") {
-    TcpServer server([](std::string_view) { return std::optional<std::string>{}; });
+    TcpServer server([](std::string_view) {
+        return std::optional<std::string>{};
+    });
     server.start();
     TcpClientOptions options;
     options.max_pending_requests = 1;
@@ -516,8 +583,12 @@ TEST_CASE("TCP client enforces pending-count body and write-byte bounds") {
     options.max_body_bytes = 1024;
     TcpClient client(options);
     ready(client.connect("127.0.0.1", server.port()));
-    CHECK_THROWS_AS((void)ready(client.submit(request(1, "echo", {{"text", std::string(1024, 'a')}}).dump())), TransportError);
-    CHECK_THROWS_AS((void)ready(client.submit(request(1, "echo", {{"text", std::string(512, 'a')}}).dump())), TransportError);
+    CHECK_THROWS_AS(
+        (void)ready(client.submit(request(1, "echo", {{"text", std::string(1024, 'a')}}).dump())),
+        TransportError);
+    CHECK_THROWS_AS(
+        (void)ready(client.submit(request(1, "echo", {{"text", std::string(512, 'a')}}).dump())),
+        TransportError);
     auto first = client.submit(request(1).dump());
     CHECK_THROWS_AS((void)ready(client.submit(request(2).dump())), TransportError);
     CHECK(client.stats().pending_requests == 1);
@@ -528,8 +599,12 @@ TEST_CASE("TCP client enforces pending-count body and write-byte bounds") {
 
 TEST_CASE("TCP client concurrent submissions retain each caller response") {
     astra::protocol::Dispatcher dispatcher;
-    dispatcher.register_method("echo", [](const Json& params) { return params; });
-    TcpServer server([&](std::string_view body) { return dispatcher.dispatch_text(body); });
+    dispatcher.register_method("echo", [](const Json& params) {
+        return params;
+    });
+    TcpServer server([&](std::string_view body) {
+        return dispatcher.dispatch_text(body);
+    });
     server.start();
     TcpClient client;
     ready(client.connect("127.0.0.1", server.port()));
@@ -557,9 +632,16 @@ TEST_CASE("TCP client malformed frames fail pending calls without hanging") {
     peer.accept_connection();
     auto pending = client.submit(request(1).dump());
     CHECK(peer.receive().size() == 1);
-    SUBCASE("Bad header") { peer.send_bytes("Content-Length: -1\r\n\r\n"); }
-    SUBCASE("Oversized body") { peer.send_bytes("Content-Length: 8388609\r\n\r\n"); }
-    SUBCASE("Truncated body") { peer.send_bytes("Content-Length: 80\r\n\r\n{"); peer.disconnect(); }
+    SUBCASE("Bad header") {
+        peer.send_bytes("Content-Length: -1\r\n\r\n");
+    }
+    SUBCASE("Oversized body") {
+        peer.send_bytes("Content-Length: 8388609\r\n\r\n");
+    }
+    SUBCASE("Truncated body") {
+        peer.send_bytes("Content-Length: 80\r\n\r\n{");
+        peer.disconnect();
+    }
     CHECK_THROWS((void)ready(std::move(pending)));
     CHECK_FALSE(client.connected());
     CHECK(client.stats().protocol_errors == 1);
@@ -574,15 +656,29 @@ TEST_CASE("TCP client invalid server envelopes fail pending calls") {
     peer.accept_connection();
     auto pending = client.submit(request(1).dump());
     CHECK(peer.receive().size() == 1);
-    SUBCASE("Invalid JSON") { peer.send_bytes(astra::protocol::encode_frame("{")); }
-    SUBCASE("Unknown ID") { peer.send_json(response(77)); }
-    SUBCASE("Wrong version") { peer.send_json(Json{{"jsonrpc", "1.0"}, {"id", 1}, {"result", true}}); }
-    SUBCASE("Result and error") {
-        auto bad = response(1); bad["error"] = Json{{"code", -1}, {"message", "bad"}}; peer.send_json(bad);
+    SUBCASE("Invalid JSON") {
+        peer.send_bytes(astra::protocol::encode_frame("{"));
     }
-    SUBCASE("Malformed error") { peer.send_json(Json{{"jsonrpc", "2.0"}, {"id", 1}, {"error", "bad"}}); }
-    SUBCASE("Empty batch") { peer.send_json(Json::array()); }
-    SUBCASE("Server request is unsupported") { peer.send_json(request("server-request")); }
+    SUBCASE("Unknown ID") {
+        peer.send_json(response(77));
+    }
+    SUBCASE("Wrong version") {
+        peer.send_json(Json{{"jsonrpc", "1.0"}, {"id", 1}, {"result", true}});
+    }
+    SUBCASE("Result and error") {
+        auto bad = response(1);
+        bad["error"] = Json{{"code", -1}, {"message", "bad"}};
+        peer.send_json(bad);
+    }
+    SUBCASE("Malformed error") {
+        peer.send_json(Json{{"jsonrpc", "2.0"}, {"id", 1}, {"error", "bad"}});
+    }
+    SUBCASE("Empty batch") {
+        peer.send_json(Json::array());
+    }
+    SUBCASE("Server request is unsupported") {
+        peer.send_json(request("server-request"));
+    }
     CHECK_THROWS_AS((void)ready(std::move(pending)), TransportError);
     CHECK_FALSE(client.connected());
     CHECK(client.stats().protocol_errors == 1);
@@ -640,7 +736,9 @@ TEST_CASE("TCP client notification overflow emits bounded resync marker and reco
     ready(client.connect("127.0.0.1", peer.port()));
     peer.accept_connection();
     const auto event = astra::protocol::make_notification("changed", {{"revision", "1"}});
-    for (int index = 0; index < 10; ++index) { peer.send_json(event); }
+    for (int index = 0; index < 10; ++index) {
+        peer.send_json(event);
+    }
     auto barrier = client.submit(request("barrier").dump());
     CHECK(peer.receive().size() == 1);
     peer.send_json(response("barrier"));
@@ -651,7 +749,10 @@ TEST_CASE("TCP client notification overflow emits bounded resync marker and reco
     CHECK(client.stats().notification_overflows == 1);
     peer.send_json(event);
     std::vector<std::string> next;
-    until([&] { next = client.take_notifications(); return !next.empty(); });
+    until([&] {
+        next = client.take_notifications();
+        return !next.empty();
+    });
     REQUIRE(next.size() == 1);
     CHECK(Json::parse(next[0])["method"] == "changed");
 }
@@ -662,7 +763,9 @@ TEST_CASE("TCP client rejects deeply nested input and server responses") {
     ready(client.connect("127.0.0.1", peer.port()));
     peer.accept_connection();
     Json nested = true;
-    for (int depth = 0; depth < 70; ++depth) { nested = Json::array({std::move(nested)}); }
+    for (int depth = 0; depth < 70; ++depth) {
+        nested = Json::array({std::move(nested)});
+    }
     CHECK_THROWS_AS((void)ready(client.submit(request(1, "echo", nested).dump())), TransportError);
     auto pending = client.submit(request(2).dump());
     CHECK(peer.receive()[0]["id"] == 2);

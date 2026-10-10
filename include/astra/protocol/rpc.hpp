@@ -16,12 +16,12 @@ namespace astra::protocol {
 using Json = nlohmann::json;
 
 class RpcError final : public std::runtime_error {
-public:
+  public:
     RpcError(int code, std::string message, std::optional<Json> data = std::nullopt);
     [[nodiscard]] int code() const noexcept;
     [[nodiscard]] const std::optional<Json>& data() const noexcept;
 
-private:
+  private:
     int code_;
     std::optional<Json> data_;
 };
@@ -40,7 +40,7 @@ private:
 // and revision before deciding whether to retry a versioned mutation. Remaining
 // batch members still execute in order, and each retains its own response ID.
 class Dispatcher {
-public:
+  public:
     using Handler = std::function<Json(const Json&)>;
     static constexpr std::size_t max_batch_size = 128;
     static constexpr std::size_t max_depth = 64;
@@ -51,11 +51,11 @@ public:
     [[nodiscard]] std::optional<Json> dispatch(const Json& request) const;
     [[nodiscard]] std::optional<std::string> dispatch_text(std::string_view body) const;
 
-private:
+  private:
     using Reply = std::pair<Json, std::size_t>;
     [[nodiscard]] std::optional<Reply> dispatch_one(const Json& request,
-                                                  std::size_t response_budget,
-                                                  std::size_t nesting_depth = 0) const;
+                                                    std::size_t response_budget,
+                                                    std::size_t nesting_depth = 0) const;
     [[nodiscard]] std::optional<Json> dispatch_validated(const Json& request) const;
     std::unordered_map<std::string, Handler> handlers_;
 };

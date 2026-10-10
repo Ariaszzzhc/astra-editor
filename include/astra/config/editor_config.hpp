@@ -76,7 +76,7 @@ struct ResolvedEditorConfig {
 // Layers are ordered from outer to inner. Non-ancestor layers do not apply.
 // The nearest applicable root=true layer clears inherited outer settings.
 // Paths must be relative; parent traversal, NUL and backslash separators are rejected.
-[[nodiscard]] ResolvedEditorConfig resolve_editor_config(
-    std::span<const EditorConfigLayer> layers, std::string_view relative_path);
+[[nodiscard]] ResolvedEditorConfig resolve_editor_config(std::span<const EditorConfigLayer> layers,
+                                                         std::string_view relative_path);
 
 } // namespace astra::config

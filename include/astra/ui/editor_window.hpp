@@ -31,7 +31,7 @@ struct WorkbenchViewState {
     TabStrip tab_strip;
     std::vector<std::string> tabs;
     std::size_t visible_file_rows{};
-    std::size_t outline_first{},outline_total{},visible_outline_rows{};
+    std::size_t outline_first{}, outline_total{}, visible_outline_rows{};
     std::size_t file_first{};
     std::optional<InlineFormLayout> inline_form_layout;
     protocol::Json inline_form;
@@ -39,7 +39,7 @@ struct WorkbenchViewState {
 
 // Main-thread editor front end. Every document change goes through EditorChannel.
 class EditorWindow final {
-public:
+  public:
     explicit EditorWindow(std::shared_ptr<EditorChannel> channel, EditorWindowOptions options = {});
     ~EditorWindow();
     EditorWindow(const EditorWindow&) = delete;
@@ -62,7 +62,7 @@ public:
     [[nodiscard]] WorkbenchLayout layout() const;
     [[nodiscard]] WorkbenchViewState view_state() const;
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

@@ -21,7 +21,7 @@ namespace astra::service {
 // and revisions are canonical decimal strings on the wire, never rounded JS
 // numbers. Offsets are nonnegative, JavaScript-safe UTF-8 byte integers.
 class EditorService {
-public:
+  public:
     using Json = protocol::Json;
     static constexpr std::size_t max_read_bytes = 64 * 1024;
     static constexpr std::size_t max_pending_notifications = 1024;
@@ -44,7 +44,7 @@ public:
     [[nodiscard]] std::vector<Json> take_notifications();
     [[nodiscard]] std::size_t document_count() const noexcept;
 
-private:
+  private:
     friend class ApplicationService;
     [[nodiscard]] Json create(const Json& params);
     [[nodiscard]] Json get(const Json& params);

@@ -1,102 +1,146 @@
 const request = (method, params = {}, options) => astra.request(method, params, options);
 export const ui = {
     read: (parameters = {}, options) => read(parameters, options),
-    update: model => request('_ui.update', model),
+    update: (model) => request('_ui.update', model),
     forms: {
-        open: spec => request('_ui.form.open',spec),
-        read: id => request('_ui.form.read',{id}),
-        update: parameters => request('_ui.form.update',parameters),
-        close: id => request('_ui.form.close',{id})
+        open: (spec) => request('_ui.form.open', spec),
+        read: (id) => request('_ui.form.read', { id }),
+        update: (parameters) => request('_ui.form.update', parameters),
+        close: (id) => request('_ui.form.close', { id })
     },
     clipboard: {
         read: () => request('_ui.clipboard.read'),
-        write: text => request('_ui.clipboard.write', {text})
+        write: (text) => request('_ui.clipboard.write', { text })
     },
     input: (spec, options) => dialog('input', spec, options),
     async confirm(spec, options) {
-        const id=`dialog-${++dialogId}`, alias=spec.id;
-        if(alias && (typeof alias!=='string' || alias.length>128 || activeConfirmations.has(alias)))throw new TypeError('Invalid or active confirmation identity');
-        if(alias)activeConfirmations.set(alias,id);
-        try { return await dialog('confirm',spec,options,id); }
-        finally { if(alias && activeConfirmations.get(alias)===id)activeConfirmations.delete(alias); }
+        const id = `dialog-${++dialogId}`,
+            alias = spec.id;
+        if (
+            alias &&
+            (typeof alias !== 'string' || alias.length > 128 || activeConfirmations.has(alias))
+        )
+            throw new TypeError('Invalid or active confirmation identity');
+        if (alias) activeConfirmations.set(alias, id);
+        try {
+            return await dialog('confirm', spec, options, id);
+        } finally {
+            if (alias && activeConfirmations.get(alias) === id) activeConfirmations.delete(alias);
+        }
     },
-    async answerConfirm(id,accepted=true) {
-        const nativeId=activeConfirmations.get(id);
-        if(nativeId)return await request('_ui.dialog.answer',{id:nativeId,accepted});
+    async answerConfirm(id, accepted = true) {
+        const nativeId = activeConfirmations.get(id);
+        if (nativeId) return await request('_ui.dialog.answer', { id: nativeId, accepted });
         return null;
     },
     async choose(spec, options) {
-        const choices=spec.choices.slice();
-        const id=`dialog-${++dialogId}`, alias=spec.id;
-        if(alias && (typeof alias!=='string' || alias.length>128 || activeChoices.has(alias)))throw new TypeError('Invalid or active choice identity');
-        if(alias)activeChoices.set(alias,id);
+        const choices = spec.choices.slice();
+        const id = `dialog-${++dialogId}`,
+            alias = spec.id;
+        if (alias && (typeof alias !== 'string' || alias.length > 128 || activeChoices.has(alias)))
+            throw new TypeError('Invalid or active choice identity');
+        if (alias) activeChoices.set(alias, id);
         try {
-            const index=await dialog('choice',{...spec,items:choices.map(choice=>typeof choice==='string' ? choice : choice.label)},options,id);
-            return index===null ? null : choices[index];
-        } finally { if(alias && activeChoices.get(alias)===id)activeChoices.delete(alias); }
+            const index = await dialog(
+                'choice',
+                {
+                    ...spec,
+                    items: choices.map((choice) =>
+                        typeof choice === 'string' ? choice : choice.label
+                    )
+                },
+                options,
+                id
+            );
+            return index === null ? null : choices[index];
+        } finally {
+            if (alias && activeChoices.get(alias) === id) activeChoices.delete(alias);
+        }
     },
-    async answerChoice(id,index) {
-        const nativeId=activeChoices.get(id);
-        if(nativeId)return await request('_ui.dialog.answer',{id:nativeId,index});
+    async answerChoice(id, index) {
+        const nativeId = activeChoices.get(id);
+        if (nativeId) return await request('_ui.dialog.answer', { id: nativeId, index });
         return null;
     },
     async pick(spec, options) {
         const items = spec.items.slice();
-        const index = await dialog('pick', {...spec, items:items.map(item => typeof item === 'string' ? item : item.label)}, options);
+        const index = await dialog(
+            'pick',
+            { ...spec, items: items.map((item) => (typeof item === 'string' ? item : item.label)) },
+            options
+        );
         return index === null ? null : items[index];
     },
     showText: (spec, options) => dialog('text', spec, options),
-    waitForIdle: options => fence('_ui.barrier',options),
-    requestClose: options => fence('_ui.window.close',options),
-    async withProgress(spec,work,options={}) {
-        const control=new AbortController(), signal=options.signal;
-        if(signal?.aborted)throw cancelled('Progress cancelled');
-        const abort=()=>control.abort();
-        signal?.addEventListener('abort',abort);
-        const id=`dialog-${++dialogId}`;
-        const input=dialog('progress',spec,{...options,signal:control.signal},id);
+    waitForIdle: (options) => fence('_ui.barrier', options),
+    requestClose: (options) => fence('_ui.window.close', options),
+    async withProgress(spec, work, options = {}) {
+        const control = new AbortController(),
+            signal = options.signal;
+        if (signal?.aborted) throw cancelled('Progress cancelled');
+        const abort = () => control.abort();
+        signal?.addEventListener('abort', abort);
+        const id = `dialog-${++dialogId}`;
+        const input = dialog('progress', spec, { ...options, signal: control.signal }, id);
         // Both promises belong to this command and are observed even if the
         // component is dismissed while its operation is still completing.
         // Observe an open failure while awaiting the native acknowledgement.
-        input.catch(()=>{});
+        input.catch(() => {});
         let running;
         try {
-            await request('_ui.dialog.present',{id});
-            running=Promise.resolve().then(()=>work({signal:control.signal}));
-            return await Promise.race([running,input.then(()=>{throw cancelled('Progress dismissed');})]);
+            await request('_ui.dialog.present', { id });
+            running = Promise.resolve().then(() => work({ signal: control.signal }));
+            return await Promise.race([
+                running,
+                input.then(() => {
+                    throw cancelled('Progress dismissed');
+                })
+            ]);
         } finally {
-            control.abort();signal?.removeEventListener('abort',abort);
-            await Promise.allSettled([input,running]);
+            control.abort();
+            signal?.removeEventListener('abort', abort);
+            await Promise.allSettled([input, running]);
         }
     },
     async execute(id, parameters = {}) {
         return await astra._invokeCommand(id, parameters);
     },
     async commands() {
-        const state = await ui.read({immediate:true});
+        const state = await ui.read({ immediate: true });
         const service = new Set(state.serviceCommands || []);
         const client = new Set(astra._commandNames());
         const specs = astra.settings().workbench?.commands || {};
-        return [...new Set([...client, ...service])].sort().map(id => ({
-            id, title:specs[id]?.title || id, shortcut:specs[id]?.shortcut || '',
-            palette:specs[id]?.palette ?? !id.startsWith('workbench.'),
-            source:service.has(id) && id.startsWith('ui.') ? 'service' : client.has(id) ? 'client' : 'service'
+        return [...new Set([...client, ...service])].sort().map((id) => ({
+            id,
+            title: specs[id]?.title || id,
+            shortcut: specs[id]?.shortcut || '',
+            palette: specs[id]?.palette ?? !id.startsWith('workbench.'),
+            source:
+                service.has(id) && id.startsWith('ui.')
+                    ? 'service'
+                    : client.has(id)
+                      ? 'client'
+                      : 'service'
         }));
     },
     // Native actions handle text layout, focus, clipboard and modal input.
     // Product workflows call services directly and publish retained view state.
-    native: (command, parameters = {}, options) => command.startsWith('editor.')
-        ? edit(command, parameters, options) : request('_ui.action', {command, parameters}, options),
+    native: (command, parameters = {}, options) =>
+        command.startsWith('editor.')
+            ? edit(command, parameters, options)
+            : request('_ui.action', { command, parameters }, options),
     registerCommand(spec, handler) {
-        if (!spec?.id || !spec?.title || typeof handler !== 'function') throw new TypeError('Invalid UI command');
-        astra.configure({workbench:{commands:{[spec.id]:spec}}});
+        if (!spec?.id || !spec?.title || typeof handler !== 'function')
+            throw new TypeError('Invalid UI command');
+        astra.configure({ workbench: { commands: { [spec.id]: spec } } });
         astra.registerCommand(spec.id, handler);
         if (spec.shortcut) astra.bind(spec.shortcut, spec.id);
     },
     registerView(spec, provider) {
-        if (!spec?.id || !spec?.title || typeof provider !== 'function') throw new TypeError('Invalid view provider');
+        if (!spec?.id || !spec?.title || typeof provider !== 'function')
+            throw new TypeError('Invalid view provider');
         providers.set(spec.id, provider);
-        astra.configure({workbench:{views:{[spec.id]:spec}}});
+        astra.configure({ workbench: { views: { [spec.id]: spec } } });
     },
     async refresh(id, parameters = {}) {
         const provider = providers.get(id);
@@ -104,22 +148,24 @@ export const ui = {
         generations.get(id)?.abort();
         const controller = new AbortController();
         generations.set(id, controller);
-        await ui.update({busy:{[id]:true}});
+        await ui.update({ busy: { [id]: true } });
         try {
-            const model = await provider(parameters, {signal:controller.signal});
+            const model = await provider(parameters, { signal: controller.signal });
             if (generations.get(id) === controller && !controller.signal.aborted) {
-                await ui.update({view:id, model});
+                await ui.update({ view: id, model });
             }
         } catch (error) {
             if (error.name !== 'AbortError' && generations.get(id) === controller) throw error;
         } finally {
             if (generations.get(id) === controller) {
                 generations.delete(id);
-                await ui.update({busy:{[id]:false}});
+                await ui.update({ busy: { [id]: false } });
             }
         }
     },
-    cancel(id) { generations.get(id)?.abort(); }
+    cancel(id) {
+        generations.get(id)?.abort();
+    }
 };
 const providers = new Map();
 const generations = new Map();
@@ -129,49 +175,81 @@ let dialogId = 0;
 let actionId = 0;
 let readId = 0;
 let fenceId = 0;
-function cancelled(message) { const error=new Error(message);error.name='AbortError';return error; }
-async function fence(method,options={}) {
-    const id=`wait-${++fenceId}`, signal=options.signal;
+function cancelled(message) {
+    const error = new Error(message);
+    error.name = 'AbortError';
+    return error;
+}
+async function fence(method, options = {}) {
+    const id = `wait-${++fenceId}`,
+        signal = options.signal;
     let cancellation;
-    const cancel=()=>{cancellation=request('_ui.wait.cancel',{waitId:id});};
-    signal?.addEventListener('abort',cancel);
-    try { return await request(method,{waitId:id},options); }
-    catch(error) { await (cancellation || request('_ui.wait.cancel',{waitId:id}));throw error; }
-    finally { signal?.removeEventListener('abort',cancel);if(cancellation)await cancellation; }
+    const cancel = () => {
+        cancellation = request('_ui.wait.cancel', { waitId: id });
+    };
+    signal?.addEventListener('abort', cancel);
+    try {
+        return await request(method, { waitId: id }, options);
+    } catch (error) {
+        await (cancellation || request('_ui.wait.cancel', { waitId: id }));
+        throw error;
+    } finally {
+        signal?.removeEventListener('abort', cancel);
+        if (cancellation) await cancellation;
+    }
 }
 async function read(parameters, options = {}) {
-    if(parameters.immediate)return await request('_ui.read',parameters,options);
-    const id=`read-${++readId}`, signal=options.signal;
+    if (parameters.immediate) return await request('_ui.read', parameters, options);
+    const id = `read-${++readId}`,
+        signal = options.signal;
     let cancellation;
-    const cancel=()=>{cancellation=request('_ui.read.cancel',{readId:id});};
-    signal?.addEventListener('abort',cancel);
-    try { return await request('_ui.read',{...parameters,readId:id},options); }
-    catch(error) { await (cancellation || request('_ui.read.cancel',{readId:id}));throw error; }
-    finally { signal?.removeEventListener('abort',cancel);if(cancellation)await cancellation; }
+    const cancel = () => {
+        cancellation = request('_ui.read.cancel', { readId: id });
+    };
+    signal?.addEventListener('abort', cancel);
+    try {
+        return await request('_ui.read', { ...parameters, readId: id }, options);
+    } catch (error) {
+        await (cancellation || request('_ui.read.cancel', { readId: id }));
+        throw error;
+    } finally {
+        signal?.removeEventListener('abort', cancel);
+        if (cancellation) await cancellation;
+    }
 }
 async function edit(command, parameters, options = {}) {
     const id = `edit-${++actionId}`;
     const signal = options.signal;
     let cancellation;
-    const cancel = () => { cancellation = request('_ui.action.cancel', {actionId:id}); };
+    const cancel = () => {
+        cancellation = request('_ui.action.cancel', { actionId: id });
+    };
     signal?.addEventListener('abort', cancel);
-    try { return await request('_ui.action', {command, parameters, actionId:id}, options); }
-    finally {
+    try {
+        return await request('_ui.action', { command, parameters, actionId: id }, options);
+    } finally {
         signal?.removeEventListener('abort', cancel);
-        await (cancellation || request('_ui.action.cancel', {actionId:id}));
+        await (cancellation || request('_ui.action.cancel', { actionId: id }));
     }
 }
 async function dialog(kind, spec, options = {}, identity) {
     const id = identity || `dialog-${++dialogId}`;
     const signal = options.signal;
     let cancellation;
-    const cancel = () => { cancellation = request('_ui.dialog.cancel', {id}); };
+    const cancel = () => {
+        cancellation = request('_ui.dialog.cancel', { id });
+    };
     signal?.addEventListener('abort', cancel);
-    try { return await request('_ui.dialog', {...spec,id,kind}, {timeoutMs:300000,...options}); }
-    finally {
+    try {
+        return await request(
+            '_ui.dialog',
+            { ...spec, id, kind },
+            { timeoutMs: 300000, ...options }
+        );
+    } finally {
         signal?.removeEventListener('abort', cancel);
-        await (cancellation || request('_ui.dialog.cancel', {id}));
+        await (cancellation || request('_ui.dialog.cancel', { id }));
     }
 }
 astra.ui = ui;
-export {request};
+export { request };

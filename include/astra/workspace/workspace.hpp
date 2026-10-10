@@ -76,7 +76,8 @@ struct SearchOptions {
     bool case_sensitive{true};
     bool regex{};
     std::size_t max_result_bytes{8U * 1024U * 1024U}; // Match metadata, including capture ranges.
-    std::vector<std::filesystem::path> excluded_paths; // Internal buffer overlays; skipped before I/O/budgets.
+    std::vector<std::filesystem::path>
+        excluded_paths; // Internal buffer overlays; skipped before I/O/budgets.
 };
 
 struct TextRange {
@@ -115,7 +116,7 @@ struct TextFindResult {
 // Overlapping rejected whole-word candidates have a 256 MiB scan-work budget;
 // exhaustion returns truncated, so adversarial filtering cannot become quadratic.
 class SearchPattern {
-public:
+  public:
     static constexpr std::size_t max_query_bytes = 64U * 1024U;
     static constexpr std::size_t max_input_bytes = 64U * 1024U * 1024U;
     static constexpr std::size_t max_capture_groups = 64;
@@ -130,23 +131,31 @@ public:
     SearchPattern& operator=(const SearchPattern&) = delete;
     // Cancellation is observed during validation and between bounded linear RE2
     // calls; RE2 does not expose interruption inside one call.
-    [[nodiscard]] TextSearchResult find_all(std::string_view text, std::stop_token stop = {},
-        std::size_t max_matches = std::numeric_limits<std::size_t>::max()) const;
+    [[nodiscard]] TextSearchResult
+    find_all(std::string_view text,
+             std::stop_token stop = {},
+             std::size_t max_matches = std::numeric_limits<std::size_t>::max()) const;
     // Seeks from a UTF-8 scalar boundary, optionally wrapping to the beginning.
     // Regex anchors and word boundaries always use the complete original input.
     // Retains at most one match, independent of the number of earlier matches.
-    [[nodiscard]] TextFindResult find_next(std::string_view text, ByteOffset begin,
-        bool wrap = true, std::stop_token stop = {}) const;
-    [[nodiscard]] TextFindResult find_previous(std::string_view text, ByteOffset begin,
-        bool wrap = true, std::stop_token stop = {}) const;
+    [[nodiscard]] TextFindResult find_next(std::string_view text,
+                                           ByteOffset begin,
+                                           bool wrap = true,
+                                           std::stop_token stop = {}) const;
+    [[nodiscard]] TextFindResult find_previous(std::string_view text,
+                                               ByteOffset begin,
+                                               bool wrap = true,
+                                               std::stop_token stop = {}) const;
     // Literal mode preserves replacement bytes. Regex mode accepts $0..$99,
     // ${name}, and $$; backslashes are literal. Unknown/malformed groups fail.
     // Revalidates the exact match/captures against the original UTF-8 text.
     void validate_replacement(std::string_view replacement) const;
-    [[nodiscard]] std::string expand_replacement(std::string_view text, const TextMatch& match,
-        std::string_view replacement, std::size_t max_bytes = max_output_bytes) const;
+    [[nodiscard]] std::string expand_replacement(std::string_view text,
+                                                 const TextMatch& match,
+                                                 std::string_view replacement,
+                                                 std::size_t max_bytes = max_output_bytes) const;
 
-private:
+  private:
     class Impl;
     std::unique_ptr<Impl> impl_;
 };
@@ -195,7 +204,7 @@ struct ReplaceResult {
 // Paths are re-resolved and checked before I/O, including symlinks/junctions.
 // External filesystem namespace changes are not an OS sandbox or atomic CAS.
 class Workspace {
-public:
+  public:
     explicit Workspace(const std::filesystem::path& root);
     [[nodiscard]] const std::filesystem::path& root() const noexcept;
     [[nodiscard]] std::filesystem::path resolve_path(const std::filesystem::path& relative) const;
@@ -203,29 +212,36 @@ public:
     [[nodiscard]] ConfigResult editor_config(const std::filesystem::path& relative) const;
     [[nodiscard]] LoadedFile load(const std::filesystem::path& relative,
                                   std::size_t max_bytes = io::default_max_file_bytes) const;
-    [[nodiscard]] SavedFile save(const std::filesystem::path& relative, std::string_view text,
-                                std::optional<io::FileVersion> expected = std::nullopt,
-                                io::TextEncoding original_encoding = io::TextEncoding::utf8) const;
-    [[nodiscard]] SearchResult search(const SearchOptions& options, std::stop_token stop = {}) const;
-    [[nodiscard]] ReplacePlan plan_replace(const SearchResult& search, std::string_view replacement,
-                                          std::stop_token stop = {}) const;
+    [[nodiscard]] SavedFile save(const std::filesystem::path& relative,
+                                 std::string_view text,
+                                 std::optional<io::FileVersion> expected = std::nullopt,
+                                 io::TextEncoding original_encoding = io::TextEncoding::utf8) const;
+    [[nodiscard]] SearchResult search(const SearchOptions& options,
+                                      std::stop_token stop = {}) const;
+    [[nodiscard]] ReplacePlan plan_replace(const SearchResult& search,
+                                           std::string_view replacement,
+                                           std::stop_token stop = {}) const;
     // Preflight checks every file version before the first write. Each save is
     // atomic, but a multi-file operation is not; partial completion is explicit.
     // The service must handle open dirty documents before invoking this disk API.
-    [[nodiscard]] ReplaceResult apply_replace(const ReplacePlan& plan, std::stop_token stop = {}) const;
+    [[nodiscard]] ReplaceResult apply_replace(const ReplacePlan& plan,
+                                              std::stop_token stop = {}) const;
 
-private:
+  private:
     struct PreparedSave {
         SavedFile result;
         // Only allocated when disk CR endings differ from editor LF text.
         std::optional<std::string> disk_text;
+
         [[nodiscard]] std::string_view text_for_disk() const noexcept {
             return disk_text ? std::string_view(*disk_text) : std::string_view(result.text);
         }
     };
+
     [[nodiscard]] PreparedSave prepare_save(const std::filesystem::path& relative,
-        std::string_view text, io::TextEncoding original_encoding,
-        const std::optional<io::FileVersion>& expected) const;
+                                            std::string_view text,
+                                            io::TextEncoding original_encoding,
+                                            const std::optional<io::FileVersion>& expected) const;
     std::filesystem::path root_;
 };
 

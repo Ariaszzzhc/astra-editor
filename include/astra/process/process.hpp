@@ -56,7 +56,7 @@ struct ProcessCallbacks {
 // host joins a private Job Object before starting the target; completion also
 // waits for every owned descendant to exit, including inherited pipe holders.
 class Process {
-public:
+  public:
     Process(ProcessOptions options, ProcessCallbacks callbacks = {});
     ~Process();
     Process(const Process&) = delete;
@@ -70,14 +70,14 @@ public:
     // invalid pipe. Async write failures are reported through on_error.
     void write_now(std::string bytes);
     [[nodiscard]] std::future<void> post(std::function<void()> task,
-        std::function<void(std::exception_ptr)> on_cancel = {});
+                                         std::function<void(std::exception_ptr)> on_cancel = {});
     // Gracefully close stdin, then kill after shutdown_timeout. Already queued
     // writes finish; queued arbitrary tasks are cancelled instead of hanging.
     void close() noexcept;
     void terminate() noexcept;
     [[nodiscard]] std::shared_future<ProcessExit> completion() const;
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

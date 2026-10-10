@@ -21,8 +21,18 @@ enum class LanguageId { c, cpp, javascript, typescript, tsx, json, python, markd
 [[nodiscard]] std::optional<LanguageId> language_for_path(std::string_view path);
 
 enum class HighlightKind {
-    comment, string, number, keyword, type, function, property, variable,
-    operator_, punctuation, heading, error
+    comment,
+    string,
+    number,
+    keyword,
+    type,
+    function,
+    property,
+    variable,
+    operator_,
+    punctuation,
+    heading,
+    error
 };
 
 struct SyntaxRange {
@@ -55,7 +65,7 @@ struct MeasureHighlight {
 // Non-overlapping runs include uncolored gaps. Byte seeking is O(log n), and a
 // viewport visits only its intersecting runs. Copies retain immutable SumTree nodes.
 class HighlightIndex {
-public:
+  public:
     HighlightIndex() = default;
     explicit HighlightIndex(std::vector<HighlightRun> runs);
     [[nodiscard]] std::size_t size_bytes() const noexcept;
@@ -66,11 +76,13 @@ public:
     [[nodiscard]] HighlightIndex concat(const HighlightIndex& other) const;
     [[nodiscard]] std::size_t shared_prefix_bytes(const HighlightIndex& other) const;
     [[nodiscard]] std::size_t shared_suffix_bytes(const HighlightIndex& other) const;
-private:
+
+  private:
     SumTree<HighlightRun, HighlightSummary, MeasureHighlight> runs_;
 };
 
 enum class OutlineKind { function, class_, struct_, enum_, namespace_, type, property, heading };
+
 struct OutlineItem {
     std::string name;
     OutlineKind kind;
@@ -81,6 +93,7 @@ struct OutlineItem {
 };
 
 enum class TextObjectKind { function, class_, comment, string, block, parameter, heading };
+
 struct TextObject {
     TextObjectKind kind;
     SyntaxRange outer;
@@ -99,17 +112,18 @@ struct ParseOptions {
     // Full traversal remains available as an independent differential oracle.
     bool incremental_analysis{true};
 };
+
 struct AnalysisStatistics {
     std::size_t visited_nodes{}, rebuilt_units{}, reused_units{}, reused_bytes{};
 };
 
 class ParseCancelled final : public std::runtime_error {
-public:
+  public:
     ParseCancelled();
 };
 
 class SyntaxSnapshot {
-public:
+  public:
     [[nodiscard]] BufferId id() const noexcept;
     [[nodiscard]] Revision revision() const noexcept;
     [[nodiscard]] ContentId content_identity() const noexcept;
@@ -118,7 +132,7 @@ public:
     [[nodiscard]] const HighlightIndex& highlights() const noexcept;
     [[nodiscard]] const std::vector<OutlineItem>& outline() const;
     [[nodiscard]] std::size_t outline_size() const noexcept;
-    [[nodiscard]] std::vector<OutlineItem> outline_range(std::size_t begin,std::size_t end) const;
+    [[nodiscard]] std::vector<OutlineItem> outline_range(std::size_t begin, std::size_t end) const;
     [[nodiscard]] const std::vector<TextObject>& text_objects() const;
     [[nodiscard]] AnalysisStatistics analysis_statistics() const noexcept;
     [[nodiscard]] const std::vector<SyntaxRange>& changed_ranges() const noexcept;
@@ -127,11 +141,12 @@ public:
     [[nodiscard]] bool matches(const DocumentSnapshot& document) const noexcept;
     // Chooses the smallest containing object; a nonempty selection can be
     // expanded repeatedly to an enclosing object. Coordinates are UTF-8 bytes.
-    [[nodiscard]] std::optional<SyntaxRange> enclosing_object(
-        SyntaxRange selection, TextObjectKind kind, bool inner = false,
-        bool strictly_larger = false) const;
+    [[nodiscard]] std::optional<SyntaxRange> enclosing_object(SyntaxRange selection,
+                                                              TextObjectKind kind,
+                                                              bool inner = false,
+                                                              bool strictly_larger = false) const;
 
-private:
+  private:
     struct State;
     std::shared_ptr<const State> state_;
     explicit SyntaxSnapshot(std::shared_ptr<const State> state);
@@ -142,7 +157,7 @@ private:
 // may cross worker/service boundaries; only publish a result if matches() holds.
 // Cancellation/deadline/limits throw and preserve the previous snapshot.
 class SyntaxParser {
-public:
+  public:
     explicit SyntaxParser(LanguageId language);
     ~SyntaxParser();
     SyntaxParser(SyntaxParser&&) noexcept;
@@ -156,10 +171,12 @@ public:
     // Undo/redo without a transaction log use parse() instead. The resulting
     // revision must advance; resulting_identity comes from the document service.
     [[nodiscard]] SyntaxSnapshot update(const SyntaxSnapshot& previous,
-        Transaction transaction, Revision resulting_revision,
-        ContentId resulting_identity, const ParseOptions& options = {});
+                                        Transaction transaction,
+                                        Revision resulting_revision,
+                                        ContentId resulting_identity,
+                                        const ParseOptions& options = {});
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

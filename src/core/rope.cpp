@@ -11,7 +11,8 @@ namespace astra {
 RopeChangedExtent Rope::changed_extent(const Rope& after) const {
     auto prefix = tree_.shared_prefix_summary(after.tree_).bytes;
     auto suffix = std::min({tree_.shared_suffix_summary(after.tree_).bytes,
-                                  size_bytes() - prefix, after.size_bytes() - prefix});
+                            size_bytes() - prefix,
+                            after.size_bytes() - prefix});
     // Shared immutable subtrees skip unchanged interiors. Compare only the
     // remaining edge bytes in bounded windows, including independently built
     // snapshots; never flatten a document merely to publish an incremental edit.
@@ -21,33 +22,54 @@ RopeChangedExtent Rope::changed_extent(const Rope& after) const {
     while (prefix < old_limit && prefix < new_limit) {
         auto old_end = prefix + std::min(window, old_limit - prefix);
         auto new_end = prefix + std::min(window, new_limit - prefix);
-        while (!is_boundary(old_end)) { --old_end; }
-        while (!after.is_boundary(new_end)) { --new_end; }
+        while (!is_boundary(old_end)) {
+            --old_end;
+        }
+        while (!after.is_boundary(new_end)) {
+            --new_end;
+        }
         const auto old_bytes = slice(prefix, old_end);
         const auto new_bytes = after.slice(prefix, new_end);
         const auto common = std::min(old_bytes.size(), new_bytes.size());
         std::size_t equal = 0;
-        while (equal < common && old_bytes[equal] == new_bytes[equal]) { ++equal; }
+        while (equal < common && old_bytes[equal] == new_bytes[equal]) {
+            ++equal;
+        }
         prefix += equal;
-        if (equal != common) { break; }
+        if (equal != common) {
+            break;
+        }
     }
-    while (!is_boundary(prefix) || !after.is_boundary(prefix)) { --prefix; }
+    while (!is_boundary(prefix) || !after.is_boundary(prefix)) {
+        --prefix;
+    }
     while (suffix < size_bytes() - prefix && suffix < after.size_bytes() - prefix) {
         const auto old_end = size_bytes() - suffix;
         const auto new_end = after.size_bytes() - suffix;
         auto old_begin = old_end - std::min(window, old_end - prefix);
         auto new_begin = new_end - std::min(window, new_end - prefix);
-        while (!is_boundary(old_begin)) { ++old_begin; }
-        while (!after.is_boundary(new_begin)) { ++new_begin; }
+        while (!is_boundary(old_begin)) {
+            ++old_begin;
+        }
+        while (!after.is_boundary(new_begin)) {
+            ++new_begin;
+        }
         const auto old_bytes = slice(old_begin, old_end);
         const auto new_bytes = after.slice(new_begin, new_end);
         const auto common = std::min(old_bytes.size(), new_bytes.size());
         std::size_t equal = 0;
-        while (equal < common && old_bytes[old_bytes.size() - equal - 1] == new_bytes[new_bytes.size() - equal - 1]) { ++equal; }
+        while (equal < common &&
+               old_bytes[old_bytes.size() - equal - 1] == new_bytes[new_bytes.size() - equal - 1]) {
+            ++equal;
+        }
         suffix += equal;
-        if (equal != common) { break; }
+        if (equal != common) {
+            break;
+        }
     }
-    while (!is_boundary(size_bytes() - suffix) || !after.is_boundary(after.size_bytes() - suffix)) { --suffix; }
+    while (!is_boundary(size_bytes() - suffix) || !after.is_boundary(after.size_bytes() - suffix)) {
+        --suffix;
+    }
     return {prefix, size_bytes() - suffix, after.size_bytes() - suffix};
 }
 
@@ -88,22 +110,35 @@ Rope::Rope(std::string_view text) {
     tree_ = Tree(std::move(chunks));
 }
 
-Rope::Rope(Tree tree) : tree_(std::move(tree)) {}
+Rope::Rope(Tree tree) : tree_(std::move(tree)) {
+}
 
-bool Rope::empty() const noexcept { return tree_.empty(); }
+bool Rope::empty() const noexcept {
+    return tree_.empty();
+}
 
-std::size_t Rope::size_bytes() const noexcept { return summary().bytes; }
+std::size_t Rope::size_bytes() const noexcept {
+    return summary().bytes;
+}
 
-std::size_t Rope::size_utf16() const noexcept { return summary().utf16_units; }
+std::size_t Rope::size_utf16() const noexcept {
+    return summary().utf16_units;
+}
 
-std::size_t Rope::line_count() const noexcept { return summary().line_breaks + 1; }
+std::size_t Rope::line_count() const noexcept {
+    return summary().line_breaks + 1;
+}
 
-const TextSummary& Rope::summary() const noexcept { return tree_.summary(); }
+const TextSummary& Rope::summary() const noexcept {
+    return tree_.summary();
+}
 
 std::string Rope::str() const {
     std::string result;
     result.reserve(size_bytes());
-    tree_.for_each([&result](const std::string& chunk) { result.append(chunk); });
+    tree_.for_each([&result](const std::string& chunk) {
+        result.append(chunk);
+    });
     return result;
 }
 
@@ -203,8 +238,8 @@ std::size_t Rope::byte_to_utf16(std::size_t byte_offset) const {
         return found.prefix.utf16_units;
     }
     return found.prefix.utf16_units +
-           utf8::utf16_length(std::string_view(*found.item).substr(
-               0, byte_offset - found.prefix.bytes));
+           utf8::utf16_length(
+               std::string_view(*found.item).substr(0, byte_offset - found.prefix.bytes));
 }
 
 std::size_t Rope::utf16_to_byte(std::size_t utf16_offset) const {
@@ -212,8 +247,8 @@ std::size_t Rope::utf16_to_byte(std::size_t utf16_offset) const {
     if (!found.item) {
         return found.prefix.bytes;
     }
-    return found.prefix.bytes + utf8::byte_offset_from_utf16(
-                                    *found.item, utf16_offset - found.prefix.utf16_units);
+    return found.prefix.bytes +
+           utf8::byte_offset_from_utf16(*found.item, utf16_offset - found.prefix.utf16_units);
 }
 
 TextPosition Rope::byte_to_position(std::size_t byte_offset) const {
@@ -221,17 +256,17 @@ TextPosition Rope::byte_to_position(std::size_t byte_offset) const {
     const auto found = tree_.seek(byte_offset, &TextSummary::bytes);
     auto prefix = found.prefix;
     if (found.item) {
-        prefix = prefix + MeasureText{}(std::string_view(*found.item).substr(
-                              0, byte_offset - found.prefix.bytes));
+        prefix =
+            prefix + MeasureText{}(
+                         std::string_view(*found.item).substr(0, byte_offset - found.prefix.bytes));
     }
     return {prefix.line_breaks, prefix.trailing_utf16};
 }
 
 std::size_t Rope::position_to_byte(TextPosition position) const {
     const auto start = line_start(position.line);
-    const auto physical_end = position.line + 1 < line_count()
-                                  ? line_start(position.line + 1) - 1
-                                  : size_bytes();
+    const auto physical_end =
+        position.line + 1 < line_count() ? line_start(position.line + 1) - 1 : size_bytes();
     const auto first_unit = byte_to_utf16(start);
     const auto line_units = byte_to_utf16(physical_end) - first_unit;
     if (position.utf16_column > line_units) {
@@ -280,9 +315,13 @@ std::size_t Rope::line_end(std::size_t line) const {
     return end;
 }
 
-std::size_t Rope::chunk_count() const noexcept { return tree_.size(); }
+std::size_t Rope::chunk_count() const noexcept {
+    return tree_.size();
+}
 
-std::size_t Rope::tree_height() const noexcept { return tree_.height(); }
+std::size_t Rope::tree_height() const noexcept {
+    return tree_.height();
+}
 
 bool Rope::validate() const {
     if (!tree_.validate()) {
@@ -290,8 +329,7 @@ bool Rope::validate() const {
     }
     bool valid = true;
     tree_.for_each([&valid](const std::string& chunk) {
-        valid = valid && !chunk.empty() && chunk.size() <= max_chunk_bytes &&
-                utf8::is_valid(chunk);
+        valid = valid && !chunk.empty() && chunk.size() <= max_chunk_bytes && utf8::is_valid(chunk);
     });
     return valid;
 }

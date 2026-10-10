@@ -53,12 +53,12 @@ struct PruneResult {
 };
 
 class RecoveryLocked final : public std::runtime_error {
-public:
+  public:
     RecoveryLocked();
 };
 
 class RecoveryCorrupt final : public std::runtime_error {
-public:
+  public:
     explicit RecoveryCorrupt(const std::string& message);
 };
 
@@ -67,12 +67,12 @@ public:
 // Document must be marked dirty (invalidate_saved_state) by its service owner.
 // No method reads or writes the source document's path: only state_directory.
 class RecoveryStore {
-public:
+  public:
     // nullopt creates a new isolated session. A supplied ID claims an abandoned
     // session under an exclusive OS lock; a live owner is never overwritten.
     explicit RecoveryStore(std::filesystem::path state_directory,
-        std::optional<std::string> claim_session = std::nullopt,
-        RecoveryLimits limits = {});
+                           std::optional<std::string> claim_session = std::nullopt,
+                           RecoveryLimits limits = {});
     ~RecoveryStore();
     RecoveryStore(const RecoveryStore&) = delete;
     RecoveryStore& operator=(const RecoveryStore&) = delete;
@@ -88,15 +88,15 @@ public:
     // delete a newer dirty checkpoint. Durable tombstone precedes unlink.
     void erase(BufferId id, Revision expected_revision);
 
-    [[nodiscard]] static std::vector<SessionInfo> discover(
-        const std::filesystem::path& state_directory, RecoveryLimits limits = {});
+    [[nodiscard]] static std::vector<SessionInfo>
+    discover(const std::filesystem::path& state_directory, RecoveryLimits limits = {});
     // Call before creating a session or after destroying a normally closed
     // store. Only abandoned sessions without dirty records qualify; valid erase
     // tombstones can be pruned, but live owners and corrupt evidence remain.
-    [[nodiscard]] static PruneResult prune_empty_sessions(
-        const std::filesystem::path& state_directory, RecoveryLimits limits = {});
+    [[nodiscard]] static PruneResult
+    prune_empty_sessions(const std::filesystem::path& state_directory, RecoveryLimits limits = {});
 
-private:
+  private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

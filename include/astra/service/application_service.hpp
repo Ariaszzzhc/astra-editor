@@ -24,15 +24,18 @@ namespace astra::service {
 // and worker-owned results cross the worker boundary. The scheduler must invoke
 // completion on this owner loop and settle every accepted task before destruction.
 class ApplicationService final {
-public:
+  public:
     using Json = protocol::Json;
-    using Scheduler = std::function<std::future<void>(
-        std::function<void()>, std::function<void(std::exception_ptr)>)>;
+    using Scheduler = std::function<std::future<void>(std::function<void()>,
+                                                      std::function<void(std::exception_ptr)>)>;
 
-    ApplicationService(const std::filesystem::path& root, Scheduler scheduler,
-                       std::string_view defaults_script = {}, std::string_view user_script = {},
+    ApplicationService(const std::filesystem::path& root,
+                       Scheduler scheduler,
+                       std::string_view defaults_script = {},
+                       std::string_view user_script = {},
                        const std::filesystem::path& resource_directory = {},
-                       const std::filesystem::path& recovery_directory = {}, bool watch_files = false);
+                       const std::filesystem::path& recovery_directory = {},
+                       bool watch_files = false);
     ~ApplicationService();
     ApplicationService(const ApplicationService&) = delete;
     ApplicationService& operator=(const ApplicationService&) = delete;
@@ -44,18 +47,20 @@ public:
     // workers. Disk work may block only this final, noninteractive shutdown phase.
     void checkpoint_for_shutdown();
 
-private:
+  private:
     struct FileBinding {
         std::filesystem::path path;
         io::FileVersion version;
         io::TextEncoding encoding{};
         config::ResolvedEditorConfig config;
     };
+
     struct BufferSearch {
         DocumentSnapshot snapshot;
         std::optional<FileBinding> binding;
         std::vector<workspace::TextMatch> matches;
     };
+
     struct Operation {
         std::string id;
         std::string kind;
@@ -72,10 +77,11 @@ private:
         bool open_invalidated{};
     };
 
-    [[nodiscard]] Json start_operation(std::string kind,
-        std::function<void(const std::shared_ptr<Operation>&)> worker,
-        std::function<Json(const std::shared_ptr<Operation>&)> complete,
-        bool git_mutation = false);
+    [[nodiscard]] Json
+    start_operation(std::string kind,
+                    std::function<void(const std::shared_ptr<Operation>&)> worker,
+                    std::function<Json(const std::shared_ptr<Operation>&)> complete,
+                    bool git_mutation = false);
     void poll_operations();
     void finish_operation(const std::shared_ptr<Operation>& operation, std::exception_ptr error);
     [[nodiscard]] Json describe(const Document& document) const;
@@ -102,7 +108,8 @@ private:
     void poll_recovery();
     [[nodiscard]] Json recovery_request(std::string_view method, const Json& params);
     [[nodiscard]] std::vector<recovery::RecoveryRecord> capture_recovery() const;
-    void finish_recovery_operation(const std::shared_ptr<Operation>& operation, std::exception_ptr error);
+    void finish_recovery_operation(const std::shared_ptr<Operation>& operation,
+                                   std::exception_ptr error);
     void register_watch_methods(bool enabled);
     void poll_watch();
     [[nodiscard]] Json reload_file(const Json& params);
@@ -114,7 +121,9 @@ private:
     [[nodiscard]] Json language_apply_completion(const Json& params);
     [[nodiscard]] Json language_prepare_workspace_edit(const Json& params);
     [[nodiscard]] Json language_apply_workspace_edit(const Json& params);
-    void reconcile_saved(BufferId id, const DocumentSnapshot& snapshot, const workspace::SavedFile& saved);
+    void reconcile_saved(BufferId id,
+                         const DocumentSnapshot& snapshot,
+                         const workspace::SavedFile& saved);
 
     EditorService editor_;
     std::shared_ptr<workspace::Workspace> workspace_;
@@ -128,18 +137,22 @@ private:
     std::map<std::uint64_t, std::string> saving_;
     std::uint64_t next_operation_{1};
     bool replacing_{};
+
     struct SyntaxJob {
         Revision revision;
         language::LanguageId language;
         std::string operation;
     };
+
     std::map<std::uint64_t, language::SyntaxSnapshot> syntax_;
     std::map<std::uint64_t, SyntaxJob> syntax_jobs_;
+
     struct GitPreview {
         std::filesystem::path path;
         std::optional<io::FileVersion> version;
         std::optional<io::TextEncoding> encoding;
     };
+
     std::map<std::string, GitPreview> git_previews_;
     std::optional<std::string> git_mutation_;
     std::filesystem::path git_resource_directory_;

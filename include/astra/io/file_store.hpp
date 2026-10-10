@@ -32,23 +32,23 @@ struct DecodedText {
 
 // Pure strict decoding for worker outputs such as Git's working-tree filters.
 // Applies exactly the same BOM, UTF-8, UTF-16, Latin-1 and NUL rules as read_file.
-[[nodiscard]] DecodedText decode_bytes(std::string_view raw,
-    std::optional<TextEncoding> encoding_override = std::nullopt);
+[[nodiscard]] DecodedText
+decode_bytes(std::string_view raw, std::optional<TextEncoding> encoding_override = std::nullopt);
 
 class FileConflict final : public std::runtime_error {
-public:
+  public:
     explicit FileConflict(const std::string& message);
 };
 
 // A rare OS replacement failure can require manual recovery. The backup is kept,
 // never deleted, when moving it back to the original path also fails.
 class FileRecoveryRequired final : public std::runtime_error {
-public:
+  public:
     FileRecoveryRequired(std::filesystem::path original, std::filesystem::path backup);
     [[nodiscard]] const std::filesystem::path& original_path() const noexcept;
     [[nodiscard]] const std::filesystem::path& backup_path() const noexcept;
 
-private:
+  private:
     std::filesystem::path original_;
     std::filesystem::path backup_;
 };
@@ -61,8 +61,8 @@ inline constexpr std::size_t default_max_file_bytes = 64U * 1024U * 1024U;
 // Latin-1 requires an explicit override: guessing it would hide malformed UTF-8.
 // Other explicit overrides must agree with the detected BOM/UTF-8 encoding.
 [[nodiscard]] FileSnapshot read_file(const std::filesystem::path& path,
-                                    std::size_t max_bytes = default_max_file_bytes,
-                                    std::optional<TextEncoding> encoding_override = std::nullopt);
+                                     std::size_t max_bytes = default_max_file_bytes,
+                                     std::optional<TextEncoding> encoding_override = std::nullopt);
 
 // No expected version means create-new only. Overwriting requires the version
 // returned by read_file/save_file for the same path and a byte-for-byte match.

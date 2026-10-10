@@ -59,23 +59,28 @@ TEST_CASE("bounded decoder handles random fragmentation of many frames") {
 
 TEST_CASE("framing permits optional content type and ASCII case insensitivity") {
     FrameDecoder decoder;
-    const auto output = decoder.feed("Content-Type: application/vscode-jsonrpc; charset=utf-8\r\ncOnTeNt-LeNgTh:\t2 \r\n\r\n{}");
+    const auto output = decoder.feed(
+        "Content-Type: application/vscode-jsonrpc; charset=utf-8\r\ncOnTeNt-LeNgTh:\t2 \r\n\r\n{}");
     REQUIRE(output.size() == 1);
     CHECK(output[0] == "{}");
 }
 
 TEST_CASE("malformed and excessive headers permanently fail closed") {
-    const std::vector<std::string> invalid{
-        "Content-Length: -1\r\n\r\n", "Content-Length: +1\r\n\r\n",
-        "Content-Length: 1x\r\n\r\n", "Content-Length: \r\n\r\n",
-        "Content-Length: 184467440737095516160\r\n\r\n",
-        "Content-Length: 101\r\n\r\n", "Other: 1\r\n\r\n",
-        "Content-Length: 1\r\ncontent-length: 1\r\n\r\n",
-        "Content-Length : 1\r\n\r\n", "Content Length: 1\r\n\r\n",
-        "Content-Length 1\r\n\r\n", "\r\n\r\n",
-        std::string(101, 'x'), std::string("Content-Length: 1\0", 19),
-        "中文: 1\r\n\r\n"
-    };
+    const std::vector<std::string> invalid{"Content-Length: -1\r\n\r\n",
+                                           "Content-Length: +1\r\n\r\n",
+                                           "Content-Length: 1x\r\n\r\n",
+                                           "Content-Length: \r\n\r\n",
+                                           "Content-Length: 184467440737095516160\r\n\r\n",
+                                           "Content-Length: 101\r\n\r\n",
+                                           "Other: 1\r\n\r\n",
+                                           "Content-Length: 1\r\ncontent-length: 1\r\n\r\n",
+                                           "Content-Length : 1\r\n\r\n",
+                                           "Content Length: 1\r\n\r\n",
+                                           "Content-Length 1\r\n\r\n",
+                                           "\r\n\r\n",
+                                           std::string(101, 'x'),
+                                           std::string("Content-Length: 1\0", 19),
+                                           "中文: 1\r\n\r\n"};
     for (const auto& header : invalid) {
         CAPTURE(header);
         FrameDecoder decoder(100, 100);
@@ -89,7 +94,8 @@ TEST_CASE("malformed and excessive headers permanently fail closed") {
 TEST_CASE("EOF distinguishes complete streams from truncated headers and bodies") {
     FrameDecoder empty;
     CHECK_NOTHROW(empty.finish());
-    for (const auto& partial : {"Content-Len", "Content-Length: 2\r\n\r\n", "Content-Length: 2\r\n\r\na"}) {
+    for (const auto& partial :
+         {"Content-Len", "Content-Length: 2\r\n\r\n", "Content-Length: 2\r\n\r\na"}) {
         FrameDecoder decoder;
         CHECK(decoder.feed(partial).empty());
         CHECK_THROWS_AS(decoder.finish(), FramingError);

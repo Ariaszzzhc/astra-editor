@@ -26,17 +26,25 @@ using Window = astra::ui::EditorWindow;
 using Host = std::shared_ptr<astra::service::ServiceHost>;
 
 void require(bool condition, const std::string& message) {
-    if (!condition) { throw std::runtime_error(message); }
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
 }
 
-template<class Predicate>
-void pump_until(Window& window, Predicate predicate, const std::string& description,
+template <class Predicate>
+void pump_until(Window& window,
+                Predicate predicate,
+                const std::string& description,
                 bool allow_error = false) {
     const auto deadline = Clock::now() + std::chrono::seconds(30);
     do {
         require(window.pump(), "GUI closed while " + description);
-        if (!allow_error) { require(window.last_error().empty(), description + ": " + window.last_error()); }
-        if (predicate()) { return; }
+        if (!allow_error) {
+            require(window.last_error().empty(), description + ": " + window.last_error());
+        }
+        if (predicate()) {
+            return;
+        }
         SDL_Delay(2); // Poll a condition with a deadline; do not assume a completion delay.
     } while (Clock::now() < deadline);
     throw std::runtime_error(description + " timed out; status=" + window.status_text() +
@@ -44,7 +52,12 @@ void pump_until(Window& window, Predicate predicate, const std::string& descript
 }
 
 void settle(Window& window) {
-    pump_until(window, [&] { return window.idle(); }, "waiting for GUI service actions");
+    pump_until(
+        window,
+        [&] {
+            return window.idle();
+        },
+        "waiting for GUI service actions");
 }
 
 void queue_key(Window& window, SDL_Keycode code, SDL_Keymod modifiers = SDL_KMOD_NONE) {
@@ -77,8 +90,12 @@ void prompt_text(Window& window, const std::string& value) {
 }
 
 Json rpc(const Host& host, std::string method, Json params = Json::object()) {
-    auto pending = host->submit(Json{{"jsonrpc", "2.0"}, {"id", "gui-workspace-check"},
-        {"method", std::move(method)}, {"params", std::move(params)}}.dump());
+    auto pending = host->submit(Json{
+        {"jsonrpc", "2.0"},
+        {"id", "gui-workspace-check"},
+        {"method", std::move(method)},
+        {"params",
+         std::move(params)}}.dump());
     require(pending.wait_for(std::chrono::seconds(10)) == std::future_status::ready,
             "Verification RPC timed out");
     const auto body = pending.get();
@@ -92,37 +109,47 @@ Json document(const Host& host, const std::string& id) {
     return rpc(host, "document.get", {{"id", id}});
 }
 
-void require_buffer(const Host& host, const std::string& id, const std::string& expected,
-                    bool dirty, const std::string& description) {
+void require_buffer(const Host& host,
+                    const std::string& id,
+                    const std::string& expected,
+                    bool dirty,
+                    const std::string& description) {
     const auto state = document(host, id);
     require(state.at("text") == expected, description + ": unexpected document text");
     require(state.at("dirty") == dirty, description + ": unexpected saved state");
 }
 
-void search(Window& window, const std::string& query, std::size_t expected_count,
+void search(Window& window,
+            const std::string& query,
+            std::size_t expected_count,
             std::initializer_list<SDL_Keycode> toggles = {}) {
     key(window, SDLK_F, SDL_KMOD_CTRL | SDL_KMOD_SHIFT);
-    for (const auto toggle : toggles) { key(window, toggle, SDL_KMOD_ALT); }
+    for (const auto toggle : toggles) {
+        key(window, toggle, SDL_KMOD_ALT);
+    }
     prompt_text(window, query);
     key(window, SDLK_RETURN);
     const auto expected = std::to_string(expected_count) + " workspace match(es)";
     require(window.status_text() == expected,
-            "Search options did not reach the service: wanted " + expected + ", got " + window.status_text());
+            "Search options did not reach the service: wanted " + expected + ", got " +
+                window.status_text());
 }
 
 void click_search_row(Window& window, std::size_t row) {
     int logical_width{}, logical_height{}, pixel_width{}, pixel_height{};
     require(SDL_GetWindowSize(window.window(), &logical_width, &logical_height) &&
-            SDL_GetWindowSizeInPixels(window.window(), &pixel_width, &pixel_height),
+                SDL_GetWindowSizeInPixels(window.window(), &pixel_width, &pixel_height),
             "Could not read the real SDL window dimensions");
     require(logical_width > 0 && logical_height > 0 && pixel_width > 0 && pixel_height > 0,
             "SDL returned an empty window");
     const auto layout = window.layout();
     // Search rows use UI units. SDL input coordinates and renderer pixels can
     // differ on high-DPI Windows displays; convert through the actual window.
-    const auto x = (layout.sidebar_rows.x+layout.sidebar_rows.width/2) * static_cast<float>(logical_width) / static_cast<float>(pixel_width);
-    const auto y = (layout.sidebar_rows.y+layout.sidebar_row_height*(static_cast<float>(row)+0.5F)) *
-                   static_cast<float>(logical_height) / static_cast<float>(pixel_height);
+    const auto x = (layout.sidebar_rows.x + layout.sidebar_rows.width / 2) *
+                   static_cast<float>(logical_width) / static_cast<float>(pixel_width);
+    const auto y =
+        (layout.sidebar_rows.y + layout.sidebar_row_height * (static_cast<float>(row) + 0.5F)) *
+        static_cast<float>(logical_height) / static_cast<float>(pixel_height);
     SDL_Event event{};
     event.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
     event.button.windowID = SDL_GetWindowID(window.window());
@@ -147,7 +174,8 @@ void prepare_replace(Window& window) {
 
 void run_acceptance(const fs::path& workspace) {
     const std::string baseline = "persisted baseline\n";
-    const std::string dirty_text = "needle DIRTY\nCaseToken caseToken casetokenX\nrx12 rxAB\nwhole wholeX\n";
+    const std::string dirty_text =
+        "needle DIRTY\nCaseToken caseToken casetokenX\nrx12 rxAB\nwhole wholeX\n";
     const std::string untitled_text = "needle UNTITLED\n";
     (void)astra::io::save_file(workspace / "dirty.txt", baseline);
     (void)astra::io::save_file(workspace / "disk.txt", "needle DISK\n");
@@ -168,29 +196,39 @@ void run_acceptance(const fs::path& workspace) {
         settle(window);
         const auto dirty_id = window.active_document_id();
         require(!dirty_id.empty(), "Initial workspace file did not open");
-        pump_until(window, [&] {
-            const auto watch = rpc(host, "workspace.watchStatus");
-            return watch.value("ready", false) && watch.value("watchedFiles", std::size_t{}) == 1;
-        }, "waiting for the real workspace file subscription");
+        pump_until(
+            window,
+            [&] {
+                const auto watch = rpc(host, "workspace.watchStatus");
+                return watch.value("ready", false) &&
+                       watch.value("watchedFiles", std::size_t{}) == 1;
+            },
+            "waiting for the real workspace file subscription");
         key(window, SDLK_A, SDL_KMOD_CTRL);
         text(window, dirty_text);
         key(window, SDLK_N, SDL_KMOD_CTRL);
         const auto untitled_id = window.active_document_id();
-        require(!untitled_id.empty() && untitled_id != dirty_id, "New file did not create an independent buffer");
+        require(!untitled_id.empty() && untitled_id != dirty_id,
+                "New file did not create an independent buffer");
         text(window, untitled_text);
         require_buffer(host, dirty_id, dirty_text, true, "Initial unsaved file");
         require_buffer(host, untitled_id, untitled_text, true, "Initial untitled file");
 
         search(window, "needle", 3);
         click_search_row(window, 0);
-        require(window.active_document_id() == dirty_id, "Unsaved search result did not activate the existing file buffer");
-        require(document(host, dirty_id).at("selections") == Json::array({{{"anchor", 0}, {"head", 6}}}),
+        require(window.active_document_id() == dirty_id,
+                "Unsaved search result did not activate the existing file buffer");
+        require(document(host, dirty_id).at("selections") ==
+                    Json::array({{{"anchor", 0}, {"head", 6}}}),
                 "Unsaved search result did not select its exact range");
         click_search_row(window, 1);
-        require(window.active_document_id() == untitled_id, "Untitled search result did not activate the existing untitled buffer");
-        require(document(host, untitled_id).at("selections") == Json::array({{{"anchor", 0}, {"head", 6}}}),
+        require(window.active_document_id() == untitled_id,
+                "Untitled search result did not activate the existing untitled buffer");
+        require(document(host, untitled_id).at("selections") ==
+                    Json::array({{{"anchor", 0}, {"head", 6}}}),
                 "Untitled search result did not select its exact range");
-        require(rpc(host, "document.list").size() == 2, "Search result click created a duplicate or pseudo-path document");
+        require(rpc(host, "document.list").size() == 2,
+                "Search result click created a duplicate or pseudo-path document");
         window.request_screenshot("build/graphics/gui-workspace-search.png");
         settle(window);
 
@@ -205,8 +243,13 @@ void run_acceptance(const fs::path& workspace) {
         std::cerr << "GUI workspace: dirty/untitled result clicks and Alt+C/R/W passed\n";
 
         prepare_replace(window);
-        require_buffer(host, dirty_id, dirty_text, true, "Replace preview must preserve dirty content");
-        require_buffer(host, untitled_id, untitled_text, true, "Replace preview must preserve untitled content");
+        require_buffer(
+            host, dirty_id, dirty_text, true, "Replace preview must preserve dirty content");
+        require_buffer(host,
+                       untitled_id,
+                       untitled_text,
+                       true,
+                       "Replace preview must preserve untitled content");
         require(astra::io::read_file(workspace / "disk.txt").text == "needle DISK\n",
                 "Workspace replacement wrote disk before confirmation");
         key(window, SDLK_ESCAPE);
@@ -219,35 +262,53 @@ void run_acceptance(const fs::path& workspace) {
         const auto replaced_dirty = std::string("thread") + dirty_text.substr(6);
         const auto replaced_untitled = std::string("thread") + untitled_text.substr(6);
         require_buffer(host, dirty_id, replaced_dirty, true, "Confirmed unsaved replacement");
-        require_buffer(host, untitled_id, replaced_untitled, true, "Confirmed untitled replacement");
+        require_buffer(
+            host, untitled_id, replaced_untitled, true, "Confirmed untitled replacement");
         require(astra::io::read_file(workspace / "dirty.txt").text == baseline,
                 "Workspace replacement implicitly saved the dirty buffer");
         require(astra::io::read_file(workspace / "disk.txt").text == "thread DISK\n",
                 "Confirmed workspace replacement did not update the closed disk file");
-        require(window.workspace_notice().find("1 disk file(s) and 2 unsaved buffer(s)") != std::string::npos,
+        require(window.workspace_notice().find("1 disk file(s) and 2 unsaved buffer(s)") !=
+                    std::string::npos,
                 "Replacement completion did not report the service's modifiedBuffers");
-        require(window.active_document_id() == untitled_id, "Replacement unexpectedly activated a different buffer");
+        require(window.active_document_id() == untitled_id,
+                "Replacement unexpectedly activated a different buffer");
         key(window, SDLK_Z, SDL_KMOD_CTRL);
-        require_buffer(host, untitled_id, untitled_text, true, "One undo must restore the untitled replacement");
+        require_buffer(host,
+                       untitled_id,
+                       untitled_text,
+                       true,
+                       "One undo must restore the untitled replacement");
         key(window, SDLK_TAB, SDL_KMOD_CTRL);
-        require(window.active_document_id() == dirty_id, "Next-tab shortcut did not activate the dirty file");
+        require(window.active_document_id() == dirty_id,
+                "Next-tab shortcut did not activate the dirty file");
         key(window, SDLK_Z, SDL_KMOD_CTRL);
-        require_buffer(host, dirty_id, dirty_text, true, "One undo must restore the file's unsaved replacement");
+        require_buffer(host,
+                       dirty_id,
+                       dirty_text,
+                       true,
+                       "One undo must restore the file's unsaved replacement");
         require(astra::io::read_file(workspace / "disk.txt").text == "thread DISK\n",
                 "Undo of a buffer replacement changed a separate disk file");
-        std::cerr << "GUI workspace: replacement confirmation, modified buffers and atomic undo passed\n";
+        std::cerr
+            << "GUI workspace: replacement confirmation, modified buffers and atomic undo passed\n";
 
         const auto before_external = document(host, dirty_id);
         const auto disk_version = astra::io::read_file(workspace / "dirty.txt").version;
         const std::string external = "external replacement\n";
-        (void)astra::io::save_file(workspace / "dirty.txt", external, astra::io::TextEncoding::utf8, disk_version);
-        pump_until(window, [&] {
-            const auto notice = window.workspace_notice();
-            return notice.find("File changed outside Astra") != std::string::npos &&
-                   notice.find("buffer preserved") != std::string::npos;
-        }, "waiting for the real atomic-replacement conflict notification");
+        (void)astra::io::save_file(
+            workspace / "dirty.txt", external, astra::io::TextEncoding::utf8, disk_version);
+        pump_until(
+            window,
+            [&] {
+                const auto notice = window.workspace_notice();
+                return notice.find("File changed outside Astra") != std::string::npos &&
+                       notice.find("buffer preserved") != std::string::npos;
+            },
+            "waiting for the real atomic-replacement conflict notification");
         settle(window);
-        require_buffer(host, dirty_id, dirty_text, true, "External conflict must preserve unsaved content");
+        require_buffer(
+            host, dirty_id, dirty_text, true, "External conflict must preserve unsaved content");
         require(document(host, dirty_id).at("revision") == before_external.at("revision"),
                 "External conflict unexpectedly edited the document");
         const auto conflict_notice = window.workspace_notice();
@@ -260,12 +321,15 @@ void run_acceptance(const fs::path& workspace) {
 
         window.execute_ui_command("ui.reload");
         settle(window);
-        require_buffer(host, dirty_id, dirty_text, true, "Reload must await an explicit confirmation");
+        require_buffer(
+            host, dirty_id, dirty_text, true, "Reload must await an explicit confirmation");
         window.request_screenshot("build/graphics/gui-workspace-reload-confirm.png");
         settle(window);
         key(window, SDLK_ESCAPE);
-        require_buffer(host, dirty_id, dirty_text, true, "Cancelled reload must preserve dirty content");
-        require(window.workspace_notice() == conflict_notice, "Cancelling reload dismissed the unresolved conflict");
+        require_buffer(
+            host, dirty_id, dirty_text, true, "Cancelled reload must preserve dirty content");
+        require(window.workspace_notice() == conflict_notice,
+                "Cancelling reload dismissed the unresolved conflict");
 
         window.execute_ui_command("ui.reload");
         settle(window);
@@ -273,34 +337,52 @@ void run_acceptance(const fs::path& workspace) {
         // A separate client can edit while the GUI's confirmation is visible.
         // The confirmation must retain its original revision rather than using
         // the latest notification's revision to silently approve newer content.
-        (void)rpc(host, "document.insert", {{"id", dirty_id}, {"baseRevision", prompt_state.at("revision")},
-                                           {"text", "concurrent "}});
+        (void)rpc(host,
+                  "document.insert",
+                  {{"id", dirty_id},
+                   {"baseRevision", prompt_state.at("revision")},
+                   {"text", "concurrent "}});
         settle(window);
         const auto concurrent = document(host, dirty_id);
-        require(concurrent.at("text") == "concurrent " + dirty_text, "Second-client edit did not reach the selected buffer");
+        require(concurrent.at("text") == "concurrent " + dirty_text,
+                "Second-client edit did not reach the selected buffer");
         queue_key(window, SDLK_RETURN);
-        pump_until(window, [&] { return window.idle() && !window.last_error().empty(); },
-                   "rejecting a reload confirmation after a concurrent edit", true);
+        pump_until(
+            window,
+            [&] {
+                return window.idle() && !window.last_error().empty();
+            },
+            "rejecting a reload confirmation after a concurrent edit",
+            true);
         require(window.last_error().find("Stale document revision") != std::string::npos,
                 "Concurrent reload did not report its stale confirmation: " + window.last_error());
         require(document(host, dirty_id).at("text") == concurrent.at("text") &&
-                document(host, dirty_id).at("revision") == concurrent.at("revision"),
+                    document(host, dirty_id).at("revision") == concurrent.at("revision"),
                 "Stale reload confirmation discarded the concurrent edit");
         require(astra::io::read_file(workspace / "dirty.txt").text == external,
                 "Rejected reload unexpectedly changed disk content");
         key(window, SDLK_ESCAPE);
-        require(window.workspace_notice() == conflict_notice, "Rejected reload cleared the unresolved external conflict");
+        require(window.workspace_notice() == conflict_notice,
+                "Rejected reload cleared the unresolved external conflict");
 
         window.execute_ui_command("ui.reload");
         settle(window);
         key(window, SDLK_RETURN);
-        require_buffer(host, dirty_id, external, false, "Fresh confirmed reload must publish the disk baseline");
+        require_buffer(host,
+                       dirty_id,
+                       external,
+                       false,
+                       "Fresh confirmed reload must publish the disk baseline");
         require(window.workspace_notice().find("Reloaded from disk") != std::string::npos,
                 "Confirmed reload did not replace the conflict notice with a reload result");
         key(window, SDLK_Z, SDL_KMOD_CTRL);
-        require_buffer(host, dirty_id, concurrent.at("text").get<std::string>(), true,
+        require_buffer(host,
+                       dirty_id,
+                       concurrent.at("text").get<std::string>(),
+                       true,
                        "Confirmed reload must preserve one-step undo of the discarded buffer");
-        std::cerr << "GUI workspace: persistent conflict and reload cancel/confirm/concurrent edit passed\n";
+        std::cerr << "GUI workspace: persistent conflict and reload cancel/confirm/concurrent edit "
+                     "passed\n";
     }
     host->shutdown();
 }
@@ -312,16 +394,23 @@ int main() {
         std::cerr << std::unitbuf;
         const auto parent = fs::weakly_canonical(fs::absolute("build/graphics"));
         fs::create_directories(parent);
-        workspace = parent / ("gui-workspace-services-" + std::to_string(Clock::now().time_since_epoch().count()));
+        workspace = parent / ("gui-workspace-services-" +
+                              std::to_string(Clock::now().time_since_epoch().count()));
         require(fs::create_directory(workspace), "Could not create a unique GUI fixture directory");
         run_acceptance(workspace);
-        const auto issues = astra::test::cleanup_owned_directory(workspace, parent, "gui-workspace-services-");
-        for (const auto& issue : issues) { std::cerr << "Fixture cleanup: " << issue.path << ": " << issue.message << '\n'; }
+        const auto issues =
+            astra::test::cleanup_owned_directory(workspace, parent, "gui-workspace-services-");
+        for (const auto& issue : issues) {
+            std::cerr << "Fixture cleanup: " << issue.path << ": " << issue.message << '\n';
+        }
         require(issues.empty(), "GUI fixture handles were not released at shutdown");
-        std::cout << "Windows GUI -> shared service: unsaved/untitled search, Alt+C/R/W, confirmed workspace replacement, dirty undo, persistent external conflict and guarded reload: PASS\n";
+        std::cout << "Windows GUI -> shared service: unsaved/untitled search, Alt+C/R/W, confirmed "
+                     "workspace replacement, dirty undo, persistent external conflict and guarded "
+                     "reload: PASS\n";
         return 0;
     } catch (const std::exception& error) {
-        std::cerr << "GUI workspace failed: " << error.what() << "\nPreserved fixture: " << workspace << '\n';
+        std::cerr << "GUI workspace failed: " << error.what()
+                  << "\nPreserved fixture: " << workspace << '\n';
         return 1;
     }
 }

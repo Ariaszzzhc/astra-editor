@@ -84,7 +84,7 @@ struct LspDiagnostics {
 // Successful document notification futures mean accepted writes, not server ACKs.
 // RPC errors retain their server code/data through protocol::RpcError.
 class LspClient {
-public:
+  public:
     explicit LspClient(LspOptions options);
     ~LspClient();
     LspClient(const LspClient&) = delete;
@@ -93,7 +93,7 @@ public:
     LspClient& operator=(LspClient&&) = delete;
 
     [[nodiscard]] std::future<Json> start(std::string root_uri,
-                                         Json initialization_options = Json::object());
+                                          Json initialization_options = Json::object());
     [[nodiscard]] bool ready() const noexcept;
     [[nodiscard]] Json capabilities() const;
     [[nodiscard]] LspRequest request(std::string method, Json params = Json::object());
@@ -101,20 +101,22 @@ public:
     // a cancelled or expired request cannot satisfy a newer request.
     void cancel(std::uint64_t id);
 
-    [[nodiscard]] std::future<void> did_open(std::string uri, std::string language_id,
-                                           std::int32_t version, std::string text);
-    [[nodiscard]] std::future<void> did_change(std::string uri, std::int32_t version,
-                                              std::vector<LspContentChange> changes, LspChangeOptions options = {});
+    [[nodiscard]] std::future<void>
+    did_open(std::string uri, std::string language_id, std::int32_t version, std::string text);
+    [[nodiscard]] std::future<void> did_change(std::string uri,
+                                               std::int32_t version,
+                                               std::vector<LspContentChange> changes,
+                                               LspChangeOptions options = {});
     [[nodiscard]] std::future<void> did_close(std::string uri);
 
     [[nodiscard]] LspRequest completion(std::string uri, TextPosition position);
     [[nodiscard]] LspRequest hover(std::string uri, TextPosition position);
     [[nodiscard]] LspRequest definition(std::string uri, TextPosition position);
-    [[nodiscard]] LspRequest references(std::string uri, TextPosition position,
-                                      bool include_declaration = true);
+    [[nodiscard]] LspRequest
+    references(std::string uri, TextPosition position, bool include_declaration = true);
     [[nodiscard]] LspRequest rename(std::string uri, TextPosition position, std::string new_name);
-    [[nodiscard]] LspRequest formatting(std::string uri, std::uint32_t tab_size = 4,
-                                       bool insert_spaces = true);
+    [[nodiscard]] LspRequest
+    formatting(std::string uri, std::uint32_t tab_size = 4, bool insert_spaces = true);
 
     [[nodiscard]] std::vector<Json> take_notifications();
     [[nodiscard]] std::vector<LspDiagnostics> take_diagnostics();
@@ -123,7 +125,7 @@ public:
     [[nodiscard]] std::future<void> shutdown();
     void close() noexcept;
 
-private:
+  private:
     class Impl;
     std::unique_ptr<Impl> impl_;
 };

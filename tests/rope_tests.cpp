@@ -49,9 +49,8 @@ astra::TextPosition reference_position(std::string_view text, std::size_t byte) 
     const auto prefix = text.substr(0, byte);
     const auto last_break = prefix.rfind('\n');
     return {static_cast<std::size_t>(std::count(prefix.begin(), prefix.end(), '\n')),
-            reference_utf16(last_break == std::string_view::npos
-                                ? prefix
-                                : prefix.substr(last_break + 1))};
+            reference_utf16(last_break == std::string_view::npos ? prefix
+                                                                 : prefix.substr(last_break + 1))};
 }
 
 std::vector<std::size_t> reference_line_starts(std::string_view text) {
@@ -85,9 +84,20 @@ void check_position(const astra::Rope& rope, std::string_view expected, std::siz
 }
 
 std::string random_text(std::mt19937& random, std::size_t maximum_tokens) {
-    const std::vector<std::string> pieces{
-        "a", "Z", " ", "\t", "\n", "\r\n", "\r", chinese, emoji, combining,
-        std::string(1, '\0'), "\xF4\x8F\xBF\xBF", "{}", "\xC2\xA0"};
+    const std::vector<std::string> pieces{"a",
+                                          "Z",
+                                          " ",
+                                          "\t",
+                                          "\n",
+                                          "\r\n",
+                                          "\r",
+                                          chinese,
+                                          emoji,
+                                          combining,
+                                          std::string(1, '\0'),
+                                          "\xF4\x8F\xBF\xBF",
+                                          "{}",
+                                          "\xC2\xA0"};
     std::string result;
     const auto length = static_cast<std::size_t>(random()) % (maximum_tokens + 1);
     for (std::size_t index = 0; index < length; ++index) {
@@ -100,13 +110,17 @@ std::string random_text(std::mt19937& random, std::size_t maximum_tokens) {
 
 TEST_CASE("persistent Rope change extents reconstruct Unicode edits without flattening") {
     std::string source;
-    for (int i = 0; i < 600; ++i) { source += "line " + chinese + emoji + combining + "\r\n"; }
+    for (int i = 0; i < 600; ++i) {
+        source += "line " + chinese + emoji + combining + "\r\n";
+    }
     astra::Rope before(source);
     std::mt19937 random(0x53484152U);
     for (int round = 0; round < 300; ++round) {
         const auto offsets = boundaries(source);
-        const auto index = static_cast<std::size_t>(random() % static_cast<unsigned>(offsets.size()));
-        const auto finish = std::min(offsets.size() - 1, index + static_cast<std::size_t>(random() % 7U));
+        const auto index =
+            static_cast<std::size_t>(random() % static_cast<unsigned>(offsets.size()));
+        const auto finish =
+            std::min(offsets.size() - 1, index + static_cast<std::size_t>(random() % 7U));
         const auto added = round % 2 == 0 ? emoji + "new\n" : std::string{};
         const auto after = before.replace(offsets[index], offsets[finish], added);
         const auto extent = before.changed_extent(after);
@@ -114,8 +128,11 @@ TEST_CASE("persistent Rope change extents reconstruct Unicode edits without flat
         REQUIRE(before.is_boundary(extent.old_end));
         REQUIRE(after.is_boundary(extent.begin));
         REQUIRE(after.is_boundary(extent.new_end));
-        CHECK(before.replace(extent.begin, extent.old_end, after.slice(extent.begin, extent.new_end)).str() == after.str());
-        CHECK(extent.old_end - extent.begin <= offsets[finish] - offsets[index] + 2 * astra::Rope::max_chunk_bytes);
+        CHECK(
+            before.replace(extent.begin, extent.old_end, after.slice(extent.begin, extent.new_end))
+                .str() == after.str());
+        CHECK(extent.old_end - extent.begin <=
+              offsets[finish] - offsets[index] + 2 * astra::Rope::max_chunk_bytes);
         source.replace(offsets[index], offsets[finish] - offsets[index], added);
         before = after;
     }
@@ -124,24 +141,50 @@ TEST_CASE("persistent Rope change extents reconstruct Unicode edits without flat
     CHECK(same.begin == same.new_end);
     const astra::Rope rebuilt(source);
     const auto whole = before.changed_extent(rebuilt);
-    CHECK(before.replace(whole.begin, whole.old_end, rebuilt.slice(whole.begin, whole.new_end)).str() == source);
+    CHECK(before.replace(whole.begin, whole.old_end, rebuilt.slice(whole.begin, whole.new_end))
+              .str() == source);
 }
 
 TEST_CASE("UTF-8 accepts Unicode scalars and rejects malformed byte sequences") {
-    const std::vector<std::string> valid{
-        "", std::string(1, '\0'), "\x7F", "\xC2\x80", "\xDF\xBF",
-        "\xE0\xA0\x80", "\xED\x9F\xBF", "\xEE\x80\x80", "\xEF\xBF\xBF",
-        "\xF0\x90\x80\x80", "\xF4\x8F\xBF\xBF", "\xEF\xBB\xBF", chinese, emoji};
+    const std::vector<std::string> valid{"",
+                                         std::string(1, '\0'),
+                                         "\x7F",
+                                         "\xC2\x80",
+                                         "\xDF\xBF",
+                                         "\xE0\xA0\x80",
+                                         "\xED\x9F\xBF",
+                                         "\xEE\x80\x80",
+                                         "\xEF\xBF\xBF",
+                                         "\xF0\x90\x80\x80",
+                                         "\xF4\x8F\xBF\xBF",
+                                         "\xEF\xBB\xBF",
+                                         chinese,
+                                         emoji};
     for (const auto& text : valid) {
         CHECK(astra::utf8::is_valid(text));
         CHECK_NOTHROW(astra::utf8::validate(text));
         check_rope(astra::Rope(text), text);
     }
-    const std::vector<std::string> invalid{
-        "\x80", "\xBF", "\xC0\x80", "\xC1\xBF", "\xC2", "\xC2\x7F", "\xDF",
-        "\xE0\x80\x80", "\xE0\x9F\xBF", "\xE1\x80", "\xED\xA0\x80",
-        "\xED\xBF\xBF", "\xEF\xBF", "\xF0\x80\x80\x80", "\xF0\x8F\xBF\xBF",
-        "\xF1\x80\x80", "\xF4\x90\x80\x80", "\xF5\x80\x80\x80", "\xFE", "\xFF"};
+    const std::vector<std::string> invalid{"\x80",
+                                           "\xBF",
+                                           "\xC0\x80",
+                                           "\xC1\xBF",
+                                           "\xC2",
+                                           "\xC2\x7F",
+                                           "\xDF",
+                                           "\xE0\x80\x80",
+                                           "\xE0\x9F\xBF",
+                                           "\xE1\x80",
+                                           "\xED\xA0\x80",
+                                           "\xED\xBF\xBF",
+                                           "\xEF\xBF",
+                                           "\xF0\x80\x80\x80",
+                                           "\xF0\x8F\xBF\xBF",
+                                           "\xF1\x80\x80",
+                                           "\xF4\x90\x80\x80",
+                                           "\xF5\x80\x80\x80",
+                                           "\xFE",
+                                           "\xFF"};
     for (const auto& text : invalid) {
         CHECK_FALSE(astra::utf8::is_valid(text));
         CHECK_THROWS_AS((void)(astra::utf8::validate(text)), std::invalid_argument);
@@ -273,8 +316,8 @@ TEST_CASE("Text summaries are associative across LF CRLF and Unicode splits") {
 }
 
 TEST_CASE("Rope split concat slice and replacement preserve earlier snapshots") {
-    const auto text = std::string(1018, 'x') + chinese + emoji + "\r\n" +
-                      std::string(2050, 'y') + "\nend";
+    const auto text =
+        std::string(1018, 'x') + chinese + emoji + "\r\n" + std::string(2050, 'y') + "\nend";
     const astra::Rope original(text);
     const auto valid = boundaries(text);
     for (const auto byte : valid) {
@@ -393,7 +436,8 @@ TEST_CASE("Rope rejects summary overflow before changing shared snapshots") {
 }
 
 TEST_CASE("Rope changed extents refine rebuilt chunks without including a neighboring long line") {
-    const std::string source = "int before;\r\n// \xf0\x9f\x98\x80\r\nint after;\r\n" + std::string(30000, ' ');
+    const std::string source =
+        "int before;\r\n// \xf0\x9f\x98\x80\r\nint after;\r\n" + std::string(30000, ' ');
     const astra::Rope before(source);
     const auto position = source.find("after");
     const auto after = before.replace(position, position + 5, "changed");
@@ -401,7 +445,8 @@ TEST_CASE("Rope changed extents refine rebuilt chunks without including a neighb
     CHECK(extent.begin == position);
     CHECK(extent.old_end == position + 5);
     CHECK(extent.new_end == position + 7);
-    CHECK(before.replace(extent.begin, extent.old_end, after.slice(extent.begin, extent.new_end)).str() == after.str());
+    CHECK(before.replace(extent.begin, extent.old_end, after.slice(extent.begin, extent.new_end))
+              .str() == after.str());
     const auto independent = before.changed_extent(astra::Rope(after.str()));
     CHECK(independent.begin == extent.begin);
     CHECK(independent.old_end == extent.old_end);

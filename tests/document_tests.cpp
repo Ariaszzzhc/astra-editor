@@ -14,7 +14,9 @@
 
 namespace {
 
-astra::ByteOffset byte(std::size_t value) { return astra::ByteOffset{value}; }
+astra::ByteOffset byte(std::size_t value) {
+    return astra::ByteOffset{value};
+}
 
 astra::Selection selection(std::size_t anchor, std::size_t head) {
     return {byte(anchor), byte(head)};
@@ -24,8 +26,7 @@ astra::Edit edit(std::size_t begin, std::size_t end, std::string text) {
     return {byte(begin), byte(end), std::move(text)};
 }
 
-astra::Transaction transaction(const astra::Document& document,
-                               std::vector<astra::Edit> edits) {
+astra::Transaction transaction(const astra::Document& document, std::vector<astra::Edit> edits) {
     return {document.revision(), std::move(edits), std::nullopt};
 }
 
@@ -110,23 +111,27 @@ TEST_CASE("stale transactions reject every field before mutation") {
     check_unchanged(document, before);
     REQUIRE(document.undo());
     CHECK(document.text().str() == "base");
-    CHECK_THROWS_AS((void)document.apply({astra::Revision{0}, {}, std::nullopt}), astra::StaleRevision);
+    CHECK_THROWS_AS((void)document.apply({astra::Revision{0}, {}, std::nullopt}),
+                    astra::StaleRevision);
 }
 
 TEST_CASE("invalid edits and post selections have an all or nothing effect") {
     astra::Document document(astra::BufferId{1}, "abcdef");
     const auto before = document.snapshot();
     SUBCASE("out of bounds") {
-        CHECK_THROWS_AS((void)document.apply(transaction(document,
-            {edit(0, 1, "valid"), edit(4, 8, "bad")})), std::out_of_range);
+        CHECK_THROWS_AS(
+            (void)document.apply(transaction(document, {edit(0, 1, "valid"), edit(4, 8, "bad")})),
+            std::out_of_range);
     }
     SUBCASE("reversed range") {
-        CHECK_THROWS_AS((void)document.apply(transaction(document,
-            {edit(0, 1, "valid"), edit(5, 2, "bad")})), std::invalid_argument);
+        CHECK_THROWS_AS(
+            (void)document.apply(transaction(document, {edit(0, 1, "valid"), edit(5, 2, "bad")})),
+            std::invalid_argument);
     }
     SUBCASE("malformed UTF-8 replacement") {
-        CHECK_THROWS_AS((void)document.apply(transaction(document,
-            {edit(0, 1, "valid"), edit(4, 5, "\xc0\xaf")})), std::invalid_argument);
+        CHECK_THROWS_AS((void)document.apply(
+                            transaction(document, {edit(0, 1, "valid"), edit(4, 5, "\xc0\xaf")})),
+                        std::invalid_argument);
     }
     SUBCASE("invalid post transaction selection") {
         auto request = transaction(document, {edit(0, 6, "x")});
@@ -145,8 +150,8 @@ TEST_CASE("invalid edits and post selections have an all or nothing effect") {
 
 TEST_CASE("transactions use original coordinates and allow adjacent replacements") {
     astra::Document document(astra::BufferId{1}, "abcdefgh");
-    REQUIRE(document.apply(transaction(document,
-        {edit(6, 8, "!"), edit(2, 4, "x"), edit(0, 2, "long")})));
+    REQUIRE(document.apply(
+        transaction(document, {edit(6, 8, "!"), edit(2, 4, "x"), edit(0, 2, "long")})));
     CHECK(document.text().str() == "longxef!");
     REQUIRE(document.undo());
     CHECK(document.text().str() == "abcdefgh");
@@ -156,32 +161,37 @@ TEST_CASE("overlapping and ambiguously ordered edits are rejected") {
     astra::Document document(astra::BufferId{1}, "abcdef");
     const auto before = document.snapshot();
     SUBCASE("intersecting replacements") {
-        CHECK_THROWS_AS((void)document.apply(transaction(document,
-            {edit(0, 3, "x"), edit(2, 4, "y")})), std::invalid_argument);
+        CHECK_THROWS_AS(
+            (void)document.apply(transaction(document, {edit(0, 3, "x"), edit(2, 4, "y")})),
+            std::invalid_argument);
     }
     SUBCASE("duplicate insertions") {
-        CHECK_THROWS_AS((void)document.apply(transaction(document,
-            {edit(2, 2, "x"), edit(2, 2, "y")})), std::invalid_argument);
+        CHECK_THROWS_AS(
+            (void)document.apply(transaction(document, {edit(2, 2, "x"), edit(2, 2, "y")})),
+            std::invalid_argument);
     }
     SUBCASE("insertion at replacement start") {
-        CHECK_THROWS_AS((void)document.apply(transaction(document,
-            {edit(2, 4, "x"), edit(2, 2, "y")})), std::invalid_argument);
+        CHECK_THROWS_AS(
+            (void)document.apply(transaction(document, {edit(2, 4, "x"), edit(2, 2, "y")})),
+            std::invalid_argument);
     }
     SUBCASE("insertion at replacement end") {
-        CHECK_THROWS_AS((void)document.apply(transaction(document,
-            {edit(2, 4, "x"), edit(4, 4, "y")})), std::invalid_argument);
+        CHECK_THROWS_AS(
+            (void)document.apply(transaction(document, {edit(2, 4, "x"), edit(4, 4, "y")})),
+            std::invalid_argument);
     }
     SUBCASE("no-op is validated before filtering") {
-        CHECK_THROWS_AS((void)document.apply(transaction(document,
-            {edit(2, 4, "cd"), edit(3, 3, "x")})), std::invalid_argument);
+        CHECK_THROWS_AS(
+            (void)document.apply(transaction(document, {edit(2, 4, "cd"), edit(3, 3, "x")})),
+            std::invalid_argument);
     }
     check_unchanged(document, before);
 }
 
 TEST_CASE("selections normalize deterministically while retaining direction") {
     astra::Document document(astra::BufferId{1}, "abcdefghij");
-    document.set_selections({selection(8, 8), selection(4, 1),
-        selection(2, 6), selection(8, 8), selection(9, 10)});
+    document.set_selections(
+        {selection(8, 8), selection(4, 1), selection(2, 6), selection(8, 8), selection(9, 10)});
     const std::vector expected{selection(6, 1), selection(8, 8), selection(9, 10)};
     CHECK(document.selections() == expected);
     CHECK(document.revision() == astra::Revision{0});
@@ -205,15 +215,18 @@ TEST_CASE("adjacent selections remain separate but duplicate boundary carets mer
 
 TEST_CASE("Unicode document edits require scalar boundaries") {
     // A, supplementary-plane emoji, e + combining acute accent, CRLF, CJK.
-    const std::string original = "A\xf0\x9f\x98\x80" "e\xcc\x81\r\n\xe4\xb8\xad";
+    const std::string original = "A\xf0\x9f\x98\x80"
+                                 "e\xcc\x81\r\n\xe4\xb8\xad";
     astra::Document document(astra::BufferId{1}, original);
     const auto before = document.snapshot();
     CHECK_THROWS_AS((void)document.set_selections({selection(2, 2)}), std::invalid_argument);
-    CHECK_THROWS_AS((void)document.apply(transaction(document, {edit(2, 5, "!")})), std::invalid_argument);
+    CHECK_THROWS_AS((void)document.apply(transaction(document, {edit(2, 5, "!")})),
+                    std::invalid_argument);
     check_unchanged(document, before);
     document.set_selections({selection(1, 5), selection(10, 13)});
     REQUIRE(document.replace_selections("\xf0\x9f\x8c\x9f"));
-    CHECK(document.text().str() == "A\xf0\x9f\x8c\x9f" "e\xcc\x81\r\n\xf0\x9f\x8c\x9f");
+    CHECK(document.text().str() == "A\xf0\x9f\x8c\x9f"
+                                   "e\xcc\x81\r\n\xf0\x9f\x8c\x9f");
     const std::vector expected{selection(5, 5), selection(14, 14)};
     CHECK(document.selections() == expected);
     REQUIRE(document.undo());
@@ -415,8 +428,9 @@ TEST_CASE("randomized Unicode multicursor transactions match a flat reference") 
         std::shuffle(selections.begin(), selections.end(), random);
         document.set_selections(selections);
         const auto before = document.snapshot();
-        const auto replacement = random() % 4 == 0 ? std::string{} :
-            tokens[static_cast<std::size_t>(random() % tokens.size())];
+        const auto replacement = random() % 4 == 0
+                                     ? std::string{}
+                                     : tokens[static_cast<std::size_t>(random() % tokens.size())];
         std::string expected;
         std::size_t source = 0;
         std::vector<astra::Selection> expected_selections;
@@ -466,10 +480,12 @@ TEST_CASE("snapshot restoration starts a new buffer history without changing ret
     CHECK(source.revision() == snapshot.revision);
     auto invalid = snapshot;
     invalid.selections = {selection(1, 1)};
-    CHECK_THROWS_AS((void)astra::Document::from_snapshot(astra::BufferId{10}, invalid), std::invalid_argument);
+    CHECK_THROWS_AS((void)astra::Document::from_snapshot(astra::BufferId{10}, invalid),
+                    std::invalid_argument);
 }
 
-TEST_CASE("prepared document saved-state guards reject invalidation even when both copies are dirty") {
+TEST_CASE(
+    "prepared document saved-state guards reject invalidation even when both copies are dirty") {
     astra::Document current({81}, "disk baseline");
     REQUIRE(current.replace_selections("local "));
     auto prepared = current.clone();
@@ -494,7 +510,8 @@ TEST_CASE("prepared document saved-state guards reject invalidation even when bo
     CHECK_FALSE(current.same_saved_state(other));
 }
 
-TEST_CASE("prepared document saved-state guards distinguish saved snapshots independently of dirty state") {
+TEST_CASE("prepared document saved-state guards distinguish saved snapshots independently of dirty "
+          "state") {
     astra::Document current({83}, "A");
     REQUIRE(current.replace_selections("B"));
     const auto newly_saved = current.snapshot();
@@ -519,11 +536,17 @@ TEST_CASE("randomized document edit history matches a flat reference") {
     INFO("seed = ", seed);
     std::mt19937_64 random(seed);
     constexpr std::size_t history_limit = 24;
+
     struct ReferenceState {
         std::string text;
         std::vector<astra::Selection> selections;
     };
-    struct ReferenceEntry { ReferenceState before; ReferenceState after; };
+
+    struct ReferenceEntry {
+        ReferenceState before;
+        ReferenceState after;
+    };
+
     ReferenceState reference{"initial", {selection(0, 0)}};
     std::deque<ReferenceEntry> undo;
     std::deque<ReferenceEntry> redo;
@@ -552,14 +575,17 @@ TEST_CASE("randomized document edit history matches a flat reference") {
         } else {
             auto begin = static_cast<std::size_t>(random() % (reference.text.size() + 1));
             auto end = static_cast<std::size_t>(random() % (reference.text.size() + 1));
-            if (begin > end) { std::swap(begin, end); }
+            if (begin > end) {
+                std::swap(begin, end);
+            }
             const std::string replacement(static_cast<std::size_t>(random() % 9),
-                static_cast<char>('a' + random() % 26));
+                                          static_cast<char>('a' + random() % 26));
             reference.selections = {selection(begin, end)};
             document.set_selections(reference.selections);
             const auto before = reference;
             reference.text.replace(begin, end - begin, replacement);
-            reference.selections = {selection(begin + replacement.size(), begin + replacement.size())};
+            reference.selections = {
+                selection(begin + replacement.size(), begin + replacement.size())};
             const bool changed = before.text != reference.text;
             CHECK(document.replace_selections(replacement) == changed);
             if (changed) {
@@ -568,14 +594,20 @@ TEST_CASE("randomized document edit history matches a flat reference") {
                 ++revision;
             }
         }
-        while (undo.size() > history_limit) { undo.pop_front(); }
-        while (redo.size() > history_limit) { redo.pop_front(); }
+        while (undo.size() > history_limit) {
+            undo.pop_front();
+        }
+        while (redo.size() > history_limit) {
+            redo.pop_front();
+        }
         CHECK(document.text().str() == reference.text);
         CHECK(document.selections() == reference.selections);
         CHECK(document.revision() == astra::Revision{revision});
         CHECK(document.can_undo() == !undo.empty());
         CHECK(document.can_redo() == !redo.empty());
-        if (iteration % 75 == 0) { retained.emplace_back(document.snapshot(), reference.text); }
+        if (iteration % 75 == 0) {
+            retained.emplace_back(document.snapshot(), reference.text);
+        }
     }
     for (const auto& [snapshot, text] : retained) {
         CHECK(snapshot.text.str() == text);

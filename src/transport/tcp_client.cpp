@@ -45,8 +45,8 @@ Json parse_body(std::string_view body) {
 
 bool valid_id(const Json& id) {
     return id.is_null() || id.is_number() ||
-        (id.is_string() && id.get_ref<const std::string&>().size() <=
-            protocol::Dispatcher::max_request_id_bytes);
+           (id.is_string() &&
+            id.get_ref<const std::string&>().size() <= protocol::Dispatcher::max_request_id_bytes);
 }
 
 bool valid_version(const Json& value) {
@@ -55,13 +55,18 @@ bool valid_version(const Json& value) {
 
 bool loopback(const sockaddr* address) {
     if (address->sa_family == AF_INET) {
-        return (ntohl(reinterpret_cast<const sockaddr_in*>(address)->sin_addr.s_addr) >> 24U) == 127U;
+        return (ntohl(reinterpret_cast<const sockaddr_in*>(address)->sin_addr.s_addr) >> 24U) ==
+               127U;
     }
     if (address->sa_family == AF_INET6) {
         const auto* bytes = reinterpret_cast<const unsigned char*>(
             &reinterpret_cast<const sockaddr_in6*>(address)->sin6_addr);
-        return std::all_of(bytes, bytes + 15, [](unsigned char value) { return value == 0; }) &&
-            bytes[15] == 1;
+        return std::all_of(bytes,
+                           bytes + 15,
+                           [](unsigned char value) {
+                               return value == 0;
+                           }) &&
+               bytes[15] == 1;
     }
     return false;
 }
@@ -109,7 +114,7 @@ class TcpClient::Impl {
         std::promise<void> promise;
     };
 
-public:
+  public:
     explicit Impl(TcpClientOptions options)
         : options_(options), decoder_(options.max_body_bytes, options.max_header_bytes) {
         if (options_.connect_timeout.count() <= 0 || options_.request_timeout.count() <= 0 ||
@@ -124,7 +129,8 @@ public:
         }
         check_uv(uv_loop_init(&loop_), "Initialize TCP client loop");
         try {
-            check_uv(uv_async_init(&loop_, &control_, control_callback), "Initialize TCP client signal");
+            check_uv(uv_async_init(&loop_, &control_, control_callback),
+                     "Initialize TCP client signal");
             control_initialized_ = true;
             control_.data = this;
             check_uv(uv_timer_init(&loop_, &timer_), "Initialize TCP client timer");
@@ -149,7 +155,9 @@ public:
         }
     }
 
-    ~Impl() { close(); }
+    ~Impl() {
+        close();
+    }
 
     std::future<void> connect(std::string host, std::uint16_t port) {
         auto task = std::make_unique<ConnectTask>();
@@ -158,10 +166,12 @@ public:
         auto future = task->promise.get_future();
         const std::lock_guard lock(mutex_);
         if (state_.load() != State::idle || stop_requested_.load()) {
-            task->promise.set_exception(std::make_exception_ptr(TransportError("TCP client connects only once")));
+            task->promise.set_exception(
+                std::make_exception_ptr(TransportError("TCP client connects only once")));
         } else if (task->host.empty() || task->host.size() > 1024 ||
                    task->host.find('\0') != std::string::npos || port == 0) {
-            task->promise.set_exception(std::make_exception_ptr(TransportError("Invalid TCP endpoint")));
+            task->promise.set_exception(
+                std::make_exception_ptr(TransportError("Invalid TCP endpoint")));
         } else {
             state_.store(State::connecting);
             connect_deadline_ = Clock::now() + options_.connect_timeout;
@@ -191,8 +201,11 @@ public:
 
     TcpClientStats stats() const noexcept {
         const std::lock_guard lock(mutex_);
-        return {pending_count_, queued_bytes_, notification_overflows_.load(),
-                protocol_errors_.load(), loop_close_error_.load()};
+        return {pending_count_,
+                queued_bytes_,
+                notification_overflows_.load(),
+                protocol_errors_.load(),
+                loop_close_error_.load()};
     }
 
     std::future<std::optional<std::string>> submit(std::string body) {
@@ -202,12 +215,15 @@ public:
         group->deadline = Clock::now() + options_.request_timeout;
         const std::lock_guard lock(mutex_);
         if (!connected()) {
-            group->promise.set_exception(std::make_exception_ptr(TransportError("TCP client is not connected")));
+            group->promise.set_exception(
+                std::make_exception_ptr(TransportError("TCP client is not connected")));
         } else if (group->body.size() > options_.max_body_bytes) {
-            group->promise.set_exception(std::make_exception_ptr(TransportError("TCP request exceeds body limit")));
+            group->promise.set_exception(
+                std::make_exception_ptr(TransportError("TCP request exceeds body limit")));
         } else if (pending_count_ >= options_.max_pending_requests ||
                    group->body.size() + 64 > options_.max_queued_write_bytes - queued_bytes_) {
-            group->promise.set_exception(std::make_exception_ptr(TransportError("TCP client request queue is full")));
+            group->promise.set_exception(
+                std::make_exception_ptr(TransportError("TCP client request queue is full")));
         } else {
             group->reserved_bytes = group->body.size() + 64;
             queued_.push_back(group);
@@ -227,7 +243,7 @@ public:
         return result;
     }
 
-private:
+  private:
     static void control_callback(uv_async_t* handle) noexcept {
         auto& self = *static_cast<Impl*>(handle->data);
         try {
@@ -254,8 +270,12 @@ private:
             hints.ai_family = AF_UNSPEC;
             hints.ai_socktype = SOCK_STREAM;
             hints.ai_protocol = IPPROTO_TCP;
-            const int status = uv_getaddrinfo(&loop_, &resolver_, resolve_callback,
-                connect_task_->host.c_str(), connect_task_->port.c_str(), &hints);
+            const int status = uv_getaddrinfo(&loop_,
+                                              &resolver_,
+                                              resolve_callback,
+                                              connect_task_->host.c_str(),
+                                              connect_task_->port.c_str(),
+                                              &hints);
             check_uv(status, "Resolve TCP hostname");
             resolving_ = true;
         }
@@ -284,7 +304,8 @@ private:
     static void resolve_callback(uv_getaddrinfo_t* request, int status, addrinfo* result) noexcept {
         auto& self = *static_cast<Impl*>(request->data);
         self.resolving_ = false;
-        const std::unique_ptr<addrinfo, decltype(&uv_freeaddrinfo)> resolved(result, uv_freeaddrinfo);
+        const std::unique_ptr<addrinfo, decltype(&uv_freeaddrinfo)> resolved(result,
+                                                                             uv_freeaddrinfo);
         if (self.state_.load() != State::connecting || self.stop_requested_.load()) {
             return;
         }
@@ -295,10 +316,12 @@ private:
                     continue;
                 }
                 if (!loopback(entry->ai_addr)) {
-                    throw TransportError("TCP client only permits resolved loopback addresses; use an SSH tunnel");
+                    throw TransportError(
+                        "TCP client only permits resolved loopback addresses; use an SSH tunnel");
                 }
                 sockaddr_storage address{};
-                const auto size = entry->ai_family == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
+                const auto size =
+                    entry->ai_family == AF_INET ? sizeof(sockaddr_in) : sizeof(sockaddr_in6);
                 std::memcpy(&address, entry->ai_addr, size);
                 self.addresses_.push_back(address);
             }
@@ -324,8 +347,10 @@ private:
             raw->connecting = true;
             current_ = raw;
             const auto& address = addresses_[next_address_++];
-            const int status = uv_tcp_connect(&raw->request, &raw->socket,
-                reinterpret_cast<const sockaddr*>(&address), connect_callback);
+            const int status = uv_tcp_connect(&raw->request,
+                                              &raw->socket,
+                                              reinterpret_cast<const sockaddr*>(&address),
+                                              connect_callback);
             if (status == 0) {
                 return;
             }
@@ -333,7 +358,8 @@ private:
             last_connect_error_ = status;
             close_connection(raw);
         }
-        throw TransportError(std::string("Connect TCP endpoint: ") + uv_strerror(last_connect_error_));
+        throw TransportError(std::string("Connect TCP endpoint: ") +
+                             uv_strerror(last_connect_error_));
     }
 
     static void connect_callback(uv_connect_t* request, int status) noexcept {
@@ -350,7 +376,9 @@ private:
             } else {
                 check_uv(uv_tcp_nodelay(&connection->socket, 1), "Configure TCP client latency");
                 check_uv(uv_read_start(reinterpret_cast<uv_stream_t*>(&connection->socket),
-                    allocate_callback, read_callback), "Read TCP responses");
+                                       allocate_callback,
+                                       read_callback),
+                         "Read TCP responses");
                 self.state_.store(State::connected);
                 self.connect_task_->promise.set_value();
                 self.connect_task_.reset();
@@ -387,12 +415,14 @@ private:
     void validate_group(Group& group) {
         const auto request = parse_body(group.body);
         group.batch = request.is_array();
-        if (group.batch && (request.empty() || request.size() > protocol::Dispatcher::max_batch_size)) {
+        if (group.batch &&
+            (request.empty() || request.size() > protocol::Dispatcher::max_batch_size)) {
             throw TransportError("Invalid JSON-RPC request batch");
         }
         std::unordered_set<std::string> ids;
         const auto validate = [&](const Json& member) {
-            if (!valid_version(member) || !member.contains("method") || !member["method"].is_string()) {
+            if (!valid_version(member) || !member.contains("method") ||
+                !member["method"].is_string()) {
                 throw TransportError("Invalid JSON-RPC request envelope");
             }
             if (member.contains("id")) {
@@ -448,12 +478,16 @@ private:
         raw->request.data = raw;
         ++raw->connection->writes;
         auto buffer = uv_buf_init(raw->frame.data(), static_cast<unsigned int>(raw->frame.size()));
-        const int status = uv_write(&raw->request, reinterpret_cast<uv_stream_t*>(&current_->socket),
-                                    &buffer, 1, write_callback);
+        const int status = uv_write(&raw->request,
+                                    reinterpret_cast<uv_stream_t*>(&current_->socket),
+                                    &buffer,
+                                    1,
+                                    write_callback);
         if (status < 0) {
             release_write(raw);
             // Socket errors make every pending transaction outcome uncertain.
-            fail(std::make_exception_ptr(TransportError(std::string("Write TCP request: ") + uv_strerror(status))));
+            fail(std::make_exception_ptr(
+                TransportError(std::string("Write TCP request: ") + uv_strerror(status))));
         }
     }
 
@@ -463,7 +497,8 @@ private:
         const auto group = write->group;
         self.release_write(write);
         if (status < 0) {
-            self.fail(std::make_exception_ptr(TransportError(std::string("Write TCP request: ") + uv_strerror(status))));
+            self.fail(std::make_exception_ptr(
+                TransportError(std::string("Write TCP request: ") + uv_strerror(status))));
         } else if (!group->done && group->ids.empty()) {
             self.finish(group, nullptr, std::nullopt);
         }
@@ -482,7 +517,8 @@ private:
 
     static void allocate_callback(uv_handle_t* handle, std::size_t, uv_buf_t* buffer) noexcept {
         auto& self = *static_cast<Connection*>(handle->data)->owner;
-        *buffer = uv_buf_init(self.read_buffer_.data(), static_cast<unsigned int>(self.read_buffer_.size()));
+        *buffer = uv_buf_init(self.read_buffer_.data(),
+                              static_cast<unsigned int>(self.read_buffer_.size()));
     }
 
     static void read_callback(uv_stream_t* stream, ssize_t count, const uv_buf_t* buffer) noexcept {
@@ -493,9 +529,11 @@ private:
         try {
             if (count < 0) {
                 self.decoder_.finish();
-                throw TransportError(std::string("TCP peer disconnected: ") + uv_strerror(static_cast<int>(count)));
+                throw TransportError(std::string("TCP peer disconnected: ") +
+                                     uv_strerror(static_cast<int>(count)));
             }
-            const auto frames = self.decoder_.feed(std::string_view(buffer->base, static_cast<std::size_t>(count)));
+            const auto frames =
+                self.decoder_.feed(std::string_view(buffer->base, static_cast<std::size_t>(count)));
             for (const auto& frame : frames) {
                 self.receive_body(frame);
             }
@@ -526,9 +564,10 @@ private:
             throw TransportError("Invalid JSON-RPC response envelope");
         }
         if (message.contains("method")) {
-            if (!message["method"].is_string() || message.contains("id") || message.contains("result") ||
-                message.contains("error") || (message.contains("params") &&
-                !message["params"].is_object() && !message["params"].is_array())) {
+            if (!message["method"].is_string() || message.contains("id") ||
+                message.contains("result") || message.contains("error") ||
+                (message.contains("params") && !message["params"].is_object() &&
+                 !message["params"].is_array())) {
                 throw TransportError("Invalid JSON-RPC server notification");
             }
             push_notification(message.dump());
@@ -540,8 +579,9 @@ private:
         }
         if (message.contains("error")) {
             const auto& error = message["error"];
-            if (!error.is_object() || !error.contains("code") || !error["code"].is_number_integer() ||
-                !error.contains("message") || !error["message"].is_string()) {
+            if (!error.is_object() || !error.contains("code") ||
+                !error["code"].is_number_integer() || !error.contains("message") ||
+                !error["message"].is_string()) {
                 throw TransportError("Invalid JSON-RPC error response");
             }
         }
@@ -601,7 +641,8 @@ private:
         }
     }
 
-    void finish(const std::shared_ptr<Group>& group, std::exception_ptr error,
+    void finish(const std::shared_ptr<Group>& group,
+                std::exception_ptr error,
                 std::optional<std::string> result = std::nullopt) noexcept {
         if (group->done) {
             return;
@@ -637,7 +678,8 @@ private:
         for (const auto& [pointer, group] : self.groups_) {
             (void)pointer;
             if (now >= group->deadline) {
-                self.fail(std::make_exception_ptr(TransportError("TCP request deadline expired; resynchronize before retry")));
+                self.fail(std::make_exception_ptr(
+                    TransportError("TCP request deadline expired; resynchronize before retry")));
                 return;
             }
         }
@@ -732,17 +774,33 @@ private:
     std::atomic<int> loop_close_error_{};
 };
 
-TcpClient::TcpClient(TcpClientOptions options) : impl_(std::make_unique<Impl>(options)) {}
+TcpClient::TcpClient(TcpClientOptions options) : impl_(std::make_unique<Impl>(options)) {
+}
+
 TcpClient::~TcpClient() = default;
+
 std::future<void> TcpClient::connect(std::string host, std::uint16_t port) {
     return impl_->connect(std::move(host), port);
 }
-void TcpClient::close() noexcept { impl_->close(); }
-bool TcpClient::connected() const noexcept { return impl_->connected(); }
-TcpClientStats TcpClient::stats() const noexcept { return impl_->stats(); }
+
+void TcpClient::close() noexcept {
+    impl_->close();
+}
+
+bool TcpClient::connected() const noexcept {
+    return impl_->connected();
+}
+
+TcpClientStats TcpClient::stats() const noexcept {
+    return impl_->stats();
+}
+
 std::future<std::optional<std::string>> TcpClient::submit(std::string body) {
     return impl_->submit(std::move(body));
 }
-std::vector<std::string> TcpClient::take_notifications() { return impl_->take_notifications(); }
+
+std::vector<std::string> TcpClient::take_notifications() {
+    return impl_->take_notifications();
+}
 
 } // namespace astra::transport

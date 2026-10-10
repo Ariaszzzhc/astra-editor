@@ -36,6 +36,10 @@
 
 ## C++ and testing
 
+- Format repository-owned C++ and JavaScript with `./scripts/format.ps1` before
+  committing. `./scripts/format.ps1 -Check` is an acceptance gate. Use the pinned
+  repository-local clang-format and Prettier; do not compress functions, branches,
+  or multiple statements onto one line. Preserve third-party sources.
 - Use modern C++23, value types, explicit ownership, const correctness, and named invariants.
   No owning raw pointers, mutable globals, shell-string construction from user paths,
   or catch-and-ignore error paths. Keep third-party APIs behind narrow adapters.

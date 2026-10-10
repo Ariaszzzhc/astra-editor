@@ -26,8 +26,11 @@ void uv_check(int status, std::string_view operation) {
 } // namespace
 
 class TcpServer::Impl {
-public:
-    Impl(Handler handler, Notifications notifications, TcpServerOptions options, TcpServerHooks hooks)
+  public:
+    Impl(Handler handler,
+         Notifications notifications,
+         TcpServerOptions options,
+         TcpServerHooks hooks)
         : handler_(std::move(handler)), notifications_(std::move(notifications)), options_(options),
           hooks_(std::move(hooks)) {
         if (!handler_ || options_.max_connections == 0 || options_.max_queued_write_bytes == 0 ||
@@ -41,7 +44,9 @@ public:
         }
     }
 
-    ~Impl() { stop(); }
+    ~Impl() {
+        stop();
+    }
 
     void start(std::string_view address, std::uint16_t port) {
         if (address != "127.0.0.1" && address != "::1") {
@@ -62,19 +67,23 @@ public:
             uv_check(uv_tcp_init(&loop_, &listener_), "Initialize TCP listener");
             listener_initialized_ = true;
             listener_.data = this;
-            uv_check(uv_async_init(&loop_, &control_, control_callback), "Initialize TCP shutdown signal");
+            uv_check(uv_async_init(&loop_, &control_, control_callback),
+                     "Initialize TCP shutdown signal");
             control_initialized_ = true;
             control_.data = this;
             if (notifications_) {
-                uv_check(uv_timer_init(&loop_, &notification_timer_), "Initialize notification timer");
+                uv_check(uv_timer_init(&loop_, &notification_timer_),
+                         "Initialize notification timer");
                 notification_timer_initialized_ = true;
                 notification_timer_.data = this;
             }
             if (address == "::1") {
                 sockaddr_in6 endpoint{};
                 uv_check(uv_ip6_addr("::1", port, &endpoint), "Parse IPv6 loopback address");
-                uv_check(uv_tcp_bind(&listener_, reinterpret_cast<const sockaddr*>(&endpoint),
-                                     UV_TCP_IPV6ONLY), "Bind IPv6 loopback listener");
+                uv_check(uv_tcp_bind(&listener_,
+                                     reinterpret_cast<const sockaddr*>(&endpoint),
+                                     UV_TCP_IPV6ONLY),
+                         "Bind IPv6 loopback listener");
             } else {
                 sockaddr_in endpoint{};
                 uv_check(uv_ip4_addr("127.0.0.1", port, &endpoint), "Parse IPv4 loopback address");
@@ -87,9 +96,10 @@ public:
             int length = static_cast<int>(sizeof(bound));
             uv_check(uv_tcp_getsockname(&listener_, reinterpret_cast<sockaddr*>(&bound), &length),
                      "Query TCP listener port");
-            const auto actual_port = bound.ss_family == AF_INET
-                ? ntohs(reinterpret_cast<const sockaddr_in*>(&bound)->sin_port)
-                : ntohs(reinterpret_cast<const sockaddr_in6*>(&bound)->sin6_port);
+            const auto actual_port =
+                bound.ss_family == AF_INET
+                    ? ntohs(reinterpret_cast<const sockaddr_in*>(&bound)->sin_port)
+                    : ntohs(reinterpret_cast<const sockaddr_in6*>(&bound)->sin6_port);
             port_.store(actual_port);
             running_.store(true);
             const auto startup = std::make_shared<std::promise<void>>();
@@ -100,8 +110,11 @@ public:
                         hooks_.on_start();
                     }
                     if (notification_timer_initialized_) {
-                        uv_check(uv_timer_start(&notification_timer_, notification_timer_callback,
-                            options_.notification_interval_ms, options_.notification_interval_ms), "Start notification timer");
+                        uv_check(uv_timer_start(&notification_timer_,
+                                                notification_timer_callback,
+                                                options_.notification_interval_ms,
+                                                options_.notification_interval_ms),
+                                 "Start notification timer");
                     }
                     startup->set_value();
                 } catch (...) {
@@ -156,21 +169,37 @@ public:
         port_.store(0);
     }
 
-    [[nodiscard]] std::uint16_t port() const noexcept { return port_.load(); }
-    [[nodiscard]] bool running() const noexcept { return running_.load() && !stop_requested_.load(); }
+    [[nodiscard]] std::uint16_t port() const noexcept {
+        return port_.load();
+    }
+
+    [[nodiscard]] bool running() const noexcept {
+        return running_.load() && !stop_requested_.load();
+    }
 
     [[nodiscard]] TcpServerStats stats() const noexcept {
-        return {accepted_.load(), rejected_.load(), protocol_errors_.load(), handler_errors_.load(),
-                write_limits_.load(), active_.load(), queued_bytes_.load(), pending_writes_.load(),
-                loop_close_error_.load(), pending_tasks_.load(), pending_work_.load(),
-                local_overflows_.load(), notification_polls_.load(), notification_poll_errors_.load()};
+        return {accepted_.load(),
+                rejected_.load(),
+                protocol_errors_.load(),
+                handler_errors_.load(),
+                write_limits_.load(),
+                active_.load(),
+                queued_bytes_.load(),
+                pending_writes_.load(),
+                loop_close_error_.load(),
+                pending_tasks_.load(),
+                pending_work_.load(),
+                local_overflows_.load(),
+                notification_polls_.load(),
+                notification_poll_errors_.load()};
     }
 
     std::future<std::optional<std::string>> submit(std::string body) {
         const auto promise = std::make_shared<std::promise<std::optional<std::string>>>();
         auto future = promise->get_future();
         if (body.size() > options_.max_body_bytes) {
-            promise->set_exception(std::make_exception_ptr(TransportError("Local request exceeds body limit")));
+            promise->set_exception(
+                std::make_exception_ptr(TransportError("Local request exceeds body limit")));
             return future;
         }
         const auto bytes = body.size();
@@ -189,7 +218,9 @@ public:
                 promise->set_exception(std::current_exception());
             }
         };
-        task.cancel = [promise](std::exception_ptr error) { promise->set_exception(error); };
+        task.cancel = [promise](std::exception_ptr error) {
+            promise->set_exception(error);
+        };
         if (auto error = enqueue(std::move(task))) {
             promise->set_exception(error);
         }
@@ -200,7 +231,8 @@ public:
         const auto promise = std::make_shared<std::promise<void>>();
         auto future = promise->get_future();
         if (!function) {
-            promise->set_exception(std::make_exception_ptr(std::invalid_argument("Empty loop task")));
+            promise->set_exception(
+                std::make_exception_ptr(std::invalid_argument("Empty loop task")));
             return future;
         }
         QueuedTask task;
@@ -214,7 +246,9 @@ public:
                 promise->set_exception(std::current_exception());
             }
         };
-        task.cancel = [promise](std::exception_ptr error) { promise->set_exception(error); };
+        task.cancel = [promise](std::exception_ptr error) {
+            promise->set_exception(error);
+        };
         if (auto error = enqueue(std::move(task))) {
             promise->set_exception(error);
         }
@@ -222,7 +256,7 @@ public:
     }
 
     std::future<void> queue_work(std::function<void()> worker,
-                                std::function<void(std::exception_ptr)> completion) {
+                                 std::function<void(std::exception_ptr)> completion) {
         auto work = std::make_shared<WorkItem>();
         work->server = this;
         work->worker = std::move(worker);
@@ -235,8 +269,12 @@ public:
         }
         QueuedTask task;
         task.is_work = true;
-        task.run = [this, work] { start_work(work); };
-        task.cancel = [this, work](std::exception_ptr error) { finish_work(work, error); };
+        task.run = [this, work] {
+            start_work(work);
+        };
+        task.cancel = [this, work](std::exception_ptr error) {
+            finish_work(work, error);
+        };
         if (auto error = enqueue(std::move(task))) {
             work->promise.set_exception(error);
         }
@@ -256,7 +294,7 @@ public:
         return result;
     }
 
-private:
+  private:
     static constexpr std::size_t read_buffer_bytes = 64 * 1024;
 
     struct Connection {
@@ -270,7 +308,9 @@ private:
         bool read_ended{};
 
         explicit Connection(Impl& owner)
-            : server(&owner), decoder(owner.options_.max_body_bytes, owner.options_.max_header_bytes) {}
+            : server(&owner),
+              decoder(owner.options_.max_body_bytes, owner.options_.max_header_bytes) {
+        }
     };
 
     struct PendingWrite {
@@ -352,7 +392,8 @@ private:
         work->request.data = work.get();
         try {
             work_items_.emplace(&work->request, work);
-            const int status = uv_queue_work(&loop_, &work->request, work_callback, after_work_callback);
+            const int status =
+                uv_queue_work(&loop_, &work->request, work_callback, after_work_callback);
             if (status < 0) {
                 work_items_.erase(&work->request);
                 finish_work(work, std::make_exception_ptr(TransportError(uv_strerror(status))));
@@ -410,8 +451,7 @@ private:
             uv_close(reinterpret_cast<uv_handle_t*>(&notification_timer_), nullptr);
             notification_timer_initialized_ = false;
         }
-        if (listener_initialized_ &&
-            !uv_is_closing(reinterpret_cast<uv_handle_t*>(&listener_))) {
+        if (listener_initialized_ && !uv_is_closing(reinterpret_cast<uv_handle_t*>(&listener_))) {
             uv_close(reinterpret_cast<uv_handle_t*>(&listener_), nullptr);
         }
         for (const auto& [address, connection] : connections_) {
@@ -429,7 +469,8 @@ private:
                 uv_close(reinterpret_cast<uv_handle_t*>(&control_), nullptr);
             }
         }
-        const auto error = std::make_exception_ptr(TransportCancelled("Server stopped before task execution"));
+        const auto error =
+            std::make_exception_ptr(TransportCancelled("Server stopped before task execution"));
         for (auto& task : cancelled) {
             task.cancel(error);
         }
@@ -469,7 +510,7 @@ private:
         }
         connection->socket.data = key;
         const int accepted = uv_accept(reinterpret_cast<uv_stream_t*>(&listener_),
-                                        reinterpret_cast<uv_stream_t*>(&connection->socket));
+                                       reinterpret_cast<uv_stream_t*>(&connection->socket));
         if (accepted < 0) {
             close_connection(*connection);
             return;
@@ -483,7 +524,9 @@ private:
             connection->read_buffer = std::make_unique<std::array<char, read_buffer_bytes>>();
             uv_check(uv_tcp_nodelay(&connection->socket, 1), "Enable TCP_NODELAY");
             uv_check(uv_read_start(reinterpret_cast<uv_stream_t*>(&connection->socket),
-                                   allocate_callback, read_callback), "Start TCP client reads");
+                                   allocate_callback,
+                                   read_callback),
+                     "Start TCP client reads");
             connection->counted = true;
             ++active_;
             ++accepted_;
@@ -514,10 +557,13 @@ private:
         connection->queued_bytes += bytes;
         queued_bytes_.fetch_add(bytes);
         ++pending_writes_;
-        auto buffer = uv_buf_init(const_cast<char*>(frame->data()),
-                                  static_cast<unsigned int>(frame->size()));
-        const int status = uv_write(request, reinterpret_cast<uv_stream_t*>(&connection->socket),
-                                     &buffer, 1, write_callback);
+        auto buffer =
+            uv_buf_init(const_cast<char*>(frame->data()), static_cast<unsigned int>(frame->size()));
+        const int status = uv_write(request,
+                                    reinterpret_cast<uv_stream_t*>(&connection->socket),
+                                    &buffer,
+                                    1,
+                                    write_callback);
         if (status < 0) {
             connection->queued_bytes -= bytes;
             queued_bytes_.fetch_sub(bytes);
@@ -615,10 +661,17 @@ private:
 
     static void notification_timer_callback(uv_timer_t* handle) noexcept {
         auto& self = *static_cast<Impl*>(handle->data);
-        if (self.stop_requested_.load()) { self.begin_shutdown(); return; }
+        if (self.stop_requested_.load()) {
+            self.begin_shutdown();
+            return;
+        }
         ++self.notification_polls_;
-        try { self.broadcast_notifications(); }
-        catch (...) { ++self.handler_errors_; ++self.notification_poll_errors_; }
+        try {
+            self.broadcast_notifications();
+        } catch (...) {
+            ++self.handler_errors_;
+            ++self.notification_poll_errors_;
+        }
     }
 
     static void work_callback(uv_work_t* request) noexcept {
@@ -641,7 +694,8 @@ private:
         self.work_items_.erase(found);
         auto error = work->error;
         if (status == UV_ECANCELED) {
-            error = std::make_exception_ptr(TransportCancelled("Background work cancelled during shutdown"));
+            error = std::make_exception_ptr(
+                TransportCancelled("Background work cancelled during shutdown"));
         } else if (status < 0) {
             error = std::make_exception_ptr(TransportError(uv_strerror(status)));
         }
@@ -664,11 +718,13 @@ private:
         }
     }
 
-    static void allocate_callback(uv_handle_t* handle, std::size_t suggested, uv_buf_t* buffer) noexcept {
+    static void
+    allocate_callback(uv_handle_t* handle, std::size_t suggested, uv_buf_t* buffer) noexcept {
         (void)suggested;
         const auto& connection = *static_cast<Connection*>(handle->data);
-        *buffer = uv_buf_init(connection.read_buffer ? connection.read_buffer->data() : nullptr,
-                              connection.read_buffer ? static_cast<unsigned int>(read_buffer_bytes) : 0);
+        *buffer =
+            uv_buf_init(connection.read_buffer ? connection.read_buffer->data() : nullptr,
+                        connection.read_buffer ? static_cast<unsigned int>(read_buffer_bytes) : 0);
     }
 
     static void read_callback(uv_stream_t* stream, ssize_t count, const uv_buf_t* buffer) noexcept {
@@ -769,24 +825,49 @@ private:
     std::atomic<std::uint64_t> notification_poll_errors_{};
 };
 
-TcpServer::TcpServer(Handler handler, Notifications notifications, TcpServerOptions options,
+TcpServer::TcpServer(Handler handler,
+                     Notifications notifications,
+                     TcpServerOptions options,
                      TcpServerHooks hooks)
-    : impl_(std::make_unique<Impl>(std::move(handler), std::move(notifications), options, std::move(hooks))) {}
+    : impl_(std::make_unique<Impl>(
+          std::move(handler), std::move(notifications), options, std::move(hooks))) {
+}
 
 TcpServer::~TcpServer() = default;
-void TcpServer::start(std::string_view address, std::uint16_t port) { impl_->start(address, port); }
-void TcpServer::stop() noexcept { impl_->stop(); }
-std::uint16_t TcpServer::port() const noexcept { return impl_->port(); }
-bool TcpServer::running() const noexcept { return impl_->running(); }
-TcpServerStats TcpServer::stats() const noexcept { return impl_->stats(); }
+
+void TcpServer::start(std::string_view address, std::uint16_t port) {
+    impl_->start(address, port);
+}
+
+void TcpServer::stop() noexcept {
+    impl_->stop();
+}
+
+std::uint16_t TcpServer::port() const noexcept {
+    return impl_->port();
+}
+
+bool TcpServer::running() const noexcept {
+    return impl_->running();
+}
+
+TcpServerStats TcpServer::stats() const noexcept {
+    return impl_->stats();
+}
+
 std::future<std::optional<std::string>> TcpServer::submit(std::string body) {
     return impl_->submit(std::move(body));
 }
-std::future<void> TcpServer::post(std::function<void()> task) { return impl_->post(std::move(task)); }
+
+std::future<void> TcpServer::post(std::function<void()> task) {
+    return impl_->post(std::move(task));
+}
+
 std::future<void> TcpServer::queue_work(std::function<void()> worker,
-                                      std::function<void(std::exception_ptr)> completion) {
+                                        std::function<void(std::exception_ptr)> completion) {
     return impl_->queue_work(std::move(worker), std::move(completion));
 }
+
 std::vector<std::string> TcpServer::take_local_notifications() {
     return impl_->take_local_notifications();
 }
