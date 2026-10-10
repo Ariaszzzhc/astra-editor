@@ -121,6 +121,9 @@ void run(const fs::path& workspace) {
             astra.registerCommand('acceptance.waitInView',()=>{waitInView=true;});
             astra.registerCommand('acceptance.focusView',()=>astra.ui.views.focus('acceptance-view'));
             astra.registerCommand('acceptance.refreshView',()=>astra.ui.refresh('acceptance-view'));
+            astra.registerCommand('acceptance.largeView', () => astra.ui.refresh('acceptance-view', {large:true}));
+            astra.registerCommand('acceptance.largePending', () => astra.ui.refresh('acceptance-view', {large:true,pause:true}));
+            astra.registerCommand('acceptance.cancelLarge', () => astra.ui.cancel('acceptance-view'));
             let capturedFocus;
             astra.registerCommand('acceptance.captureFocus', async () => {
                 capturedFocus = await astra.ui.views.read('acceptance-view');
@@ -150,10 +153,15 @@ void run(const fs::path& workspace) {
                 await astra.ui.update({status:'Sidebar text isolated'});
             });
             astra.ui.registerView({id:'acceptance-view',title:'Custom 中🙂',icon:'symbol',order:3},
-                (_, options) => ({
+                ({large,pause}, options) => ({
                     rows: (async function* () {
                         yield {id:'group',label:'Custom group',group:true,icon:'folder'};
-                        for (let index=0; index<600; ++index) {
+                        for (let index=0; index<(large ? 20000 : 600); ++index) {
+                            if (pause && index===15000) {
+                                const pending=astra.sleep(200000,options);
+                                await astra.ui.update({status:'Large builder waiting'});
+                                await pending;
+                            }
                             if (index===256 && rowGate) {
                                 await astra.ui.update({status:'Stream waiting'});
                                 await rowGate;
@@ -634,6 +642,43 @@ void run(const fs::path& workspace) {
                 "View failure did not settle JS");
         window.request_screenshot("build/graphics/gui-custom-view.png");
         settle(window);
+        window.execute_ui_command("acceptance.largeView");
+        settle(window);
+        require(window.view_state().sidebar.at("total") == 20002,
+                "Large async view did not publish every source row");
+        window.execute_ui_command("acceptance.focusView");
+        settle(window);
+        key(window, SDLK_END);
+        require(window.view_state().sidebar.at("row").at("id") == "tail",
+                "Large view lost logarithmic last-row navigation");
+        const auto before_retirement = window.view_state().view_retirement.at("completed");
+        window.execute_ui_command("acceptance.refreshView");
+        settle(window);
+        require(window.view_state().sidebar.at("total") == 602,
+                "Large source replacement did not retain the small source");
+        require(window.view_state().view_retirement.at("completed") > before_retirement &&
+                    window.view_state().view_retirement.at("queued") == 0,
+                "Idle fence did not await actual large-source retirement");
+        const auto small_version = window.view_state().sidebar.at("version");
+        window.execute_ui_command("acceptance.largePending");
+        const auto large_wait_deadline = Clock::now() + std::chrono::seconds(30);
+        while (window.status_text() != "Large builder waiting") {
+            require(window.pump(), "Window closed while a large builder streamed");
+            require(window.last_error().empty(), window.last_error());
+            require(Clock::now() < large_wait_deadline, "Large builder did not reach its pause");
+            SDL_Delay(1);
+        }
+        require(window.view_state().sidebar.at("version") == small_version,
+                "An unfinished large builder replaced the published source");
+        enqueue_key(window, SDLK_HOME);
+        window.execute_ui_command("acceptance.cancelLarge");
+        settle(window);
+        require(window.view_state().sidebar.at("version") == small_version &&
+                    window.view_state().sidebar.at("total") == 602 &&
+                    window.view_state().sidebar.at("row").at("id") == "group",
+                "Large cancellation blocked input or changed the old snapshot");
+        require(window.view_state().view_retirement.at("queued") == 0,
+                "Cancelled large builder was still retained after idle");
         window.execute_ui_command("ui.explorer");
         settle(window);
         require(window.view_state().sidebar.at("focused") == true,

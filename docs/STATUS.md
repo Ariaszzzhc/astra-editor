@@ -9,6 +9,101 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### Bounded native view retirement (2026-10-10)
+
+Published sources, cancelled/superseded builders, old fold projections and
+publication restarts now transfer owning edges to a dedicated memory-only worker.
+The worker does not call SDL, JavaScript, services or I/O; libuv continues to own
+external I/O. Its 48 preallocated lifetime slots are reserved before construction,
+and 256 MiB of serialized-page accounting bounds admission. Shared projections
+are charged conservatively while retained, so this accounting is not total heap
+usage. Slot/byte exhaustion preserves current builders and published content.
+Malformed-page rejection rolls back its temporary charge. Round-robin retirement
+prevents a repeatedly reused low slot from starving another queued source.
+
+Ownership handoff does not allocate queue entries or destroy a large graph on the
+window thread. MSVC's `std::set` move allocates a sentinel, so fold-state ownership
+now moves by pointer; compile-time checks require noexcept payload construction
+and assignment. The worker drops payloads outside its mutex. Normal UI idle fences
+include retirement, and native close retires published sources, refuses new
+builders and waits for both script/transport and retirement to drain. RAII queue
+destruction joins the worker. External C++ snapshots remain immutable and keep
+their own edges alive; releasing those external edges later is outside GUI-owned
+retirement. Source construction, fold preparation and general display/parser
+work are not claimed to have constant latency by this change.
+
+Windows Debug evidence:
+
+- `./scripts/format.ps1 -Check -Offline`: 129 C++ / 12 JS files passed;
+  `git diff --check` passed.
+- `./scripts/xmake.ps1 build -y astra-tests astra-view-benchmark astra astra-server
+  gui-presentation-smoke gui-smoke gui-recovery-smoke gui-workspace-smoke
+  gui-services-smoke`: passed.
+- `./build/windows/x64/debug/astra-tests.exe --no-version`: 541 cases /
+  1,083,413 assertions, zero failures/skips. The earlier affected
+  `--test-case=presentation*,workbench*` run passed 94 cases / 838,710 assertions.
+  New cases observe actual destruction on another thread, stall that destruction
+  to prove capacity/byte backpressure, exercise reuse and shutdown joining, retain
+  an immutable external snapshot, and prove admission/malformed-page failures
+  cannot overwrite a current builder or published source.
+- `gui-presentation-smoke.exe`: the actual GPU window published 20,002 streamed
+  rows, navigated the final row, replaced that source with 602 rows and verified
+  that the idle fence awaited real retirement. It then cancelled an unpublished
+  15,000-row builder while Home input navigated the old view. Versions/content
+  remained intact and no retirement remained after idle. Existing streamed
+  publication, focus/fold, native input and renderer shutdown regressions passed.
+- Local/TCP `gui-smoke.exe`, `gui-workspace-smoke.exe`, `gui-services-smoke.exe`
+  and `gui-recovery-smoke.exe` passed with the real graphics backend; actual
+  clangd/Git, retained search/replacement/conflict flows and durable exit were
+  exercised. `./tests/cli_smoke.ps1 -Mode debug` also passed.
+- `./build/windows/x64/debug/astra-view-benchmark.exe`: seven samples at each
+  size, actual source destruction versus owner handoff, with complete queue/source
+  shutdown checked each time. Nearest-rank P95 results in microseconds:
+
+  | Rows | Inline source free | Abort owner handoff | Publish owner handoff |
+  | --- | ---: | ---: | ---: |
+  | 1,000 | 924.7 | 11.9 | 4.9 |
+  | 10,000 | 11,740.7 | 15.1 | 7.2 |
+  | 100,000 | 126,634 | 15.8 | 7.4 |
+
+  These are measurements on this Windows host, not portable guarantees or full
+  input-to-GPU-frame timings. Real destruction still runs to completion on the
+  worker. `scripts/test.ps1 -Benchmarks` now includes this target in Release.
+
+Windows Release evidence for this source revision:
+
+- `./scripts/xmake.ps1 f -m release -y` and `./scripts/xmake.ps1 build -y
+  astra-tests astra astra-server astra-view-benchmark gui-presentation-smoke
+  gui-smoke gui-recovery-smoke gui-workspace-smoke gui-services-smoke
+  graphics-smoke renderer-smoke text-layout-tests`: passed.
+- `./build/windows/x64/release/astra-tests.exe --no-version`: 541 cases /
+  1,083,451 assertions, zero failures/skips.
+- `graphics-smoke.exe`, `renderer-smoke.exe`, `text-layout-tests.exe`:
+  real D3D12/Graphite/Dawn readback/presentation, SDL lifetime and Unicode
+  shaping/hit testing passed.
+- All five GUI workflow targets and `gui-smoke.exe --tcp` passed. The same
+  20,002-row publication and 15,000-row cancellation/input/retirement checks ran
+  in Release, along with actual clangd/Git, workspace conflict/replacement,
+  Unicode editing, save/dirty close and recovery.
+- `./tests/cli_smoke.ps1 -Mode release`: passed.
+- `./tests/package_scripts_tests.ps1`: 12 Windows helper invariants passed. This
+  is not a newly built or isolated-smoked final application package.
+- `./build/windows/x64/release/astra-view-benchmark.exe`: seven samples per size
+  with complete shutdown. Nearest-rank P95 results in microseconds:
+
+  | Rows | Inline source free | Abort owner handoff | Publish owner handoff |
+  | --- | ---: | ---: | ---: |
+  | 1,000 | 392.3 | 9.6 | 2.6 |
+  | 10,000 | 6,938.8 | 8.2 | 3.4 |
+  | 100,000 | 72,617.6 | 9.2 | 4.5 |
+
+Initial builds rejected throwing payload moves (the MSVC set sentinel) and three
+discarded nodiscard results in negative tests. These were corrected without
+weakening the ownership checks. Initial/final build and test evidence is preserved
+under `build/view-retirement-*.log`. Broader incremental display/syntax, contextual
+search output, native window extraction and current final package/product
+acceptance remain open.
+
 ### Backpressured asynchronous view providers (2026-10-10)
 
 View publication now consumes arrays, synchronous iterables and asynchronous

@@ -38,6 +38,7 @@ struct WorkbenchViewState {
     protocol::Json sidebar;
     std::optional<InlineFormLayout> sidebar_form_layout;
     protocol::Json sidebar_form;
+    protocol::Json view_retirement;
 };
 
 // Main-thread editor front end. Every document change goes through EditorChannel.

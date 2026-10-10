@@ -98,7 +98,11 @@ The test entry point builds the selected targets, runs the doctest suite and CLI
 smoke, and checks packaging helpers. `-Gui` additionally runs GPU readback,
 renderer/text-layout and all editor GUI smoke targets, including the TCP variant
 of `gui-smoke`. These are separate acceptance executables, not doctest cases.
-`-Benchmarks` runs the 1, 8 and 64 MiB core benchmark only in Release.
+`-Benchmarks` runs the 1, 8 and 64 MiB core benchmark and the 1,000 / 10,000 /
+100,000-row view lifetime benchmark only in Release. The latter compares actual
+source destruction with owner-thread cancellation/publication handoff; it also
+checks complete retirement after shutdown. Its latency numbers do not measure
+GPU frames, service search completion, parsing or external snapshot holders.
 Do not infer results for a new source revision from an older target run.
 
 For a focused check after configuring the desired mode:

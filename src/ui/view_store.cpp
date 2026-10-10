@@ -22,8 +22,12 @@ std::future<Json> ready(bool value) {
 }
 } // namespace
 
+ViewStore::ViewStore(std::size_t retirement_capacity, std::size_t byte_capacity)
+    : retirement_(retirement_capacity, byte_capacity) {
+}
+
 ViewStore::~ViewStore() {
-    cancel_all();
+    shutdown();
 }
 
 void ViewStore::register_spec(const Json& spec) {
@@ -58,9 +62,11 @@ void ViewStore::register_spec(const Json& spec) {
 }
 
 std::string ViewStore::begin(const Json& spec) {
+    if (stopped_)
+        throw protocol::RpcError(-32004, "View store is shutting down");
     if (sequence_ == std::numeric_limits<std::uint64_t>::max())
         throw protocol::RpcError(-32004, "View refresh identity exhausted");
-    auto replacement = std::make_unique<Pending>();
+    auto replacement = std::make_unique<Pending>(retirement_.reserve());
     replacement->version = std::to_string(++sequence_);
     const auto version = replacement->version;
     register_spec(spec);
@@ -68,6 +74,7 @@ std::string ViewStore::begin(const Json& spec) {
     if (auto found = pending_.find(id); found != pending_.end()) {
         if (found->second->committing)
             found->second->completion.set_value(false);
+        retire(*found->second);
         found->second = std::move(replacement);
     } else
         pending_.emplace(id, std::move(replacement));
@@ -86,7 +93,14 @@ bool ViewStore::append(std::string_view id, std::string_view version, const Json
         return false;
     if (stage->committing)
         throw protocol::RpcError(-32004, "View refresh already committing");
-    stage->builder.append(rows);
+    const auto bytes = rows.dump().size();
+    stage->ownership.charge(bytes);
+    try {
+        stage->builder.append(rows);
+    } catch (...) {
+        stage->ownership.undo_charge(bytes);
+        throw;
+    }
     return true;
 }
 
@@ -101,11 +115,9 @@ std::future<Json> ViewStore::commit(std::string_view id,
         throw protocol::RpcError(-32004, "View refresh already committing");
     text(subtitle, 1024);
     text(empty, 1024);
-    auto source = std::move(stage->builder).finish();
+    stage->source = std::move(stage->builder).finish();
     auto& view = at(id);
-    ViewIndex projection(source, view.index.collapsed());
-    stage->source = std::move(source);
-    stage->projection.emplace(std::move(projection));
+    stage->projection.emplace(stage->source, view.index.collapsed());
     stage->fold_generation = view.fold_generation;
     stage->subtitle = std::move(subtitle);
     stage->empty = std::move(empty);
@@ -117,6 +129,7 @@ bool ViewStore::abort(std::string_view id, std::string_view version) {
     if (auto* stage = pending(id, version)) {
         if (stage->committing)
             stage->completion.set_value(false);
+        retire(*stage);
         pending_.erase(std::string(id));
         return true;
     }
@@ -128,8 +141,30 @@ void ViewStore::cancel_all() {
         static_cast<void>(id);
         if (stage->committing)
             stage->completion.set_value(false);
+        retire(*stage);
     }
     pending_.clear();
+}
+
+void ViewStore::retire(Pending& stage) noexcept {
+    ViewRetirement::Payload payload;
+    payload.builder.emplace(std::move(stage.builder));
+    payload.source = std::move(stage.source);
+    payload.projection = std::move(stage.projection);
+    retirement_.retire(std::move(stage.ownership), std::move(payload));
+}
+
+void ViewStore::shutdown() {
+    if (stopped_)
+        return;
+    stopped_ = true;
+    cancel_all();
+    for (auto& [id, ownership] : published_ownership_) {
+        ViewRetirement::Payload payload;
+        payload.projection.emplace(std::move(at(id).index));
+        retirement_.retire(std::move(ownership), std::move(payload));
+    }
+    published_ownership_.clear();
 }
 
 void ViewStore::poll() {
@@ -144,7 +179,15 @@ void ViewStore::poll() {
         auto& view = at(iterator->first);
         try {
             if (stage.fold_generation != view.fold_generation) {
-                stage.projection.emplace(stage.source, view.index.collapsed());
+                auto ownership = retirement_.try_reserve();
+                if (!ownership)
+                    return; // Backpressure: keep the stage and old view live.
+                ownership->charge(stage.source->bytes);
+                ViewIndex replacement(stage.source, view.index.collapsed());
+                ViewRetirement::Payload payload;
+                payload.projection = std::move(stage.projection);
+                stage.projection.emplace(std::move(replacement));
+                retirement_.retire(std::move(*ownership), std::move(payload));
                 stage.fold_generation = view.fold_generation;
             }
             if (stage.projection->filter_step(128)) {
@@ -156,6 +199,13 @@ void ViewStore::poll() {
                                                stage.projection->size() - 1));
                     next_cursor = stage.projection->at(position).value->at("id").get<std::string>();
                 }
+                auto& ownership = published_ownership_.try_emplace(iterator->first).first->second;
+                if (ownership) {
+                    ViewRetirement::Payload payload;
+                    payload.projection.emplace(std::move(view.index));
+                    retirement_.retire(std::move(ownership), std::move(payload));
+                }
+                ownership = std::move(stage.ownership);
                 view.index = std::move(*stage.projection);
                 view.cursor = std::move(next_cursor);
                 view.version = std::move(stage.version);
@@ -167,6 +217,7 @@ void ViewStore::poll() {
             }
         } catch (...) {
             stage.completion.set_exception(std::current_exception());
+            retire(stage);
             pending_.erase(iterator);
         }
         return; // At most one bounded projection page per owner pump.
@@ -205,7 +256,13 @@ void ViewStore::toggle(std::string_view id, std::size_t row) {
     auto& view = at(id);
     if (view.fold_generation == std::numeric_limits<std::uint64_t>::max())
         throw protocol::RpcError(-32004, "View fold identity exhausted");
-    view.index.toggle(row);
+    auto ownership = retirement_.reserve();
+    // A retired projection can outlive its source's own reservation. Charge its
+    // shared JSON conservatively until this final owning edge is released too.
+    ownership.charge(view.index.source_bytes());
+    ViewRetirement::Payload payload;
+    payload.rows = view.index.toggle(row);
+    retirement_.retire(std::move(ownership), std::move(payload));
     ++view.fold_generation;
     if (view.cursor) {
         const auto position = view.index.position(*view.cursor, true);

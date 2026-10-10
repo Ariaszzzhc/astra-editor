@@ -68,6 +68,10 @@ class ViewIndex final {
         return source_ ? source_->rows.size() : 0;
     }
 
+    [[nodiscard]] std::size_t source_bytes() const noexcept {
+        return source_ ? source_->bytes : 0;
+    }
+
     [[nodiscard]] const ViewRow& at(std::size_t index) const {
         return visible_.at(index);
     }
@@ -76,15 +80,17 @@ class ViewIndex final {
         return visible_;
     }
 
-    [[nodiscard]] const std::set<std::string>& collapsed() const noexcept {
-        return collapsed_;
+    [[nodiscard]] const std::set<std::string>& collapsed() const {
+        static const std::set<std::string> empty;
+        return collapsed_ ? *collapsed_ : empty;
     }
 
     [[nodiscard]] bool collapsed(std::string_view id) const {
-        return collapsed_.contains(std::string(id));
+        return collapsed_ && collapsed_->contains(std::string(id));
     }
 
-    void toggle(std::size_t index);
+    // Return the old projection so the owner can reclaim it off the input loop.
+    [[nodiscard]] ViewSnapshot toggle(std::size_t index);
     [[nodiscard]] std::optional<std::size_t> position(std::string_view id,
                                                       bool visible_ancestor = false) const;
     [[nodiscard]] std::optional<std::size_t> parent(std::size_t index) const;
@@ -103,7 +109,9 @@ class ViewIndex final {
     filtered_range(std::size_t begin, std::size_t end, std::string_view exclude) const;
     std::shared_ptr<const ViewSource> source_;
     ViewSnapshot visible_;
-    std::set<std::string> collapsed_;
+    // MSVC's set move can allocate its sentinel. Keep the set behind ownership
+    // so publication/retirement moves remain allocation-free and noexcept.
+    std::unique_ptr<std::set<std::string>> collapsed_;
     std::size_t cursor_{};
 };
 

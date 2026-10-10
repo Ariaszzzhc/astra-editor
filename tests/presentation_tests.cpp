@@ -12,6 +12,8 @@
 #include <limits>
 #include <set>
 #include <string>
+#include <future>
+#include <thread>
 
 namespace {
 astra::protocol::Json form_spec() {
@@ -23,7 +25,148 @@ astra::protocol::Json form_spec() {
             {"toggles", Json::array({{{"id", "regex"}, {"label", "Regex"}, {"value", false}}})},
             {"actions", Json::array({{{"id", "next"}, {"label", "Next"}}})}};
 }
+
+struct ReleaseGate {
+    std::promise<void> release;
+    std::shared_future<void> future = release.get_future().share();
+    bool released{};
+
+    ~ReleaseGate() {
+        open();
+    }
+
+    void open() {
+        if (!released) {
+            released = true;
+            release.set_value();
+        }
+    }
+};
+
+struct RetirementProbe {
+    astra::protocol::Json row{{"id", "probe"}, {"label", "中🙂"}};
+    std::promise<std::thread::id>& entered;
+    std::shared_future<void> gate;
+
+    RetirementProbe(std::promise<std::thread::id>& entry, std::shared_future<void> release)
+        : entered(entry), gate(std::move(release)) {
+    }
+
+    ~RetirementProbe() {
+        entered.set_value(std::this_thread::get_id());
+        gate.wait();
+    }
+};
 } // namespace
+
+TEST_CASE("presentation retirement reclaims off owner with bounded reservations and bytes") {
+    std::promise<std::thread::id> entered;
+    auto worker = entered.get_future();
+    astra::ui::ViewRetirement retirement(1, 100);
+    ReleaseGate gate; // Opens before queue destruction even on a failed assertion.
+    auto probe = std::make_shared<RetirementProbe>(entered, gate.future);
+    std::shared_ptr<const astra::protocol::Json> value(probe, &probe->row);
+    std::weak_ptr<const astra::protocol::Json> weak = value;
+    auto reservation = retirement.reserve();
+    reservation.charge(99);
+    CHECK_THROWS(reservation.charge(2));
+    CHECK(retirement.stats().bytes == 99);
+    CHECK_FALSE(retirement.try_reserve());
+    astra::ui::ViewRetirement::Payload payload;
+    payload.rows = astra::ui::ViewSnapshot::singleton({std::move(value), 0, 0, false});
+    probe.reset();
+    retirement.retire(std::move(reservation), std::move(payload));
+    REQUIRE(worker.wait_for(std::chrono::seconds(2)) == std::future_status::ready);
+    CHECK(worker.get() != std::this_thread::get_id());
+    CHECK_FALSE(retirement.idle());
+    CHECK(retirement.stats().queued == 1);
+    CHECK(retirement.stats().bytes == 99);
+    CHECK_FALSE(retirement.try_reserve());
+    CHECK_THROWS(static_cast<void>(retirement.reserve()));
+    gate.open();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!retirement.idle() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    REQUIRE(retirement.idle());
+    CHECK(weak.expired());
+    CHECK(retirement.stats().reserved == 0);
+    CHECK(retirement.stats().bytes == 0);
+    CHECK(retirement.stats().completed == 1);
+    auto reused = retirement.reserve();
+    reused.charge(100);
+    CHECK(retirement.stats().bytes == 100);
+}
+
+TEST_CASE("presentation retirement shutdown drains and external snapshots remain valid") {
+    std::promise<std::thread::id> entered;
+    auto worker = entered.get_future();
+    ReleaseGate gate;
+    gate.open();
+    auto probe = std::make_shared<RetirementProbe>(entered, gate.future);
+    std::shared_ptr<const astra::protocol::Json> value(probe, &probe->row);
+    std::weak_ptr<const astra::protocol::Json> weak = value;
+    auto retained = astra::ui::ViewSnapshot::singleton({std::move(value), 0, 0, false});
+    probe.reset();
+    {
+        astra::ui::ViewRetirement retirement;
+        astra::ui::ViewRetirement::Payload payload;
+        payload.rows = retained;
+        retirement.retire(retirement.reserve(), std::move(payload));
+    }
+    CHECK_FALSE(weak.expired());
+    CHECK(retained.at(0).value->at("label") == "中🙂");
+    CHECK(worker.wait_for(std::chrono::milliseconds(0)) == std::future_status::timeout);
+    retained = {};
+    CHECK(weak.expired());
+    CHECK(worker.get() == std::this_thread::get_id());
+
+    std::promise<std::thread::id> drained;
+    auto drained_on = drained.get_future();
+    auto second = std::make_shared<RetirementProbe>(drained, gate.future);
+    std::shared_ptr<const astra::protocol::Json> second_value(second, &second->row);
+    std::weak_ptr<const astra::protocol::Json> second_weak = second_value;
+    second.reset();
+    {
+        astra::ui::ViewRetirement retirement;
+        astra::ui::ViewRetirement::Payload payload;
+        payload.rows = astra::ui::ViewSnapshot::singleton({std::move(second_value), 0, 0, false});
+        retirement.retire(retirement.reserve(), std::move(payload));
+    }
+    CHECK(second_weak.expired());
+    CHECK(drained_on.get() != std::this_thread::get_id());
+}
+
+TEST_CASE("presentation view memory admission failures preserve builders and published data") {
+    using Json = astra::protocol::Json;
+    astra::ui::ViewStore store(2, 200);
+    const Json spec{{"id", "budget"}, {"title", "Budget"}};
+    const auto initial = store.begin(spec);
+    REQUIRE(store.append("budget", initial, Json::array({{{"id", "old"}, {"label", "Old"}}})));
+    auto committed = store.commit("budget", initial, "", "Empty");
+    store.poll();
+    REQUIRE(committed.get().get<bool>());
+    const auto next = store.begin(spec);
+    CHECK_THROWS(static_cast<void>(store.begin(spec))); // Preserve this reserved builder.
+    const auto bytes = store.retirement_stats().bytes;
+    CHECK_THROWS(static_cast<void>(store.append(
+        "budget", next, Json::array({{{"id", "large"}, {"label", std::string(200, 'x')}}}))));
+    CHECK(store.retirement_stats().bytes == bytes);
+    CHECK_THROWS(static_cast<void>(store.append(
+        "budget", next, Json::array({{{"id", "bad"}, {"label", "Bad"}, {"depth", 1}}}))));
+    CHECK(store.retirement_stats().bytes == bytes);
+    REQUIRE(store.append("budget", next, Json::array({{{"id", "new"}, {"label", "New"}}})));
+    CHECK(store.at("budget").version == initial);
+    CHECK(store.at("budget").index.at(0).value->at("id") == "old");
+    CHECK(store.abort("budget", next));
+    store.shutdown();
+    CHECK_THROWS(static_cast<void>(store.begin(spec)));
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!store.quiescent() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::yield();
+    REQUIRE(store.quiescent());
+    CHECK(store.retirement_stats().bytes == 0);
+    CHECK(store.retirement_stats().reserved == 0);
+}
 
 TEST_CASE("presentation view pages validate atomically across hierarchy boundaries") {
     using Json = astra::protocol::Json;
@@ -45,14 +188,14 @@ TEST_CASE("presentation view pages validate atomically across hierarchy boundari
     astra::ui::ViewIndex index(source);
     REQUIRE(index.filter_step());
     const auto snapshot = index.snapshot();
-    index.toggle(0);
+    static_cast<void>(index.toggle(0));
     CHECK(index.size() == 1);
     CHECK(snapshot.size() == 2);
     CHECK(snapshot.at(1).value->at("label") == "中🙂");
-    index.toggle(0);
+    static_cast<void>(index.toggle(0));
     CHECK(index.size() == 2);
     CHECK(index.snapshot().validate());
-    CHECK_THROWS(index.toggle(1));
+    CHECK_THROWS(static_cast<void>(index.toggle(1)));
     CHECK_THROWS(static_cast<void>(index.filter_step(0)));
 }
 
@@ -88,7 +231,7 @@ TEST_CASE("presentation hierarchical view toggles match a flat oracle with retai
             const auto id = item.value->at("id").get<std::string>();
             if (!collapsed.erase(id))
                 collapsed.insert(id);
-            index.toggle(target);
+            static_cast<void>(index.toggle(target));
         }
         std::vector<std::string> expected;
         std::optional<std::size_t> hidden_depth;

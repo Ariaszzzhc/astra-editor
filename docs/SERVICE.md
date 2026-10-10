@@ -459,6 +459,20 @@ the last published snapshot interactive when rejected before publication. Native
 commit Promise settles only after atomic publication; shutdown cancels pending
 publication fences. No production drawing backend is replaced.
 
+Native view sources, abandoned builders and superseded fold projections retire
+on a dedicated memory-only worker. No SDL/JS/service/I/O runs there; libuv retains
+the external I/O responsibilities. Admission reserves one of 48 lifetime slots
+before beginning a build, so publication/cancellation can transfer ownership
+without allocating queue entries. Sources and shared retired projections are
+conservatively charged against a 256 MiB serialized-page budget. This is not a
+measurement of total heap usage. Exhausted slot/byte admission rejects the new
+operation before changing existing data; publication and row navigation retain
+their old guards. The worker releases ownership outside its queue mutex and
+drains queued jobs fairly. `waitForIdle()` and window close also await retirement;
+the final native shutdown drains published views and rejects new builders.
+External C++ snapshot holders still determine the lifetime of their own retained
+edges. Their later releases are outside this GUI worker's ownership.
+
 ```javascript
 astra.ui.registerView(
     { id: 'favorites', title: 'Favorites', icon: 'symbol', order: 3 },

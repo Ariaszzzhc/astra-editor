@@ -1550,7 +1550,7 @@ bool EditorWindow::Impl::native_idle(bool waiting_inputs) const {
     }
     return requests.empty() && !active_request && operations.empty() && pending_edits.empty() &&
            pending_reads.empty() && closing_pending.empty() && form_events.empty() &&
-           sidebar_views.idle() && inputs_idle;
+           sidebar_views.quiescent() && inputs_idle;
 }
 
 void EditorWindow::Impl::emit_form(std::string_view event,
@@ -4879,6 +4879,7 @@ WorkbenchLayout EditorWindow::layout() const {
 }
 
 WorkbenchViewState EditorWindow::view_state() const {
+    const auto retired = impl_->sidebar_views.retirement_stats();
     WorkbenchViewState result{impl_->geometry,
                               impl_->tab_strip,
                               impl_->tabs,
@@ -4886,6 +4887,10 @@ WorkbenchViewState EditorWindow::view_state() const {
     const auto& sidebar = impl_->sidebar_views.at(impl_->active_view);
     result.file_first = sidebar.scroll;
     result.sidebar = impl_->sidebar_views.state(impl_->active_view);
+    result.view_retirement = {{"queued", retired.queued},
+                              {"completed", retired.completed},
+                              {"reserved", retired.reserved},
+                              {"bytes", retired.bytes}};
     result.sidebar["focused"] = impl_->focused_view == impl_->active_view;
     result.sidebar["focus"] = std::to_string(impl_->view_focus_sequence);
     result.sidebar["rows"] = Json::array();
@@ -4940,18 +4945,19 @@ bool EditorWindow::pump() {
                 pending.completion.set_value(false);
             }
             impl_->stopping_workbench = true;
-            impl_->sidebar_views.cancel_all();
+            impl_->sidebar_views.shutdown();
             impl_->workbench_shutdown_deadline = Clock::now() + std::chrono::seconds(5);
             impl_->workbench->shutdown();
             impl_->policy_inputs.clear();
             impl_->view_inputs.clear();
         }
         impl_->workbench->poll();
-        if (impl_->workbench->idle()) {
+        if (impl_->workbench->idle() && impl_->sidebar_views.quiescent()) {
             return false;
         }
         if (Clock::now() >= impl_->workbench_shutdown_deadline) {
-            throw std::runtime_error("Workbench transport did not drain on shutdown");
+            throw std::runtime_error(
+                "Workbench transport or view retirement did not drain on shutdown");
         }
         return true;
     }

@@ -111,14 +111,14 @@ std::shared_ptr<const ViewSource> ViewBuilder::finish() && {
 }
 
 ViewIndex::ViewIndex(std::shared_ptr<const ViewSource> source, std::set<std::string> collapsed)
-    : source_(std::move(source)), collapsed_(std::move(collapsed)) {
-    if (collapsed_.size() > 4096)
+    : source_(std::move(source)) {
+    if (collapsed.size() > 4096)
         throw protocol::RpcError(-32004, "View collapse state exceeds its bound");
     if (!source_) {
-        collapsed_.clear();
         return;
     }
-    std::erase_if(collapsed_, [&](const auto& id) {
+    collapsed_ = std::make_unique<std::set<std::string>>(std::move(collapsed));
+    std::erase_if(*collapsed_, [&](const auto& id) {
         const auto found = source_->positions.find(id);
         return found == source_->positions.end() || !source_->rows.at(found->second).group;
     });
@@ -166,7 +166,7 @@ bool ViewIndex::filter_step(std::size_t budget) {
         throw std::invalid_argument("View filter budget must be 1..256");
     if (ready())
         return true;
-    if (collapsed_.empty()) {
+    if (collapsed_->empty()) {
         visible_ = source_->rows;
         cursor_ = source_->rows.size();
         return true;
@@ -189,7 +189,7 @@ ViewSnapshot
 ViewIndex::filtered_range(std::size_t begin, std::size_t end, std::string_view exclude) const {
     auto result = source_->rows.split(begin).second.split(end - begin).first;
     std::vector<std::pair<std::size_t, std::size_t>> ranges;
-    for (const auto& id : collapsed_) {
+    for (const auto& id : *collapsed_) {
         if (id == exclude)
             continue;
         const auto& row = source_->rows.at(source_->positions.at(id));
@@ -210,7 +210,7 @@ ViewIndex::filtered_range(std::size_t begin, std::size_t end, std::string_view e
     return result;
 }
 
-void ViewIndex::toggle(std::size_t index) {
+ViewSnapshot ViewIndex::toggle(std::size_t index) {
     if (!ready())
         throw protocol::RpcError(-32004, "View projection is not ready");
     const auto row = visible_.at(index);
@@ -221,10 +221,12 @@ void ViewIndex::toggle(std::size_t index) {
     if (collapsed(id)) {
         auto [before, after] = visible_.split(index + 1);
         auto expanded = before.concat(filtered_range(row.ordinal + 1, end, id)).concat(after);
-        collapsed_.erase(id);
+        collapsed_->erase(id);
+        auto retired = std::move(visible_);
         visible_ = std::move(expanded);
+        return retired;
     } else {
-        if (collapsed_.size() >= 4096)
+        if (collapsed_->size() >= 4096)
             throw protocol::RpcError(-32004, "View collapse state exceeds its bound");
         const auto last = visible_
                               .seek_prefix([&](const ViewSummary& prefix) {
@@ -232,8 +234,10 @@ void ViewIndex::toggle(std::size_t index) {
                               })
                               .index;
         auto hidden = visible_.erase(index + 1, last);
-        collapsed_.insert(id);
+        collapsed_->insert(id);
+        auto retired = std::move(visible_);
         visible_ = std::move(hidden);
+        return retired;
     }
 }
 } // namespace astra::ui

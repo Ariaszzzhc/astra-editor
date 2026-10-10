@@ -1,6 +1,7 @@
 #pragma once
 
 #include <astra/ui/view_index.hpp>
+#include <astra/ui/view_retirement.hpp>
 #include <cstdint>
 #include <future>
 #include <map>
@@ -27,6 +28,8 @@ struct RetainedView {
 // superseded, cancelled and partially received replacements.
 class ViewStore final {
   public:
+    explicit ViewStore(std::size_t retirement_capacity = 48,
+                       std::size_t byte_capacity = 256 * 1024 * 1024);
     ~ViewStore();
     void register_spec(const protocol::Json& spec);
     [[nodiscard]] std::string begin(const protocol::Json& spec);
@@ -36,10 +39,19 @@ class ViewStore final {
     commit(std::string_view id, std::string_view version, std::string subtitle, std::string empty);
     [[nodiscard]] bool abort(std::string_view id, std::string_view version);
     void cancel_all();
+    void shutdown();
     void poll();
 
     [[nodiscard]] bool idle() const noexcept {
         return pending_.empty();
+    }
+
+    [[nodiscard]] bool quiescent() const {
+        return idle() && retirement_.idle();
+    }
+
+    [[nodiscard]] ViewRetirement::Stats retirement_stats() const {
+        return retirement_.stats();
     }
 
     [[nodiscard]] RetainedView& at(std::string_view id);
@@ -55,6 +67,11 @@ class ViewStore final {
 
   private:
     struct Pending {
+        explicit Pending(ViewRetirement::Reservation reservation)
+            : ownership(std::move(reservation)) {
+        }
+
+        ViewRetirement::Reservation ownership;
         std::string version;
         ViewBuilder builder;
         std::shared_ptr<const ViewSource> source;
@@ -66,9 +83,14 @@ class ViewStore final {
     };
 
     [[nodiscard]] Pending* pending(std::string_view id, std::string_view version);
+    void retire(Pending& pending) noexcept;
+    // Declared before its reservations so it outlives every owning view/stage.
+    ViewRetirement retirement_;
+    std::map<std::string, ViewRetirement::Reservation, std::less<>> published_ownership_;
     std::map<std::string, RetainedView, std::less<>> views_;
     std::map<std::string, std::unique_ptr<Pending>, std::less<>> pending_;
     std::uint64_t sequence_{};
     std::string poll_after_;
+    bool stopped_{};
 };
 } // namespace astra::ui

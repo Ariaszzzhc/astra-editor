@@ -21,7 +21,7 @@ try {
         & "$PSScriptRoot/xmake.ps1" f -m $configuration -y
         $targets = @('astra-tests','astra-server')
         if ($Gui) { $targets += @('astra','graphics-smoke','renderer-smoke','text-layout-tests','gui-smoke','gui-services-smoke','gui-recovery-smoke','gui-workspace-smoke','gui-presentation-smoke') }
-        if ($Benchmarks -and $configuration -eq 'release') { $targets += 'astra-core-benchmark' }
+        if ($Benchmarks -and $configuration -eq 'release') { $targets += @('astra-core-benchmark', 'astra-view-benchmark') }
         & "$PSScriptRoot/xmake.ps1" build -y @targets
         $directory = Join-Path $repository ('build/windows/x64/' + $configuration)
         Invoke-AcceptanceBinary $directory 'astra-tests' @('--no-version','--duration=true')
@@ -32,7 +32,10 @@ try {
             }
             Invoke-AcceptanceBinary $directory 'gui-smoke' @('--tcp')
         }
-        if ($Benchmarks -and $configuration -eq 'release') { Invoke-AcceptanceBinary $directory 'astra-core-benchmark' }
+        if ($Benchmarks -and $configuration -eq 'release') {
+            Invoke-AcceptanceBinary $directory 'astra-core-benchmark'
+            Invoke-AcceptanceBinary $directory 'astra-view-benchmark'
+        }
     }
     & "$repository/tests/package_scripts_tests.ps1"
 } finally {
