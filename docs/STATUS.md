@@ -18,6 +18,74 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### Shared editable input behavior and geometry (2026-10-10)
+
+Modal input/picker fields now use the same bounded Unicode document model and
+editing commands as inline forms. They support caret/word movement, extended
+selection, grapheme deletion, clipboard and local undo/redo instead of maintaining
+an append-only string and a select-all flag. JavaScript still owns dialog
+workflows and consumes the existing awaited result. Native pointer dragging and
+the shared field painter use the document selection; IME placement/composition,
+selection colors and horizontal scrolling share that painter.
+
+`TextInputLayout` caches one exact text/all-options paragraph for each field.
+Painting and pointer input prepare current content/style, including several
+SDL events before repainting. A failed preparation preserves the previous cache
+key/paragraph. Single-line/16 KiB limits are checked before shaping. The obsolete
+fallback modal renderer and three independent input cache fields were removed.
+
+Focused Windows evidence:
+
+- `./scripts/xmake.ps1 build -y astra viewport-layout-tests gui-smoke
+  gui-presentation-smoke`: passed in Debug. The first build failed MSVC C4458
+  because a pointer helper's local `geometry` shadowed the window member. It was
+  renamed before rebuilding; the failure remains in
+  `build/text-input-build-first-failed.log`.
+- `./build/windows/x64/debug/viewport-layout-tests.exe`: passed with actual
+  Windows font/SkParagraph pixel, caret and hit-test oracles. Editable geometry
+  covers emoji/combining/bidi/tab/CJK text, changed color/fonts/DPI, stale text
+  detection and preservation after invalid UTF-8, newline, over-limit content
+  and invalid style.
+- `./build/windows/x64/debug/gui-presentation-smoke.exe`: passed on actual
+  SDL3/Graphite/Dawn. Modal selection/copy preserves emoji and CJK, Backspace
+  removes an entire combining sequence, undo/redo preserves the expected result,
+  and a same-batch text-change/pointer/text sequence agrees with independently
+  shaped geometry. Existing picker filtering, actions, custom views and shutdown
+  checks also passed.
+- `./scripts/format.ps1 -Check -Offline`: 143 C++ / 12 JS files passed;
+  `git diff --check` passed. The new JS fixture embedded in a C++ raw string was
+  manually expanded; the file formatter does not format that embedded language.
+
+Integrated Windows evidence:
+
+- `./scripts/test.ps1 -Mode all -Gui`: Debug passed with 557 cases / 1,185,869
+  assertions, zero failures/skips, including all real GUI/TCP/service checks.
+  The first Release run stopped in the existing parent-directory rename watcher
+  test: Windows rejected `filesystem::rename` with `Access is denied`. Its
+  exception is retained in `build/text-input-acceptance-first-failed.log`;
+  no assertion failed in that run. The cause is not established.
+- Ran `astra-tests.exe --no-version '--test-case=file monitor parent rename*'`
+  in Release 20 times: every run passed. The filtered
+  `--source-file=*file_monitor_tests.cpp` suite also passed 14 cases / 573
+  assertions. Logs: `text-input-watch-repeat-release.log` and
+  `text-input-watch-release.log`. No watcher behavior or assertion was changed.
+- `./scripts/test.ps1 -Mode release -Gui`: the full rerun passed with 557 cases /
+  1,185,738 assertions, zero failures/skips. Both configurations passed actual
+  D3D12/Dawn/Graphite rendering, Unicode/viewport/input geometry, local/TCP
+  editing, real clangd/Git, recovery, workspace and presentation checks. Package
+  helpers passed 12 checks; no new distribution package was produced.
+- Complete logs: `build/text-input-acceptance-all.log` and
+  `text-input-acceptance-release.log`.
+- Restored Debug with `./scripts/xmake.ps1 f -m debug -y`; final
+  `git diff --check` passed. Restore log: `text-input-restore-debug.log`.
+
+Focused logs: `build/text-input-viewport-debug.log`, `text-input-gui-debug.log`,
+`text-input-build-debug.log` and `text-input-format-check-first.log`.
+Editable shaping remains synchronous and bounded to 16 KiB. This increment does
+not establish background editable shaping, row-internal incremental glyph
+layout, complete native component extraction, cohesive whole-product visual
+acceptance or a new distribution package.
+
 ### Shared read-only text surfaces (2026-10-10)
 
 Text panels, choice details and confirmation/progress details now use

@@ -1,6 +1,7 @@
 #include <astra/io/file_store.hpp>
 #include <astra/service/service_host.hpp>
 #include <astra/ui/editor_window.hpp>
+#include <astra/ui/text_layout.hpp>
 #include "support/temporary_directory.hpp"
 
 #include <SDL3/SDL.h>
@@ -11,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 
 namespace {
@@ -228,6 +230,21 @@ void run(const fs::path& workspace) {
                 const choice=await astra.ui.pick({title:'CHOOSE A FILE — TYPE TO FILTER',items:Array.from({length:40},(_,i)=>({label:'File '+i+' 中🙂',value:i}))});
                 await astra.ui.update({status:choice ? 'Selected '+choice.value : 'Choice cancelled'});
             });
+            astra.ui.registerCommand(
+                {
+                    id: 'acceptance.inputEditing',
+                    title: 'Unicode input editing'
+                },
+                async () => {
+                    const value = await astra.ui.input({
+                        title: 'UNICODE INPUT EDITING',
+                        value: 'A🙂éB'
+                    });
+                    await astra.ui.update({
+                        status: value === null ? 'Input cancelled' : 'Input ' + value
+                    });
+                }
+            );
             astra.ui.registerCommand({id:'acceptance.text',title:'Read indexed text'},async()=>{
                 await astra.ui.showText({title:'INDEXED INFORMATION — Esc to close',text:Array.from({length:80},(_,i)=>'Line '+i+' 中🙂').join('\n')});
                 await astra.ui.update({status:'Information closed'});
@@ -473,6 +490,70 @@ void run(const fs::path& workspace) {
         key(window, SDLK_RETURN);
         require(window.status_text() == "Selected 39",
                 "Picker filtering lost its original source identity");
+        window.execute_ui_command("acceptance.text");
+        settle(window);
+        key(window, SDLK_ESCAPE);
+        window.execute_ui_command("acceptance.inputEditing");
+        settle(window);
+        key(window, SDLK_LEFT);
+        key(window, SDLK_BACKSPACE);
+        SDL_Event unicode_input{};
+        unicode_input.type = SDL_EVENT_TEXT_INPUT;
+        unicode_input.text.windowID = SDL_GetWindowID(window.window());
+        unicode_input.text.text = "中";
+        require(SDL_PushEvent(&unicode_input), "Cannot queue input replacement");
+        settle(window);
+        key(window, SDLK_Z, SDL_KMOD_CTRL);
+        key(window, SDLK_Y, SDL_KMOD_CTRL);
+        key(window, SDLK_HOME, SDL_KMOD_SHIFT);
+        key(window, SDLK_C, SDL_KMOD_CTRL);
+        const std::unique_ptr<char, decltype(&SDL_free)> copied(SDL_GetClipboardText(), SDL_free);
+        require(copied && std::string(copied.get()) == "A🙂中",
+                "Modal Unicode selection/copy lost boundaries");
+        key(window, SDLK_RIGHT);
+        key(window, SDLK_DELETE);
+        key(window, SDLK_RETURN);
+        require(window.status_text() == "Input A🙂中",
+                "Modal cursor, grapheme editing or undo changed the result");
+        window.execute_ui_command("acceptance.inputEditing");
+        settle(window);
+        key(window, SDLK_A, SDL_KMOD_CTRL);
+        unicode_input.text.text = "0123456789🙂";
+        require(SDL_PushEvent(&unicode_input), "Cannot queue same-frame modal text");
+        int input_width{}, input_height{};
+        require(SDL_GetWindowSizeInPixels(window.window(), &input_width, &input_height),
+                "Cannot read modal input dimensions");
+        const auto input_box = astra::ui::PickerLayout::measure(static_cast<float>(input_width),
+                                                                static_cast<float>(input_height),
+                                                                window.layout().scale,
+                                                                0)
+                                   .input;
+        const auto local_x = 40 * window.layout().scale;
+        mouse(window,
+              SDL_EVENT_MOUSE_BUTTON_DOWN,
+              input_box.x + 6 * window.layout().scale + local_x,
+              input_box.y + 10 * window.layout().scale);
+        mouse(window,
+              SDL_EVENT_MOUSE_BUTTON_UP,
+              input_box.x + 6 * window.layout().scale + local_x,
+              input_box.y + 10 * window.layout().scale);
+        unicode_input.text.text = "中";
+        require(SDL_PushEvent(&unicode_input), "Cannot queue text after modal pointer");
+        settle(window);
+        astra::ui::TextLayoutEngine input_fonts;
+        astra::ui::TextLayoutOptions input_style;
+        input_style.font_size = 14;
+        input_style.dpi_scale = window.layout().scale;
+        input_style.line_height = 1;
+        input_style.font_families = {"Segoe UI", "Microsoft YaHei UI", "Segoe UI Emoji"};
+        input_style.direction = astra::ui::TextDirection::automatic;
+        const std::string typed = "0123456789🙂";
+        const auto paragraph = input_fonts.layout(typed, input_style);
+        const auto offset = paragraph.hit_test(local_x, paragraph.height() / 2).byte_offset;
+        const auto expected = typed.substr(0, offset) + "中" + typed.substr(offset);
+        key(window, SDLK_RETURN);
+        require(window.status_text() == "Input " + expected,
+                "Same-frame modal pointer used stale text geometry");
         window.execute_ui_command("acceptance.text");
         settle(window);
         for (int row = 0; row < 30; ++row)

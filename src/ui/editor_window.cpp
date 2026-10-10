@@ -8,6 +8,7 @@
 #include "astra/ui/text_line_index.hpp"
 #include "astra/ui/text_panel.hpp"
 #include "astra/ui/text_surface.hpp"
+#include "astra/ui/text_input_layout.hpp"
 #include "astra/ui/picker_index.hpp"
 #include "astra/ui/decoration_indexes.hpp"
 #include "astra/ui/inline_form.hpp"
@@ -206,9 +207,8 @@ struct EditorWindow::Impl {
         TextLineIndex items;
         PickerIndex picker;
         float horizontal{};
-        std::optional<TextLayout> input_layout;
-        std::string input_text;
-        float input_scale{};
+        std::unique_ptr<InlineForm> input;
+        std::unique_ptr<TextInputLayout> input_layout;
     };
 
     std::shared_ptr<EditorChannel> channel;
@@ -318,8 +318,8 @@ struct EditorWindow::Impl {
     Prompt prompt{Prompt::none};
     std::optional<Dialog> dialog;
     std::string prompt_text;
+    bool dragging_dialog_input{};
     std::size_t prompt_choice{};
-    bool prompt_select_all{};
     std::string preedit;
     bool consumed_modal_text{};
     std::bitset<128> consumed_modal_keys;
@@ -332,12 +332,7 @@ struct EditorWindow::Impl {
     std::string dragging_form_id;
     std::deque<std::pair<std::string, Json>> form_events;
 
-    struct FieldLayout {
-        std::string text;
-        float scale{};
-        std::optional<TextLayout> layout;
-        float horizontal{};
-    };
+    using FieldLayout = TextInputLayout;
 
     std::map<std::string, FieldLayout> form_fields;
     std::uint64_t form_sequence{};
@@ -724,6 +719,19 @@ struct EditorWindow::Impl {
                           std::size_t first,
                           std::optional<std::size_t> begin = {});
     void fetch_syntax();
+    void sync_dialog_input();
+    bool point_dialog_input(float, float, bool);
+    bool
+    text_input_key(InlineForm&, const SDL_KeyboardEvent&, bool, bool, const std::function<void()>&);
+    TextLayoutOptions input_style(float) const;
+    void draw_field(SkCanvas*,
+                    const InlineForm::Field&,
+                    Box,
+                    bool,
+                    bool,
+                    TextInputLayout&,
+                    std::string_view,
+                    float);
     const TextLayout* prepare_line(Document&, std::size_t);
     void fetch_diagnostics(const std::string& id);
     void editor_command(std::string command,
@@ -1770,6 +1778,16 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
         pending.picker.reset(items.get<std::vector<std::string>>());
     else if (!items.empty())
         pending.items.reset(item_text);
+    if (kind == "input" || kind == "pick") {
+        pending.input = std::make_unique<InlineForm>(
+            Json{{"id", "native.input"},
+                 {"title", "Input"},
+                 {"fields", Json::array({{{"id", "value"}, {"value", value}}})},
+                 {"actions", Json::array({{{"id", "accept"}, {"label", "Accept"}}})}});
+        pending.input->focus(0);
+        static_cast<void>(pending.input->edit(editing::Command::move_end));
+        pending.input_layout = std::make_unique<TextInputLayout>(fonts);
+    }
     auto result = pending.completion.get_future();
     focus_view(std::nullopt);
     forms.blur();
@@ -1785,7 +1803,6 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
                                                                        : Prompt::policy_confirm))));
     prompt_text = value;
     prompt_choice = kind == "choice" ? spec.value("defaultChoice", std::size_t{0}) : 0;
-    prompt_select_all = false;
     preedit.clear();
     consumed_modal_text = false;
     return result;
@@ -1799,9 +1816,41 @@ void EditorWindow::Impl::finish_dialog(Json value) {
     dialog.reset();
     prompt = Prompt::none;
     prompt_text.clear();
-    prompt_select_all = false;
+    dragging_dialog_input = false;
     preedit.clear();
     pending.completion.set_value(std::move(value));
+}
+
+void EditorWindow::Impl::sync_dialog_input() {
+    const auto text = dialog->input->fields().front().text.text().str();
+    if (prompt_text != text) {
+        prompt_choice = 0;
+    }
+    prompt_text = text;
+}
+
+bool EditorWindow::Impl::point_dialog_input(float x, float y, bool extend) {
+    if (!dialog || !dialog->input) {
+        return false;
+    }
+    const auto pixels = renderer.pixel_size();
+    const auto layout =
+        PickerLayout::measure(static_cast<float>(pixels.width),
+                              static_cast<float>(pixels.height),
+                              scale,
+                              prompt == Prompt::policy_pick ? dialog->picker.size() : 0);
+    if (!dragging_dialog_input && !layout.input.contains(x, y)) {
+        return false;
+    }
+    auto& input_geometry = *dialog->input_layout;
+    const auto& paragraph =
+        input_geometry.prepare(dialog->input->fields().front().text.text().str(), input_style(14));
+    const auto hit = paragraph.hit_test(x - layout.input.x - 6 * scale + input_geometry.horizontal,
+                                        y - layout.input.y - 5 * scale);
+    dialog->input->select(0, ByteOffset{hit.byte_offset}, extend);
+    sync_dialog_input();
+    preedit.clear();
+    return true;
 }
 
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
@@ -2275,7 +2324,6 @@ void EditorWindow::Impl::advance_policy_inputs() {
 }
 
 void EditorWindow::Impl::command(std::string_view name) {
-    prompt_select_all = false;
     if ((quit_requested || prompt == Prompt::policy_progress) && name != "ui.cancel") {
         return;
     }
@@ -2307,7 +2355,6 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     if (dialog && name != "ui.cancel" && name != "ui.closeWindow") {
         throw protocol::RpcError(-32004, "Dismiss the active dialog before changing its focus");
     }
-    prompt_select_all = false;
     if (name.starts_with("editor.")) {
         editor_command(std::string(name));
     } else if (name == "ui.dismissWorkspaceNotice") {
@@ -2635,48 +2682,19 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
             }
             return;
         }
-        if (control && input.key == SDLK_A) {
-            prompt_select_all = true;
-            return;
+        if (!dialog || !dialog->input) {
+            throw std::logic_error("Editable dialog has no input model");
         }
         if (input.key == SDLK_RETURN || input.key == SDLK_KP_ENTER) {
             accept_prompt();
-        } else if (input.key == SDLK_BACKSPACE && !prompt_text.empty()) {
-            if (prompt_select_all) {
-                prompt_text.clear();
-                prompt_select_all = false;
-            } else {
-                const auto layout = fonts.layout(prompt_text);
-                const auto boundaries = layout.grapheme_boundaries();
-                prompt_text.resize(boundaries[boundaries.size() - 2]);
-            }
-            prompt_choice = 0;
         } else if (input.key == SDLK_UP && prompt_choice != 0) {
             --prompt_choice;
         } else if (input.key == SDLK_DOWN) {
             ++prompt_choice;
-        } else if (control && input.key == SDLK_V) {
-            const std::unique_ptr<char, SdlStringDeleter> text(SDL_GetClipboardText());
-            if (!text) {
-                throw std::runtime_error(std::string("Clipboard read failed: ") + SDL_GetError());
-            }
-            const std::string_view pasted(text.get());
-            if (dialog &&
-                (pasted.find_first_of("\r\n") != pasted.npos || pasted.find('\0') != pasted.npos)) {
-                error = "Input must contain one logical line";
-                return;
-            }
-            const auto existing = prompt_select_all ? std::size_t{0} : prompt_text.size();
-            if (existing > 16384 || pasted.size() > 16384 - existing) {
-                error = "Input exceeds its 16 KiB limit";
-                return;
-            }
-            if (prompt_select_all) {
-                prompt_text.clear();
-                prompt_select_all = false;
-            }
-            prompt_text += pasted;
-            prompt_choice = 0;
+        } else if (!alt) {
+            text_input_key(*dialog->input, input, control, shift, [this] {
+                sync_dialog_input();
+            });
         }
         return;
     }
@@ -2921,13 +2939,24 @@ bool EditorWindow::Impl::inline_key(const SDL_KeyboardEvent& input,
             emit_form("ui.form.action", action);
         return true;
     }
+    return text_input_key(form, input, control, shift, [this] {
+        emit_form("ui.form.changed");
+    });
+}
+
+bool EditorWindow::Impl::text_input_key(InlineForm& form,
+                                        const SDL_KeyboardEvent& input,
+                                        bool control,
+                                        bool shift,
+                                        const std::function<void()>& changed) {
+    const auto& field = form.fields()[*form.focus()];
     if (control && (input.key == SDLK_C || input.key == SDLK_X)) {
         const auto selection = field.text.selections().front();
         const auto text = field.text.text().slice(selection.begin().value, selection.end().value);
         if (!SDL_SetClipboardText(text.c_str()))
             throw std::runtime_error(SDL_GetError());
         if (input.key == SDLK_X && form.edit(editing::Command::insert_text))
-            emit_form("ui.form.changed");
+            changed();
         return true;
     }
     if (control && input.key == SDLK_V) {
@@ -2937,12 +2966,12 @@ bool EditorWindow::Impl::inline_key(const SDL_KeyboardEvent& input,
         editing::Options input_options;
         input_options.text = pasted.get();
         if (form.edit(editing::Command::insert_text, input_options))
-            emit_form("ui.form.changed");
+            changed();
         return true;
     }
     if (control && (input.key == SDLK_Z || input.key == SDLK_Y)) {
         if (form.history(input.key == SDLK_Y || shift))
-            emit_form("ui.form.changed");
+            changed();
         return true;
     }
     std::optional<editing::Command> input_command;
@@ -2981,7 +3010,7 @@ bool EditorWindow::Impl::inline_key(const SDL_KeyboardEvent& input,
     editing::Options input_options;
     input_options.extend = shift;
     if (form.edit(*input_command, input_options))
-        emit_form("ui.form.changed");
+        changed();
     return true;
 }
 
@@ -3163,25 +3192,15 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         if (!input.text.text || focused_view || consumed_modal_text) {
             break;
         }
-        if (prompt != Prompt::none && prompt != Prompt::policy_choice &&
-            prompt != Prompt::policy_text && prompt != Prompt::policy_progress &&
-            prompt != Prompt::policy_confirm) {
-            const std::string_view entered(input.text.text);
-            if (dialog && entered.find_first_of("\r\n") != entered.npos) {
-                error = "Input must contain one logical line";
-                break;
+        if (prompt == Prompt::policy_input || prompt == Prompt::policy_pick) {
+            if (!dialog || !dialog->input) {
+                throw std::logic_error("Editable dialog has no input model");
             }
-            const auto existing = prompt_select_all ? std::size_t{0} : prompt_text.size();
-            if (existing + entered.size() > 16384) {
-                error = "Input exceeds its 16 KiB limit";
-                break;
+            editing::Options entered;
+            entered.text = input.text.text;
+            if (dialog->input->edit(editing::Command::insert_text, entered)) {
+                sync_dialog_input();
             }
-            if (prompt_select_all) {
-                prompt_text.clear();
-                prompt_select_all = false;
-            }
-            prompt_text += input.text.text;
-            prompt_choice = 0;
         } else if (prompt == Prompt::none) {
             if (inline_form && inline_form->focus()) {
                 editing::Options input_options;
@@ -3195,7 +3214,9 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
     case SDL_EVENT_MOUSE_MOTION:
         mouse_x = input.motion.x * ratio_x;
         mouse_y = input.motion.y * ratio_y;
-        if (dragging_sidebar) {
+        if (dragging_dialog_input && dialog && dialog->input) {
+            static_cast<void>(point_dialog_input(mouse_x, mouse_y, true));
+        } else if (dragging_sidebar) {
             sidebar_width =
                 std::clamp((mouse_x - geometry.activity.right()) / scale, 180.0F, 480.0F);
         } else if (!dragging_tab.empty() && std::abs(mouse_x - tab_drag_start) > 8 * scale) {
@@ -3217,11 +3238,13 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             const auto boxes = form_layout(*inline_form);
             const auto cached =
                 form_fields.find(form_key(inline_form->id(), inline_form->fields()[index].id));
-            if (cached != form_fields.end() && cached->second.layout) {
+            if (cached != form_fields.end()) {
                 const auto& box = boxes.fields[index];
-                const auto hit = cached->second.layout->hit_test(mouse_x - box.x - 6 * scale +
-                                                                     cached->second.horizontal,
-                                                                 mouse_y - box.y - 5 * scale);
+                const auto& paragraph = cached->second.prepare(
+                    inline_form->fields()[index].text.text().str(), input_style(ui_font_size));
+                const auto hit =
+                    paragraph.hit_test(mouse_x - box.x - 6 * scale + cached->second.horizontal,
+                                       mouse_y - box.y - 5 * scale);
                 inline_form->select(index, ByteOffset{hit.byte_offset}, true);
             }
         } else if (dragging_scroll) {
@@ -3238,6 +3261,10 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         mouse_x = input.button.x * ratio_x;
         mouse_y = input.button.y * ratio_y;
         const auto width = static_cast<float>(pixels.width);
+        if (point_dialog_input(mouse_x, mouse_y, (SDL_GetModState() & SDL_KMOD_SHIFT) != 0)) {
+            dragging_dialog_input = true;
+            break;
+        }
         if (prompt == Prompt::policy_text && dialog) {
             const auto layout = TextPanelLayout::measure(width,
                                                          static_cast<float>(pixels.height),
@@ -3309,8 +3336,10 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                 if (boxes.fields[i].contains(mouse_x, mouse_y)) {
                     forms.focus(form->id(), i);
                     const auto found = form_fields.find(form_key(form->id(), form->fields()[i].id));
-                    if (found != form_fields.end() && found->second.layout) {
-                        const auto hit = found->second.layout->hit_test(
+                    if (found != form_fields.end()) {
+                        const auto& paragraph = found->second.prepare(
+                            form->fields()[i].text.text().str(), input_style(ui_font_size));
+                        const auto hit = paragraph.hit_test(
                             mouse_x - boxes.fields[i].x - 6 * scale + found->second.horizontal,
                             mouse_y - boxes.fields[i].y - 5 * scale);
                         form->select(i,
@@ -3472,6 +3501,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         break;
     }
     case SDL_EVENT_MOUSE_BUTTON_UP:
+        dragging_dialog_input = false;
         if (input.button.button == SDL_BUTTON_LEFT) {
             dragging = false;
             dragging_scroll = false;
@@ -3675,6 +3705,97 @@ void EditorWindow::Impl::draw_inline_form(SkCanvas* canvas) {
             draw_form(canvas, *form, form_layout(*form));
 }
 
+TextLayoutOptions EditorWindow::Impl::input_style(float font_size) const {
+    TextLayoutOptions style;
+    style.font_size = font_size;
+    style.dpi_scale = scale;
+    style.line_height = 1.0F;
+    style.color = foreground;
+    style.font_families = {"Segoe UI", "Microsoft YaHei UI", "Segoe UI Emoji"};
+    style.direction = TextDirection::automatic;
+    return style;
+}
+
+void EditorWindow::Impl::draw_field(SkCanvas* canvas,
+                                    const InlineForm::Field& field,
+                                    Box box,
+                                    bool focused,
+                                    bool invalid,
+                                    TextInputLayout& cached,
+                                    std::string_view placeholder,
+                                    float font_size) {
+    const auto text = field.text.text().str();
+    const auto& input = cached.prepare(text, input_style(font_size));
+    rectangle(canvas,
+              box.x,
+              box.y,
+              box.width,
+              box.height,
+              invalid ? error_color : (focused ? accent : border_color));
+    rectangle(canvas,
+              box.x + scale,
+              box.y + scale,
+              std::max(0.0F, box.width - 2 * scale),
+              std::max(0.0F, box.height - 2 * scale),
+              input_color);
+    const auto selection = field.text.selections().front();
+    const auto caret = input.caret(selection.head.value);
+    const auto available = std::max(0.0F, box.width - 12 * scale);
+    if (focused) {
+        if (caret.x < cached.horizontal)
+            cached.horizontal = caret.x;
+        if (caret.x > cached.horizontal + available)
+            cached.horizontal = caret.x - available;
+    }
+    cached.horizontal =
+        std::clamp(cached.horizontal, 0.0F, std::max(0.0F, input.width() - available));
+    const auto x = box.x + 6 * scale - cached.horizontal, y = box.y + 5 * scale;
+    canvas->save();
+    canvas->clipRect(SkRect::MakeXYWH(box.x + 2 * scale,
+                                      box.y + scale,
+                                      std::max(0.0F, box.width - 4 * scale),
+                                      std::max(0.0F, box.height - 2 * scale)));
+    if (text.empty() && (!focused || preedit.empty()))
+        elided_label(
+            canvas, placeholder, box.x + 6 * scale, box.y + 6 * scale, 13, available, muted);
+    for (const auto& rect : input.selection_rects(selection.begin().value, selection.end().value)) {
+        rectangle(canvas,
+                  x + rect.x,
+                  y + rect.y,
+                  rect.width,
+                  rect.height,
+                  focused ? selection_color : hover_color);
+    }
+    input.draw(canvas, x, y);
+    if (focused) {
+        rectangle(canvas,
+                  x + caret.x,
+                  y + caret.y,
+                  scale,
+                  std::min(caret.height, std::max(0.0F, box.height - 8 * scale)),
+                  foreground);
+        int logical_width{}, logical_height{}, pixels_width{}, pixels_height{};
+        if (!SDL_GetWindowSize(renderer.window(), &logical_width, &logical_height) ||
+            !SDL_GetWindowSizeInPixels(renderer.window(), &pixels_width, &pixels_height) ||
+            logical_width <= 0 || logical_height <= 0)
+            throw std::runtime_error(SDL_GetError());
+        const auto rx = static_cast<float>(pixels_width) / static_cast<float>(logical_width),
+                   ry = static_cast<float>(pixels_height) / static_cast<float>(logical_height);
+        renderer.set_text_input_area(SDL_Rect{static_cast<int>((x + caret.x) / rx),
+                                              static_cast<int>((y + caret.y) / ry),
+                                              2,
+                                              std::max(1, static_cast<int>(caret.height / ry))},
+                                     0);
+        if (!preedit.empty()) {
+            const auto style = input_style(font_size);
+            const auto composition = fonts.layout(preedit, style);
+            composition.draw(canvas, x + caret.x, y);
+            rectangle(canvas, x + caret.x, y + 20 * scale, composition.width(), scale, accent);
+        }
+    }
+    canvas->restore();
+}
+
 void EditorWindow::Impl::draw_form(SkCanvas* canvas,
                                    const InlineForm& form,
                                    const InlineFormLayout& boxes) {
@@ -3716,98 +3837,9 @@ void EditorWindow::Impl::draw_form(SkCanvas* canvas,
         const auto& field = form.fields()[i];
         const auto box = boxes.fields[i];
         const auto focused = form.focus() == i;
-        auto& cached = form_fields[form_key(form.id(), field.id)];
-        const auto text = field.text.text().str();
-        if (!cached.layout || cached.text != text || cached.scale != scale) {
-            TextLayoutOptions style;
-            style.font_size = ui_font_size;
-            style.dpi_scale = scale;
-            style.line_height = 1.0F;
-            style.color = foreground;
-            style.font_families = {"Segoe UI", "Microsoft YaHei UI", "Segoe UI Emoji"};
-            style.direction = TextDirection::automatic;
-            cached.layout = fonts.layout(text, style);
-            cached.text = text;
-            cached.scale = scale;
-        }
-        rectangle(canvas,
-                  box.x,
-                  box.y,
-                  box.width,
-                  box.height,
-                  form.error() ? error_color : (focused ? accent : border_color));
-        rectangle(canvas,
-                  box.x + scale,
-                  box.y + scale,
-                  std::max(0.0F, box.width - 2 * scale),
-                  std::max(0.0F, box.height - 2 * scale),
-                  input_color);
-        const auto selection = field.text.selections().front();
-        const auto caret = cached.layout->caret(selection.head.value);
-        const auto available = std::max(0.0F, box.width - 12 * scale);
-        if (focused) {
-            if (caret.x < cached.horizontal)
-                cached.horizontal = caret.x;
-            if (caret.x > cached.horizontal + available)
-                cached.horizontal = caret.x - available;
-        }
-        cached.horizontal =
-            std::clamp(cached.horizontal, 0.0F, std::max(0.0F, cached.layout->width() - available));
-        const auto x = box.x + 6 * scale - cached.horizontal, y = box.y + 5 * scale;
-        canvas->save();
-        canvas->clipRect(SkRect::MakeXYWH(box.x + 2 * scale,
-                                          box.y + scale,
-                                          std::max(0.0F, box.width - 4 * scale),
-                                          std::max(0.0F, box.height - 2 * scale)));
-        if (text.empty() && (!focused || preedit.empty()))
-            elided_label(canvas,
-                         field.placeholder,
-                         box.x + 6 * scale,
-                         box.y + 6 * scale,
-                         13,
-                         available,
-                         muted);
-        for (const auto& rect :
-             cached.layout->selection_rects(selection.begin().value, selection.end().value)) {
-            rectangle(canvas,
-                      x + rect.x,
-                      y + rect.y,
-                      rect.width,
-                      rect.height,
-                      focused ? selection_color : hover_color);
-        }
-        cached.layout->draw(canvas, x, y);
-        if (focused) {
-            rectangle(canvas,
-                      x + caret.x,
-                      y + caret.y,
-                      scale,
-                      std::min(caret.height, std::max(0.0F, box.height - 8 * scale)),
-                      foreground);
-            int logical_width{}, logical_height{}, pixels_width{}, pixels_height{};
-            if (!SDL_GetWindowSize(renderer.window(), &logical_width, &logical_height) ||
-                !SDL_GetWindowSizeInPixels(renderer.window(), &pixels_width, &pixels_height) ||
-                logical_width <= 0 || logical_height <= 0)
-                throw std::runtime_error(SDL_GetError());
-            const auto rx = static_cast<float>(pixels_width) / static_cast<float>(logical_width),
-                       ry = static_cast<float>(pixels_height) / static_cast<float>(logical_height);
-            renderer.set_text_input_area(SDL_Rect{static_cast<int>((x + caret.x) / rx),
-                                                  static_cast<int>((y + caret.y) / ry),
-                                                  2,
-                                                  std::max(1, static_cast<int>(caret.height / ry))},
-                                         0);
-            if (!preedit.empty()) {
-                TextLayoutOptions style;
-                style.font_size = ui_font_size;
-                style.dpi_scale = scale;
-                style.line_height = 1.0F;
-                style.color = foreground;
-                const auto composition = fonts.layout(preedit, style);
-                composition.draw(canvas, x + caret.x, y);
-                rectangle(canvas, x + caret.x, y + 20 * scale, composition.width(), scale, accent);
-            }
-        }
-        canvas->restore();
+        auto& cached = form_fields.try_emplace(form_key(form.id(), field.id), fonts).first->second;
+        draw_field(
+            canvas, field, box, focused, form.error(), cached, field.placeholder, ui_font_size);
     }
     for (std::size_t i = 0; i < form.toggles().size(); ++i) {
         const auto& toggle = form.toggles()[i];
@@ -4127,61 +4159,16 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                   layout.input.width,
                   layout.input.height,
                   input_color);
-        if (prompt_select_all && !prompt_text.empty())
-            rectangle(canvas,
-                      layout.input.x + 8 * scale,
-                      layout.input.y + 3 * scale,
-                      layout.input.width - 16 * scale,
-                      25 * scale,
-                      selection_color);
-        TextLayoutOptions style;
-        style.font_size = 14;
-        style.dpi_scale = scale;
-        style.color = foreground;
-        style.font_families = {"Segoe UI", "Microsoft YaHei UI", "sans-serif"};
-        if (!dialog->input_layout || dialog->input_text != prompt_text ||
-            dialog->input_scale != scale) {
-            dialog->input_layout = fonts.layout(prompt_text, style);
-            dialog->input_text = prompt_text;
-            dialog->input_scale = scale;
-        }
-        const auto& input = *dialog->input_layout;
-        const auto horizontal = std::max(0.0F, input.width() - (layout.input.width - 40 * scale));
-        const auto input_x = layout.input.x + 10 * scale + input.width() - horizontal,
-                   input_y = layout.input.y + 6 * scale;
-        canvas->save();
-        canvas->clipRect(SkRect::MakeXYWH(layout.input.x + 8 * scale,
-                                          layout.input.y + 3 * scale,
-                                          layout.input.width - 16 * scale,
-                                          27 * scale));
-        if (prompt_text.empty())
-            label(canvas,
-                  dialog->spec.value("placeholder",
-                                     std::string(picking ? "Type to filter; Enter to choose"
-                                                         : "Type text, then press Enter")),
-                  layout.input.x + 10 * scale,
-                  input_y,
-                  14,
-                  muted);
-        else
-            input.draw(canvas, layout.input.x + 10 * scale - horizontal, input_y);
-        if (!preedit.empty()) {
-            const auto composition = fonts.layout(preedit, style);
-            composition.draw(canvas, input_x, input_y);
-            rectangle(canvas, input_x, input_y + 20 * scale, composition.width(), scale, accent);
-        } else
-            rectangle(canvas, input_x, input_y, scale, 20 * scale, cursor_color);
-        canvas->restore();
-        int logical_width{}, logical_height{};
-        if (SDL_GetWindowSize(renderer.window(), &logical_width, &logical_height) &&
-            logical_width > 0 && logical_height > 0) {
-            renderer.set_text_input_area(
-                {static_cast<int>(input_x * static_cast<float>(logical_width) / width),
-                 static_cast<int>(input_y * static_cast<float>(logical_height) / height),
-                 2,
-                 static_cast<int>(26 * scale * static_cast<float>(logical_height) / height)},
-                0);
-        }
+        draw_field(canvas,
+                   dialog->input->fields().front(),
+                   layout.input,
+                   true,
+                   false,
+                   *dialog->input_layout,
+                   dialog->spec.value("placeholder",
+                                      std::string(picking ? "Type to filter; Enter to choose"
+                                                          : "Type text, then press Enter")),
+                   14);
         if (picking) {
             dialog->picker.filter(prompt_text);
             if (dialog->picker.size())
@@ -4226,49 +4213,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         }
         return;
     }
-    const auto x = (width - 600 * scale) / 2;
-    rectangle(canvas, x, 64 * scale, 600 * scale, 76 * scale, panel_background);
-    rectangle(canvas, x, 64 * scale, 600 * scale, 2 * scale, accent);
-    label(canvas,
-          prompt == Prompt::policy_input && dialog ? dialog->spec.at("title").get<std::string>()
-                                                   : "INPUT",
-          x + 16 * scale,
-          73 * scale,
-          10,
-          muted);
-    rectangle(canvas, x + 12 * scale, 94 * scale, 576 * scale, 30 * scale, background);
-    if (prompt_select_all && !prompt_text.empty()) {
-        rectangle(canvas, x + 20 * scale, 97 * scale, 560 * scale, 25 * scale, selection_color);
-    }
-    const auto placeholder = "Type text, then press Enter";
-    label(canvas,
-          prompt_text.empty() ? placeholder : prompt_text,
-          x + 22 * scale,
-          100 * scale,
-          14,
-          prompt_text.empty() ? muted : foreground);
-    TextLayoutOptions input_style;
-    input_style.font_size = 14;
-    input_style.dpi_scale = scale;
-    input_style.color = foreground;
-    const auto input_layout = fonts.layout(prompt_text, input_style);
-    const auto input_x = std::min(x + 570 * scale, x + 22 * scale + input_layout.width());
-    if (!preedit.empty()) {
-        const auto composition = fonts.layout(preedit, input_style);
-        composition.draw(canvas, input_x, 100 * scale);
-        rectangle(canvas, input_x, 120 * scale, composition.width(), scale, accent);
-    }
-    int logical_width{}, logical_height{};
-    if (SDL_GetWindowSize(renderer.window(), &logical_width, &logical_height) &&
-        logical_width > 0 && logical_height > 0) {
-        const auto rx = width / static_cast<float>(logical_width);
-        const auto ry = height / static_cast<float>(logical_height);
-        renderer.set_text_input_area({static_cast<int>(input_x / rx),
-                                      static_cast<int>(98 * scale / ry),
-                                      2,
-                                      static_cast<int>(26 * scale / ry)},
-                                     0);
-    }
+    throw std::logic_error("Dialog has no matching native presentation");
 }
 
 void EditorWindow::Impl::draw() {

@@ -1,5 +1,6 @@
 #include <astra/ui/document_viewport.hpp>
 #include <astra/ui/text_surface.hpp>
+#include <astra/ui/text_input_layout.hpp>
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkImageInfo.h"
@@ -509,6 +510,48 @@ void text_surfaces(astra::ui::TextLayoutEngine& engine) {
         << seed << " and bounded reuse: PASS\n";
 }
 
+void editable_geometry(astra::ui::TextLayoutEngine& engine) {
+    using namespace astra::ui;
+    TextInputLayout input(engine);
+    TextLayoutOptions style;
+    style.direction = TextDirection::automatic;
+    const std::string text = "A🙂é אבג\t中文";
+    equal(input.prepare(text, style), engine.layout(text, style));
+    require(input.matches(text) && !input.matches("different"),
+            "Input geometry accepted stale text");
+    const auto before = pixels(*input.layout());
+    style.color = 0xFF40C070;
+    equal(input.prepare(text, style), engine.layout(text, style));
+    require(pixels(*input.layout()) != before, "Input theme color retained an old cache entry");
+    style.dpi_scale = 1.25F;
+    style.font_size = 19;
+    style.font_families = {"Consolas", "Segoe UI Emoji", "Microsoft YaHei UI"};
+    equal(input.prepare(text, style), engine.layout(text, style));
+    const auto retained = pixels(*input.layout());
+    auto invalid = style;
+    invalid.dpi_scale = 0;
+    bool rejected = false;
+    try {
+        static_cast<void>(input.prepare("new value", invalid));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    require(rejected && input.matches(text) && pixels(*input.layout()) == retained,
+            "Failed input preparation replaced valid geometry");
+    for (const auto& value :
+         {std::string("\xFF", 1), std::string("line\nbreak"), std::string(16385, 'a')}) {
+        rejected = false;
+        try {
+            static_cast<void>(input.prepare(value, style));
+        } catch (const std::invalid_argument&) {
+            rejected = true;
+        }
+        require(rejected && input.matches(text), "Invalid input content discarded valid layout");
+    }
+    std::cout << "Editable input geometry: real Unicode/style pixels, exact cache keys, "
+                 "stale text and atomic failure preservation: PASS\n";
+}
+
 int main() {
     try {
         TextLayoutEngine engine;
@@ -519,6 +562,7 @@ int main() {
         background_layout(engine);
         background_viewport(engine);
         text_surfaces(engine);
+        editable_geometry(engine);
         std::shared_ptr<const TextLayout> retained;
         {
             TextLayoutEngine temporary;

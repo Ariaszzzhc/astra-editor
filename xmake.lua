@@ -269,6 +269,7 @@ target("astra-ui")
     add_files("src/ui/editor_window.cpp", "src/ui/icons.cpp", "src/ui/document_viewport.cpp")
     add_files("src/ui/layout_jobs.cpp")
     add_files("src/ui/text_surface.cpp")
+    add_files("src/ui/text_input_layout.cpp")
     add_packages("libuv")
     set_exceptions("cxx")
 

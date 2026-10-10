@@ -339,6 +339,16 @@ geometry. Modal actions remain available while paragraph work is pending, and
 closing a modal cancels only its own surface jobs. Source indexing and visible
 page copying are still explicit UI-thread costs.
 
+Editable modal inputs and inline form fields share `TextInputLayout`, the
+Unicode document editing commands, and the same native field painter. Caret,
+selection, clipboard and undo/redo operate on grapheme-safe document positions;
+pointer input prepares the current text/style before hit testing, including
+multiple SDL events processed before the next paint. The cache key includes
+all layout options, so theme/font/DPI changes replace geometry. Failed text or
+style preparation preserves the previous cache entry. These single-line fields
+are bounded to 16 KiB and still shape synchronously; background editable shaping
+and row-internal incremental layout are not established by this component.
+
 ## Upstream references
 
 - [Skia build requirements](https://skia.org/docs/user/build/)
