@@ -2,6 +2,10 @@ const request = (method, params = {}, options) => astra.request(method, params, 
 export const ui = {
     read: (parameters = {}, options) => read(parameters, options),
     update: (model) => request('_ui.update', model),
+    style: {
+        read: (options) => request('_ui.style.read', {}, options),
+        update: (patch, options) => updateStyle(patch, options)
+    },
     views: {
         read: (id, options) => request('_ui.view.read', { id }, options),
         focus: (id, options) => request('_ui.view.focus', { id }, options),
@@ -317,6 +321,25 @@ let dialogId = 0;
 let actionId = 0;
 let readId = 0;
 let fenceId = 0;
+let styleId = 0;
+async function updateStyle(patch, options = {}) {
+    const id = `style-${++styleId}`,
+        signal = options.signal;
+    let cancellation;
+    const cancel = () => {
+        cancellation = request('_ui.style.cancel', { id });
+    };
+    signal?.addEventListener('abort', cancel);
+    try {
+        return await request('_ui.style.update', { id, patch }, options);
+    } catch (error) {
+        await (cancellation || request('_ui.style.cancel', { id }));
+        throw error;
+    } finally {
+        signal?.removeEventListener('abort', cancel);
+        if (cancellation) await cancellation;
+    }
+}
 function cancelled(message) {
     const error = new Error(message);
     error.name = 'AbortError';

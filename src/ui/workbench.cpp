@@ -19,6 +19,7 @@ struct Workbench::Impl {
     std::deque<Request> requests;
     std::map<script::Runtime::TaskId, Completion> commands;
     std::unique_ptr<script::Runtime> runtime;
+    Json defaults;
     std::map<std::string, std::string> default_bindings;
     std::uint64_t default_binding_generation{};
     std::uint64_t next_id{1};
@@ -59,6 +60,9 @@ struct Workbench::Impl {
         for (const auto& [name, source] : modules) {
             runtime->define_module(name, source);
         }
+        static_cast<void>(
+            runtime->evaluate_module("import 'astra/defaults';", "astra-defaults.js"));
+        defaults = runtime->take_settings();
         static_cast<void>(runtime->evaluate_module(
             "import {initialize} from 'astra/workbench'; initialize();", "astra-client.js"));
         default_bindings = runtime->keybindings();
@@ -165,6 +169,10 @@ bool Workbench::awaiting(std::span<const std::string_view> methods) const {
 
 Workbench::Json Workbench::settings() const {
     return impl_->runtime->settings();
+}
+
+Workbench::Json Workbench::default_settings() const {
+    return impl_->defaults;
 }
 
 std::map<std::string, std::string> Workbench::keybindings() const {

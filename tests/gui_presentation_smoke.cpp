@@ -153,6 +153,7 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
     // The client's explicit default-value preference must win over this
     // retained service override when native settings arrive asynchronously.
     service.defaults_script += "\nastra.bind('Ctrl+Shift+Tab', 'ui.nextTab');\n";
+    service.defaults_script += "astra.configure({workbench:{uiFontSize:11,sidebarWidth:270}});\n";
     service.resource_directory = fs::current_path();
     service.watch_files = false;
     auto host = std::make_shared<astra::service::ServiceHost>(std::move(service));
@@ -163,6 +164,91 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         options.open_paths = {"one.cpp"};
         options.user_script = R"js(if(astra.context==='client') {
             astra.bind('Ctrl+Shift+Tab', 'ui.previousTab');
+            astra.configure({workbench: {uiFontSize: 13}});
+            let originalStyle;
+            astra.registerCommand('acceptance.style.large', async () => {
+                originalStyle = await astra.ui.style.read();
+                const updated = await astra.ui.style.update({
+                    theme: {background: '#18212A', panel: '#273544', tabs: '#151B23'},
+                    workbench: {
+                        uiFontSize: 16,
+                        uiFontFamilies: ['Consolas', 'Microsoft YaHei UI', 'Segoe UI Emoji']
+                    }
+                });
+                if (updated.workbench.uiFontSize !== 16) throw Error('Style update did not settle');
+                await astra.ui.update({status: 'Large style settled'});
+            });
+            astra.registerCommand('acceptance.style.small', async () => {
+                await astra.ui.style.update({
+                    ...originalStyle,
+                    workbench: {...originalStyle.workbench, uiFontSize: 9}
+                });
+                await astra.ui.update({status: 'Small style settled'});
+            });
+            astra.registerCommand('acceptance.style.restore', async () => {
+                await astra.ui.style.update(originalStyle);
+                await astra.ui.update({status: 'Style restored'});
+            });
+            astra.registerCommand('acceptance.style.race', async () => {
+                return await astra.ui.style.update({workbench: {uiFontSize: 16}});
+            });
+            astra.registerCommand('acceptance.style.cancelPending', async () => {
+                const before = JSON.stringify(await astra.ui.style.read());
+                const controller = new AbortController();
+                const changing = astra.ui.style.update({workbench: {uiFontSize: 9}}, {
+                    signal: controller.signal
+                });
+                // A separate owner-loop native read ensures the update has
+                // reached the queue before aborting its pending future.
+                await astra.ui.style.read();
+                controller.abort();
+                try {
+                    await changing;
+                    throw Error('Pending style update was accepted after cancellation');
+                } catch (error) {
+                    if (error.name !== 'AbortError') throw error;
+                }
+                if (JSON.stringify(await astra.ui.style.read()) !== before) {
+                    throw Error('Cancelled pending update changed style');
+                }
+            });
+            astra.registerCommand('acceptance.style.invalid', async () => {
+                const before = JSON.stringify(await astra.ui.style.read());
+                for (const patch of [
+                    {theme: {background: '#FFFFFF', warning: '# 12345'}},
+                    {theme: {foreground: null}},
+                    {theme: {unknownColor: '#123456'}},
+                    {workbench: {uiFontSize: 99}},
+                    {workbench: {uiFontFamilies: []}},
+                    {workbench: {uiFontSize: 9, uiMonospaceFontFamilies: ['Bad\nFont']}},
+                    {workbench: {unknownSetting: 9}},
+                    {editor: {fontSize: 9}}
+                ]) {
+                    let rejected = false;
+                    try {
+                        await astra.ui.style.update(patch);
+                    } catch (error) {
+                        rejected = true;
+                    }
+                    if (!rejected || JSON.stringify(await astra.ui.style.read()) !== before) {
+                        throw Error('Invalid style patch changed the published style');
+                    }
+                }
+                const controller = new AbortController();
+                controller.abort();
+                try {
+                    await astra.ui.style.update({workbench: {uiFontSize: 9}}, {
+                        signal: controller.signal
+                    });
+                    throw Error('Cancelled style patch was accepted');
+                } catch (error) {
+                    if (error.name !== 'AbortError') throw error;
+                }
+                if (JSON.stringify(await astra.ui.style.read()) !== before) {
+                    throw Error('Cancelled style patch changed presentation');
+                }
+                await astra.ui.update({status: 'Invalid styles retained'});
+            });
             astra.ui.registerCommand(
                 { id: 'acceptance.ignorePage', title: 'Custom page binding', palette: false },
                 async () => {
@@ -393,6 +479,86 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         require(original.layout.outline_rows.height == 0,
                 "Outline should default to collapsed inside Explorer");
         const auto one = window.active_document_id();
+        require(original.style.at("workbench").at("uiFontSize") == 13 &&
+                    original.style.at("workbench").at("sidebarWidth") == 270,
+                "Service style preferences or explicit same-value client preference were lost");
+        window.execute_ui_command("acceptance.captureBody");
+        settle(window);
+        const auto check_styled_input = [&](const char* command, float size, const char* capture) {
+            window.execute_ui_command(command);
+            settle(window);
+            require(window.view_state().style.at("workbench").at("uiFontSize") == size,
+                    "Native style did not follow the awaited JS update");
+            window.request_screenshot(fs::path("build/graphics") / (std::string(capture) + ".png"));
+            settle(window);
+            window.execute_ui_command("acceptance.inputEditing");
+            settle(window);
+            key(window, SDLK_A, SDL_KMOD_CTRL);
+            const std::string typed = "0123456789🙂";
+            SDL_Event text{};
+            text.type = SDL_EVENT_TEXT_INPUT;
+            text.text.windowID = SDL_GetWindowID(window.window());
+            text.text.text = typed.c_str();
+            require(SDL_PushEvent(&text), "Cannot queue styled native input");
+            settle(window);
+            int width{}, height{};
+            require(SDL_GetWindowSizeInPixels(window.window(), &width, &height),
+                    "Cannot read styled input window dimensions");
+            const auto scale = window.layout().scale;
+            const auto box = astra::ui::PickerLayout::measure(
+                                 static_cast<float>(width), static_cast<float>(height), scale, 0)
+                                 .input;
+            const auto x = 40 * scale;
+            click(window, box.x + 6 * scale + x, box.y + 10 * scale);
+            text.text.text = "中";
+            require(SDL_PushEvent(&text), "Cannot insert after styled pointer placement");
+            settle(window);
+            // Independent native font oracle: modal inputs have a 14-unit
+            // reference relative to the configured 13-unit UI base.
+            astra::ui::TextLayoutEngine fonts;
+            astra::ui::TextLayoutOptions style;
+            style.font_size = 14 * size / 13;
+            style.dpi_scale = scale;
+            style.line_height = 1;
+            style.direction = astra::ui::TextDirection::automatic;
+            style.font_families = window.view_state()
+                                      .style.at("workbench")
+                                      .at("uiFontFamilies")
+                                      .get<std::vector<std::string>>();
+            const auto paragraph = fonts.layout(typed, style);
+            const auto offset = paragraph.hit_test(x, paragraph.height() / 2).byte_offset;
+            window.request_screenshot(fs::path("build/graphics") /
+                                      (std::string(capture) + "-input.png"));
+            settle(window);
+            key(window, SDLK_RETURN);
+            require(window.status_text() ==
+                        "Input " + typed.substr(0, offset) + "中" + typed.substr(offset),
+                    "Styled input painting and native pointer geometry diverged");
+        };
+        check_styled_input("acceptance.style.large", 16, "gui-style-large");
+        const auto large_style = window.view_state().style;
+        window.execute_ui_command("acceptance.style.invalid");
+        settle(window);
+        require(window.status_text() == "Invalid styles retained" &&
+                    window.view_state().style == large_style,
+                "Invalid or cancelled style update changed the current appearance");
+        window.execute_ui_command("acceptance.style.cancelPending");
+        settle(window);
+        require(window.view_state().style == large_style &&
+                    window.view_state().input_layout.at("pendingStyles") == 0,
+                "Cancelled native style queue was not drained");
+        window.execute_ui_command("acceptance.choice");
+        settle(window);
+        window.request_screenshot("build/graphics/gui-style-large-choice.png");
+        settle(window);
+        key(window, SDLK_ESCAPE);
+        check_styled_input("acceptance.style.small", 9, "gui-style-small");
+        window.execute_ui_command("acceptance.style.restore");
+        settle(window);
+        require(window.view_state().style == original.style,
+                "Restoring the effective style lost service/client preferences");
+        window.execute_ui_command("acceptance.verifyBody");
+        settle(window);
         click(window, 18 * original.layout.scale, original.layout.header.height / 2);
         require(!window.view_state().input_layout.contains("bytes") &&
                     window.active_document_id() == one,
@@ -780,6 +946,7 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         accept_input.key.windowID = SDL_GetWindowID(window.window());
         accept_input.key.key = SDLK_RETURN;
         require(SDL_PushEvent(&accept_input), "Cannot queue long input acceptance");
+        window.execute_ui_command("acceptance.style.race");
         settle(window);
         const auto long_paragraph = input_fonts.layout(long_input, input_style);
         const auto long_offset =
@@ -791,6 +958,11 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         require(window.status_text() ==
                     "Long input " + long_expected.substr(0, prefix_bytes) + " length 5601",
                 "Cold long input pointer/text/acceptance reordered or split Unicode");
+        require(window.view_state().style.at("workbench").at("uiFontSize") == 16 &&
+                    window.view_state().input_layout.at("pendingStyles") == 0,
+                "Style update did not wait for accepted long-input pointer/text completion");
+        window.execute_ui_command("acceptance.style.restore");
+        settle(window);
         const auto cancellation_workers =
             window.view_state().input_layout.at("workerSubmitted").get<std::size_t>();
         window.execute_ui_command("acceptance.longInput");

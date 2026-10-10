@@ -3,6 +3,7 @@
 #include "astra/ui/text_layout.hpp"
 #include "astra/ui/document_viewport.hpp"
 #include "astra/ui/workbench.hpp"
+#include "astra/ui/workbench_style.hpp"
 #include "astra/ui/view_store.hpp"
 #include "astra/ui/icons.hpp"
 #include "astra/ui/text_line_index.hpp"
@@ -229,6 +230,15 @@ struct EditorWindow::Impl {
     std::map<std::string, std::shared_ptr<PendingEdit>> pending_edits;
     std::map<std::string, std::shared_ptr<PendingRead>> pending_reads;
     std::map<std::string, PendingFence> pending_fences;
+
+    struct PendingStyle {
+        std::string id;
+        Json patch;
+        std::promise<Json> completion;
+        Clock::time_point deadline;
+    };
+
+    std::deque<PendingStyle> pending_styles;
     std::uint64_t next_read{1};
     std::uint64_t next_request{1};
     std::map<std::string, std::string> keybindings;
@@ -241,43 +251,7 @@ struct EditorWindow::Impl {
     Json busy_views = Json::object();
     Json settings = Json::object();
     Json editor_settings = Json::object();
-    SkColor background{0xFF191D27};
-    SkColor sidebar_background{0xFF161A23};
-    SkColor panel_background{0xFF1E2330};
-    SkColor border_color{0xFF2B3140};
-    SkColor foreground{0xFFDDE3EF};
-    SkColor muted{0xFF8893A8};
-    SkColor accent{0xFF7FA9F9};
-    SkColor selection_color{0xFF304A73};
-    SkColor status_color{0xFF263B5E};
-    SkColor activity_background{0xFF141821};
-    SkColor active_tab_background{0xFF191D27};
-    SkColor error_color{0xFFF14C4C};
-    SkColor warning_color{0xFFD7BA7D};
-    SkColor hover_color{0xFF2A2D2E};
-    SkColor current_line_color{0xFF272727};
-    SkColor input_color{0xFF313131};
-    SkColor cursor_color{0xFFAEAFAD};
-    SkColor scrollbar_color{0xFF424242};
-    SkColor folder_color{0xFFD7BA7D};
-    SkColor code_icon_color{0xFF75BEFF};
-    SkColor script_icon_color{0xFFE5C07B};
-    SkColor added_color{0xFF73C991};
-    SkColor changed_color{0xFF75BEFF};
-    SkColor notice_background{0xFF332D18};
-    SkColor recovery_background{0xFF263222};
-    SkColor error_background{0xFF3A1D1D};
-    SkColor status_foreground{0xFFCCCCCC};
-    std::map<std::string, SkColor> syntax_colors{{"comment", 0xFF6A9955},
-                                                 {"string", 0xFFCE9178},
-                                                 {"number", 0xFFB5CEA8},
-                                                 {"keyword", 0xFFC586C0},
-                                                 {"type", 0xFF4EC9B0},
-                                                 {"function", 0xFFDCDCAA},
-                                                 {"property", 0xFF9CDCFE},
-                                                 {"variable", 0xFF9CDCFE},
-                                                 {"heading", 0xFF569CD6},
-                                                 {"error", 0xFFF44747}};
+    WorkbenchStyle ui_style;
     ViewStore sidebar_views;
     std::string active_view{"explorer"};
     std::optional<std::string> focused_view;
@@ -298,7 +272,7 @@ struct EditorWindow::Impl {
     bool show_sidebar{true};
     bool show_outline{};
     float sidebar_width{248};
-    float ui_font_size{13};
+
     WorkbenchLayout geometry;
     TabStrip tab_strip;
     bool reveal_tab{true};
@@ -386,6 +360,9 @@ struct EditorWindow::Impl {
             options.resource_directory = std::filesystem::path(base);
         }
         std::map<std::string, std::string> modules;
+        modules.emplace(
+            "astra/defaults",
+            io::read_file(options.resource_directory / "data" / "defaults.js", 1024 * 1024).text);
         for (const auto& [name, file] :
              std::map<std::string, std::string>{{"astra/ui", "api.js"},
                                                 {"astra/files", "files.js"},
@@ -415,6 +392,9 @@ struct EditorWindow::Impl {
                 if (method == "_ui.barrier" || method == "_ui.window.close") {
                     return begin_fence(method, params);
                 }
+                if (method == "_ui.style.update") {
+                    return begin_style(params);
+                }
                 if (method == "_ui.view.commit") {
                     return sidebar_views.commit(params.at("id").get<std::string>(),
                                                 params.at("version").get<std::string>(),
@@ -435,6 +415,9 @@ struct EditorWindow::Impl {
             },
             modules,
             options.user_script);
+        auto initial_settings = workbench->default_settings();
+        initial_settings.merge_patch(workbench->settings());
+        apply_settings(std::move(initial_settings));
         for (const auto& spec : workbench->settings().at("workbench").at("views"))
             sidebar_views.register_spec(spec);
         scale = renderer.dpi_scale();
@@ -455,101 +438,39 @@ struct EditorWindow::Impl {
             keybindings[normalized_binding(key)] = name;
         }
         refresh_bindings();
-        enqueue(
-            {"script.settings",
-             Json::object(),
-             {},
-             false,
-             [this](const Json& result) {
-                 settings = result.value("settings", Json::object());
-                 settings.merge_patch(workbench->settings());
-                 editor_settings = settings.value("editor", Json::object());
-                 options.font_size = editor_settings.value("fontSize", options.font_size);
-                 if (!std::isfinite(options.font_size) || options.font_size < 6 ||
-                     options.font_size > 128) {
-                     throw std::runtime_error("editor.fontSize must be between 6 and 128");
-                 }
-                 const auto theme = settings.value("theme", Json::object());
-                 const auto color = [&](std::string_view name, SkColor& destination) {
-                     const auto field = theme.find(std::string(name));
-                     if (field == theme.end()) {
-                         return;
-                     }
-                     const auto hex = field->get<std::string>();
-                     if (hex.size() != 7 || hex.front() != '#') {
-                         throw std::runtime_error("Theme colors require #RRGGBB");
-                     }
-                     std::size_t parsed{};
-                     const auto rgb = std::stoul(hex.substr(1), &parsed, 16);
-                     if (parsed != 6) {
-                         throw std::runtime_error("Theme color contains non-hexadecimal digits");
-                     }
-                     destination = 0xFF000000U | static_cast<SkColor>(rgb);
-                 };
-                 color("background", background);
-                 color("foreground", foreground);
-                 color("sidebar", sidebar_background);
-                 color("tabs", panel_background);
-                 color("border", border_color);
-                 color("muted", muted);
-                 color("accent", accent);
-                 color("selection", selection_color);
-                 color("status", status_color);
-                 color("activityBar", activity_background);
-                 color("activeTab", active_tab_background);
-                 color("error", error_color);
-                 color("warning", warning_color);
-                 color("hover", hover_color);
-                 color("currentLine", current_line_color);
-                 color("input", input_color);
-                 color("cursor", cursor_color);
-                 color("scrollbar", scrollbar_color);
-                 color("folder", folder_color);
-                 color("codeIcon", code_icon_color);
-                 color("scriptIcon", script_icon_color);
-                 color("added", added_color);
-                 color("changed", changed_color);
-                 color("noticeBackground", notice_background);
-                 color("recoveryBackground", recovery_background);
-                 color("errorBackground", error_background);
-                 color("statusForeground", status_foreground);
-                 const auto desired_sidebar =
-                     settings.value("workbench", Json::object()).value("sidebarWidth", 248.0F);
-                 const auto desired_ui_font =
-                     settings.value("workbench", Json::object()).value("uiFontSize", 13.0F);
-                 if (!std::isfinite(desired_sidebar) || !std::isfinite(desired_ui_font) ||
-                     desired_ui_font < 9 || desired_ui_font > 16) {
-                     throw std::runtime_error(
-                         "Invalid workbench sidebarWidth or uiFontSize (9 to 16)");
-                 }
-                 sidebar_width = std::clamp(desired_sidebar, 180.0F, 480.0F);
-                 ui_font_size = desired_ui_font;
-                 for (auto& [name, value] : syntax_colors) {
-                     color(name, value);
-                 }
-                 if (result.contains("keybindings") && result["keybindings"].is_object()) {
-                     for (const auto& [key, command] : result["keybindings"].items()) {
-                         if (command.is_string()) {
-                             keybindings[normalized_binding(key)] = command.get<std::string>();
+        enqueue({"script.settings",
+                 Json::object(),
+                 {},
+                 false,
+                 [this](const Json& result) {
+                     auto candidate = workbench->default_settings();
+                     candidate.merge_patch(result.value("settings", Json::object()));
+                     candidate.merge_patch(workbench->settings());
+                     apply_settings(std::move(candidate));
+                     if (result.contains("keybindings") && result["keybindings"].is_object()) {
+                         for (const auto& [key, command] : result["keybindings"].items()) {
+                             if (command.is_string()) {
+                                 keybindings[normalized_binding(key)] = command.get<std::string>();
+                             }
+                         }
+                     } else if (result.contains("keybindings") &&
+                                result["keybindings"].is_array()) {
+                         for (const auto& binding : result["keybindings"]) {
+                             keybindings[normalized_binding(binding.at("key").get<std::string>())] =
+                                 binding.at("command").get<std::string>();
                          }
                      }
-                 } else if (result.contains("keybindings") && result["keybindings"].is_array()) {
-                     for (const auto& binding : result["keybindings"]) {
-                         keybindings[normalized_binding(binding.at("key").get<std::string>())] =
-                             binding.at("command").get<std::string>();
+                     service_commands = result.value("commands", Json::array());
+                     for (const auto& command : service_commands) {
+                         const auto name = command.get<std::string>();
+                         if (name.starts_with("ui.")) {
+                             service_ui_commands.insert(name);
+                         }
                      }
-                 }
-                 service_commands = result.value("commands", Json::array());
-                 for (const auto& command : service_commands) {
-                     const auto name = command.get<std::string>();
-                     if (name.starts_with("ui.")) {
-                         service_ui_commands.insert(name);
-                     }
-                 }
-                 keybinding_generation = 0;
-                 refresh_bindings();
-             },
-             {}});
+                     keybinding_generation = 0;
+                     refresh_bindings();
+                 },
+                 {}});
         enqueue({"workspace.documents",
                  Json::object(),
                  {},
@@ -778,6 +699,11 @@ struct EditorWindow::Impl {
     void advance_view_inputs();
     void native_command(std::string_view name);
     Json native_ui_request(std::string_view method, const Json& params);
+    void apply_settings(Json candidate);
+    [[nodiscard]] Json style_model() const;
+    std::future<Json> begin_style(const Json& params);
+    void validate_style_patch(const Json& params) const;
+    void finish_styles();
     std::future<Json> begin_dialog(const Json& spec);
     void finish_dialog(Json value);
 
@@ -1619,7 +1545,7 @@ bool EditorWindow::Impl::native_idle(bool waiting_inputs) const {
     return requests.empty() && !active_request && operations.empty() && pending_edits.empty() &&
            pending_reads.empty() && closing_pending.empty() && form_events.empty() &&
            sidebar_views.quiescent() && inputs_idle && layout_jobs->idle() && !input_point &&
-           input_events.size() == 0;
+           input_events.size() == 0 && pending_styles.empty();
 }
 
 void EditorWindow::Impl::emit_form(std::string_view event,
@@ -1915,7 +1841,7 @@ void EditorWindow::Impl::point_input(InlineForm& form,
                                      bool extend,
                                      std::string dialog_id) {
     const auto& document = form.fields().at(field).text;
-    const auto style = input_style(dialog_id.empty() ? ui_font_size : 14);
+    const auto style = input_style(dialog_id.empty() ? 13.0F : 14.0F);
     const auto* paragraph = cached.text().prepare_async(document.text().str(), style);
     if (paragraph) {
         const auto hit = paragraph->hit_test(x, y);
@@ -1963,7 +1889,7 @@ bool EditorWindow::Impl::complete_input_point() {
         throw std::runtime_error("Input focus changed before pointer selection completed");
     }
     const auto& document = form->fields()[pending.field].text;
-    const auto style = input_style(pending.dialog.empty() ? ui_font_size : 14);
+    const auto style = input_style(pending.dialog.empty() ? 13.0F : 14.0F);
     if (document.revision() != pending.revision ||
         document.selections().front() != pending.selection || style != pending.style) {
         throw std::runtime_error(
@@ -2042,7 +1968,161 @@ bool EditorWindow::Impl::point_dialog_input(float x, float y, bool extend) {
     return true;
 }
 
+void EditorWindow::Impl::validate_style_patch(const Json& params) const {
+    if (!params.is_object()) {
+        throw std::invalid_argument("Style patch requires an object");
+    }
+    for (const auto& [key, value] : params.items()) {
+        if (key != "theme" && key != "workbench") {
+            throw std::invalid_argument("Unknown style patch field: " + key);
+        }
+        if (!value.is_object()) {
+            throw std::invalid_argument("Style theme/workbench patch requires an object");
+        }
+        if (key == "workbench") {
+            for (const auto& [field, entry] : value.items()) {
+                if (field != "uiFontSize" && field != "uiFontFamilies" &&
+                    field != "uiMonospaceFontFamilies" && field != "sidebarWidth") {
+                    throw std::invalid_argument("Unknown workbench style field: " + field);
+                }
+                if (field == "uiFontFamilies" || field == "uiMonospaceFontFamilies") {
+                    if (!entry.is_array() || entry.empty() || entry.size() > 8) {
+                        throw std::invalid_argument("Style font families require 1 to 8 names");
+                    }
+                    for (const auto& name : entry) {
+                        if (!name.is_string() || name.get_ref<const std::string&>().size() > 128) {
+                            throw std::invalid_argument("Style font family exceeds its limit");
+                        }
+                    }
+                } else if (!entry.is_number()) {
+                    throw std::invalid_argument("Style size and width must be numbers");
+                }
+            }
+        } else {
+            for (const auto& [field, entry] : value.items()) {
+                if (!settings.at("theme").contains(field)) {
+                    throw std::invalid_argument("Unknown theme style field: " + field);
+                }
+                if (!entry.is_string() ||
+                    entry.get_ref<const std::string&>().size() > (field == "name" ? 128U : 7U)) {
+                    throw std::invalid_argument("Theme field exceeds its string limit: " + field);
+                }
+            }
+        }
+    }
+}
+
+std::future<Json> EditorWindow::Impl::begin_style(const Json& params) {
+    // Reject oversized/unknown data before copying it into the bounded queue.
+    validate_style_patch(params.at("patch"));
+    auto id = params.at("id").get<std::string>();
+    if (id.empty() || id.size() > 128 ||
+        std::ranges::any_of(pending_styles, [&](const auto& pending) {
+            return pending.id == id;
+        })) {
+        throw std::invalid_argument("Invalid style update identity");
+    }
+    if (pending_styles.size() >= 256) {
+        throw protocol::RpcError(-32004, "Style update queue is full");
+    }
+    PendingStyle pending{
+        std::move(id), params.at("patch"), {}, Clock::now() + std::chrono::seconds(30)};
+    auto result = pending.completion.get_future();
+    pending_styles.push_back(std::move(pending));
+    return result;
+}
+
+void EditorWindow::Impl::finish_styles() {
+    // Accepted pointer/text input finishes with the font geometry it captured.
+    // Modal input may remain open; a style update does not wait for its answer.
+    if (input_point || input_events.size() != 0) {
+        return;
+    }
+    const auto until = Clock::now() + std::chrono::milliseconds(4);
+    for (int count = 0; count < 8 && !pending_styles.empty() && Clock::now() < until; ++count) {
+        auto pending = std::move(pending_styles.front());
+        pending_styles.pop_front();
+        try {
+            if (Clock::now() >= pending.deadline) {
+                throw protocol::RpcError(-32004, "Style update timed out");
+            }
+            pending.completion.set_value(native_ui_request("_ui.style.update", pending.patch));
+        } catch (...) {
+            pending.completion.set_exception(std::current_exception());
+        }
+    }
+}
+
+void EditorWindow::Impl::apply_settings(Json candidate) {
+    auto prepared = WorkbenchStyle::compile(candidate);
+    auto editor = candidate.at("editor");
+    const auto font_size = editor.at("fontSize").get<float>();
+    if (!std::isfinite(font_size) || font_size < 6 || font_size > 128) {
+        throw std::invalid_argument("editor.fontSize must be between 6 and 128");
+    }
+    const auto editor_geometry_changed = editor_settings != editor;
+    const auto document_style_changed = editor_geometry_changed ||
+                                        ui_style.colors.foreground != prepared.colors.foreground ||
+                                        ui_style.syntax != prepared.syntax;
+    candidate["workbench"]["sidebarWidth"] = prepared.sidebar_width;
+    settings.swap(candidate);
+    editor_settings.swap(editor);
+    std::swap(ui_style, prepared);
+    options.font_size = font_size;
+    sidebar_width = ui_style.sidebar_width;
+    reveal_tab = true;
+    if (document_style_changed) {
+        for (auto& [id, document] : documents) {
+            static_cast<void>(id);
+            document.viewport.invalidate_layouts();
+            document.needs_lines = document.needs_lines || editor_geometry_changed;
+        }
+    }
+}
+
+Json EditorWindow::Impl::style_model() const {
+    const auto& bench = settings.at("workbench");
+    return {{"theme", settings.at("theme")},
+            {"workbench",
+             {{"uiFontSize", bench.at("uiFontSize")},
+              {"uiFontFamilies", bench.at("uiFontFamilies")},
+              {"uiMonospaceFontFamilies", bench.at("uiMonospaceFontFamilies")},
+              {"sidebarWidth", sidebar_width}}}};
+}
+
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
+    if (method == "_ui.style.cancel") {
+        const auto id = params.at("id").get<std::string>();
+        const auto found = std::ranges::find(pending_styles, id, &PendingStyle::id);
+        if (found != pending_styles.end()) {
+            // The request runtime already owns the AbortError/TimeoutError.
+            // Complete the abandoned native future without a second failure.
+            found->completion.set_value(nullptr);
+            pending_styles.erase(found);
+        }
+        return nullptr;
+    }
+    if (method == "_ui.style.read") {
+        return style_model();
+    }
+    if (method == "_ui.style.update") {
+        validate_style_patch(params);
+        // Prepare the reply before publication as well. Allocation/validation
+        // failures must leave the entire current style and document intact.
+        auto candidate = settings;
+        candidate["workbench"]["sidebarWidth"] = sidebar_width;
+        candidate.merge_patch(params);
+        const auto prepared = WorkbenchStyle::compile(candidate);
+        candidate["workbench"]["sidebarWidth"] = prepared.sidebar_width;
+        auto reply = Json{{"theme", candidate.at("theme")},
+                          {"workbench",
+                           {{"uiFontSize", prepared.font_size},
+                            {"uiFontFamilies", prepared.font_families},
+                            {"uiMonospaceFontFamilies", prepared.monospace_families},
+                            {"sidebarWidth", prepared.sidebar_width}}}};
+        apply_settings(std::move(candidate));
+        return reply;
+    }
     if (method == "_ui.dialog.present") {
         if (!dialog || dialog->id != params.at("id").get<std::string>())
             throw protocol::RpcError(-32004, "The progress component could not be opened");
@@ -2698,7 +2778,7 @@ const TextLayout* EditorWindow::Impl::prepare_line(Document& document, std::size
     style.dpi_scale = scale;
     style.line_height = std::clamp(editor_settings.value("lineHeight", 1.4F), 1.0F, 4.0F);
     style.tab_size = editor_settings.value("tabSize", 4U);
-    style.color = foreground;
+    style.color = ui_style.colors.foreground;
     if (document.editor_config.contains("tab_width")) {
         style.tab_size = static_cast<unsigned>(
             std::stoul(document.editor_config.at("tab_width").get<std::string>()));
@@ -2711,8 +2791,9 @@ const TextLayout* EditorWindow::Impl::prepare_line(Document& document, std::size
             line->begin, line->end, [&](const auto& highlight) {
                 const auto begin = std::max(line->begin, highlight.begin);
                 const auto end = std::min(line->end, highlight.end);
-                const auto found = syntax_colors.find(highlight.value);
-                const auto color = found == syntax_colors.end() ? foreground : found->second;
+                const auto found = ui_style.syntax.find(highlight.value);
+                const auto color =
+                    found == ui_style.syntax.end() ? ui_style.colors.foreground : found->second;
                 style.color_spans.push_back({begin - line->begin, end - line->begin, color});
             });
     }
@@ -3765,14 +3846,7 @@ void EditorWindow::Impl::label(
 }
 
 TextLayoutOptions EditorWindow::Impl::label_style(float size, SkColor color) const {
-    TextLayoutOptions style;
-    style.font_size = size * ui_font_size / 13.0F;
-    style.dpi_scale = scale;
-    style.color = color == 0 ? foreground : color;
-    style.line_height = 1.15F;
-    style.direction = TextDirection::automatic;
-    style.font_families = {"Segoe UI", "Microsoft YaHei UI", "Segoe UI Emoji"};
-    return style;
+    return ui_style.text(size, scale, color == 0 ? ui_style.colors.foreground : color);
 }
 
 std::shared_ptr<const TextLayout>
@@ -3819,7 +3893,8 @@ void EditorWindow::Impl::measure_layout() {
     for (const auto& id : tabs) {
         const auto& path = documents.at(id).path;
         widths.push_back(
-            label_layout(path.empty() ? "Untitled" : basename(path), 13, foreground)->width());
+            label_layout(path.empty() ? "Untitled" : basename(path), 13, ui_style.colors.foreground)
+                ->width());
     }
     const auto active = std::ranges::find(tabs, active_id);
     const auto index = active == tabs.end() ? 0 : static_cast<std::size_t>(active - tabs.begin());
@@ -3835,14 +3910,7 @@ void EditorWindow::Impl::draw_inline_form(SkCanvas* canvas) {
 }
 
 TextLayoutOptions EditorWindow::Impl::input_style(float font_size) const {
-    TextLayoutOptions style;
-    style.font_size = font_size;
-    style.dpi_scale = scale;
-    style.line_height = 1.0F;
-    style.color = foreground;
-    style.font_families = {"Segoe UI", "Microsoft YaHei UI", "Segoe UI Emoji"};
-    style.direction = TextDirection::automatic;
-    return style;
+    return ui_style.text(font_size, scale, ui_style.colors.foreground, 1.0F);
 }
 
 void EditorWindow::Impl::input_area(float x, float y, float height) {
@@ -3870,17 +3938,21 @@ void EditorWindow::Impl::draw_field(SkCanvas* canvas,
                                     std::string_view placeholder,
                                     float font_size) {
     const auto text = field.text.text().str();
-    const TextFieldPaint paint{
-        box,
-        input_style(font_size),
-        label_style(13, muted),
-        {input_color, border_color, accent, error_color, selection_color, hover_color},
-        text,
-        placeholder,
-        focused ? std::string_view(preedit) : std::string_view{},
-        field.text.selections().front(),
-        focused,
-        invalid};
+    const TextFieldPaint paint{box,
+                               input_style(font_size),
+                               label_style(13, ui_style.colors.muted),
+                               {ui_style.colors.input,
+                                ui_style.colors.border,
+                                ui_style.colors.accent,
+                                ui_style.colors.error,
+                                ui_style.colors.selection,
+                                ui_style.colors.hover},
+                               text,
+                               placeholder,
+                               focused ? std::string_view(preedit) : std::string_view{},
+                               field.text.selections().front(),
+                               focused,
+                               invalid};
     std::optional<Box> caret;
     try {
         caret = cached.draw(canvas, labels, paint);
@@ -3905,40 +3977,48 @@ void EditorWindow::Impl::draw_form(SkCanvas* canvas,
               boxes.panel.width,
               boxes.panel.height,
               0x55000000);
-    rectangle(
-        canvas, boxes.panel.x, boxes.panel.y, boxes.panel.width, boxes.panel.height, border_color);
+    rectangle(canvas,
+              boxes.panel.x,
+              boxes.panel.y,
+              boxes.panel.width,
+              boxes.panel.height,
+              ui_style.colors.border);
     rectangle(canvas,
               boxes.panel.x + scale,
               boxes.panel.y + scale,
               std::max(0.0F, boxes.panel.width - 2 * scale),
               std::max(0.0F, boxes.panel.height - 2 * scale),
-              sidebar_background);
+              ui_style.colors.sidebar);
     canvas->save();
     canvas->clipRect(
         SkRect::MakeXYWH(boxes.panel.x, boxes.panel.y, boxes.panel.width, boxes.panel.height));
-    elided_label(
-        canvas, form.title(), boxes.title.x, boxes.title.y, 12, boxes.title.width, foreground);
+    elided_label(canvas,
+                 form.title(),
+                 boxes.title.x,
+                 boxes.title.y,
+                 12,
+                 boxes.title.width,
+                 ui_style.colors.foreground);
     if (boxes.close.contains(mouse_x, mouse_y))
         rectangle(canvas,
                   boxes.close.x,
                   boxes.close.y,
                   boxes.close.width,
                   boxes.close.height,
-                  hover_color);
+                  ui_style.colors.hover);
     draw_icon(canvas,
               Icon::close,
               boxes.close.x + 6 * scale,
               boxes.close.y + 5 * scale,
               14 * scale,
-              muted);
+              ui_style.colors.muted);
     for (std::size_t i = 0; i < form.fields().size(); ++i) {
         const auto& field = form.fields()[i];
         const auto box = boxes.fields[i];
         const auto focused = form.focus() == i;
         auto& cached = form_fields.try_emplace(form_key(form.id(), field.id), fonts, layout_jobs)
                            .first->second;
-        draw_field(
-            canvas, field, box, focused, form.error(), cached, field.placeholder, ui_font_size);
+        draw_field(canvas, field, box, focused, form.error(), cached, field.placeholder, 13);
     }
     for (std::size_t i = 0; i < form.toggles().size(); ++i) {
         const auto& toggle = form.toggles()[i];
@@ -3949,18 +4029,19 @@ void EditorWindow::Impl::draw_form(SkCanvas* canvas,
                   box.y,
                   box.width,
                   box.height,
-                  toggle.value
-                      ? selection_color
-                      : (box.contains(mouse_x, mouse_y) ? hover_color : sidebar_background));
+                  toggle.value ? ui_style.colors.selection
+                               : (box.contains(mouse_x, mouse_y) ? ui_style.colors.hover
+                                                                 : ui_style.colors.sidebar));
         if (focused)
-            rectangle(canvas, box.x, box.bottom() - scale, box.width, scale, accent);
+            rectangle(
+                canvas, box.x, box.bottom() - scale, box.width, scale, ui_style.colors.accent);
         elided_label(canvas,
                      toggle.label,
                      box.x + 6 * scale,
                      box.y + 5 * scale,
                      11,
                      std::max(0.0F, box.width - 12 * scale),
-                     toggle.value ? foreground : muted);
+                     toggle.value ? ui_style.colors.foreground : ui_style.colors.muted);
     }
     elided_label(canvas,
                  form.message(),
@@ -3968,7 +4049,7 @@ void EditorWindow::Impl::draw_form(SkCanvas* canvas,
                  boxes.message.y,
                  11,
                  boxes.message.width,
-                 form.error() ? error_color : muted);
+                 form.error() ? ui_style.colors.error : ui_style.colors.muted);
     for (std::size_t i = 0; i < form.actions().size(); ++i) {
         const auto box = boxes.actions[i];
         const auto focused = form.focus() == form.fields().size() + form.toggles().size() + i;
@@ -3977,15 +4058,16 @@ void EditorWindow::Impl::draw_form(SkCanvas* canvas,
                   box.y,
                   box.width,
                   box.height,
-                  focused ? selection_color
-                          : (box.contains(mouse_x, mouse_y) ? hover_color : input_color));
+                  focused ? ui_style.colors.selection
+                          : (box.contains(mouse_x, mouse_y) ? ui_style.colors.hover
+                                                            : ui_style.colors.input));
         elided_label(canvas,
                      form.actions()[i].label,
                      box.x + 6 * scale,
                      box.y + 7 * scale,
                      11,
                      std::max(0.0F, box.width - 12 * scale),
-                     foreground);
+                     ui_style.colors.foreground);
     }
     canvas->restore();
 }
@@ -3994,7 +4076,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
     if (prompt == Prompt::none) {
         return;
     }
-    rectangle(canvas, 0, 0, width, height, SkColorSetA(background, 160));
+    rectangle(canvas, 0, 0, width, height, SkColorSetA(ui_style.colors.background, 160));
     if (prompt == Prompt::policy_choice && dialog) {
         const auto& choices = dialog->spec.at("items");
         const auto layout = ChoiceLayout::measure(width, height, scale, choices.size());
@@ -4003,21 +4085,22 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                   layout.panel.y,
                   layout.panel.width,
                   layout.panel.height,
-                  panel_background);
-        rectangle(canvas, layout.panel.x, layout.panel.y, layout.panel.width, 2 * scale, accent);
+                  ui_style.colors.panel);
+        rectangle(canvas,
+                  layout.panel.x,
+                  layout.panel.y,
+                  layout.panel.width,
+                  2 * scale,
+                  ui_style.colors.accent);
         elided_label(canvas,
                      dialog->spec.at("title").get<std::string>(),
                      layout.title.x,
                      layout.title.y,
                      16,
                      layout.title.width,
-                     foreground);
-        TextLayoutOptions style;
-        style.font_size = 13;
-        style.dpi_scale = scale;
-        style.color = muted;
-        style.wrap_width = layout.detail.width;
-        style.font_families = {"Segoe UI", "Microsoft YaHei UI", "sans-serif"};
+                     ui_style.colors.foreground);
+        auto style =
+            ui_style.text(13, scale, ui_style.colors.muted, 1.4F, false, layout.detail.width);
         canvas->save();
         canvas->clipRect(SkRect::MakeXYWH(
             layout.detail.x, layout.detail.y, layout.detail.width, layout.detail.height));
@@ -4047,14 +4130,14 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                       box.y,
                       box.width,
                       box.height,
-                      i == prompt_choice ? accent : border_color);
+                      i == prompt_choice ? ui_style.colors.accent : ui_style.colors.border);
             elided_label(canvas,
                          choices[i].get<std::string>(),
                          box.x + 12 * scale,
                          box.y + 8 * scale,
                          13,
                          box.width - 24 * scale,
-                         foreground);
+                         ui_style.colors.foreground);
         }
         return;
     }
@@ -4069,26 +4152,22 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                   layout.panel.y,
                   layout.panel.width,
                   layout.panel.height,
-                  panel_background);
-        rectangle(canvas, layout.panel.x, layout.panel.y, layout.panel.width, 2 * scale, accent);
+                  ui_style.colors.panel);
+        rectangle(canvas,
+                  layout.panel.x,
+                  layout.panel.y,
+                  layout.panel.width,
+                  2 * scale,
+                  ui_style.colors.accent);
         elided_label(canvas,
                      dialog->spec.at("title").get<std::string>(),
                      layout.title.x,
                      layout.title.y,
                      11,
                      layout.title.width,
-                     muted);
-        TextLayoutOptions style;
-        style.font_size = 13;
-        style.dpi_scale = scale;
-        style.color = foreground;
-        style.font_families =
-            dialog->spec.value("monospace", false)
-                ? std::vector<std::string>{"Cascadia Mono",
-                                           "Consolas",
-                                           "Microsoft YaHei UI",
-                                           "monospace"}
-                : std::vector<std::string>{"Segoe UI", "Microsoft YaHei UI", "sans-serif"};
+                     ui_style.colors.muted);
+        auto style = ui_style.text(
+            13, scale, ui_style.colors.foreground, 1.4F, dialog->spec.value("monospace", false));
         prompt_choice = std::min(prompt_choice, dialog->detail->lines().size() - 1);
         const auto count =
             static_cast<std::size_t>(std::ceil(layout.content.height / (18 * scale))) + 1;
@@ -4105,19 +4184,19 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
             [&](std::size_t row, const std::string&) {
                 switch (dialog->text_panel.tone(row)) {
                 case TextPanelTone::added:
-                    style.color = added_color;
+                    style.color = ui_style.colors.added;
                     break;
                 case TextPanelTone::removed:
-                    style.color = error_color;
+                    style.color = ui_style.colors.error;
                     break;
                 case TextPanelTone::accent:
-                    style.color = accent;
+                    style.color = ui_style.colors.accent;
                     break;
                 case TextPanelTone::muted:
-                    style.color = muted;
+                    style.color = ui_style.colors.muted;
                     break;
                 case TextPanelTone::normal:
-                    style.color = foreground;
+                    style.color = ui_style.colors.foreground;
                     break;
                 }
                 const auto* paragraph = dialog->detail->prepare(row, style);
@@ -4135,14 +4214,14 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         for (std::size_t index = 0; index < layout.actions.size(); ++index) {
             const auto& action = dialog->text_panel.actions()[index];
             const auto& box = layout.actions[index];
-            rectangle(canvas, box.x, box.y, box.width, box.height, border_color);
+            rectangle(canvas, box.x, box.y, box.width, box.height, ui_style.colors.border);
             elided_label(canvas,
                          action.label + (action.key.empty() ? "" : "  [" + action.key + "]"),
                          box.x + 8 * scale,
                          box.y + 7 * scale,
                          12,
                          std::max(0.0F, box.width - 16 * scale),
-                         action.destructive ? error_color : foreground);
+                         action.destructive ? ui_style.colors.error : ui_style.colors.foreground);
         }
         return;
     }
@@ -4151,21 +4230,22 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         const auto fill = [&](const Box& box, SkColor color) {
             rectangle(canvas, box.x, box.y, box.width, box.height, color);
         };
-        fill(layout.panel, panel_background);
-        rectangle(canvas, layout.panel.x, layout.panel.y, layout.panel.width, 2 * scale, accent);
+        fill(layout.panel, ui_style.colors.panel);
+        rectangle(canvas,
+                  layout.panel.x,
+                  layout.panel.y,
+                  layout.panel.width,
+                  2 * scale,
+                  ui_style.colors.accent);
         elided_label(canvas,
                      dialog->spec.at("title").get<std::string>(),
                      layout.title.x,
                      layout.title.y,
                      16,
                      layout.title.width,
-                     foreground);
-        TextLayoutOptions style;
-        style.font_size = 13;
-        style.dpi_scale = scale;
-        style.color = muted;
-        style.wrap_width = layout.detail.width;
-        style.font_families = {"Segoe UI", "Microsoft YaHei UI", "sans-serif"};
+                     ui_style.colors.foreground);
+        auto style =
+            ui_style.text(13, scale, ui_style.colors.muted, 1.4F, false, layout.detail.width);
         canvas->save();
         canvas->clipRect(SkRect::MakeXYWH(
             layout.detail.x, layout.detail.y, layout.detail.width, layout.detail.height));
@@ -4207,28 +4287,28 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                                  y + 4 * scale,
                                  13,
                                  layout.items.width,
-                                 foreground);
+                                 ui_style.colors.foreground);
                 });
             canvas->restore();
         }
         if (prompt == Prompt::policy_confirm) {
-            fill(layout.accept, accent);
+            fill(layout.accept, ui_style.colors.accent);
             elided_label(canvas,
                          dialog->spec.value("accept", std::string("Confirm")),
                          layout.accept.x + 16 * scale,
                          layout.accept.y + 8 * scale,
                          13,
                          layout.accept.width - 32 * scale,
-                         foreground);
+                         ui_style.colors.foreground);
         }
-        fill(layout.cancel, border_color);
+        fill(layout.cancel, ui_style.colors.border);
         elided_label(canvas,
                      dialog->spec.value("cancel", std::string("Cancel")),
                      layout.cancel.x + 16 * scale,
                      layout.cancel.y + 8 * scale,
                      13,
                      layout.cancel.width - 32 * scale,
-                     foreground);
+                     ui_style.colors.foreground);
         return;
     }
     if ((prompt == Prompt::policy_input || prompt == Prompt::policy_pick) && dialog) {
@@ -4243,21 +4323,26 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                   layout.panel.width,
                   picking ? layout.panel.height
                           : layout.input.bottom() - layout.panel.y + 16 * scale,
-                  panel_background);
-        rectangle(canvas, layout.panel.x, layout.panel.y, layout.panel.width, 2 * scale, accent);
+                  ui_style.colors.panel);
+        rectangle(canvas,
+                  layout.panel.x,
+                  layout.panel.y,
+                  layout.panel.width,
+                  2 * scale,
+                  ui_style.colors.accent);
         elided_label(canvas,
                      dialog->spec.at("title").get<std::string>(),
                      layout.title.x + 4 * scale,
                      layout.title.y,
                      10,
                      layout.title.width - 8 * scale,
-                     muted);
+                     ui_style.colors.muted);
         rectangle(canvas,
                   layout.input.x,
                   layout.input.y,
                   layout.input.width,
                   layout.input.height,
-                  input_color);
+                  ui_style.colors.input);
         draw_field(canvas,
                    dialog->input->fields().front(),
                    layout.input,
@@ -4292,14 +4377,14 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                                                             y,
                                                             layout.rows.width,
                                                             layout.row_height - 2 * scale,
-                                                            hover_color);
+                                                            ui_style.colors.hover);
                                               elided_label(canvas,
                                                            item.label,
                                                            layout.rows.x + 8 * scale,
                                                            y + 7 * scale,
                                                            13,
                                                            layout.rows.width - 16 * scale,
-                                                           foreground);
+                                                           ui_style.colors.foreground);
                                           });
             if (!dialog->picker.size())
                 label(canvas,
@@ -4307,7 +4392,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                       layout.rows.x + 8 * scale,
                       layout.rows.y + 7 * scale,
                       13,
-                      muted);
+                      ui_style.colors.muted);
             canvas->restore();
         }
         return;
@@ -4329,7 +4414,7 @@ void EditorWindow::Impl::draw() {
                            3 * scale);
     measure_layout();
     gutter = 60 * scale;
-    canvas->clear(background);
+    canvas->clear(ui_style.colors.background);
     const auto fill = [&](const Box& box, SkColor color) {
         rectangle(canvas, box.x, box.y, box.width, box.height, color);
     };
@@ -4345,26 +4430,33 @@ void EditorWindow::Impl::draw() {
                   x,
                   y,
                   size,
-                  code ? code_icon_color : (script ? script_icon_color : muted));
+                  code ? ui_style.colors.code_icon
+                       : (script ? ui_style.colors.script_icon : ui_style.colors.muted));
     };
-    fill(geometry.header, activity_background);
-    rectangle(canvas, 0, geometry.header.bottom() - scale, width, scale, border_color);
+    fill(geometry.header, ui_style.colors.activity);
+    rectangle(canvas, 0, geometry.header.bottom() - scale, width, scale, ui_style.colors.border);
     const auto search = geometry.command_center;
     if (search.x >= 72 * scale) {
-        label(canvas, "Astra", 14 * scale, 8 * scale, 12, muted);
+        label(canvas, "Astra", 14 * scale, 8 * scale, 12, ui_style.colors.muted);
     }
     SkPaint search_paint;
-    search_paint.setColor(input_color);
+    search_paint.setColor(ui_style.colors.input);
     search_paint.setAntiAlias(true);
     const auto search_rect = SkRect::MakeXYWH(search.x, search.y, search.width, search.height);
     canvas->drawRoundRect(search_rect, 4 * scale, 4 * scale, search_paint);
     search_paint.setStyle(SkPaint::kStroke_Style);
     search_paint.setStrokeWidth(scale);
-    search_paint.setColor(search.contains(mouse_x, mouse_y) ? accent : border_color);
+    search_paint.setColor(search.contains(mouse_x, mouse_y) ? ui_style.colors.accent
+                                                            : ui_style.colors.border);
     canvas->drawRoundRect(search_rect, 4 * scale, 4 * scale, search_paint);
     canvas->save();
     canvas->clipRect(search_rect);
-    draw_icon(canvas, Icon::search, search.x + 9 * scale, search.y + 3 * scale, 15 * scale, muted);
+    draw_icon(canvas,
+              Icon::search,
+              search.x + 9 * scale,
+              search.y + 3 * scale,
+              15 * scale,
+              ui_style.colors.muted);
     const bool show_hint = search.width > 260 * scale;
     elided_label(canvas,
                  options.workspace_name,
@@ -4372,7 +4464,7 @@ void EditorWindow::Impl::draw() {
                  search.y + 3 * scale,
                  12,
                  search.width - (show_hint ? 126 : 39) * scale,
-                 foreground);
+                 ui_style.colors.foreground);
     if (show_hint) {
         elided_label(canvas,
                      "Ctrl+Shift+P",
@@ -4380,10 +4472,10 @@ void EditorWindow::Impl::draw() {
                      search.y + 4 * scale,
                      10,
                      77 * scale,
-                     muted);
+                     ui_style.colors.muted);
     }
     canvas->restore();
-    fill(geometry.activity, activity_background);
+    fill(geometry.activity, ui_style.colors.activity);
     const auto activity_views = sidebar_views.ordered();
     canvas->save();
     canvas->clipRect(SkRect::MakeLTRB(geometry.activity.x,
@@ -4395,25 +4487,29 @@ void EditorWindow::Impl::draw() {
         const auto y = geometry.header.bottom() + static_cast<float>(index) * 48 * scale;
         const auto selected = active_view == activity_views[index];
         if (selected && geometry.sidebar.width > 0)
-            rectangle(canvas, 0, y, 2 * scale, 48 * scale, accent);
+            rectangle(canvas, 0, y, 2 * scale, 48 * scale, ui_style.colors.accent);
         draw_icon(canvas,
                   view_icon(view.spec.value("icon", std::string("files"))),
                   10 * scale,
                   y + 13 * scale,
                   24 * scale,
-                  selected ? foreground : muted);
+                  selected ? ui_style.colors.foreground : ui_style.colors.muted);
     }
     canvas->restore();
-    draw_icon(
-        canvas, Icon::settings, 10 * scale, geometry.status.y - 32 * scale, 22 * scale, muted);
+    draw_icon(canvas,
+              Icon::settings,
+              10 * scale,
+              geometry.status.y - 32 * scale,
+              22 * scale,
+              ui_style.colors.muted);
     rectangle(canvas,
               geometry.activity.right() - scale,
               geometry.activity.y,
               scale,
               geometry.activity.height,
-              border_color);
+              ui_style.colors.border);
     if (geometry.sidebar.width > 0) {
-        fill(geometry.sidebar, sidebar_background);
+        fill(geometry.sidebar, ui_style.colors.sidebar);
         const auto sx = geometry.sidebar.x;
         auto& view = sidebar_views.at(active_view);
         label(canvas,
@@ -4421,7 +4517,7 @@ void EditorWindow::Impl::draw() {
               sx + 16 * scale,
               geometry.sidebar.y + 12 * scale,
               11,
-              foreground);
+              ui_style.colors.foreground);
         const auto busy = busy_views.value(active_view, false);
         const Box refresh{
             left - 34 * scale, geometry.sidebar.y + 5 * scale, 28 * scale, 26 * scale};
@@ -4430,26 +4526,26 @@ void EditorWindow::Impl::draw() {
                   left - 29 * scale,
                   geometry.sidebar.y + 9 * scale,
                   16 * scale,
-                  busy ? accent : muted);
+                  busy ? ui_style.colors.accent : ui_style.colors.muted);
         rectangle(canvas,
                   sx,
                   geometry.sidebar.y + 32 * scale,
                   geometry.sidebar.width,
                   24 * scale,
-                  panel_background);
+                  ui_style.colors.sidebar);
         draw_icon(canvas,
                   view.expanded ? Icon::chevron_down : Icon::chevron_right,
                   sx + 6 * scale,
                   geometry.sidebar.y + 36 * scale,
                   16 * scale,
-                  muted);
+                  ui_style.colors.muted);
         elided_label(canvas,
                      view.subtitle.empty() ? options.workspace_name : view.subtitle,
                      sx + 24 * scale,
                      geometry.sidebar.y + 37 * scale,
                      12,
                      geometry.sidebar.width - 30 * scale,
-                     foreground);
+                     ui_style.colors.foreground);
         const auto count = view.expanded ? view.index.size() : 0;
         if (view.scroll >= count)
             view.scroll = count ? count - 1 : 0;
@@ -4476,7 +4572,7 @@ void EditorWindow::Impl::draw() {
                           y,
                           geometry.sidebar.width,
                           geometry.sidebar_row_height,
-                          selection_color);
+                          ui_style.colors.selection);
             else if (geometry.sidebar_rows.contains(mouse_x, mouse_y) && mouse_y >= y &&
                      mouse_y < y + geometry.sidebar_row_height)
                 rectangle(canvas,
@@ -4484,9 +4580,10 @@ void EditorWindow::Impl::draw() {
                           y,
                           geometry.sidebar.width,
                           geometry.sidebar_row_height,
-                          hover_color);
+                          ui_style.colors.hover);
             if (focused_row)
-                rectangle(canvas, sx, y, 2 * scale, geometry.sidebar_row_height, accent);
+                rectangle(
+                    canvas, sx, y, 2 * scale, geometry.sidebar_row_height, ui_style.colors.accent);
             if (row.group)
                 draw_icon(canvas,
                           view.index.collapsed(item.at("id").get<std::string>())
@@ -4495,19 +4592,19 @@ void EditorWindow::Impl::draw() {
                           x,
                           y + 4 * scale,
                           16 * scale,
-                          muted);
+                          ui_style.colors.muted);
             const auto icon = view_icon(item.value("icon", std::string{}));
-            const auto icon_color = icon == Icon::folder   ? folder_color
-                                    : icon == Icon::code   ? code_icon_color
-                                    : icon == Icon::braces ? script_icon_color
-                                                           : muted;
+            const auto icon_color = icon == Icon::folder   ? ui_style.colors.folder
+                                    : icon == Icon::code   ? ui_style.colors.code_icon
+                                    : icon == Icon::braces ? ui_style.colors.script_icon
+                                                           : ui_style.colors.muted;
             draw_icon(canvas, icon, x + 18 * scale, y + 4 * scale, 16 * scale, icon_color);
             const auto tone = item.value("tone", std::string{});
-            const auto color = tone == "error"     ? error_color
-                               : tone == "added"   ? added_color
-                               : tone == "changed" ? changed_color
-                               : tone == "muted"   ? muted
-                                                   : foreground;
+            const auto color = tone == "error"     ? ui_style.colors.error
+                               : tone == "added"   ? ui_style.colors.added
+                               : tone == "changed" ? ui_style.colors.changed
+                               : tone == "muted"   ? ui_style.colors.muted
+                                                   : ui_style.colors.foreground;
             const auto badge = item.value("badge", std::string{});
             const auto badge_width = badge.empty() ? 0.0F : 48 * scale;
             elided_label(canvas,
@@ -4533,27 +4630,31 @@ void EditorWindow::Impl::draw() {
                          geometry.sidebar_rows.y + 12 * scale,
                          12,
                          geometry.sidebar.width - 32 * scale,
-                         muted);
+                         ui_style.colors.muted);
         canvas->restore();
         if (geometry.outline_header.height > 0) {
-            fill(geometry.outline_header, panel_background);
+            fill(geometry.outline_header, ui_style.colors.sidebar);
             draw_icon(canvas,
                       show_outline ? Icon::chevron_down : Icon::chevron_right,
                       sx + 6 * scale,
                       geometry.outline_header.y + 5 * scale,
                       16 * scale,
-                      muted);
+                      ui_style.colors.muted);
             label(canvas,
                   "OUTLINE",
                   sx + 27 * scale,
                   geometry.outline_header.y + 7 * scale,
                   11,
-                  foreground);
+                  ui_style.colors.foreground);
         }
-        rectangle(
-            canvas, left - scale, geometry.sidebar.y, scale, geometry.sidebar.height, border_color);
+        rectangle(canvas,
+                  left - scale,
+                  geometry.sidebar.y,
+                  scale,
+                  geometry.sidebar.height,
+                  ui_style.colors.border);
     }
-    fill(geometry.tabs, panel_background);
+    fill(geometry.tabs, ui_style.colors.tabs);
     canvas->save();
     canvas->clipRect(SkRect::MakeXYWH(
         geometry.tabs.x, geometry.tabs.y, geometry.tabs.width, geometry.tabs.height));
@@ -4561,15 +4662,20 @@ void EditorWindow::Impl::draw() {
         const auto& document = documents.at(tabs[tab.index]);
         const bool active = tabs[tab.index] == active_id;
         if (active) {
-            fill(tab.bounds, active_tab_background);
-            rectangle(canvas, tab.bounds.x, tab.bounds.y, tab.bounds.width, 2 * scale, accent);
+            fill(tab.bounds, ui_style.colors.active_tab);
+            rectangle(canvas,
+                      tab.bounds.x,
+                      tab.bounds.y,
+                      tab.bounds.width,
+                      2 * scale,
+                      ui_style.colors.accent);
         }
         rectangle(canvas,
                   tab.bounds.right() - scale,
                   tab.bounds.y,
                   scale,
                   tab.bounds.height,
-                  border_color);
+                  ui_style.colors.border);
         file_icon(document.path, tab.bounds.x + 12 * scale, tab.bounds.y + 9 * scale, 16 * scale);
         canvas->save();
         canvas->clipRect(SkRect::MakeXYWH(tab.bounds.x + 34 * scale,
@@ -4582,11 +4688,11 @@ void EditorWindow::Impl::draw() {
                      tab.bounds.y + 10 * scale,
                      13,
                      tab.bounds.width - 62 * scale,
-                     active ? foreground : muted);
+                     active ? ui_style.colors.foreground : ui_style.colors.muted);
         canvas->restore();
         if (document.metadata.value("dirty", false)) {
             SkPaint dirty;
-            dirty.setColor(active ? foreground : muted);
+            dirty.setColor(active ? ui_style.colors.foreground : ui_style.colors.muted);
             dirty.setAntiAlias(true);
             canvas->drawCircle(
                 tab.close.x + 13 * scale, tab.close.y + 17 * scale, 3 * scale, dirty);
@@ -4596,25 +4702,25 @@ void EditorWindow::Impl::draw() {
                       tab.close.x + 6 * scale,
                       tab.close.y + 10 * scale,
                       14 * scale,
-                      muted);
+                      ui_style.colors.muted);
     }
     if (tab_strip.previous.width > 0) {
-        fill(tab_strip.previous, panel_background);
-        fill(tab_strip.next, panel_background);
+        fill(tab_strip.previous, ui_style.colors.tabs);
+        fill(tab_strip.next, ui_style.colors.tabs);
         canvas->save();
         canvas->translate(tab_strip.previous.x + 18 * scale, tab_strip.previous.y + 10 * scale);
         canvas->scale(-1, 1);
-        draw_icon(canvas, Icon::chevron_right, 0, 0, 14 * scale, muted);
+        draw_icon(canvas, Icon::chevron_right, 0, 0, 14 * scale, ui_style.colors.muted);
         canvas->restore();
         draw_icon(canvas,
                   Icon::chevron_right,
                   tab_strip.next.x + 6 * scale,
                   tab_strip.next.y + 10 * scale,
                   14 * scale,
-                  muted);
+                  ui_style.colors.muted);
     }
     canvas->restore();
-    fill(geometry.breadcrumb, background);
+    fill(geometry.breadcrumb, ui_style.colors.background);
     if (const auto* document = current()) {
         canvas->save();
         canvas->clipRect(SkRect::MakeXYWH(geometry.breadcrumb.x,
@@ -4627,11 +4733,15 @@ void EditorWindow::Impl::draw() {
                      geometry.breadcrumb.y + 5 * scale,
                      12,
                      geometry.breadcrumb.width - 36 * scale,
-                     muted);
+                     ui_style.colors.muted);
         canvas->restore();
     }
-    rectangle(
-        canvas, left, geometry.breadcrumb.bottom() - scale, right - left, scale, border_color);
+    rectangle(canvas,
+              left,
+              geometry.breadcrumb.bottom() - scale,
+              right - left,
+              scale,
+              ui_style.colors.border);
 
     if (auto* document = current()) {
         const auto& selections = document->metadata.at("selections");
@@ -4670,7 +4780,7 @@ void EditorWindow::Impl::draw() {
                 }
             }
             if (number == active_line) {
-                rectangle(canvas, left, y, right - left, row_height, current_line_color);
+                rectangle(canvas, left, y, right - left, row_height, ui_style.colors.current_line);
             }
             document->decorations.gutter.intersect(number, number + 1, [&](const auto& change) {
                 const auto& kind = change.value;
@@ -4679,15 +4789,16 @@ void EditorWindow::Impl::draw() {
                           y,
                           3 * scale,
                           kind == "deleted" ? 4 * scale : row_height,
-                          kind == "added" ? added_color
-                                          : (kind == "deleted" ? error_color : changed_color));
+                          kind == "added" ? ui_style.colors.added
+                                          : (kind == "deleted" ? ui_style.colors.error
+                                                               : ui_style.colors.changed));
             });
             label(canvas,
                   std::to_string(number + 1),
                   left + 15 * scale,
                   y + 3 * scale,
                   12,
-                  number == active_line ? foreground : muted);
+                  number == active_line ? ui_style.colors.foreground : ui_style.colors.muted);
             const auto text_x = left + gutter - document->horizontal;
             canvas->save();
             canvas->clipRect(SkRect::MakeLTRB(left + gutter - 5 * scale, y, right, y + row_height));
@@ -4704,7 +4815,7 @@ void EditorWindow::Impl::draw() {
                                   y + box.y,
                                   box.width,
                                   box.height,
-                                  selection_color);
+                                  ui_style.colors.selection);
                     }
                 }
                 if (std::min(anchor, head) <= line.end && std::max(anchor, head) > line.end &&
@@ -4714,7 +4825,7 @@ void EditorWindow::Impl::draw() {
                               y,
                               8 * scale,
                               row_height,
-                              selection_color);
+                              ui_style.colors.selection);
                 }
             }
             shaped->draw(canvas, text_x, y);
@@ -4728,7 +4839,8 @@ void EditorWindow::Impl::draw() {
                         number == diagnostic.end - 1
                             ? shaped->byte_offset_from_utf16(diagnostic.value.end_utf16)
                             : line.text.size();
-                    const auto color = diagnostic.value.severity == 1 ? error_color : warning_color;
+                    const auto color = diagnostic.value.severity == 1 ? ui_style.colors.error
+                                                                      : ui_style.colors.warning;
                     for (const auto& box : shaped->selection_rects(begin, end)) {
                         rectangle(canvas,
                                   text_x + box.x,
@@ -4753,7 +4865,7 @@ void EditorWindow::Impl::draw() {
                               cursor_y,
                               std::max(1.0F, 1.5F * scale),
                               caret.height,
-                              cursor_color);
+                              ui_style.colors.cursor);
                 }
                 if (index == 0) {
                     int logical_width{}, logical_height{};
@@ -4776,14 +4888,14 @@ void EditorWindow::Impl::draw() {
                                   cursor_y,
                                   composition.width() + 4 * scale,
                                   composition.height(),
-                                  background);
+                                  ui_style.colors.background);
                         composition.draw(canvas, cursor_x, cursor_y);
                         rectangle(canvas,
                                   cursor_x,
                                   cursor_y + composition.height() - scale,
                                   composition.width(),
                                   scale,
-                                  accent);
+                                  ui_style.colors.accent);
                     }
                 }
             }
@@ -4793,7 +4905,7 @@ void EditorWindow::Impl::draw() {
                       text_x + shaped->width(),
                       y + 3 * scale,
                       12,
-                      muted);
+                      ui_style.colors.muted);
             }
             canvas->restore();
         });
@@ -4806,34 +4918,39 @@ void EditorWindow::Impl::draw() {
             const auto y =
                 content_top + (track - thumb) * static_cast<float>(document->first_line) /
                                   static_cast<float>(std::max(std::size_t{1}, lines - 1));
-            rectangle(canvas, right - 7 * scale, y, 5 * scale, thumb, scrollbar_color);
+            rectangle(canvas, right - 7 * scale, y, 5 * scale, thumb, ui_style.colors.scrollbar);
         }
     } else {
-        label(canvas, "ASTRA", left + 85 * scale, content_top + 96 * scale, 40, muted);
+        label(canvas,
+              "ASTRA",
+              left + 85 * scale,
+              content_top + 96 * scale,
+              40,
+              ui_style.colors.muted);
         label(canvas,
               "A focused place to write code.",
               left + 88 * scale,
               content_top + 159 * scale,
               15,
-              muted);
+              ui_style.colors.muted);
         label(canvas,
               "New file        Ctrl+N",
               left + 90 * scale,
               content_top + 211 * scale,
               13,
-              muted);
+              ui_style.colors.muted);
         label(canvas,
               "Open file       Ctrl+P",
               left + 90 * scale,
               content_top + 248 * scale,
               13,
-              muted);
+              ui_style.colors.muted);
         label(canvas,
               "Commands        Ctrl+Shift+P",
               left + 90 * scale,
               content_top + 285 * scale,
               13,
-              muted);
+              ui_style.colors.muted);
     }
 
     if (geometry.outline_rows.height > 0 && geometry.sidebar.width > 0) {
@@ -4847,7 +4964,7 @@ void EditorWindow::Impl::draw() {
             if (document->syntax_revision != document->view_revision ||
                 document->syntax_state == "pending" ||
                 document->outline_begin != document->outline_scroll) {
-                label(canvas, "Parsing document...", ox, oy + 6 * scale, 12, muted);
+                label(canvas, "Parsing document...", ox, oy + 6 * scale, 12, ui_style.colors.muted);
             } else if (document->outline.empty()) {
                 label(canvas,
                       document->syntax_state == "unsupported" ? "No parser for this file type"
@@ -4855,7 +4972,7 @@ void EditorWindow::Impl::draw() {
                       ox,
                       oy + 6 * scale,
                       12,
-                      muted);
+                      ui_style.colors.muted);
             } else
                 for (std::size_t i = 0; i < document->outline.size(); ++i) {
                     const auto y = oy + static_cast<float>(i) * geometry.sidebar_row_height;
@@ -4870,34 +4987,35 @@ void EditorWindow::Impl::draw() {
                               x,
                               y + 4 * scale,
                               16 * scale,
-                              accent);
+                              ui_style.colors.accent);
                     label(canvas,
                           symbol.at("name").get<std::string>(),
                           x + 22 * scale,
                           y + 4 * scale,
                           13,
-                          foreground);
+                          ui_style.colors.foreground);
                 }
             canvas->restore();
         }
     }
-    fill(geometry.status, status_color);
-    rectangle(canvas, 0, geometry.status.y, width, scale, border_color);
+    fill(geometry.status, ui_style.colors.status);
+    rectangle(canvas, 0, geometry.status.y, width, scale, ui_style.colors.border);
     const auto status_y = geometry.status.y + 6 * scale;
     draw_icon(canvas,
               Icon::branch,
               12 * scale,
               geometry.status.y + 4 * scale,
               16 * scale,
-              status_foreground);
+              ui_style.colors.status_foreground);
     const auto branch = workspace_branch;
-    elided_label(canvas, branch, 34 * scale, status_y, 11, 90 * scale, status_foreground);
+    elided_label(
+        canvas, branch, 34 * scale, status_y, 11, 90 * scale, ui_style.colors.status_foreground);
     canvas->save();
     canvas->clipRect(SkRect::MakeXYWH(130 * scale,
                                       geometry.status.y,
                                       std::max(0.0F, width - 600 * scale),
                                       geometry.status.height));
-    label(canvas, status, 140 * scale, status_y, 11, status_foreground);
+    label(canvas, status, 140 * scale, status_y, 11, ui_style.colors.status_foreground);
     canvas->restore();
     if (const auto* document = current()) {
         const auto& positions = document->metadata.contains("selectionPositions")
@@ -4937,13 +5055,14 @@ void EditorWindow::Impl::draw() {
         if (width > 820 * scale)
             detail += "    " + std::string(spaces ? "Spaces: " : "Tab Size: ") +
                       std::to_string(tab_size) + (document->language_active ? "    LSP" : "");
-        const auto detail_width = label_layout(detail, 11, status_foreground)->width();
+        const auto detail_width =
+            label_layout(detail, 11, ui_style.colors.status_foreground)->width();
         label(canvas,
               detail,
               std::max(130 * scale, width - detail_width - 16 * scale),
               status_y,
               11,
-              status_foreground);
+              ui_style.colors.status_foreground);
     }
     if (recovery_available) {
         rectangle(canvas,
@@ -4951,13 +5070,13 @@ void EditorWindow::Impl::draw() {
                   content_bottom - 100 * scale,
                   std::max(100 * scale, right - left - 24 * scale),
                   36 * scale,
-                  recovery_background);
+                  ui_style.colors.recovery_background);
         label(canvas,
               "Unsaved recovery sessions are available — click to review",
               left + 24 * scale,
               content_bottom - 91 * scale,
               12,
-              foreground);
+              ui_style.colors.foreground);
     }
     if (const auto notice = workspace_notice(); !notice.empty()) {
         rectangle(canvas,
@@ -4965,15 +5084,25 @@ void EditorWindow::Impl::draw() {
                   content_bottom - 142 * scale,
                   std::max(100 * scale, right - left - 24 * scale),
                   36 * scale,
-                  notice_background);
+                  ui_style.colors.notice_background);
         canvas->save();
         canvas->clipRect(SkRect::MakeLTRB(left + 24 * scale,
                                           content_bottom - 142 * scale,
                                           right - 44 * scale,
                                           content_bottom - 106 * scale));
-        label(canvas, notice, left + 24 * scale, content_bottom - 133 * scale, 12, warning_color);
+        label(canvas,
+              notice,
+              left + 24 * scale,
+              content_bottom - 133 * scale,
+              12,
+              ui_style.colors.warning);
         canvas->restore();
-        label(canvas, "×", right - 34 * scale, content_bottom - 133 * scale, 13, warning_color);
+        label(canvas,
+              "×",
+              right - 34 * scale,
+              content_bottom - 133 * scale,
+              13,
+              ui_style.colors.warning);
     }
     if (!error.empty()) {
         rectangle(canvas,
@@ -4981,8 +5110,13 @@ void EditorWindow::Impl::draw() {
                   content_bottom - 58 * scale,
                   std::max(100 * scale, right - left - 24 * scale),
                   46 * scale,
-                  error_background);
-        label(canvas, error, left + 24 * scale, content_bottom - 44 * scale, 12, foreground);
+                  ui_style.colors.error_background);
+        label(canvas,
+              error,
+              left + 24 * scale,
+              content_bottom - 44 * scale,
+              12,
+              ui_style.colors.foreground);
     }
     draw_inline_form(canvas);
     draw_prompt(canvas, width, height);
@@ -5052,6 +5186,7 @@ WorkbenchViewState EditorWindow::view_state() const {
                               impl_->tabs,
                               impl_->sidebar_views.at("explorer").index.size()};
     const auto& sidebar = impl_->sidebar_views.at(impl_->active_view);
+    result.style = impl_->style_model();
     result.file_first = sidebar.scroll;
     result.text_labels = {{"entries", label_stats.entries},
                           {"bytes", label_stats.accounted_bytes},
@@ -5076,6 +5211,7 @@ WorkbenchViewState EditorWindow::view_state() const {
         composing_fields += cached.composition_pending() ? 1 : 0;
     }
     result.input_layout["pendingFields"] = pending_fields;
+    result.input_layout["pendingStyles"] = impl_->pending_styles.size();
     result.input_layout["compositionPendingFields"] = composing_fields;
     if (impl_->dialog) {
         if (impl_->dialog->input_layout) {
@@ -5166,6 +5302,10 @@ bool EditorWindow::pump() {
             }
             impl_->stopping_workbench = true;
             impl_->clear_input_events();
+            for (auto& pending : impl_->pending_styles) {
+                pending.completion.set_value(nullptr);
+            }
+            impl_->pending_styles.clear();
             impl_->sidebar_views.shutdown();
             impl_->workbench_shutdown_deadline = Clock::now() + std::chrono::seconds(5);
             impl_->workbench->shutdown();
@@ -5232,6 +5372,7 @@ bool EditorWindow::pump() {
             impl_->workbench->emit(event.first, event.second);
         }
         impl_->workbench->poll();
+        impl_->finish_styles();
         impl_->advance_policy_inputs();
         impl_->advance_view_inputs();
         if (impl_->finish_fences())

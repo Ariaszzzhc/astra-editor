@@ -1240,6 +1240,13 @@ Runtime::Json Runtime::settings() const {
     return impl_->configuration;
 }
 
+Runtime::Json Runtime::take_settings() {
+    impl_->require_owner();
+    auto result = Json::object();
+    result.swap(impl_->configuration);
+    return result;
+}
+
 std::uint64_t Runtime::keybinding_generation() const {
     impl_->require_owner();
     return impl_->binding_generation;

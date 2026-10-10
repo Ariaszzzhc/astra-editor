@@ -175,6 +175,47 @@ error includes `handlerCompleted` and `resyncRequired`: it is not a rollback.
 
 ## JavaScript customization
 
+The client loads the shipped `data/defaults.js` policy before its workbench and
+user script. Default settings are retained separately: effective startup settings
+merge shipped defaults, service preferences, then explicit client preferences.
+An explicit client value equal to the default still overrides a different service
+value. C++ compiles a complete theme/font candidate before publishing it; the
+window has no second product palette or UI font-family preset.
+
+`astra.ui.style.read(options)` and `astra.ui.style.update(patch, options)` return
+Promises for the effective `{theme, workbench}` presentation settings. Updates
+apply only to this window and do not edit documents, persist service settings or
+change another client's presentation. Use `astra.configure` in the user startup
+script for persistent preferences. The style read is the authority for current
+presentation; `astra.settings()` describes configuration in its own runtime.
+
+```javascript
+const previous = await astra.ui.style.read();
+await astra.ui.style.update({
+    theme: { panel: '#252526', tabs: '#181818' },
+    workbench: {
+        uiFontSize: 14,
+        uiFontFamilies: ['Segoe UI', 'Microsoft YaHei UI', 'Segoe UI Emoji']
+    }
+}, { signal, timeoutMs: 30000 });
+await astra.ui.style.update(previous);
+```
+
+Updates accept partial `theme` and `workbench` objects. Unknown fields, deleted
+required roles, malformed `#RRGGBB` colors and invalid font values reject without
+publishing any part of the candidate. Theme roles include separate `panel`,
+`tabs`, and `syntaxError` colors. Workbench style fields are `uiFontSize` (9–16),
+`sidebarWidth` (finite and clamped to 180–480), `uiFontFamilies` and
+`uiMonospaceFontFamilies` (1–8 nonempty UTF-8 names, at most 128 bytes per name).
+Body text, titles, labels and editable inputs scale their reference sizes relative
+to the same 13-unit UI base. Document font configuration remains under `editor`.
+
+Live updates enter a bounded native queue after structural/name/family validation.
+Already accepted pointer/text input finishes using its captured font geometry
+before an update publishes. Modal input may remain open. Cancellation removes
+unpublished updates; shutdown settles pending native futures without publication.
+The queue has a 30-second native deadline in addition to the request timeout.
+
 `data/defaults.js` supplies complete settings and VS Code-style bindings.
 Explicit `--config <workspace-relative.js>` runs user configuration afterward:
 

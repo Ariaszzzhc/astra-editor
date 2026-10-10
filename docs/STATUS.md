@@ -18,6 +18,98 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### JS-owned workbench style and async updates (2026-10-10)
+
+The client now imports the real shipped `data/defaults.js` before the workbench
+and user configuration. Runtime bootstrap settings are extracted separately
+from subsequent client preferences; effective startup style merges shipped
+defaults, service preferences and explicit client preferences in that order.
+The window's duplicate native RGB palette and UI font-family presets were removed.
+`WorkbenchStyle` validates a complete candidate before publication. Modal panels
+and the tab strip have separate roles; syntax error color is explicitly configured.
+
+Labels, titles, modal/picker inputs, mounted fields, wrapped dialog detail and
+monospace text now derive their size and font families from the same configured
+UI base. Native font geometry, clipping, input and painting remain in C++.
+UI-only changes preserve document paragraph work; document font/foreground/syntax
+changes retire obsolete prepared geometry while retaining measured line indexes
+and the bounded exact paragraph cache.
+
+`astra.ui.style.read` / `update` return Promises and accept standard request
+cancellation/timeout options. Updates are client presentation operations, not
+document edits or persisted service configuration. Unknown fields, removed
+required roles, malformed colors or invalid fonts reject without partial
+publication. The effective style is observable through Agent view state. The
+reply is prepared before publishing the candidate.
+
+Live updates now pass through a bounded 256-entry native queue. Patch field/name/
+family bounds are checked before copying into the queue. Already accepted native
+pointer/text events finish with their captured font geometry before style
+publication; an open modal does not require an answer before an update completes.
+The owner loop publishes at most eight candidates within a four-millisecond
+budget, with a 30-second native deadline. Request cancellation removes queued
+updates, and shutdown settles their futures without publishing.
+
+Focused Windows evidence:
+
+- Three initial builds failed under warnings-as-errors: a shadowed color-parser
+  local, ignored `[[nodiscard]]` results in exception tests and integer-to-float
+  conversion in conditional reference sizes. Corrected the variable name, explicit
+  test casts and float constants. Failure logs:
+  `build/style-build-{first,second,third}-failed.log`.
+- `./scripts/xmake.ps1 build -y astra-tests gui-presentation-smoke astra` passed
+  in Debug; logs: `build/style-build-debug.log` and `style-final-build-debug.log`.
+- `astra-tests.exe --no-version '--test-case=presentation style*,workbench*style*'`
+  passed 4 cases / 108 assertions. The remaining 561 cases were excluded by the
+  filter. Tests cover complete JS defaults without bootstrap I/O, UI text hierarchy
+  at 9/13/16, independent service/client preference layers, malformed palettes and
+  families, invalid geometry, deferred native read/update completion and Promise
+  return values. Final log: `build/style-final-unit-debug.log`.
+- `gui-presentation-smoke.exe` passed actual SDL3/Graphite/Dawn workflows. The
+  service sets font size 11 and sidebar width 270; an explicit client size 13 wins
+  without losing the width. Awaited live font/family/palette changes, eight invalid
+  patch forms, a pre-aborted request and exact style restoration pass. Styled
+  modal pointer insertion at sizes 9 and 16 agrees with independently configured
+  native font geometry. Captured document revision/content/selection are unchanged.
+  Initial log: `build/style-gui-debug.log`. Queue acceptance additionally checks
+  cancellation after actual native submission and a live font update concurrent
+  with cold long-input pointer/text/acceptance. A first queue run reported a
+  redundant failure from an abandoned native future after the caller's AbortError.
+  Cancellation/shutdown now settle that native future without another exception;
+  actual invalid configuration errors still reject. Failure log:
+  `build/style-queue-first-failed.log`. The corrected run passed;
+  log: `build/style-final-gui-debug.log`.
+- Inspected actual GPU captures `build/graphics/gui-style-large.png`,
+  `gui-style-large-choice.png` and `gui-style-small-input.png`. The large font and
+  separate custom panel/tab palettes are visible, body text follows configured
+  size, and Unicode input remains clipped within its field. These are component
+  checks, not final whole-product visual acceptance.
+- `./scripts/format.ps1 -Offline` passed 151 C++ / 12 JS files and
+  `git diff --check` passed. Log: `build/style-format.log`.
+
+An initial complete-acceptance attempt reached the Debug GUI presentation run
+but failed with `Unknown native UI primitive`: JS resources were edited while
+that validation process was still live, so the fixture read the new API against
+its previously built binary. This was a validation sequencing error, not accepted
+evidence. The process exited, failure log was preserved as
+`build/style-acceptance-first-failed.log`, and all targets were rebuilt together.
+
+- `./scripts/test.ps1 -Mode all -Gui` subsequently completed with exit code 0 on
+  Windows, using unchanged runtime resources. Debug: 565 cases / 1,188,476
+  assertions; Release: 565 cases / 1,188,469 assertions. All passed with zero
+  failed or skipped cases. Both modes passed real renderer/font/viewport/input
+  checks, all GUI/service/recovery/workspace/presentation workflows, TCP editing
+  and 12 package helper invariants. Log: `build/style-final-acceptance-all.log`.
+- After the full acceptance process exited, `./scripts/xmake.ps1 f -m debug -y`
+  restored Debug configuration; log: `build/style-restore-debug.log`.
+  Final `./scripts/format.ps1 -Check -Offline` passed 151 C++ / 12 JS files and
+  `git diff --check` passed; log: `build/style-final-format.log`.
+
+No new distribution has been made by these checks.
+Remaining native icon policy, component extraction, document IME preparation,
+row-internal incremental glyph layout and whole-product visual acceptance are
+still incomplete.
+
 ### JS-owned document keymaps and page policy (2026-10-10)
 
 The window no longer supplies a second hardcoded default keymap or an editing /

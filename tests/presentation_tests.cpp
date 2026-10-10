@@ -7,6 +7,9 @@
 #include <astra/ui/inline_form.hpp>
 #include <astra/ui/form_registry.hpp>
 #include <astra/ui/view_store.hpp>
+#include <astra/ui/workbench_style.hpp>
+#include <astra/script/runtime.hpp>
+#include <astra/io/file_store.hpp>
 #include <doctest/doctest.h>
 
 #include <random>
@@ -15,6 +18,76 @@
 #include <string>
 #include <future>
 #include <thread>
+#include <cmath>
+
+namespace {
+astra::protocol::Json shipped_style_settings() {
+    astra::script::Runtime runtime(
+        [](std::string_view, const astra::protocol::Json&) -> astra::protocol::Json {
+            throw std::logic_error("Defaults must not perform bootstrap I/O");
+        });
+    static_cast<void>(runtime.evaluate(astra::io::read_file("data/defaults.js").text));
+    return runtime.settings();
+}
+} // namespace
+
+TEST_CASE("presentation style derives every UI text role from JS defaults") {
+    using astra::ui::WorkbenchStyle;
+    auto settings = shipped_style_settings();
+    for (const float size : {9.0F, 13.0F, 16.0F}) {
+        settings["workbench"]["uiFontSize"] = size;
+        settings["workbench"]["uiFontFamilies"] = {"Consolas", "Microsoft YaHei UI"};
+        const auto style = WorkbenchStyle::compile(settings);
+        CHECK(style.colors.background == 0xFF1F1F1FU);
+        CHECK(style.colors.panel == 0xFF252526U);
+        CHECK(style.colors.tabs == 0xFF181818U);
+        CHECK(style.syntax.at("error") == 0xFFF44747U);
+        for (const float reference : {12.0F, 13.0F, 14.0F, 16.0F}) {
+            const auto text = style.text(reference, 1.5F, style.colors.foreground);
+            CHECK(text.font_size == doctest::Approx(reference * size / 13));
+            CHECK(text.dpi_scale == 1.5F);
+            CHECK(text.font_families == style.font_families);
+            CHECK(text.direction == astra::ui::TextDirection::automatic);
+        }
+        const auto mono = style.text(13, 1, style.colors.muted, 1.4F, true, 250);
+        CHECK(mono.font_families == style.monospace_families);
+        CHECK(mono.wrap_width == 250);
+        CHECK(mono.line_height == 1.4F);
+    }
+}
+
+TEST_CASE("presentation style rejects partial invalid palettes and font geometry") {
+    using astra::ui::WorkbenchStyle;
+    const auto defaults = shipped_style_settings();
+    for (const auto* invalid : {"# 12345", "#+12345", "#12345Z", "1234567", "#12345678"}) {
+        auto candidate = defaults;
+        candidate["theme"]["warning"] = invalid;
+        CHECK_THROWS(static_cast<void>(WorkbenchStyle::compile(candidate)));
+    }
+    for (const auto& patch : std::vector<astra::protocol::Json>{
+             {{"theme", {{"foreground", nullptr}}}},
+             {{"theme", {{"panel", 7}}}},
+             {{"workbench", {{"uiFontSize", 17}}}},
+             {{"workbench", {{"uiFontSize", "13"}}}},
+             {{"workbench", {{"uiFontFamilies", astra::protocol::Json::array()}}}},
+             {{"workbench", {{"uiFontFamilies", {"Bad\nFamily"}}}}},
+             {{"workbench", {{"uiMonospaceFontFamilies", {17}}}}}}) {
+        auto candidate = defaults;
+        candidate.merge_patch(patch);
+        CHECK_THROWS(static_cast<void>(WorkbenchStyle::compile(candidate)));
+    }
+    auto candidate = defaults;
+    candidate["workbench"]["sidebarWidth"] = 1;
+    CHECK(WorkbenchStyle::compile(candidate).sidebar_width == 180);
+    candidate["workbench"]["sidebarWidth"] = 9999;
+    CHECK(WorkbenchStyle::compile(candidate).sidebar_width == 480);
+    const auto style = WorkbenchStyle::compile(defaults);
+    CHECK_THROWS(static_cast<void>(style.text(13, 0, 0)));
+    CHECK_THROWS(static_cast<void>(style.text(0, 1, 0)));
+    CHECK_THROWS(static_cast<void>(style.text(13, 1, 0, 0.5F)));
+    CHECK_THROWS(static_cast<void>(WorkbenchStyle{}.text(13, 1, 0)));
+    CHECK(defaults == shipped_style_settings());
+}
 
 namespace {
 astra::protocol::Json form_spec() {

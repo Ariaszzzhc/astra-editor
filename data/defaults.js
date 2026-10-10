@@ -16,6 +16,7 @@ astra.configure({
         sidebar: '#181818',
         activityBar: '#181818',
         tabs: '#181818',
+        panel: '#252526',
         activeTab: '#1F1F1F',
         border: '#2B2B2B',
         selection: '#264F78',
@@ -43,9 +44,24 @@ astra.configure({
         comment: '#6A9955',
         number: '#B5CEA8',
         type: '#4EC9B0',
-        function: '#DCDCAA'
+        function: '#DCDCAA',
+        property: '#9CDCFE',
+        variable: '#9CDCFE',
+        heading: '#569CD6',
+        syntaxError: '#F44747'
     },
-    workbench: { sidebarWidth: 248, uiFontSize: 13 },
+    workbench: {
+        sidebarWidth: 248,
+        uiFontSize: 13,
+        uiFontFamilies: ['Segoe UI', 'Microsoft YaHei UI', 'Segoe UI Emoji'],
+        uiMonospaceFontFamilies: [
+            'Cascadia Mono',
+            'Consolas',
+            'Microsoft YaHei UI',
+            'Segoe UI Emoji',
+            'monospace'
+        ]
+    },
     git: { inheritGlobalConfig: true },
     languageServers: {
         c: { command: 'clangd', arguments: ['--background-index'] },

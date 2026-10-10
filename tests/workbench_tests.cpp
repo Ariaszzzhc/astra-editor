@@ -46,6 +46,7 @@ class Channel final : public astra::ui::EditorChannel {
 
 std::map<std::string, std::string> modules() {
     std::map<std::string, std::string> result;
+    result["astra/defaults"] = astra::io::read_file("data/defaults.js").text;
     for (const auto& [name, file] :
          std::map<std::string, std::string>{{"astra/ui", "api.js"},
                                             {"astra/files", "files.js"},
@@ -4114,4 +4115,83 @@ TEST_CASE("workbench Git cancellation drains a pending gutter metadata read") {
     REQUIRE(stage);
     CHECK_FALSE(stage->error);
     CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench separates shipped style defaults from explicit client preferences") {
+    auto channel = std::make_shared<Channel>();
+    astra::ui::Workbench workbench(
+        channel,
+        [](std::string_view, const Json&) {
+            return ready(nullptr);
+        },
+        modules(),
+        "astra.configure({workbench:{uiFontSize:13},theme:{accent:'#123456'}});");
+    const auto defaults = workbench.default_settings();
+    CHECK(defaults.at("theme").at("accent") == "#0078D4");
+    CHECK(defaults.at("workbench").at("uiFontFamilies").size() == 3);
+    const auto preferences = workbench.settings();
+    CHECK(preferences.at("theme").size() == 1);
+    CHECK_FALSE(preferences.at("workbench").contains("sidebarWidth"));
+    auto effective = defaults;
+    effective.merge_patch({{"workbench", {{"uiFontSize", 11}, {"sidebarWidth", 320}}},
+                           {"theme", {{"accent", "#ABCDEF"}}}});
+    effective.merge_patch(preferences);
+    CHECK(effective.at("workbench").at("uiFontSize") == 13);
+    CHECK(effective.at("workbench").at("sidebarWidth") == 320);
+    CHECK(effective.at("theme").at("accent") == "#123456");
+    CHECK(channel->requests.empty());
+}
+
+TEST_CASE("workbench style APIs await native completion and return authoritative values") {
+    auto channel = std::make_shared<Channel>();
+    std::promise<Json> reading, updating;
+    unsigned reads{}, updates{};
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.style.read") {
+                ++reads;
+                return reading.get_future();
+            }
+            if (method == "_ui.style.update") {
+                ++updates;
+                CHECK(params.at("patch") == Json{{"workbench", {{"uiFontSize", 16}}}});
+                CHECK(params.at("id").is_string());
+                return updating.get_future();
+            }
+            throw std::logic_error("Unexpected style API request");
+        },
+        modules(),
+        R"js(
+            astra.registerCommand('acceptance.style', async () => {
+                const read = astra.ui.style.read();
+                if (!(read instanceof Promise)) throw Error('Style read must return Promise');
+                const current = await read;
+                const update = astra.ui.style.update({workbench: {uiFontSize: 16}});
+                if (!(update instanceof Promise)) throw Error('Style update must return Promise');
+                return {current, updated: await update};
+            });
+        )js");
+    std::optional<astra::script::Runtime::Outcome> result;
+    workbench.execute("acceptance.style", Json::object(), [&](const auto& outcome) {
+        result = outcome;
+    });
+    for (int tick = 0; tick < 8; ++tick)
+        workbench.poll();
+    CHECK(reads == 1);
+    CHECK(updates == 0);
+    CHECK_FALSE(result);
+    reading.set_value({{"workbench", {{"uiFontSize", 13}}}});
+    for (int tick = 0; tick < 8; ++tick)
+        workbench.poll();
+    CHECK(updates == 1);
+    CHECK_FALSE(result);
+    updating.set_value({{"workbench", {{"uiFontSize", 16}}}});
+    for (int tick = 0; tick < 8; ++tick)
+        workbench.poll();
+    REQUIRE(result);
+    CHECK_FALSE(result->error);
+    CHECK(result->value.at("current").at("workbench").at("uiFontSize") == 13);
+    CHECK(result->value.at("updated").at("workbench").at("uiFontSize") == 16);
+    CHECK(channel->requests.empty());
 }

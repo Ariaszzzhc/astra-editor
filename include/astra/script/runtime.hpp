@@ -86,6 +86,9 @@ class Runtime {
     [[nodiscard]] Json evaluate_module(std::string_view source, std::string_view filename);
     [[nodiscard]] std::vector<std::string> commands() const;
     [[nodiscard]] Json settings() const;
+    // Owner-only bootstrap boundary: retain defaults separately from later
+    // client preferences so service preferences can merge between the layers.
+    [[nodiscard]] Json take_settings();
     // Owner-local registration sequence; identical-value rebindings still count
     // as explicit policy changes. Invalid calls do not advance the sequence.
     [[nodiscard]] std::uint64_t keybinding_generation() const;

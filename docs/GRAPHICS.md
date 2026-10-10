@@ -439,3 +439,28 @@ bounded native font/paragraph heaps or constant frame latency.
 
 The generic xmake Skia package does not currently expose this Graphite/Dawn build
 configuration. It is not interchangeable with the local graphics package.
+
+## Workbench style ownership and live updates
+
+`data/defaults.js` supplies all workbench RGB roles and UI font families. The
+client imports it into its actual QuickJS runtime before user policy, retains the
+bootstrap settings separately and merges service and client preferences over
+that base. No native alternate palette is shown before asynchronous service
+settings arrive. `WorkbenchStyle` compiles an entire candidate before publishing
+colors, fonts and sidebar width; popup `panel` and tab-band `tabs` are independent.
+
+Chrome labels, modal inputs, mounted fields and dialog body/monospace text use
+reference sizes relative to a shared 13-unit UI base. Font-family and exact size
+changes participate in existing paragraph cache keys. UI-only updates preserve
+document paragraph preparation; document foreground/syntax/font changes retire
+obsolete geometry while retaining line indexes and the exact bounded cache.
+
+The async client `astra.ui.style` API returns effective presentation settings and
+supports atomic partial updates with request cancellation/timeouts. Agent view
+state exposes the same effective style. Native SDL pointer tests compare styled
+input insertion at sizes 9 and 16 against independently configured font shaping,
+then verify document revision/content/selection preservation. Invalid patches
+and pre-aborted updates retain the complete previous style. Real GPU captures
+are `build/graphics/gui-style-{large,small}.png`, the corresponding `-input.png`
+files and `gui-style-large-choice.png`. This validates the tested components;
+whole-product visual acceptance remains outstanding.

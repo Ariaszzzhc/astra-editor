@@ -38,6 +38,7 @@ class Workbench final {
     [[nodiscard]] bool awaiting(std::string_view method) const;
     [[nodiscard]] bool awaiting(std::span<const std::string_view> methods) const;
     [[nodiscard]] Json settings() const;
+    [[nodiscard]] Json default_settings() const;
     [[nodiscard]] std::map<std::string, std::string> default_keybindings() const;
     [[nodiscard]] std::uint64_t keybinding_generation() const;
     // Explicit client registrations after built-in JS policy, including a
