@@ -477,6 +477,48 @@ selected original item or `null`; items can be strings or objects with a `label`
 Filtering uses ASCII case folding and literal Unicode text matching; row identity
 survives filtering and scrolling. Limits match the confirmation list. Native
 filtering occurs when the query changes, not on each frame.
+
+`items` may also be an asynchronous `(query, {signal}) => items` provider. It
+receives the initial query and subsequent changed input, and can return an array
+or `{items, message}`. Each result has the same 4,096-row / 64 KiB label limits;
+`message` is at most 4 KiB of single-line UTF-8. Object items can supply `iconPath`
+to use the JS file-icon theme: each path admits 32 KiB, 64 KiB combined per result.
+The result's original item, including its application data, is returned on selection.
+
+New input aborts the previous provider's signal and advances a native query
+identity. Old rows remain visible while searching; Enter and pointer activation
+are disabled until the current result arrives. Late publications cannot replace
+the current query, even when a provider ignores cancellation. Dismissal aborts
+the current provider. Provider failures stay inside the picker with an error
+message; changing the query permits recovery. Pending providers participate in
+window idle detection. Providers should check their signal and yield with
+`astra.sleep(0, {signal})` during long CPU loops; the QuickJS execution budget
+still applies. Native code handles input, measured result indexes and publication
+validation; matching and ranking belong to the JS provider.
+
+```javascript
+const selected = await astra.ui.pick({
+    title: 'Symbols',
+    items: async (query, {signal}) => {
+        const matches = await findSymbols(query, {signal});
+        return matches.map(symbol => ({label: symbol.name, symbol}));
+    }
+}, {signal});
+```
+
+The shipped `Ctrl+P` command uses this provider API for fuzzy file lookup.
+JS obtains `workspace.tree` through asynchronous pages once per open dialog,
+retaining at most 100,000 file paths / 8 MiB of UTF-8 path bytes (not a JS heap
+measurement). Ranking uses Unicode scalar subsequences, case folding, basename
+and boundary bonuses; CPU passes yield every 32 entries or 4,096 string units.
+Only the top 128 rows / 60,000 label bytes are published. Files beyond the static
+picker's 4,096-item limit remain searchable within the bounded workspace index.
+Reopening scans the current filesystem again. Cancellation drains owned service
+operations without opening a file. Index limits and directory-read failures are
+reported in the picker. The command palette also exposes **Open file by path...**
+for an explicit workspace-relative path. This is a bounded index, not an
+unlimited workspace search or a filesystem watcher cache.
+
 `astra.ui.showText({title, text, monospace, actions, lineTones}, options)` awaits
 an indexed text panel. It returns the selected action's string `id`, or `null`
 on Enter/Escape/dismissal. Arrows and Shift-wheel support horizontal scrolling.

@@ -86,10 +86,18 @@ export const ui = {
         return null;
     },
     async pick(spec, options) {
+        if (typeof spec.items === 'function') return await dynamicPick(spec, options);
         const items = spec.items.slice();
         const index = await dialog(
             'pick',
-            { ...spec, items: items.map((item) => (typeof item === 'string' ? item : item.label)) },
+            {
+                ...spec,
+                dynamic: false,
+                items: items.map((item) => (typeof item === 'string' ? item : item.label)),
+                iconPaths: items.map((item) =>
+                    typeof item === 'string' ? '' : (item.iconPath ?? '')
+                )
+            },
             options
         );
         return index === null ? null : items[index];
@@ -475,6 +483,100 @@ async function dialog(kind, spec, options = {}, identity) {
     }
 }
 astra.ui = ui;
+const dynamicPicks = new Map();
+async function dynamicPick(spec, options = {}) {
+    const id = `dialog-${++dialogId}`;
+    const record = { provider: spec.items, items: [], generation: '', published: '' };
+    dynamicPicks.set(id, record);
+    try {
+        const result = await dialog(
+            'pick',
+            { ...spec, items: [], iconPaths: [], dynamic: true },
+            options,
+            id
+        );
+        if (result === null) return null;
+        if (
+            result.generation !== record.published ||
+            !Number.isInteger(result.index) ||
+            result.index < 0 ||
+            result.index >= record.items.length
+        ) {
+            throw new Error('Picker returned an obsolete selection');
+        }
+        return record.items[result.index];
+    } finally {
+        record.control?.abort();
+        if (dynamicPicks.get(id) === record) dynamicPicks.delete(id);
+    }
+}
+// Race cancellation even for a user provider which ignores its signal. Observe
+// both outcomes; its late continuation cannot publish to a newer query/dialog.
+async function pickerWork(work, signal) {
+    let abort;
+    const cancelledWork = new Promise((_, reject) => {
+        abort = () => reject(cancelled('Picker query cancelled'));
+        signal.addEventListener('abort', abort);
+        if (signal.aborted) abort();
+    });
+    try {
+        return await Promise.race([work, cancelledWork]);
+    } finally {
+        signal.removeEventListener('abort', abort);
+    }
+}
+astra.on('ui.picker.query', async ({ id, generation, query }) => {
+    const record = dynamicPicks.get(id);
+    if (!record || record.generation === generation) return;
+    record.control?.abort();
+    const control = new AbortController();
+    record.control = control;
+    record.generation = generation;
+    const current = () =>
+        dynamicPicks.get(id) === record &&
+        record.generation === generation &&
+        !control.signal.aborted;
+    try {
+        const output = await pickerWork(
+            Promise.resolve().then(() => record.provider(query, { signal: control.signal })),
+            control.signal
+        );
+        if (!current()) return;
+        const items = (Array.isArray(output) ? output : output.items).slice();
+        if (items.length > 4096) throw new RangeError('Picker exceeds 4096 results');
+        const labels = items.map((item) => (typeof item === 'string' ? item : item.label));
+        const iconPaths = items.map((item) =>
+            typeof item === 'string' ? '' : (item.iconPath ?? '')
+        );
+        const message = Array.isArray(output) ? '' : (output.message ?? '');
+        // Capture the original items before publication: native Enter may finish
+        // the dialog before the publication acknowledgement reaches this task.
+        record.items = items;
+        record.published = generation;
+        await request(
+            '_ui.picker.publish',
+            { id, generation, items: labels, iconPaths, message },
+            { signal: control.signal }
+        );
+    } catch (error) {
+        if (!current()) return;
+        let message = String(error?.message ?? error)
+            .replace(/[\r\n\0]/g, ' ')
+            .slice(0, 512);
+        if (/[\uD800-\uDBFF]$/.test(message)) message = message.slice(0, -1);
+        record.items = [];
+        record.published = generation;
+        try {
+            await request(
+                '_ui.picker.publish',
+                { id, generation, items: [], message, error: true },
+                { signal: control.signal }
+            );
+        } catch (publicationError) {
+            if (current()) throw publicationError;
+        }
+    }
+});
 async function activateView({ id, version, row }) {
     if (publishedViews.get(id) !== version) return;
     await providers.get(id)?.handlers.activate?.(row.data, row);

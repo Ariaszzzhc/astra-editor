@@ -1,4 +1,6 @@
 #include <astra/ui/picker_index.hpp>
+#include <astra/core/utf8.hpp>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -13,26 +15,71 @@ std::string fold(std::string_view value) {
 }
 } // namespace
 
-void PickerIndex::reset(const std::vector<std::string>& labels) {
+namespace {
+PickerIndex::Snapshot rows(const std::vector<std::string>& labels,
+                           const std::vector<std::string>& icon_paths) {
+    if (!icon_paths.empty() && icon_paths.size() != labels.size()) {
+        throw std::invalid_argument("Picker icon paths must match its labels");
+    }
     if (labels.size() > 4096)
         throw std::length_error("Picker exceeds its 4096 item limit");
-    std::vector<Row> rows;
+    std::vector<PickerIndex::Row> rows;
     std::size_t bytes{};
+    std::size_t path_bytes{};
     rows.reserve(labels.size());
     for (const auto& label : labels) {
         if (label.empty() || label.size() > 4096 || label.find_first_of("\r\n") != label.npos ||
-            label.size() > 65536 - bytes)
+            label.find('\0') != label.npos || label.size() > 65536 - bytes)
             throw std::length_error("Picker label exceeds its bounds");
+        utf8::validate(label);
         bytes += label.size();
-        rows.push_back({label, fold(label), rows.size()});
+        const auto path = icon_paths.empty() ? std::string{} : icon_paths.at(rows.size());
+        if (path.size() > 32768 || path.size() > 65536 - path_bytes ||
+            path.find('\0') != path.npos) {
+            throw std::length_error("Picker icon paths exceed their bounds");
+        }
+        utf8::validate(path);
+        path_bytes += path.size();
+        rows.push_back({label, fold(label), rows.size(), path});
     }
-    Snapshot replacement(std::move(rows));
+    return PickerIndex::Snapshot(std::move(rows));
+}
+} // namespace
+
+void PickerIndex::reset(const std::vector<std::string>& labels,
+                        bool dynamic,
+                        const std::vector<std::string>& icon_paths) {
+    auto replacement = rows(labels, icon_paths);
+    std::string message = dynamic ? "Searching…" : "";
     source_ = replacement;
     visible_ = std::move(replacement);
     query_.clear();
+    message_ = std::move(message);
+    dynamic_ = dynamic;
+    generation_ = 1;
+    published_ = dynamic ? 0 : 1;
+    error_ = false;
 }
 
 void PickerIndex::filter(std::string_view query) {
+    if (query.size() > 16384 || query.find_first_of("\r\n") != query.npos ||
+        query.find('\0') != query.npos) {
+        throw std::length_error("Picker query exceeds its bounds");
+    }
+    utf8::validate(query);
+    if (dynamic_) {
+        if (query == query_)
+            return;
+        if (generation_ == std::numeric_limits<std::uint64_t>::max()) {
+            throw std::length_error("Picker query identity exhausted");
+        }
+        std::string replacement(query), message("Searching…");
+        query_ = std::move(replacement);
+        message_ = std::move(message);
+        ++generation_;
+        error_ = false;
+        return;
+    }
     auto folded = fold(query);
     if (folded == query_)
         return;
@@ -49,5 +96,26 @@ void PickerIndex::filter(std::string_view query) {
     }
     visible_ = std::move(replacement);
     query_ = std::move(folded);
+}
+
+bool PickerIndex::publish(std::string_view generation,
+                          const std::vector<std::string>& labels,
+                          std::string message,
+                          bool error,
+                          const std::vector<std::string>& icon_paths) {
+    if (!dynamic_ || generation != this->generation())
+        return false;
+    if (message.size() > 4096 || message.find_first_of("\r\n") != message.npos ||
+        message.find('\0') != message.npos) {
+        throw std::length_error("Picker message exceeds its bounds");
+    }
+    utf8::validate(message);
+    auto replacement = rows(labels, icon_paths);
+    source_ = replacement;
+    visible_ = std::move(replacement);
+    message_ = std::move(message);
+    published_ = generation_;
+    error_ = error;
+    return true;
 }
 } // namespace astra::ui

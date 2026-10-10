@@ -20,6 +20,71 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### Asynchronous Quick Open and provider pickers (2026-10-11)
+
+`Ctrl+P` now uses a JS-owned fuzzy file provider instead of literal path entry. The
+generic Promise-based `astra.ui.pick` accepts an asynchronous query provider,
+with per-query AbortSignals, stale-result rejection, original-item completion,
+local error/retry and cancellation of ignored-signal providers. Native code
+owns measured result indexes, presentation/input and atomic generation checks.
+Loading contributes to window idle and prevents Enter/pointer acceptance of
+previous rows. Visible result icons share JS theme policy.
+
+The JS index uses service pages, caps retained paths at 100,000 / 8 MiB of UTF-8
+identity bytes, yields every 32 entries or 4,096 string units, and publishes at
+most 128 rows / 60,000 label bytes. These are admission/accounting limits, not
+heap or frame-time guarantees. Partial filesystem results are reported; explicit
+path entry remains available in the command palette. No watcher-backed index is
+claimed.
+
+Current Windows evidence:
+
+- `./scripts/format.ps1 -Offline` passed 159 C++ / 13 JS files.
+- `./scripts/xmake.ps1 build -y -j 2 astra-tests` passed. Focused
+  `./build/windows/x64/debug/astra-tests.exe '--test-case=*quick open*,*dynamic picker*,*picker preserves static*' --no-version`
+  passed five cases, zero failures. Tests cover retained native snapshots and
+  atomic invalid publication, cancellation of obsolete providers, retirement of
+  late host mutations, error/recovery, paged 5,003-file Unicode lookup and
+  cancellation draining a late service operation identity, static item/data
+  compatibility and rejection of obsolete dynamic selections. Log:
+  `build/quick-open-final-policy-tests-debug.log`.
+- Initial GUI fixture compilation referenced nonexistent `WorkbenchViewState`
+  document/status fields. Corrected it to use the production service identity
+  query and `status_text()`; log: `build/quick-open-gui-build-debug.log`.
+- First GUI run incorrectly expected `path` in `document.get`; corrected to
+  `workspace.documents`, preserving the actual-file identity assertion. Log:
+  `build/quick-open-gui-debug.log`.
+- Second GUI run passed all new Quick Open/provider checks, then failed the
+  existing save-as content check: the inserted quick-open/close fixture had
+  changed the active document. Restored the original captured document before
+  the save workflow without weakening its existing content assertion. Log:
+  `build/quick-open-gui-final-debug.log`.
+- Rebuilt with `./scripts/xmake.ps1 build -y -j 2 gui-presentation-smoke astra-tests astra`;
+  `./build/windows/x64/debug/gui-presentation-smoke.exe` passed the complete
+  actual SDL3 / Graphite / Dawn presentation workflow. It includes 5,005 indexed
+  entries, fuzzy lookup beyond 4,096 rows, same-batch typing / pending Enter
+  rejection, pending pointer rejection, local provider error/recovery, late
+  completion isolation, Escape, existing same-batch save-as, large text/custom
+  views and 640-tab pointer/drag/close behavior. Log:
+  `build/quick-open-gui-restored-debug.log`. The GPU capture
+  `build/graphics/gui-quick-open.png` was inspected for query, matched file,
+  clipping and file icon. Whole-product visual acceptance remains outstanding.
+- Final `./scripts/test.ps1 -Mode all -Gui` completed with exit code 0 using
+  unchanged native source/runtime resources. Debug: 587 cases / 1,617,282
+  assertions; Release: 587 cases / 1,617,253 assertions, zero failed/skipped.
+  Both configurations passed the new Quick Open/provider workflow and the
+  complete renderer/font/viewport/input/editing/service/recovery/workspace/
+  presentation GUI workflows, including TCP editing. All 12 package-helper
+  invariants passed. Log: `build/quick-open-acceptance-all.log`.
+- After acceptance exited, `./scripts/xmake.ps1 f -m debug -y` restored Debug
+  configuration (`build/quick-open-restore-debug.log`). Final
+  `./scripts/format.ps1 -Check -Offline` passed 159 C++ / 13 JS files
+  (`build/quick-open-final-check.log`), and `git diff --check` passed.
+
+Further native component extraction, row-internal incremental glyph layout,
+whole-product visual acceptance and a new distribution remain incomplete.
+No non-Windows validation is claimed.
+
 ### Shared native tab bar presentation (2026-10-11)
 
 `TabBar` now owns tab caption preparation, font-generation tracking, overflow

@@ -1,14 +1,13 @@
 import { ui, request } from 'astra/ui';
 export function registerFiles() {
     ui.registerCommand(
-        { id: 'ui.quickOpen', title: 'Open file by path', shortcut: 'Ctrl+P' },
-        async () => {
-            const path = await ui.input({ title: 'OPEN WORKSPACE FILE' });
-            if (!path) return;
-            const document = await request('workspace.open', { path });
-            await ui.update({ document, activate: document.id, status: 'File opened' });
-        }
+        { id: 'ui.quickOpen', title: 'Quick open workspace file', shortcut: 'Ctrl+P' },
+        quickOpen
     );
+    ui.registerCommand({ id: 'ui.openPath', title: 'Open file by path...' }, async () => {
+        const path = await ui.input({ title: 'OPEN WORKSPACE FILE BY PATH' });
+        if (path) await ui.execute('workbench.open', { path });
+    });
     ui.registerCommand(
         { id: 'ui.saveAs', title: 'Save file as...', shortcut: 'Ctrl+Shift+S' },
         (parameters) => save(true, parameters)
@@ -182,6 +181,151 @@ export function registerFiles() {
             }
         );
     }
+}
+async function quickOpen(parameters = {}) {
+    const control = new AbortController();
+    const abort = () => control.abort();
+    parameters.signal?.addEventListener('abort', abort);
+    if (parameters.signal?.aborted) abort();
+    let index;
+    try {
+        const state = await ui.read({ immediate: true }, { signal: control.signal });
+        index = quickOpenIndex({ signal: control.signal });
+        // A failure is also observed by the provider and final drain below.
+        index.catch(() => {});
+        const selected = await ui.pick(
+            {
+                title: 'QUICK OPEN',
+                placeholder: 'Search files by name or path',
+                items: async (query, options) => {
+                    const model = await index;
+                    options.signal.throwIfAborted();
+                    return await quickOpenMatches(model, query, state.document?.path, options);
+                }
+            },
+            { signal: control.signal }
+        );
+        control.signal.throwIfAborted();
+        if (selected) await ui.execute('workbench.open', { path: selected.path });
+    } finally {
+        control.abort();
+        parameters.signal?.removeEventListener('abort', abort);
+        if (index) await Promise.allSettled([index]);
+    }
+}
+async function quickOpenIndex(options) {
+    const paths = [];
+    let bytes = 0,
+        partial = false,
+        issues = 0,
+        budget = 0,
+        visited = 0;
+    for await (const page of astra.operationPages(
+        'workspace.tree',
+        { maxEntries: 100000 },
+        options
+    )) {
+        options.signal.throwIfAborted();
+        if (page.cancelled)
+            throw Object.assign(new Error('File listing cancelled'), { name: 'AbortError' });
+        partial ||= page.truncated;
+        issues = Math.max(issues, page.issues?.length ?? 0);
+        for (const entry of page.entries) {
+            options.signal.throwIfAborted();
+            budget += entry.path.length;
+            if (++visited % 32 === 0 || budget >= 4096) {
+                await astra.sleep(0, options);
+                budget = 0;
+            }
+            if (entry.directory) continue;
+            const path = entry.path.replaceAll('\\', '/');
+            const size = astra.utf8ByteLength(path);
+            if (paths.length >= 100000 || bytes + size > 8 * 1024 * 1024) {
+                partial = true;
+                continue;
+            }
+            paths.push({ path, folded: path.toLowerCase() });
+            bytes += size;
+        }
+    }
+    return { paths, partial, issues };
+}
+function quickOpenScore(path, needle, query) {
+    if (!needle.length) return 0;
+    let index = 0,
+        position = 0,
+        previous = '',
+        last = -1,
+        score = 0;
+    for (const scalar of path) {
+        if (scalar === needle[index]) {
+            score +=
+                100 +
+                (position === last + 1 ? 24 : 0) +
+                (!previous || '/._- '.includes(previous) ? 32 : 0);
+            score -= position - last - 1;
+            last = position;
+            if (++index === needle.length) break;
+        }
+        previous = scalar;
+        ++position;
+    }
+    if (index !== needle.length) return null;
+    const basename = path.slice(path.lastIndexOf('/') + 1);
+    if (basename === query) score += 100000;
+    else if (basename.startsWith(query)) score += 10000;
+    else if (path.startsWith(query)) score += 5000;
+    return score - path.length;
+}
+async function quickOpenMatches(model, query, active, options) {
+    const needle = Array.from(query.replaceAll('\\', '/').trim().toLowerCase().replace(/\s+/g, ''));
+    const normalized = needle.join('');
+    const ranked = [];
+    let budget = 0,
+        visited = 0;
+    const compare = (a, b) => b.score - a.score || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+    for (const item of model.paths) {
+        options.signal.throwIfAborted();
+        let score = quickOpenScore(item.folded, needle, normalized);
+        if (score !== null) {
+            if (!needle.length && item.path === active?.replaceAll('\\', '/')) score += 1000000;
+            const candidate = { path: item.path, score };
+            let low = 0,
+                high = ranked.length;
+            while (low < high) {
+                const middle = (low + high) >>> 1;
+                if (compare(candidate, ranked[middle]) < 0) high = middle;
+                else low = middle + 1;
+            }
+            if (low < 256) {
+                ranked.splice(low, 0, candidate);
+                if (ranked.length > 256) ranked.pop();
+            }
+        }
+        budget += item.folded.length;
+        if (++visited % 32 === 0 || budget >= 4096) {
+            await astra.sleep(0, options);
+            budget = 0;
+        }
+    }
+    const items = [];
+    let bytes = 0;
+    for (const item of ranked) {
+        const label = item.path.replace(/[\r\n\0]/g, ' ');
+        const size = astra.utf8ByteLength(label);
+        if (size > 4096 || bytes + size > 60000) continue;
+        items.push({ label, path: item.path, iconPath: item.path });
+        bytes += size;
+        if (items.length === 128) break;
+    }
+    return {
+        items,
+        message: model.partial
+            ? 'File list limit reached; Open by path is also available'
+            : model.issues
+              ? 'Some folders could not be read'
+              : `${items.length} matching ${items.length === 1 ? 'file' : 'files'}`
+    };
 }
 async function save(saveAs, parameters = {}) {
     const options = { signal: parameters.signal };

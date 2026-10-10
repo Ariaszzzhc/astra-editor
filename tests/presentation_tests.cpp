@@ -1049,6 +1049,56 @@ TEST_CASE("presentation picker filtering preserves source identity and old snaps
                     std::length_error);
 }
 
+TEST_CASE("presentation dynamic picker rejects stale publications and preserves snapshots") {
+    astra::ui::PickerIndex index;
+    index.reset({}, true);
+    CHECK_FALSE(index.ready());
+    const auto initial = index.generation();
+    REQUIRE(index.publish(initial, {"旧🙂", "Other"}, "2 matches", false, {"old.cpp", "other"}));
+    const auto retained = index.snapshot();
+    index.filter("中🙂");
+    CHECK_FALSE(index.ready());
+    CHECK(index.size() == 2);
+    const auto current = index.generation();
+    CHECK(current != initial);
+    index.filter("中🙂");
+    CHECK(index.generation() == current);
+    CHECK_FALSE(index.publish(initial, {"obsolete"}, "stale"));
+    CHECK(index.at(0).label == "旧🙂");
+    REQUIRE(index.publish(current, {"new"}, "1 match", false, {"src/new.cpp"}));
+    CHECK(index.ready());
+    CHECK(index.at(0).source == 0);
+    CHECK(index.at(0).icon_path == "src/new.cpp");
+    CHECK(retained.at(0).label == "旧🙂");
+    CHECK(retained.at(0).icon_path == "old.cpp");
+    CHECK(retained.summary().rows == 2);
+    CHECK(index.snapshot().validate());
+    CHECK_THROWS(index.publish(current, {"invalid\nrow"}, "invalid"));
+    CHECK_THROWS(index.publish(current, {"new"}, "bad\nmessage"));
+    CHECK_THROWS(index.publish(current, {"new"}, "valid", false, {"a", "b"}));
+    CHECK_THROWS(index.publish(current, {std::string(1, '\xFF')}, "invalid UTF-8"));
+    CHECK_THROWS(index.publish(current, {"new"}, "valid", false, {std::string(32769, 'x')}));
+    CHECK_THROWS(index.filter(std::string(1, '\xFF')));
+    CHECK(index.ready());
+    CHECK(index.query() == "中🙂");
+    CHECK(index.message() == "1 match");
+    CHECK(index.at(0).icon_path == "src/new.cpp");
+    index.filter("none");
+    REQUIRE(index.publish(index.generation(), {}, "Provider failed", true));
+    CHECK(index.ready());
+    CHECK(index.error());
+    CHECK(index.size() == 0);
+    index.filter("retry");
+    CHECK_FALSE(index.error());
+    CHECK_FALSE(index.ready());
+    REQUIRE(index.publish(index.generation(), {"retry"}, "Recovered"));
+    index.reset({"static"});
+    CHECK(index.ready());
+    CHECK_FALSE(index.dynamic());
+    CHECK_FALSE(index.publish(index.generation(), {"dynamic"}, "ignored"));
+    CHECK(index.at(0).label == "static");
+}
+
 TEST_CASE("presentation modal layouts share bounded rows and pointer geometry") {
     for (const auto scale : {1.0F, 1.25F, 1.5F, 2.0F})
         for (const auto width : {160.0F, 260.0F, 584.0F, 640.0F, 680.0F, 1440.0F}) {

@@ -85,6 +85,14 @@ void key(Window& window, SDL_Keycode code, SDL_Keymod mods = SDL_KMOD_NONE) {
     settle(window);
 }
 
+void enqueue_text(Window& window, const char* value) {
+    SDL_Event event{};
+    event.type = SDL_EVENT_TEXT_INPUT;
+    event.text.windowID = SDL_GetWindowID(window.window());
+    event.text.text = value;
+    require(SDL_PushEvent(&event), "Cannot enqueue picker query input");
+}
+
 void await_surface(Window& window) {
     const auto until = Clock::now() + std::chrono::seconds(20);
     // A worker may finish during GPU presentation, before the test observes
@@ -113,7 +121,7 @@ void await_input(Window& window, std::size_t submitted) {
 }
 
 void run(const fs::path& workspace) {
-    constexpr int files = 1500;
+    constexpr int files = 5000;
     fs::create_directory(workspace / "generated");
     for (int i = 0; i < files; ++i) {
         std::ofstream output(workspace / "generated" / ("item" + std::to_string(i) + ".txt"));
@@ -286,6 +294,18 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
                 astra.bind('PageDown', 'ui.pageDown');
             });
             let stressTabNext = 0, stressTabStyle;
+            let releasePicker;
+            astra.registerCommand('acceptance.dynamicPicker', async () => {
+                const result = await astra.ui.pick({title: 'ASYNC PICKER',
+                    items: async (query, {signal}) => {
+                        if (query === 'slow') await new Promise(resolve => releasePicker = resolve);
+                        if (query === 'error') throw Error('Provider failed');
+                        return [{label: query || 'old', value: query || 'old', iconPath: 'one.cpp'}];
+                    }
+                });
+                await astra.ui.update({status: result ? `Picked ${result.value}` : 'Picker cancelled'});
+            });
+            astra.registerCommand('acceptance.releasePicker', () => releasePicker());
             astra.registerCommand('acceptance.tabs.open', async () => {
                 const end = Math.min(stressTabNext + 64, 640);
                 let document;
@@ -866,8 +886,107 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         require(SDL_PushEvent(&mode) && SDL_PushEvent(&text) && SDL_PushEvent(&enter),
                 "Cannot enqueue quick-open event batch");
         settle(window);
+        require(window.view_state().input_layout.value("pickerQuery", std::string{}) ==
+                        "three.cpp" &&
+                    window.view_state().input_layout.value("pickerRows", 0) == 1 &&
+                    window.active_document_id() == two,
+                "Quick open lost same-batch typing or accepted before its async query completed");
+        key(window, SDLK_RETURN);
         require(window.active_document_id() == three,
                 "Quick open did not settle focus before same-frame typing");
+        key(window, SDLK_P, SDL_KMOD_CTRL);
+        enqueue_key(window, SDLK_A, SDL_KMOD_CTRL);
+        enqueue_text(window, "itm4999");
+        settle(window);
+        require(window.view_state().input_layout.value("pickerRows", 0) == 1 &&
+                    !window.view_state().input_layout.value("pickerPending", true),
+                "Quick open failed to match a file beyond the static 4096-row capacity");
+        window.request_screenshot("build/graphics/gui-quick-open.png");
+        settle(window);
+        key(window, SDLK_RETURN);
+        auto selected_file = host->submit(nlohmann::json{
+            {"jsonrpc", "2.0"},
+            {"id", "quick-open-acceptance"},
+            {"method", "workspace.documents"},
+            {"params",
+             nlohmann::json::object()}}.dump());
+        require(selected_file.wait_for(std::chrono::seconds(5)) == std::future_status::ready,
+                "Quick-open identity verification timed out");
+        const auto selected_response = selected_file.get();
+        require(selected_response.has_value(), "Quick-open identity verification has no reply");
+        const auto selected_documents = nlohmann::json::parse(*selected_response).at("result");
+        const auto selected_document = std::find_if(
+            selected_documents.begin(), selected_documents.end(), [&](const auto& document) {
+                return document.at("id") == window.active_document_id();
+            });
+        require(selected_document != selected_documents.end() &&
+                    fs::path(selected_document->at("path").get<std::string>()) ==
+                        fs::path("generated/item4999.txt"),
+                "Fuzzy quick open selected another workspace identity");
+        key(window, SDLK_W, SDL_KMOD_CTRL);
+        window.execute_ui_command("acceptance.dynamicPicker");
+        settle(window);
+        enqueue_key(window, SDLK_A, SDL_KMOD_CTRL);
+        enqueue_text(window, "slow");
+        const auto picker_deadline = Clock::now() + std::chrono::seconds(20);
+        while (!window.view_state().input_layout.value("pickerPending", false)) {
+            require(Clock::now() < picker_deadline && window.pump(),
+                    "Async provider did not expose its pending query");
+            require(window.last_error().empty(), window.last_error());
+        }
+        require(!window.idle(), "Pending dynamic provider was incorrectly idle");
+        enqueue_key(window, SDLK_RETURN);
+        require(window.pump(), "Pending picker closed the window");
+        require(window.view_state().input_layout.value("pickerPending", false),
+                "Enter accepted an obsolete provider result");
+        int picker_width{}, picker_height{};
+        require(SDL_GetWindowSizeInPixels(window.window(), &picker_width, &picker_height),
+                "Cannot measure pending picker");
+        const auto pending_picker =
+            astra::ui::PickerLayout::measure(static_cast<float>(picker_width),
+                                             static_cast<float>(picker_height),
+                                             window.layout().scale,
+                                             1);
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_DOWN,
+                      pending_picker.rows.x + 30,
+                      pending_picker.rows.y + 10);
+        enqueue_mouse(window,
+                      SDL_EVENT_MOUSE_BUTTON_UP,
+                      pending_picker.rows.x + 30,
+                      pending_picker.rows.y + 10);
+        require(window.pump(), "Pending picker pointer closed the window");
+        require(window.view_state().input_layout.value("pickerPending", false),
+                "Pointer accepted an obsolete provider result");
+        enqueue_key(window, SDLK_A, SDL_KMOD_CTRL);
+        enqueue_text(window, "error");
+        settle(window);
+        require(window.view_state().input_layout.value("pickerError", false) &&
+                    window.view_state().input_layout.value("pickerRows", 1) == 0,
+                "Provider failure did not remain local to the picker");
+        window.execute_ui_command("acceptance.releasePicker");
+        settle(window);
+        require(window.view_state().input_layout.value("pickerError", false),
+                "Late provider result overwrote the current error");
+        enqueue_key(window, SDLK_A, SDL_KMOD_CTRL);
+        enqueue_text(window, "recovered");
+        settle(window);
+        require(!window.view_state().input_layout.value("pickerError", true),
+                "Dynamic picker did not recover after a provider failure");
+        key(window, SDLK_RETURN);
+        require(window.status_text() == "Picked recovered",
+                "Dynamic picker did not return the current original item");
+        window.execute_ui_command("acceptance.dynamicPicker");
+        settle(window);
+        key(window, SDLK_ESCAPE);
+        require(window.status_text() == "Picker cancelled",
+                "Escape did not cancel dynamic selection");
+        std::cout << "Async quick open: 5000-file fuzzy lookup, pending Enter/pointer guards, "
+                     "provider failure/recovery, late results and Escape: PASS\n";
+        window.open_path("three.cpp");
+        settle(window);
+        require(window.active_document_id() == three,
+                "Quick-open fixture did not restore the captured save-as document");
         window.execute_ui_command("ui.saveAs");
         settle(window);
         window.request_screenshot("build/graphics/gui-workbench-input.png");
@@ -1673,7 +1792,7 @@ int main() {
         for (const auto& issue : issues)
             std::cerr << issue.path << ": " << issue.message << '\n';
         require(issues.empty(), "Presentation fixture cleanup failed");
-        std::cout << "Windows native workbench: 1505 indexed files, folder collapse, splitter, "
+        std::cout << "Windows native workbench: 5005 indexed files, folder collapse, splitter, "
                      "paged Outline scrolling/selection, shaped tabs, drag reorder, overflow, "
                      "resize, same-frame open/save focus, async picker/text/review cancellation, "
                      "custom JS views, guarded publication, and shutdown: PASS\n";

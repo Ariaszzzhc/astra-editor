@@ -718,6 +718,7 @@ struct EditorWindow::Impl {
     void finish_styles();
     std::future<Json> begin_dialog(const Json& spec);
     void finish_dialog(Json value);
+    void emit_picker_query();
 
     [[nodiscard]] std::string newline(const Document* document) const;
     void event(const SDL_Event& event);
@@ -1677,6 +1678,10 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
     }
     const auto id = spec.at("id").get<std::string>();
     const auto kind = spec.at("kind").get<std::string>();
+    const auto dynamic = spec.value("dynamic", false);
+    if (dynamic && kind != "pick") {
+        throw protocol::RpcError(-32602, "Dynamic providers require a picker");
+    }
     if (kind != "input" && kind != "confirm" && kind != "choice" && kind != "pick" &&
         kind != "text" && kind != "progress") {
         throw protocol::RpcError(-32602, "Unknown dialog kind");
@@ -1742,9 +1747,13 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
                                          "Choice keys must be unique ASCII letters or digits");
         }
     }
-    if (kind == "pick")
-        pending.picker.reset(items.get<std::vector<std::string>>());
-    else if (!items.empty())
+    if (kind == "pick") {
+        pending.picker.reset(
+            items.get<std::vector<std::string>>(),
+            dynamic,
+            spec.value("iconPaths", Json::array()).get<std::vector<std::string>>());
+        pending.picker.filter(value);
+    } else if (!items.empty())
         pending.items.reset(item_text);
     if (kind == "input" || kind == "pick") {
         pending.input = std::make_unique<InlineForm>(
@@ -1773,7 +1782,24 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
     prompt_choice = kind == "choice" ? spec.value("defaultChoice", std::size_t{0}) : 0;
     clear_preedit();
     consumed_modal_text = false;
+    if (dynamic)
+        emit_picker_query();
     return result;
+}
+
+void EditorWindow::Impl::emit_picker_query() {
+    if (!dialog || !dialog->picker.dynamic())
+        return;
+    std::erase_if(form_events, [&](const auto& event) {
+        return event.first == "ui.picker.query" && event.second.at("id") == dialog->id;
+    });
+    if (form_events.size() >= 256) {
+        throw protocol::RpcError(-32004, "Picker event capacity exceeded");
+    }
+    form_events.emplace_back("ui.picker.query",
+                             Json{{"id", dialog->id},
+                                  {"generation", dialog->picker.generation()},
+                                  {"query", dialog->picker.query()}});
 }
 
 void EditorWindow::Impl::finish_dialog(Json value) {
@@ -1781,6 +1807,9 @@ void EditorWindow::Impl::finish_dialog(Json value) {
         return;
     }
     auto pending = std::move(*dialog);
+    std::erase_if(form_events, [&](const auto& event) {
+        return event.first == "ui.picker.query" && event.second.at("id") == pending.id;
+    });
     clear_input_events();
     dialog.reset();
     prompt = Prompt::none;
@@ -1794,6 +1823,10 @@ void EditorWindow::Impl::sync_dialog_input() {
     const auto text = dialog->input->fields().front().text.text().str();
     if (prompt_text != text) {
         prompt_choice = 0;
+        if (dialog->picker.dynamic()) {
+            dialog->picker.filter(text);
+            emit_picker_query();
+        }
     }
     prompt_text = text;
 }
@@ -1965,11 +1998,13 @@ bool EditorWindow::Impl::point_dialog_input(float x, float y, bool extend) {
         return false;
     }
     const auto pixels = renderer.pixel_size();
-    const auto layout =
-        PickerLayout::measure(static_cast<float>(pixels.width),
-                              static_cast<float>(pixels.height),
-                              scale,
-                              prompt == Prompt::policy_pick ? dialog->picker.size() : 0);
+    const auto layout = PickerLayout::measure(
+        static_cast<float>(pixels.width),
+        static_cast<float>(pixels.height),
+        scale,
+        prompt == Prompt::policy_pick
+            ? std::max(dialog->picker.size(), dialog->picker.dynamic() ? std::size_t{1} : 0)
+            : 0);
     if (!dragging_dialog_input && !layout.input.contains(x, y)) {
         return false;
     }
@@ -2170,6 +2205,20 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         if (!dialog || dialog->id != params.at("id").get<std::string>())
             throw protocol::RpcError(-32004, "The progress component could not be opened");
         return true;
+    }
+    if (method == "_ui.picker.publish") {
+        if (!dialog || dialog->id != params.at("id").get<std::string>() ||
+            !dialog->picker.dynamic())
+            return false;
+        const auto accepted = dialog->picker.publish(
+            params.at("generation").get<std::string>(),
+            params.at("items").get<std::vector<std::string>>(),
+            params.value("message", std::string{}),
+            params.value("error", false),
+            params.value("iconPaths", Json::array()).get<std::vector<std::string>>());
+        if (accepted)
+            prompt_choice = 0;
+        return accepted;
     }
     if (method == "_ui.wait.cancel") {
         const auto id = params.at("waitId").get<std::string>();
@@ -2773,9 +2822,13 @@ void EditorWindow::Impl::accept_prompt() {
         finish_dialog(true);
     } else if (prompt == Prompt::policy_pick && dialog) {
         dialog->picker.filter(prompt_text);
-        if (dialog->picker.size())
-            finish_dialog(
-                dialog->picker.at(std::min(prompt_choice, dialog->picker.size() - 1)).source);
+        if (dialog->picker.ready() && dialog->picker.size()) {
+            const auto source =
+                dialog->picker.at(std::min(prompt_choice, dialog->picker.size() - 1)).source;
+            finish_dialog(dialog->picker.dynamic()
+                              ? Json{{"generation", dialog->picker.generation()}, {"index", source}}
+                              : Json(source));
+        }
     } else if (prompt == Prompt::policy_text) {
         finish_dialog(nullptr);
     }
@@ -3534,7 +3587,10 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         if (prompt == Prompt::policy_pick && dialog) {
             dialog->picker.filter(prompt_text);
             const auto layout = PickerLayout::measure(
-                width, static_cast<float>(pixels.height), scale, dialog->picker.size());
+                width,
+                static_cast<float>(pixels.height),
+                scale,
+                std::max(dialog->picker.size(), dialog->picker.dynamic() ? std::size_t{1} : 0));
             if (layout.rows.contains(mouse_x, mouse_y) && layout.capacity &&
                 dialog->picker.size()) {
                 prompt_choice = std::min(prompt_choice, dialog->picker.size() - 1);
@@ -4359,8 +4415,12 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         const auto picking = prompt == Prompt::policy_pick;
         if (picking)
             dialog->picker.filter(prompt_text);
-        const auto layout =
-            PickerLayout::measure(width, height, scale, picking ? dialog->picker.size() : 0);
+        const auto layout = PickerLayout::measure(
+            width,
+            height,
+            scale,
+            picking ? std::max(dialog->picker.size(), dialog->picker.dynamic() ? std::size_t{1} : 0)
+                    : 0);
         rectangle(canvas,
                   layout.panel.x,
                   layout.panel.y,
@@ -4374,8 +4434,11 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                   layout.panel.width,
                   2 * scale,
                   ui_style.colors.accent);
+        const auto picker_title =
+            dialog->spec.at("title").get<std::string>() +
+            (picking && !dialog->picker.message().empty() ? " — " + dialog->picker.message() : "");
         elided_label(canvas,
-                     dialog->spec.at("title").get<std::string>(),
+                     picker_title,
                      layout.title.x + 4 * scale,
                      layout.title.y,
                      10,
@@ -4409,30 +4472,42 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
             canvas->save();
             canvas->clipRect(SkRect::MakeXYWH(
                 layout.rows.x, layout.rows.y, layout.rows.width, layout.rows.height));
-            dialog->picker.for_each_range(first,
-                                          std::min(dialog->picker.size(), first + layout.capacity),
-                                          [&](std::size_t row, const PickerIndex::Row& item) {
-                                              const auto y =
-                                                  layout.rows.y + static_cast<float>(row - first) *
-                                                                      layout.row_height;
-                                              if (row == prompt_choice)
-                                                  rectangle(canvas,
-                                                            layout.rows.x,
-                                                            y,
-                                                            layout.rows.width,
-                                                            layout.row_height - 2 * scale,
-                                                            ui_style.colors.hover);
-                                              elided_label(canvas,
-                                                           item.label,
-                                                           layout.rows.x + 8 * scale,
-                                                           y + 7 * scale,
-                                                           13,
-                                                           layout.rows.width - 16 * scale,
-                                                           ui_style.colors.foreground);
-                                          });
+            dialog->picker.for_each_range(
+                first,
+                std::min(dialog->picker.size(), first + layout.capacity),
+                [&](std::size_t row, const PickerIndex::Row& item) {
+                    const auto y =
+                        layout.rows.y + static_cast<float>(row - first) * layout.row_height;
+                    if (row == prompt_choice)
+                        rectangle(canvas,
+                                  layout.rows.x,
+                                  y,
+                                  layout.rows.width,
+                                  layout.row_height - 2 * scale,
+                                  ui_style.colors.hover);
+                    const auto icon_width = item.icon_path.empty() ? 0.0F : 24 * scale;
+                    if (!item.icon_path.empty()) {
+                        const auto icon = file_icons.lookup(item.icon_path, false);
+                        draw_icon(canvas,
+                                  icon.glyph,
+                                  layout.rows.x + 8 * scale,
+                                  y + 7 * scale,
+                                  16 * scale,
+                                  icon.color(ui_style.colors));
+                    }
+                    elided_label(canvas,
+                                 item.label,
+                                 layout.rows.x + 8 * scale + icon_width,
+                                 y + 7 * scale,
+                                 13,
+                                 layout.rows.width - 16 * scale - icon_width,
+                                 ui_style.colors.foreground);
+                });
             if (!dialog->picker.size())
                 label(canvas,
-                      "No matching items",
+                      dialog->picker.dynamic() && !dialog->picker.message().empty()
+                          ? dialog->picker.message()
+                          : "No matching items",
                       layout.rows.x + 8 * scale,
                       layout.rows.y + 7 * scale,
                       13,
@@ -5160,6 +5235,7 @@ bool EditorWindow::idle() const noexcept {
     const auto* document = impl_->current();
     return !impl_->quit_requested && impl_->tabs.pending() == 0 && impl_->file_icons.idle() &&
            impl_->pending_fences.empty() && impl_->native_idle(impl_->dialog.has_value()) &&
+           (!impl_->dialog || !impl_->dialog->picker.dynamic() || impl_->dialog->picker.ready()) &&
            (impl_->workbench->idle() || (impl_->dialog && impl_->workbench->awaiting_input())) &&
            (!document || (!document->needs_lines && !document->loading && !document->needs_syntax &&
                           !document->syntax_loading));
@@ -5248,6 +5324,15 @@ WorkbenchViewState EditorWindow::view_state() const {
     result.input_layout["pendingFields"] = pending_fields;
     result.input_layout["pendingStyles"] = impl_->pending_styles.size();
     result.input_layout["compositionPendingFields"] = composing_fields;
+    if (impl_->prompt == Impl::Prompt::policy_pick && impl_->dialog) {
+        const auto& picker = impl_->dialog->picker;
+        result.input_layout["pickerPending"] = !picker.ready();
+        result.input_layout["pickerRows"] = picker.size();
+        result.input_layout["pickerGeneration"] = picker.generation();
+        result.input_layout["pickerQuery"] = impl_->prompt_text;
+        result.input_layout["pickerMessage"] = picker.message();
+        result.input_layout["pickerError"] = picker.error();
+    }
     if (impl_->dialog) {
         if (impl_->dialog->input_layout) {
             result.input_layout["pending"] = impl_->dialog->input_layout->pending();

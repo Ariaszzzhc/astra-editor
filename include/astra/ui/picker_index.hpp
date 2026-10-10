@@ -2,6 +2,7 @@
 
 #include <astra/core/sum_tree.hpp>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -12,6 +13,7 @@ class PickerIndex final {
     struct Row {
         std::string label, folded;
         std::size_t source{};
+        std::string icon_path;
     };
 
     struct Summary {
@@ -30,8 +32,40 @@ class PickerIndex final {
     };
 
     using Snapshot = SumTree<Row, Summary, Measure>;
-    void reset(const std::vector<std::string>& labels);
+    void reset(const std::vector<std::string>& labels,
+               bool dynamic = false,
+               const std::vector<std::string>& icon_paths = {});
     void filter(std::string_view query);
+    // Provider publication is atomic and only accepts the current query identity.
+    bool publish(std::string_view generation,
+                 const std::vector<std::string>& labels,
+                 std::string message,
+                 bool error = false,
+                 const std::vector<std::string>& icon_paths = {});
+
+    [[nodiscard]] bool dynamic() const noexcept {
+        return dynamic_;
+    }
+
+    [[nodiscard]] bool ready() const noexcept {
+        return !dynamic_ || published_ == generation_;
+    }
+
+    [[nodiscard]] std::string generation() const {
+        return std::to_string(generation_);
+    }
+
+    [[nodiscard]] const std::string& query() const noexcept {
+        return query_;
+    }
+
+    [[nodiscard]] const std::string& message() const noexcept {
+        return message_;
+    }
+
+    [[nodiscard]] bool error() const noexcept {
+        return error_;
+    }
 
     [[nodiscard]] std::size_t size() const noexcept {
         return visible_.size();
@@ -56,5 +90,8 @@ class PickerIndex final {
   private:
     Snapshot source_, visible_;
     std::string query_;
+    std::string message_;
+    std::uint64_t generation_{1}, published_{};
+    bool dynamic_{}, error_{};
 };
 } // namespace astra::ui

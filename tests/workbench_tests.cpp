@@ -3,6 +3,7 @@
 #include <astra/ui/inline_form.hpp>
 #include <astra/ui/form_registry.hpp>
 #include <astra/ui/view_store.hpp>
+#include <astra/ui/picker_index.hpp>
 #include <astra/io/file_store.hpp>
 #include <doctest/doctest.h>
 
@@ -11,6 +12,8 @@
 #include <filesystem>
 #include <utility>
 #include <tuple>
+#include <chrono>
+#include <thread>
 
 namespace {
 using Json = astra::protocol::Json;
@@ -70,6 +73,49 @@ std::future<Json> ready(Json value) {
     result.set_value(std::move(value));
     return result.get_future();
 }
+
+struct PickerHost {
+    astra::ui::PickerIndex picker;
+    std::optional<std::promise<Json>> input;
+    Json specification;
+    std::vector<Json> publications;
+
+    std::future<Json> operator()(std::string_view method, const Json& params) {
+        if (method == "_ui.dialog") {
+            REQUIRE_FALSE(input);
+            specification = params;
+            picker.reset(params.at("items").get<std::vector<std::string>>(),
+                         params.value("dynamic", false),
+                         params.value("iconPaths", Json::array()).get<std::vector<std::string>>());
+            input.emplace();
+            return input->get_future();
+        }
+        if (method == "_ui.dialog.cancel") {
+            if (input) {
+                input->set_value(nullptr);
+                input.reset();
+            }
+            return ready(nullptr);
+        }
+        REQUIRE(method == "_ui.picker.publish");
+        publications.push_back(params);
+        return ready(input && specification.at("id") == params.at("id") &&
+                     picker.publish(
+                         params.at("generation").get<std::string>(),
+                         params.at("items").get<std::vector<std::string>>(),
+                         params.value("message", std::string{}),
+                         params.value("error", false),
+                         params.value("iconPaths", Json::array()).get<std::vector<std::string>>()));
+    }
+
+    void query(astra::ui::Workbench& workbench, std::string text) {
+        picker.filter(text);
+        workbench.emit("ui.picker.query",
+                       {{"id", specification.at("id")},
+                        {"generation", picker.generation()},
+                        {"query", std::move(text)}});
+    }
+};
 
 struct InlineHost {
     std::optional<astra::ui::InlineForm> form;
@@ -484,6 +530,305 @@ TEST_CASE("workbench superseded workspace failures cannot overwrite newer input 
     for (const auto& update : host.updates)
         if (update.contains("error"))
             CHECK(update.at("error") != "old query rejected");
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench dynamic picker cancels obsolete providers and returns captured items") {
+    auto channel = std::make_shared<Channel>();
+    PickerHost host;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            return host(method, params);
+        },
+        modules(),
+        R"js(
+        let releaseOld, oldSignal;
+        astra.registerCommand('acceptance.pick', () => astra.ui.pick({
+            title: 'Dynamic',
+            items: async (query, {signal}) => {
+                if (query === 'old') {
+                    oldSignal = signal;
+                    await new Promise(resolve => releaseOld = resolve);
+                }
+                if (query === 'error') throw new Error('Failed\nprovider');
+                return {items: [{label: query, path: query + '.cpp', iconPath: query + '.cpp'}],
+                        message: '1 match'};
+            }
+        }));
+        astra.registerCommand('acceptance.release', () => {
+            releaseOld();
+            return oldSignal.aborted;
+        });
+        )js");
+    auto poll = [&] {
+        for (int tick = 0; tick < 20; ++tick)
+            workbench.poll();
+    };
+    std::optional<astra::script::Runtime::Outcome> outcome, released;
+    workbench.execute("acceptance.pick", Json::object(), [&](const auto& value) {
+        outcome = value;
+    });
+    poll();
+    REQUIRE(host.input);
+    CHECK(host.specification.at("dynamic") == true);
+    host.query(workbench, "old");
+    poll();
+    CHECK(host.publications.empty());
+    CHECK_FALSE(host.picker.ready());
+    host.query(workbench, "new🙂");
+    poll();
+    REQUIRE(host.picker.ready());
+    CHECK(host.picker.at(0).label == "new🙂");
+    CHECK(host.picker.at(0).icon_path == "new🙂.cpp");
+    workbench.execute("acceptance.release", Json::object(), [&](const auto& value) {
+        released = value;
+    });
+    poll();
+    REQUIRE(released);
+    CHECK_FALSE(released->error);
+    CHECK(released->value == true);
+    CHECK(host.publications.size() == 1);
+    CHECK(workbench.awaiting_input());
+    host.query(workbench, "error");
+    poll();
+    CHECK(host.picker.ready());
+    CHECK(host.picker.error());
+    CHECK(host.picker.message() == "Failed provider");
+    host.query(workbench, "recovered");
+    poll();
+    CHECK_FALSE(host.picker.error());
+    REQUIRE(host.picker.size() == 1);
+    host.input->set_value({{"generation", host.picker.generation()}, {"index", 0}});
+    host.input.reset();
+    poll();
+    REQUIRE(outcome);
+    CHECK_FALSE(outcome->error);
+    CHECK(outcome->value.at("path") == "recovered.cpp");
+    CHECK(workbench.take_errors().empty());
+    CHECK(channel->requests.empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench picker preserves static item data and rejects obsolete dynamic selections") {
+    auto channel = std::make_shared<Channel>();
+    PickerHost host;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            return host(method, params);
+        },
+        modules(),
+        R"js(
+        astra.registerCommand('acceptance.static', () => astra.ui.pick({
+            title: 'Static', dynamic: true,
+            items: [{label: 'First', data: 42, iconPath: 'first.cpp'}, 'Second']
+        }));
+        astra.registerCommand('acceptance.dynamic', () => astra.ui.pick({
+            title: 'Dynamic', items: query => [{label: query, data: query}]
+        }));
+        )js");
+    auto poll = [&] {
+        for (int tick = 0; tick < 20; ++tick)
+            workbench.poll();
+    };
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("acceptance.static", Json::object(), [&](const auto& value) {
+        outcome = value;
+    });
+    poll();
+    REQUIRE(host.input);
+    CHECK_FALSE(host.picker.dynamic());
+    CHECK(host.picker.at(0).icon_path == "first.cpp");
+    host.input->set_value(0);
+    host.input.reset();
+    poll();
+    REQUIRE(outcome);
+    CHECK_FALSE(outcome->error);
+    CHECK(outcome->value.at("data") == 42);
+    outcome.reset();
+    workbench.execute("acceptance.dynamic", Json::object(), [&](const auto& value) {
+        outcome = value;
+    });
+    poll();
+    host.query(workbench, "first");
+    poll();
+    const auto obsolete = host.picker.generation();
+    host.query(workbench, "latest");
+    poll();
+    REQUIRE(host.picker.ready());
+    host.input->set_value({{"generation", obsolete}, {"index", 0}});
+    host.input.reset();
+    poll();
+    REQUIRE(outcome);
+    REQUIRE(outcome->error);
+    CHECK(outcome->error->at("message") == "Picker returned an obsolete selection");
+    CHECK(workbench.idle());
+    CHECK(channel->requests.empty());
+    CHECK(workbench.take_errors().empty());
+}
+
+TEST_CASE("workbench dynamic picker dismissal retires ignored-signal work") {
+    auto channel = std::make_shared<Channel>();
+    PickerHost host;
+    unsigned updates{};
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.update") {
+                ++updates;
+                return ready(nullptr);
+            }
+            return host(method, params);
+        },
+        modules(),
+        R"js(
+        let release, cancelledSignal;
+        astra.registerCommand('acceptance.pick', () => astra.ui.pick({
+            title: 'Dismiss',
+            items: async (_, {signal}) => {
+                cancelledSignal = signal;
+                await new Promise(resolve => release = resolve);
+                await astra.ui.update({status: 'Forbidden late mutation'});
+                return ['Late'];
+            }
+        }));
+        astra.registerCommand('acceptance.release', () => {
+            release();
+            return cancelledSignal.aborted;
+        });
+        )js");
+    std::optional<astra::script::Runtime::Outcome> outcome, released;
+    workbench.execute("acceptance.pick", Json::object(), [&](const auto& value) {
+        outcome = value;
+    });
+    for (int tick = 0; tick < 20; ++tick)
+        workbench.poll();
+    host.query(workbench, "waiting");
+    for (int tick = 0; tick < 20; ++tick)
+        workbench.poll();
+    REQUIRE(host.input);
+    host.input->set_value(nullptr);
+    host.input.reset();
+    for (int tick = 0; tick < 30; ++tick)
+        workbench.poll();
+    REQUIRE(outcome);
+    CHECK_FALSE(outcome->error);
+    CHECK(outcome->value.is_null());
+    CHECK(workbench.idle());
+    workbench.execute("acceptance.release", Json::object(), [&](const auto& value) {
+        released = value;
+    });
+    for (int tick = 0; tick < 30; ++tick)
+        workbench.poll();
+    REQUIRE(released);
+    CHECK(released->value == true);
+    CHECK(updates == 0);
+    CHECK(host.publications.empty());
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench quick open searches beyond static picker capacity and drains cancellation") {
+    auto channel = std::make_shared<Channel>();
+    PickerHost host;
+    std::vector<Json> updates;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.read")
+                return ready({{"document", {{"path", "src/active.cpp"}}}});
+            if (method == "_ui.update") {
+                updates.push_back(params);
+                return ready(nullptr);
+            }
+            return host(method, params);
+        },
+        modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("ui.quickOpen", Json::object(), [&](const auto& value) {
+        outcome = value;
+    });
+    for (int tick = 0; tick < 20; ++tick)
+        workbench.poll();
+    REQUIRE(host.input);
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "workspace.tree");
+    CHECK(channel->requests.front().body.at("params").at("maxEntries") == 100000);
+    host.query(workbench, "unused");
+    host.query(workbench, "中🙂");
+    channel->reply({{"operationId", "files"}});
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!host.picker.ready()) {
+        REQUIRE(std::chrono::steady_clock::now() < deadline);
+        workbench.poll();
+        if (!channel->requests.empty()) {
+            const auto& body = channel->requests.front().body;
+            REQUIRE(body.at("method") == "operation.get");
+            const auto offset = body.at("params").at("offset").get<std::size_t>();
+            const auto end = std::min(offset + 256, std::size_t{5003});
+            Json entries = Json::array();
+            for (auto row = offset; row < end; ++row) {
+                const auto path = row < 5000    ? "generated/item" + std::to_string(row) + ".txt"
+                                  : row == 5000 ? "src/中🙂.cpp"
+                                  : row == 5001 ? "lib/中🙂-test.cpp"
+                                                : "src/active.cpp";
+                entries.push_back({{"path", path}, {"directory", false}});
+            }
+            channel->reply({{"state", "completed"},
+                            {"page", {{"nextOffset", end}, {"total", 5003}}},
+                            {"result", {{"entries", entries}}}});
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    REQUIRE(host.picker.size() == 2);
+    CHECK(host.picker.at(0).label == "src/中🙂.cpp");
+    CHECK(host.picker.at(1).label == "lib/中🙂-test.cpp");
+    CHECK(host.publications.size() == 1);
+    host.input->set_value({{"generation", host.picker.generation()}, {"index", 0}});
+    host.input.reset();
+    for (int tick = 0; tick < 30; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "workspace.open");
+    CHECK(channel->requests.front().body.at("params").at("path") == "src/中🙂.cpp");
+    channel->reply({{"id", "selected"}, {"revision", "0"}});
+    for (int tick = 0; tick < 30; ++tick)
+        workbench.poll();
+    REQUIRE(outcome);
+    CHECK_FALSE(outcome->error);
+    REQUIRE(updates.size() == 1);
+    CHECK(updates.at(0).at("activate") == "selected");
+    CHECK(workbench.idle());
+
+    outcome.reset();
+    workbench.execute("ui.quickOpen", Json::object(), [&](const auto& value) {
+        outcome = value;
+    });
+    for (int tick = 0; tick < 20; ++tick)
+        workbench.poll();
+    REQUIRE(host.input);
+    host.query(workbench, "waiting");
+    host.input->set_value(nullptr);
+    host.input.reset();
+    for (int tick = 0; tick < 20; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "workspace.tree");
+    channel->reply({{"operationId", "late-files"}});
+    for (int tick = 0; tick < 30; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "operation.cancel");
+    CHECK(channel->requests.front().body.at("params").at("id") == "late-files");
+    channel->reply({{"cancelled", true}});
+    for (int tick = 0; tick < 30; ++tick)
+        workbench.poll();
+    REQUIRE(outcome);
+    CHECK_FALSE(outcome->error);
+    CHECK(updates.size() == 1);
+    CHECK(channel->requests.empty());
     CHECK(workbench.take_errors().empty());
     CHECK(workbench.idle());
 }

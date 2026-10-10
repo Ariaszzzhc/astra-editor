@@ -474,6 +474,15 @@ configuration. It is not interchangeable with the local graphics package.
 
 ## Workbench style ownership and live updates
 
+Quick Open and user-provided asynchronous pickers share `PickerLayout`, native
+editable text geometry and the persistent `PickerIndex`. Painting and pointer
+placement reserve the same empty loading row. Query changes retain previous
+rows but prevent their activation until a matching generation is published.
+Result objects with `iconPath` use the shared JS file-icon descriptor cache.
+The actual GPU capture `build/graphics/gui-quick-open.png` shows a fuzzy query
+selecting `generated/item4999.txt` in a 5,000-file fixture. This establishes the
+tested picker presentation, not whole-product visual acceptance.
+
 `data/defaults.js` supplies all workbench RGB roles and UI font families. The
 client imports it into its actual QuickJS runtime before user policy, retains the
 bootstrap settings separately and merges service and client preferences over
