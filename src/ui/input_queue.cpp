@@ -1,5 +1,6 @@
 #include <astra/ui/input_queue.hpp>
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -65,12 +66,16 @@ bool InputQueue::empty() const noexcept {
     return inputs_.empty();
 }
 
-bool InputQueue::waiting_only(std::span<const Identity> tasks) const {
-    std::set<std::string_view> scopes;
+bool InputQueue::waiting_only(std::span<const Identity> tasks) const noexcept {
+    // Admission caps this queue at 256. Idle observation must not allocate.
+    std::array<std::string_view, 256> scopes;
+    std::size_t count{};
     for (const auto& [identity, input] : inputs_) {
         static_cast<void>(identity);
-        if (!scopes.insert(input.document).second)
+        const auto end = scopes.begin() + static_cast<std::ptrdiff_t>(count);
+        if (std::find(scopes.begin(), end, input.document) != end)
             continue;
+        scopes[count++] = input.document;
         if (!input.task || std::find(tasks.begin(), tasks.end(), *input.task) == tasks.end())
             return false;
     }

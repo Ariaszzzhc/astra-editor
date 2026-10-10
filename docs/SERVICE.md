@@ -303,8 +303,20 @@ selected original item or `null`; items can be strings or objects with a `label`
 Filtering uses ASCII case folding and literal Unicode text matching; row identity
 survives filtering and scrolling. Limits match the confirmation list. Native
 filtering occurs when the query changes, not on each frame.
-`astra.ui.showText({title, text}, options)` awaits dismissal of an indexed text
-panel, supporting arrows and Shift-wheel for horizontal scrolling. These are native retained modal
+`astra.ui.showText({title, text, monospace, actions, lineTones}, options)` awaits
+an indexed text panel. It returns the selected action's string `id`, or `null`
+on Enter/Escape/dismissal. Arrows and Shift-wheel support horizontal scrolling.
+Optional `actions` contains at most eight `{id,label,key,destructive}` objects:
+identities are unique nonempty UTF-8 strings up to 128 bytes; single-line labels
+are at most 256 bytes; optional keys are unique ASCII letters/digits, case
+insensitive. Buttons and shortcuts return identities to JS without invoking a
+native service command. A shortcut's generated text/composition and auto-repeat
+remain consumed through key release, preserving the editor's document and
+selection state after the modal closes. `lineTones` contains ordered disjoint half-open logical
+row ranges `{begin,end,tone}` bounded by the text's line count; tones are
+`normal`, `added`, `removed`, `accent`, or `muted`. Native measured range indexes
+resolve colors; JS supplies domain classification. `monospace` selects code fonts.
+These are native retained modal
 components with Promise completion; input/focus/drawing stays in C++ and the
 following service workflow stays in JS. Abort dismisses the matching dialog and
 drains its native future. Dialogs default to five minutes, with a separate bounded
@@ -312,7 +324,19 @@ client task deadline. UI automation distinguishes waiting for user input from
 unfinished background operations. Input is bounded to 16 KiB; confirmation
 details to 64 KiB. Native text panels index logical CR/LF/CRLF rows and bound their
 source to 8 MiB and 100,000 lines; diff shaping caches only a bounded visible-row
-working set. The clipboard adapter reads/writes at most 8 MiB and rejects
+working set. Git comparison uses this same component: JS captures its path,
+staged state and exact service preview identity; JS decides line tones, offers
+stage/unstage actions and offers discard only for a working-tree preview.
+Discard still awaits confirmation and the service validates the captured preview
+before changing disk. Dismissal releases the preview session. Actions invoked
+while a comparison is open abort and drain only that comparison's presentation
+and metadata-read handles. A completed Git operation cannot dismiss a subsequently
+opened unrelated modal. The internal
+`_ui.read` result no longer carries Git-specific dialog state.
+`astra.ui.update({gutter:{id,revision,marks}})` publishes generic document-line
+decorations only while that document's revision still matches. Git's JS workflow
+chooses clean matching documents before publishing working-tree gutter marks.
+The clipboard adapter reads/writes at most 8 MiB and rejects
 oversized/NUL text rather than silently truncating it.
 
 `astra.ui.choose({title, detail, choices, defaultChoice, keys, id}, options)`

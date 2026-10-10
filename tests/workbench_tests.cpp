@@ -2988,16 +2988,15 @@ TEST_CASE("workbench Git discard awaits confirmation and retains its exact previ
     astra::ui::Workbench workbench(
         channel,
         [&](std::string_view method, const Json& params) {
-            if (method == "_ui.read")
-                return ready({{"gitPath", "file.cpp"},
-                              {"gitStaged", false},
-                              {"gitPreview", "captured-preview"}});
             if (method == "_ui.dialog")
                 return confirmation.get_future();
             return views(method, params);
         },
         modules());
-    workbench.execute("ui.gitDiscard", Json::object(), {});
+    workbench.execute(
+        "ui.gitDiscard",
+        {{"target", {{"path", "file.cpp"}, {"staged", false}, {"previewId", "captured-preview"}}}},
+        {});
     for (int tick = 0; tick < 6; ++tick)
         workbench.poll();
     CHECK(channel->requests.empty());
@@ -3666,5 +3665,354 @@ TEST_CASE("workbench formatting discards obsolete results without applying edits
     for (int tick = 0; tick < 4; ++tick)
         workbench.poll();
     CHECK(channel->requests.empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench Git diff owns native text actions and exact discard targets in JS") {
+    auto channel = std::make_shared<Channel>();
+    ViewHost views;
+    std::promise<Json> selection;
+    std::promise<Json> confirmation;
+    Json panel, gutter, confirm;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.read")
+                return ready({{"tabs", Json::array({"document-id"})},
+                              {"document",
+                               {{"id", "document-id"},
+                                {"path", "file.cpp"},
+                                {"revision", "7"},
+                                {"dirty", false}}}});
+            if (method == "_ui.update" && params.contains("gutter"))
+                gutter = params.at("gutter");
+            if (method == "_ui.dialog") {
+                if (params.at("kind") == "text") {
+                    panel = params;
+                    return selection.get_future();
+                }
+                REQUIRE(params.at("kind") == "confirm");
+                confirm = params;
+                return confirmation.get_future();
+            }
+            return views(method, params);
+        },
+        modules());
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("workbench.gitDiff", {{"path", "file.cpp"}}, [&](const auto& result) {
+        outcome = result;
+    });
+    for (int tick = 0; tick < 6; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "git.diff");
+    channel->reply({{"patch", "--- old\r\n+++ new\r\n@@ hunk\r\n+中🙂\r\n+added\r\n-removed\r\n"},
+                    {"previewId", "exact-preview"},
+                    {"gutter", Json::array({{{"line", 0}, {"kind", "modified"}}})}});
+    for (int tick = 0; tick < 16; ++tick)
+        workbench.poll();
+    REQUIRE(panel.is_object());
+    CHECK(panel.at("monospace") == true);
+    CHECK(panel.at("actions").size() == 3);
+    CHECK(panel.at("lineTones") == Json::array({{{"begin", 2}, {"end", 3}, {"tone", "accent"}},
+                                                {{"begin", 3}, {"end", 5}, {"tone", "added"}},
+                                                {{"begin", 5}, {"end", 6}, {"tone", "removed"}}}));
+    CHECK(gutter.at("id") == "document-id");
+    CHECK(gutter.at("revision") == "7");
+    CHECK(workbench.awaiting_input());
+    CHECK_FALSE(outcome);
+    CHECK(channel->requests.empty());
+    SUBCASE("dismissal does not invoke Git or retain a discarded preview") {
+        selection.set_value(nullptr);
+        for (int tick = 0; tick < 10; ++tick)
+            workbench.poll();
+        REQUIRE(outcome);
+        CHECK_FALSE(outcome->error);
+        workbench.execute("ui.gitDiscard", Json::object(), {});
+        for (int tick = 0; tick < 8; ++tick)
+            workbench.poll();
+        CHECK(confirm.is_null());
+        CHECK(channel->requests.empty());
+        CHECK(workbench.idle());
+    }
+    SUBCASE("discard action awaits a confirmation before issuing the captured preview") {
+        selection.set_value("ui.gitDiscard");
+        for (int tick = 0; tick < 12; ++tick)
+            workbench.poll();
+        REQUIRE(confirm.is_object());
+        CHECK(confirm.at("detail").get<std::string>().starts_with("file.cpp\n"));
+        CHECK(channel->requests.empty());
+        confirmation.set_value(false);
+        for (int tick = 0; tick < 12; ++tick)
+            workbench.poll();
+        REQUIRE(outcome);
+        CHECK_FALSE(outcome->error);
+        CHECK(channel->requests.empty());
+        CHECK(workbench.idle());
+    }
+    SUBCASE("stage action uses its captured diff path") {
+        selection.set_value("ui.gitStage");
+        for (int tick = 0; tick < 12; ++tick)
+            workbench.poll();
+        REQUIRE(channel->requests.size() == 1);
+        CHECK(channel->requests.front().body.at("method") == "git.stage");
+        CHECK(channel->requests.front().body.at("params").at("paths") == Json::array({"file.cpp"}));
+        channel->reply({{"entries", Json::array()}});
+        for (int tick = 0; tick < 30; ++tick) {
+            views.views.poll();
+            workbench.poll();
+        }
+        REQUIRE(outcome);
+        CHECK_FALSE(outcome->error);
+        CHECK(workbench.idle());
+    }
+    SUBCASE("unadvertised action identities cannot dispatch service commands") {
+        selection.set_value("ui.gitCommit");
+        for (int tick = 0; tick < 12; ++tick)
+            workbench.poll();
+        REQUIRE(outcome);
+        CHECK_FALSE(outcome->error);
+        CHECK(channel->requests.empty());
+        CHECK(workbench.idle());
+    }
+}
+
+TEST_CASE("workbench Git text projection handles asynchronous pages and staged binary panels") {
+    auto channel = std::make_shared<Channel>();
+    Json panel;
+    unsigned reads{};
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.read") {
+                ++reads;
+                return ready({{"tabs", Json::array()}});
+            }
+            if (method == "_ui.dialog") {
+                panel = params;
+                return ready(nullptr);
+            }
+            return ready(nullptr);
+        },
+        modules());
+    bool staged{};
+    Json model;
+    SUBCASE("working-tree tones retain row identity across yields and mixed newlines") {
+        std::string text;
+        for (int row = 0; row < 1536; ++row) {
+            text += "+中🙂";
+            text += row % 3 == 0 ? "\r\n" : (row % 3 == 1 ? "\r" : "\n");
+        }
+        model = {{"patch", text}, {"previewId", "preview"}};
+    }
+    SUBCASE("staged binary comparisons offer no discard or working-tree gutters") {
+        staged = true;
+        model = {{"binary", true}, {"patch", "+ignored"}, {"previewId", "preview"}};
+    }
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("workbench.gitDiff",
+                      {{"path", "captured.cpp"}, {"staged", staged}},
+                      [&](const auto& result) {
+                          outcome = result;
+                      });
+    for (int tick = 0; tick < 6; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("params").at("staged") == staged);
+    channel->reply(model);
+    for (int tick = 0; tick < 2000 && !outcome; ++tick)
+        workbench.poll();
+    REQUIRE(outcome);
+    CHECK_FALSE(outcome->error);
+    REQUIRE(panel.is_object());
+    if (staged) {
+        CHECK(reads == 0);
+        CHECK(panel.at("actions").size() == 2);
+        CHECK(panel.at("lineTones").empty());
+        CHECK(panel.at("text") == "Binary file — textual diff is unavailable.");
+    } else {
+        CHECK(panel.at("actions").size() == 3);
+        CHECK(panel.at("lineTones") ==
+              Json::array({{{"begin", 0}, {"end", 1536}, {"tone", "added"}}}));
+    }
+    CHECK(channel->requests.empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench delayed Git stage preserves an unrelated modal session") {
+    auto channel = std::make_shared<Channel>();
+    ViewHost views;
+    std::promise<Json> selection, unrelated;
+    bool unrelated_open{}, unrelated_dismissed{};
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.read")
+                return ready({{"tabs", Json::array()}});
+            if (method == "_ui.dialog") {
+                if (params.at("title") == "Unrelated panel") {
+                    unrelated_open = true;
+                    return unrelated.get_future();
+                }
+                return selection.get_future();
+            }
+            if (method == "_ui.update" && params.value("dismissPrompt", false) && unrelated_open)
+                unrelated_dismissed = true;
+            return views(method, params);
+        },
+        modules(),
+        "astra.ui.registerCommand({id:'acceptance.other',title:'Unrelated panel'},"
+        "async()=>await astra.ui.showText({title:'Unrelated panel',text:'Other content'}));");
+    std::optional<astra::script::Runtime::Outcome> stage, other;
+    workbench.execute("workbench.gitDiff", {{"path", "captured.cpp"}}, [&](const auto& outcome) {
+        stage = outcome;
+    });
+    for (int tick = 0; tick < 6; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    channel->reply({{"patch", "+change"}, {"previewId", "preview"}});
+    for (int tick = 0; tick < 12; ++tick)
+        workbench.poll();
+    REQUIRE(workbench.awaiting_input());
+    selection.set_value("ui.gitStage");
+    for (int tick = 0; tick < 12; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "git.stage");
+    workbench.execute("acceptance.other", Json::object(), [&](const auto& outcome) {
+        other = outcome;
+    });
+    for (int tick = 0; tick < 6; ++tick)
+        workbench.poll();
+    REQUIRE(unrelated_open);
+    channel->reply({{"entries", Json::array()}});
+    for (int tick = 0; tick < 30; ++tick) {
+        views.views.poll();
+        workbench.poll();
+    }
+    REQUIRE(stage);
+    CHECK_FALSE(stage->error);
+    CHECK_FALSE(unrelated_dismissed);
+    CHECK_FALSE(other);
+    CHECK(workbench.awaiting_input());
+    unrelated.set_value(nullptr);
+    for (int tick = 0; tick < 12; ++tick)
+        workbench.poll();
+    REQUIRE(other);
+    CHECK_FALSE(other->error);
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench direct Git action cancels and drains only its comparison session") {
+    auto channel = std::make_shared<Channel>();
+    ViewHost views;
+    std::promise<Json> presentation;
+    std::string dialog_id;
+    unsigned cancelled{};
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.read")
+                return ready({{"tabs", Json::array()}});
+            if (method == "_ui.dialog") {
+                dialog_id = params.at("id").get<std::string>();
+                return presentation.get_future();
+            }
+            if (method == "_ui.dialog.cancel" && params.at("id") == dialog_id) {
+                if (!cancelled++)
+                    presentation.set_value(nullptr);
+                return ready(nullptr);
+            }
+            return views(method, params);
+        },
+        modules());
+    std::optional<astra::script::Runtime::Outcome> diff, stage;
+    workbench.execute("workbench.gitDiff", {{"path", "captured.cpp"}}, [&](const auto& result) {
+        diff = result;
+    });
+    for (int tick = 0; tick < 6; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    channel->reply({{"patch", "+change"}, {"previewId", "preview"}});
+    for (int tick = 0; tick < 12; ++tick)
+        workbench.poll();
+    REQUIRE(workbench.awaiting_input());
+    workbench.execute("ui.gitStage", Json::object(), [&](const auto& result) {
+        stage = result;
+    });
+    for (int tick = 0; tick < 20; ++tick)
+        workbench.poll();
+    CHECK(cancelled > 0);
+    REQUIRE(diff);
+    REQUIRE(diff->error);
+    CHECK(diff->error->at("name") == "AbortError");
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "git.stage");
+    CHECK(channel->requests.front().body.at("params").at("paths") == Json::array({"captured.cpp"}));
+    channel->reply({{"entries", Json::array()}});
+    for (int tick = 0; tick < 30; ++tick) {
+        views.views.poll();
+        workbench.poll();
+    }
+    REQUIRE(stage);
+    CHECK_FALSE(stage->error);
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench Git cancellation drains a pending gutter metadata read") {
+    auto channel = std::make_shared<Channel>();
+    ViewHost views;
+    std::promise<Json> metadata;
+    std::string read_id;
+    unsigned cancelled{}, panels{};
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.read") {
+                read_id = params.at("readId").get<std::string>();
+                return metadata.get_future();
+            }
+            if (method == "_ui.read.cancel") {
+                CHECK(params.at("readId") == read_id);
+                if (!cancelled++)
+                    metadata.set_value(nullptr);
+                return ready(nullptr);
+            }
+            if (method == "_ui.dialog")
+                ++panels;
+            return views(method, params);
+        },
+        modules());
+    std::optional<astra::script::Runtime::Outcome> diff, stage;
+    workbench.execute("workbench.gitDiff", {{"path", "captured.cpp"}}, [&](const auto& value) {
+        diff = value;
+    });
+    for (int tick = 0; tick < 6; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    channel->reply({{"patch", "+change"}, {"previewId", "preview"}});
+    for (int tick = 0; tick < 6; ++tick)
+        workbench.poll();
+    REQUIRE_FALSE(read_id.empty());
+    workbench.execute("ui.gitStage", Json::object(), [&](const auto& value) {
+        stage = value;
+    });
+    for (int tick = 0; tick < 20; ++tick)
+        workbench.poll();
+    CHECK(cancelled > 0);
+    REQUIRE(diff);
+    REQUIRE(diff->error);
+    CHECK(diff->error->at("name") == "AbortError");
+    CHECK(panels == 0);
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "git.stage");
+    CHECK(channel->requests.front().body.at("params").at("paths") == Json::array({"captured.cpp"}));
+    channel->reply({{"entries", Json::array()}});
+    for (int tick = 0; tick < 30; ++tick) {
+        views.views.poll();
+        workbench.poll();
+    }
+    REQUIRE(stage);
+    CHECK_FALSE(stage->error);
     CHECK(workbench.idle());
 }

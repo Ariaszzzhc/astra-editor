@@ -6,6 +6,7 @@
 #include "astra/ui/view_store.hpp"
 #include "astra/ui/icons.hpp"
 #include "astra/ui/text_line_index.hpp"
+#include "astra/ui/text_panel.hpp"
 #include "astra/ui/picker_index.hpp"
 #include "astra/ui/decoration_indexes.hpp"
 #include "astra/ui/inline_form.hpp"
@@ -21,6 +22,8 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
+#include <bitset>
 #include <chrono>
 #include <cctype>
 #include <cmath>
@@ -187,16 +190,16 @@ struct EditorWindow::Impl {
         policy_choice,
         policy_pick,
         policy_text,
-        policy_progress,
-
-        git_diff
+        policy_progress
     };
 
     struct Dialog {
         std::string id;
+        script::Runtime::TaskId owner{};
         Json spec;
         std::promise<Json> completion;
         TextLineIndex detail_lines;
+        TextPanelPresentation text_panel;
         std::map<std::size_t, TextLayout> detail_layout;
         float detail_width{}, detail_scale{};
         TextLineIndex items;
@@ -279,12 +282,6 @@ struct EditorWindow::Impl {
     std::string watch_error;
     std::string replace_notice;
     std::string workspace_branch{"Astra"};
-    std::string git_path;
-    std::string git_preview;
-    TextLineIndex git_diff_lines;
-    std::map<std::size_t, TextLayout> git_diff_layouts;
-    float git_diff_layout_scale{};
-    bool git_staged{};
     std::map<std::string, TextLayout> labels;
     float scale{1};
     float row_height{26};
@@ -322,6 +319,8 @@ struct EditorWindow::Impl {
     std::size_t prompt_choice{};
     bool prompt_select_all{};
     std::string preedit;
+    bool consumed_modal_text{};
+    std::bitset<128> consumed_modal_keys;
     std::string error;
     std::string status{"Starting workspace..."};
     std::optional<std::filesystem::path> screenshot;
@@ -724,7 +723,6 @@ struct EditorWindow::Impl {
                           std::optional<std::size_t> begin = {});
     void fetch_syntax();
     void fetch_diagnostics(const std::string& id);
-    void fetch_git_diff(std::string path, bool staged = false);
     void editor_command(std::string command,
                         Json extra = Json::object(),
                         std::shared_ptr<PendingEdit> edit = {});
@@ -1464,10 +1462,6 @@ void EditorWindow::Impl::fetch_diagnostics(const std::string& id) {
              {}});
 }
 
-void EditorWindow::Impl::fetch_git_diff(std::string path, bool staged) {
-    execute_policy("workbench.gitDiff", {{"path", std::move(path)}, {"staged", staged}});
-}
-
 void EditorWindow::Impl::set_selections(Json selections, std::string revision) {
     auto* document = current();
     if (!document) {
@@ -1538,12 +1532,16 @@ void EditorWindow::Impl::close_document(const std::string& id, bool discard) {
 bool EditorWindow::Impl::native_idle(bool waiting_inputs) const {
     bool inputs_idle = policy_inputs.empty() && view_inputs.empty();
     if (!inputs_idle && waiting_inputs) {
-        std::vector<InputQueue::Identity> owners;
+        std::array<InputQueue::Identity, 257> owners;
+        std::size_t count{};
         for (const auto& [id, fence] : pending_fences) {
             static_cast<void>(id);
-            owners.push_back(fence.owner);
+            owners[count++] = fence.owner;
         }
-        inputs_idle = policy_inputs.waiting_only(owners) && view_inputs.waiting_only(owners);
+        if (dialog)
+            owners[count++] = dialog->owner;
+        const auto waiting = std::span(owners.data(), count);
+        inputs_idle = policy_inputs.waiting_only(waiting) && view_inputs.waiting_only(waiting);
     }
     return requests.empty() && !active_request && operations.empty() && pending_edits.empty() &&
            pending_reads.empty() && closing_pending.empty() && form_events.empty() &&
@@ -1678,8 +1676,13 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
     }
     Dialog pending;
     pending.id = id;
+    pending.owner = workbench->request_owner();
     pending.spec = spec;
     pending.detail_lines.reset(detail);
+    if (kind == "text")
+        pending.text_panel.reset(spec, pending.detail_lines.size());
+    else if (spec.contains("actions") || spec.contains("lineTones"))
+        throw protocol::RpcError(-32602, "Text presentation is only supported by text panels");
     const auto items = spec.value("items", Json::array());
     if (!items.is_array() || items.size() > 4096)
         throw protocol::RpcError(-32602,
@@ -1739,6 +1742,7 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
     prompt_choice = kind == "choice" ? spec.value("defaultChoice", std::size_t{0}) : 0;
     prompt_select_all = false;
     preedit.clear();
+    consumed_modal_text = false;
     return result;
 }
 
@@ -1967,10 +1971,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         Json result{{"sidebarVisible", show_sidebar},
                     {"sidebar", active_view},
                     {"outlineVisible", show_outline},
-                    {"tabs", tabs},
-                    {"gitPath", prompt == Prompt::git_diff ? git_path : std::string{}},
-                    {"gitStaged", git_staged},
-                    {"gitPreview", git_preview}};
+                    {"tabs", tabs}};
         result["serviceCommands"] = service_commands;
         result["focusedView"] = focused_view ? Json(*focused_view) : Json(nullptr);
         const auto* focused = forms.focused();
@@ -2012,9 +2013,6 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         sidebar_views.at(params.at("view").get<std::string>()).version !=
             params.at("viewVersion").get<std::string>())
         return false;
-    if (params.contains("gitDiff") && dialog) {
-        throw protocol::RpcError(-32004, "Dismiss the active dialog before showing a comparison");
-    }
     // Establish document state before activation regardless of JSON key order.
     if (params.contains("document")) {
         accept_metadata(params.at("document"));
@@ -2089,33 +2087,11 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         } else if (name == "workspaceNotice") {
             workspace_notices[value.at("id").get<std::string>()] =
                 value.at("text").get<std::string>();
-        } else if (name == "gitDiff") {
-            focus_view(std::nullopt);
-            forms.blur();
-            auto path = value.at("path").get<std::string>();
-            const auto staged = value.at("staged").get<bool>();
-            const auto& model = value.at("model");
-            auto text = value.at("text").get<std::string>();
-            auto preview = model.value("previewId", std::string{});
-            TextLineIndex lines;
-            lines.reset(text);
-            const auto marks = model.value("gutter", Json::array());
-            if (!marks.is_array())
-                throw protocol::RpcError(-32602, "Git gutter must be an array");
-            git_path = std::move(path);
-            git_staged = staged;
-            git_preview = std::move(preview);
-            git_diff_lines = std::move(lines);
-            git_diff_layouts.clear();
-            git_diff_layout_scale = 0;
-            for (auto& [id, document] : documents) {
-                static_cast<void>(id);
-                if (document.path == git_path && !git_staged &&
-                    !document.metadata.value("dirty", false))
-                    document.decorations.set_gutter(marks);
-            }
-            prompt = Prompt::git_diff;
-            prompt_choice = 0;
+        } else if (name == "gutter") {
+            const auto found = documents.find(value.at("id").get<std::string>());
+            if (found != documents.end() &&
+                found->second.metadata.at("revision") == value.at("revision"))
+                found->second.decorations.set_gutter(value.at("marks"));
         } else if (name == "dismissPrompt") {
             if (value.get<bool>()) {
                 finish_dialog(nullptr);
@@ -2417,8 +2393,6 @@ void EditorWindow::Impl::accept_prompt() {
                 dialog->picker.at(std::min(prompt_choice, dialog->picker.size() - 1)).source);
     } else if (prompt == Prompt::policy_text) {
         finish_dialog(nullptr);
-    } else if (prompt == Prompt::git_diff) {
-        prompt = Prompt::none;
     }
 }
 
@@ -2482,6 +2456,15 @@ std::size_t EditorWindow::Impl::view_page() const {
 }
 
 void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
+    if (input.key < consumed_modal_keys.size()) {
+        if (input.repeat && consumed_modal_keys.test(input.key)) {
+            consumed_modal_text = true;
+            return;
+        }
+        if (!input.repeat)
+            consumed_modal_keys.reset(input.key);
+    }
+    consumed_modal_text = false;
 #if defined(__APPLE__)
     const bool control = (input.mod & (SDL_KMOD_GUI | SDL_KMOD_CTRL)) != 0;
 #else
@@ -2520,6 +2503,8 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
                 for (std::size_t i = 0; i < keys.size(); ++i) {
                     const auto key = lower_ascii(keys[i].get<std::string>());
                     if (!key.empty() && input.key == static_cast<SDL_Keycode>(key[0])) {
+                        consumed_modal_text = true;
+                        consumed_modal_keys.set(input.key);
                         finish_dialog(i);
                         return;
                     }
@@ -2539,18 +2524,15 @@ void EditorWindow::Impl::key(const SDL_KeyboardEvent& input) {
         if (prompt == Prompt::policy_progress) {
             return;
         }
-        if (prompt == Prompt::git_diff || prompt == Prompt::policy_text) {
-            if (prompt == Prompt::git_diff) {
-                if (input.key == SDLK_S) {
-                    command("ui.gitStage");
-                    return;
-                }
-                if (input.key == SDLK_U) {
-                    command("ui.gitUnstage");
-                    return;
-                }
-                if (input.key == SDLK_D) {
-                    command("ui.gitDiscard");
+        if (prompt == Prompt::policy_text) {
+            if (dialog && !control && !alt &&
+                ((input.key >= SDLK_A && input.key <= SDLK_Z) ||
+                 (input.key >= SDLK_0 && input.key <= SDLK_9))) {
+                if (const auto* action =
+                        dialog->text_panel.shortcut(static_cast<char>(input.key))) {
+                    consumed_modal_text = true;
+                    consumed_modal_keys.set(input.key);
+                    finish_dialog(action->id);
                     return;
                 }
             }
@@ -3012,17 +2994,27 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
     case SDL_EVENT_KEY_DOWN:
         key(input.key);
         break;
+    case SDL_EVENT_KEY_UP:
+        if (input.key.key < consumed_modal_keys.size())
+            consumed_modal_keys.reset(input.key.key);
+        break;
+    case SDL_EVENT_WINDOW_FOCUS_LOST:
+        consumed_modal_keys.reset();
+        consumed_modal_text = false;
+        break;
     case SDL_EVENT_TEXT_EDITING:
+        if (consumed_modal_text)
+            break;
         preedit = !focused_view && input.edit.text ? input.edit.text : "";
         break;
     case SDL_EVENT_TEXT_INPUT:
         preedit.clear();
-        if (!input.text.text || focused_view) {
+        if (!input.text.text || focused_view || consumed_modal_text) {
             break;
         }
         if (prompt != Prompt::none && prompt != Prompt::policy_choice &&
-            prompt != Prompt::policy_text && prompt != Prompt::git_diff &&
-            prompt != Prompt::policy_progress && prompt != Prompt::policy_confirm) {
+            prompt != Prompt::policy_text && prompt != Prompt::policy_progress &&
+            prompt != Prompt::policy_confirm) {
             const std::string_view entered(input.text.text);
             if (dialog && entered.find_first_of("\r\n") != entered.npos) {
                 error = "Input must contain one logical line";
@@ -3091,9 +3083,23 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         if (input.button.button != SDL_BUTTON_LEFT) {
             break;
         }
+        consumed_modal_text = false;
         mouse_x = input.button.x * ratio_x;
         mouse_y = input.button.y * ratio_y;
         const auto width = static_cast<float>(pixels.width);
+        if (prompt == Prompt::policy_text && dialog) {
+            const auto layout = TextPanelLayout::measure(width,
+                                                         static_cast<float>(pixels.height),
+                                                         scale,
+                                                         dialog->detail_lines.size(),
+                                                         dialog->text_panel.actions().size());
+            for (std::size_t index = 0; index < layout.actions.size(); ++index)
+                if (layout.actions[index].contains(mouse_x, mouse_y)) {
+                    finish_dialog(dialog->text_panel.actions()[index].id);
+                    break;
+                }
+            break;
+        }
         if (prompt == Prompt::policy_pick && dialog) {
             dialog->picker.filter(prompt_text);
             const auto layout = PickerLayout::measure(
@@ -3771,8 +3777,8 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         return;
     }
     if (prompt == Prompt::policy_text && dialog) {
-        const auto layout =
-            TextPanelLayout::measure(width, height, scale, dialog->detail_lines.size());
+        const auto layout = TextPanelLayout::measure(
+            width, height, scale, dialog->detail_lines.size(), dialog->text_panel.actions().size());
         rectangle(canvas,
                   layout.panel.x,
                   layout.panel.y,
@@ -3791,7 +3797,13 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         style.font_size = 13;
         style.dpi_scale = scale;
         style.color = foreground;
-        style.font_families = {"Segoe UI", "Microsoft YaHei UI", "sans-serif"};
+        style.font_families =
+            dialog->spec.value("monospace", false)
+                ? std::vector<std::string>{"Cascadia Mono",
+                                           "Consolas",
+                                           "Microsoft YaHei UI",
+                                           "monospace"}
+                : std::vector<std::string>{"Segoe UI", "Microsoft YaHei UI", "sans-serif"};
         if (dialog->detail_scale != scale) {
             dialog->detail_layout.clear();
             dialog->detail_scale = scale;
@@ -3813,12 +3825,41 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                 if (found == dialog->detail_layout.end()) {
                     if (dialog->detail_layout.size() >= 256)
                         dialog->detail_layout.erase(dialog->detail_layout.begin());
+                    switch (dialog->text_panel.tone(row)) {
+                    case TextPanelTone::added:
+                        style.color = added_color;
+                        break;
+                    case TextPanelTone::removed:
+                        style.color = error_color;
+                        break;
+                    case TextPanelTone::accent:
+                        style.color = accent;
+                        break;
+                    case TextPanelTone::muted:
+                        style.color = muted;
+                        break;
+                    case TextPanelTone::normal:
+                        style.color = foreground;
+                        break;
+                    }
                     found = dialog->detail_layout.emplace(row, fonts.layout(text, style)).first;
                 }
                 found->second.draw(canvas, layout.content.x - dialog->horizontal, y);
                 y += found->second.height();
             });
         canvas->restore();
+        for (std::size_t index = 0; index < layout.actions.size(); ++index) {
+            const auto& action = dialog->text_panel.actions()[index];
+            const auto& box = layout.actions[index];
+            rectangle(canvas, box.x, box.y, box.width, box.height, border_color);
+            elided_label(canvas,
+                         action.label + (action.key.empty() ? "" : "  [" + action.key + "]"),
+                         box.x + 8 * scale,
+                         box.y + 7 * scale,
+                         12,
+                         std::max(0.0F, box.width - 16 * scale),
+                         action.destructive ? error_color : foreground);
+        }
         return;
     }
     if ((prompt == Prompt::policy_confirm || prompt == Prompt::policy_progress) && dialog) {
@@ -4029,67 +4070,6 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                       13,
                       muted);
             canvas->restore();
-        }
-        return;
-    }
-    if (prompt == Prompt::git_diff) {
-        const auto x = (width - 680 * scale) / 2;
-        const auto panel_bottom = std::min(height - 70 * scale, 610 * scale);
-        rectangle(canvas, x, 70 * scale, 680 * scale, panel_bottom - 70 * scale, panel_background);
-        label(canvas,
-              "DIFF — " + git_path + (git_staged ? " [staged]" : " [working tree]"),
-              x + 18 * scale,
-              83 * scale,
-              11,
-              muted);
-        if (prompt == Prompt::git_diff) {
-            label(canvas,
-                  "S: Stage  ·  U: Unstage  ·  D: Discard  ·  Esc: Close",
-                  x + 18 * scale,
-                  100 * scale,
-                  10,
-                  accent);
-        }
-        canvas->save();
-        canvas->clipRect(SkRect::MakeLTRB(
-            x + 14 * scale, 115 * scale, x + 666 * scale, panel_bottom - 12 * scale));
-        if (prompt == Prompt::git_diff) {
-            if (git_diff_layout_scale != scale) {
-                git_diff_layouts.clear();
-                git_diff_layout_scale = scale;
-            }
-            prompt_choice = std::min(prompt_choice, git_diff_lines.size() - 1);
-            float y = 115 * scale;
-            const auto rows =
-                static_cast<std::size_t>(std::ceil((panel_bottom - y) / (14 * scale))) + 1;
-            git_diff_lines.for_each_range(
-                prompt_choice,
-                std::min(git_diff_lines.size(), prompt_choice + rows),
-                [&](std::size_t row, const std::string& text) {
-                    if (y >= panel_bottom - 12 * scale)
-                        return;
-                    auto found = git_diff_layouts.find(row);
-                    if (found == git_diff_layouts.end()) {
-                        TextLayoutOptions style;
-                        style.font_size = 14;
-                        style.dpi_scale = scale;
-                        style.color = foreground;
-                        style.wrap_width = 630 * scale;
-                        if (text.starts_with('+') && !text.starts_with("+++"))
-                            style.color = added_color;
-                        else if (text.starts_with('-') && !text.starts_with("---"))
-                            style.color = error_color;
-                        else if (text.starts_with("@@"))
-                            style.color = accent;
-                        if (git_diff_layouts.size() >= 256)
-                            git_diff_layouts.erase(git_diff_layouts.begin());
-                        found = git_diff_layouts.emplace(row, fonts.layout(text, style)).first;
-                    }
-                    found->second.draw(canvas, x + 22 * scale, y);
-                    y += found->second.height() + 5 * scale;
-                });
-            canvas->restore();
-            return;
         }
         return;
     }
@@ -4850,7 +4830,8 @@ std::string EditorWindow::active_document_id() const {
 
 bool EditorWindow::idle() const noexcept {
     const auto* document = impl_->current();
-    return !impl_->quit_requested && impl_->pending_fences.empty() && impl_->native_idle() &&
+    return !impl_->quit_requested && impl_->pending_fences.empty() &&
+           impl_->native_idle(impl_->dialog.has_value()) &&
            (impl_->workbench->idle() || (impl_->dialog && impl_->workbench->awaiting_input())) &&
            (!document || (!document->needs_lines && !document->loading && !document->needs_syntax &&
                           !document->syntax_loading));
@@ -4975,6 +4956,11 @@ bool EditorWindow::pump() {
                 impl_->error = error.what();
             }
         });
+        // Read-only modal shortcuts retain their keystroke through release,
+        // including auto-repeat and its text/IME packets after the panel closes.
+        // Other keydowns, pointer input and new dialogs start a fresh text sequence.
+        if (impl_->consumed_modal_keys.none())
+            impl_->consumed_modal_text = false;
         impl_->service_responses();
         impl_->sidebar_views.poll();
         if (impl_->focused_view) {

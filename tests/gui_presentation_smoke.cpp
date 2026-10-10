@@ -221,6 +221,13 @@ void run(const fs::path& workspace) {
                 await astra.ui.showText({title:'INDEXED INFORMATION — Esc to close',text:Array.from({length:80},(_,i)=>'Line '+i+' 中🙂').join('\n')});
                 await astra.ui.update({status:'Information closed'});
             });
+            astra.ui.registerCommand({id:'acceptance.textAction',title:'Generic text action'},async()=>{
+                const action=await astra.ui.showText({title:'GENERIC TEXT ACTIONS — Esc to close',
+                    text:'Normal 中🙂\nAddition\nRemoval\nHeading',monospace:true,
+                    lineTones:[{begin:1,end:2,tone:'added'},{begin:2,end:3,tone:'removed'},{begin:3,end:4,tone:'accent'}],
+                    actions:[{id:'inspect',label:'Inspect 中🙂',key:'i'},{id:'apply',label:'Apply',key:'a'},{id:'remove',label:'Remove',key:'r',destructive:true}]});
+                await astra.ui.update({status:action ? 'Text action '+action : 'Text action cancelled'});
+            });
         })js";
         Window window(host, std::move(options));
         settle(window);
@@ -450,6 +457,57 @@ void run(const fs::path& workspace) {
         key(window, SDLK_ESCAPE);
         require(window.status_text() == "Information closed",
                 "Text panel dismissal did not settle its awaited JS workflow");
+        window.execute_ui_command("acceptance.captureBody");
+        settle(window);
+        window.execute_ui_command("acceptance.textAction");
+        settle(window);
+        SDL_Event shortcut{};
+        shortcut.type = SDL_EVENT_KEY_DOWN;
+        shortcut.key.windowID = SDL_GetWindowID(window.window());
+        shortcut.key.key = SDLK_I;
+        SDL_Event shortcut_text{};
+        shortcut_text.type = SDL_EVENT_TEXT_INPUT;
+        shortcut_text.text.windowID = SDL_GetWindowID(window.window());
+        shortcut_text.text.text = "i";
+        require(SDL_PushEvent(&shortcut) && SDL_PushEvent(&shortcut_text),
+                "Cannot enqueue modal shortcut and its generated text");
+        settle(window);
+        require(window.status_text() == "Text action inspect",
+                "Text shortcut lost the action identity");
+        shortcut.key.repeat = true;
+        SDL_Event release = shortcut;
+        release.type = SDL_EVENT_KEY_UP;
+        release.key.repeat = false;
+        require(SDL_PushEvent(&shortcut) && SDL_PushEvent(&shortcut_text) &&
+                    SDL_PushEvent(&release),
+                "Cannot enqueue modal shortcut auto-repeat and release");
+        settle(window);
+        window.execute_ui_command("acceptance.verifyBody");
+        settle(window);
+        require(window.status_text() == "Sidebar text isolated",
+                "Modal shortcut text leaked into the document");
+        window.execute_ui_command("acceptance.textAction");
+        settle(window);
+        int text_width{}, text_height{};
+        require(SDL_GetWindowSizeInPixels(window.window(), &text_width, &text_height),
+                "Cannot read text viewport");
+        const auto text_panel = astra::ui::TextPanelLayout::measure(static_cast<float>(text_width),
+                                                                    static_cast<float>(text_height),
+                                                                    window.layout().scale,
+                                                                    4,
+                                                                    3);
+        window.request_screenshot("build/graphics/gui-text-actions.png");
+        settle(window);
+        click(window,
+              text_panel.actions[1].x + text_panel.actions[1].width / 2,
+              text_panel.actions[1].y + text_panel.actions[1].height / 2);
+        require(window.status_text() == "Text action apply",
+                "Text button lost the action identity");
+        window.execute_ui_command("acceptance.textAction");
+        settle(window);
+        key(window, SDLK_ESCAPE);
+        require(window.status_text() == "Text action cancelled",
+                "Text cancellation returned an action");
         window.execute_ui_command("acceptance.choice");
         settle(window);
         key(window, SDLK_RETURN);

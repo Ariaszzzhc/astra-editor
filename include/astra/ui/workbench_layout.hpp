@@ -54,7 +54,9 @@ struct PickerLayout {
 
 struct TextPanelLayout {
     Box panel, title, content;
-    static TextPanelLayout measure(float width, float height, float scale, std::size_t rows = 32);
+    std::vector<Box> actions;
+    static TextPanelLayout
+    measure(float width, float height, float scale, std::size_t rows = 32, std::size_t actions = 0);
 };
 
 struct TabBox {

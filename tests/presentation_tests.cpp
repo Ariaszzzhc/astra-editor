@@ -2,6 +2,7 @@
 #include <astra/ui/picker_index.hpp>
 #include <astra/ui/workbench_layout.hpp>
 #include <astra/ui/text_line_index.hpp>
+#include <astra/ui/text_panel.hpp>
 #include <astra/ui/decoration_indexes.hpp>
 #include <astra/ui/inline_form.hpp>
 #include <astra/ui/form_registry.hpp>
@@ -976,9 +977,24 @@ TEST_CASE("presentation modal layouts share bounded rows and pointer geometry") 
             CHECK(text.panel.x >= 0);
             CHECK(text.panel.right() <= width * scale);
             CHECK(text.content.bottom() <= text.panel.bottom());
+            for (std::size_t count = 1; count <= 8; ++count) {
+                const auto panel = astra::ui::TextPanelLayout::measure(
+                    width * scale, 600 * scale, scale, 80, count);
+                REQUIRE(panel.actions.size() == count);
+                for (const auto& button : panel.actions) {
+                    CHECK(button.x >= panel.panel.x);
+                    CHECK(button.right() <= panel.panel.right());
+                    CHECK(button.y >= panel.content.bottom());
+                    CHECK(button.bottom() <= panel.panel.bottom());
+                    CHECK(
+                        button.contains(button.x + button.width / 2, button.y + button.height / 2));
+                }
+            }
         }
     CHECK_THROWS_AS((void)astra::ui::PickerLayout::measure(0, 100, 1), std::invalid_argument);
     CHECK_THROWS_AS((void)astra::ui::TextPanelLayout::measure(100, 100, 0), std::invalid_argument);
+    CHECK_THROWS_AS((void)astra::ui::TextPanelLayout::measure(100, 100, 1, 10, 9),
+                    std::invalid_argument);
     CHECK(astra::ui::PickerLayout::measure(1440, 900, 1, 1).capacity == 1);
     CHECK(astra::ui::PickerLayout::measure(1440, 900, 1, 1).panel.height < 150);
     CHECK(astra::ui::TextPanelLayout::measure(1440, 900, 1, 6).panel.height < 200);
@@ -1088,5 +1104,104 @@ TEST_CASE("presentation tabs use measured labels reveal active tabs and expose c
     CHECK(strip.previous.width > 0);
     for (const auto& tab : strip.visible) {
         CHECK(tab.bounds.right() <= strip.previous.x);
+    }
+}
+
+TEST_CASE("presentation text panels validate atomic actions and measured tone ranges") {
+    using Json = astra::protocol::Json;
+    using Tone = astra::ui::TextPanelTone;
+    astra::ui::TextPanelPresentation panel;
+    const Json valid{
+        {"actions", Json::array({{{"id", "inspect"}, {"label", "Inspect 中🙂"}, {"key", "I"}}})},
+        {"lineTones",
+         Json::array({{{"begin", 1}, {"end", 3}, {"tone", "added"}},
+                      {{"begin", 3}, {"end", 4}, {"tone", "removed"}}})}};
+    panel.reset(valid, 5);
+    REQUIRE(panel.shortcut('i'));
+    CHECK(panel.shortcut('I')->id == "inspect");
+    CHECK(panel.shortcut('x') == nullptr);
+    CHECK(panel.tone(0) == Tone::normal);
+    CHECK(panel.tone(1) == Tone::added);
+    CHECK(panel.tone(3) == Tone::removed);
+    CHECK(panel.tone(4) == Tone::normal);
+    CHECK(panel.tone(std::numeric_limits<std::size_t>::max()) == Tone::normal);
+    std::vector<Json> invalid;
+    auto candidate = valid;
+    candidate["actions"].push_back(candidate["actions"][0]);
+    invalid.push_back(candidate);
+    candidate = valid;
+    candidate["actions"][0]["key"] = "Enter";
+    invalid.push_back(candidate);
+    candidate = valid;
+    candidate["actions"][0]["label"] = "bad\nlabel";
+    invalid.push_back(candidate);
+    candidate = valid;
+    candidate["actions"][0]["id"] = std::string("bad\0id", 6);
+    invalid.push_back(candidate);
+    candidate = valid;
+    candidate["actions"][0]["label"] = std::string(257, 'x');
+    invalid.push_back(candidate);
+    candidate = valid;
+    candidate["actions"] = Json::array();
+    for (int i = 0; i < 9; ++i)
+        candidate["actions"].push_back({{"id", std::to_string(i)}, {"label", "Action"}});
+    invalid.push_back(candidate);
+    candidate = valid;
+    candidate["lineTones"][0]["begin"] = -1;
+    invalid.push_back(candidate);
+    candidate = valid;
+    candidate["lineTones"][0]["begin"] = 1.5;
+    invalid.push_back(candidate);
+    candidate = valid;
+    candidate["lineTones"][0]["end"] = 1;
+    invalid.push_back(candidate);
+    candidate = valid;
+    candidate["lineTones"][1]["begin"] = 2;
+    invalid.push_back(candidate);
+    candidate = valid;
+    candidate["lineTones"][1]["end"] = 6;
+    invalid.push_back(candidate);
+    candidate = valid;
+    candidate["lineTones"][0]["tone"] = "business-command";
+    invalid.push_back(candidate);
+    for (const auto& spec : invalid) {
+        CHECK_THROWS_AS(panel.reset(spec, 5), std::invalid_argument);
+        CHECK(panel.actions().size() == 1);
+        REQUIRE(panel.shortcut('i'));
+        CHECK(panel.shortcut('i')->id == "inspect");
+        CHECK(panel.tone(3) == Tone::removed);
+    }
+    auto retained = panel;
+    panel.reset(Json::object(), 5);
+    CHECK(panel.actions().empty());
+    CHECK(panel.tone(3) == Tone::normal);
+    CHECK(retained.tone(3) == Tone::removed);
+}
+
+TEST_CASE("presentation text panel row tones match an independent flat oracle") {
+    using Json = astra::protocol::Json;
+    using Tone = astra::ui::TextPanelTone;
+    constexpr std::uint32_t seed = 0xA57A71;
+    INFO(seed);
+    std::mt19937 random(seed);
+    astra::ui::TextPanelPresentation panel;
+    for (int publication = 0; publication < 80; ++publication) {
+        std::vector<Tone> expected(1024, Tone::normal);
+        Json ranges = Json::array();
+        for (std::size_t row = 0; row < expected.size();) {
+            const auto end = std::min(expected.size(), row + 1 + random() % 17);
+            if (random() % 2) {
+                const auto added = random() % 2 != 0;
+                for (auto index = row; index < end; ++index)
+                    expected[index] = added ? Tone::added : Tone::removed;
+                ranges.push_back(
+                    {{"begin", row}, {"end", end}, {"tone", added ? "added" : "removed"}});
+            }
+            row = end;
+        }
+        panel.reset({{"lineTones", ranges}}, expected.size());
+        for (std::size_t row = 0; row < expected.size(); ++row)
+            CHECK(panel.tone(row) == expected[row]);
+        CHECK(panel.tone(expected.size()) == Tone::normal);
     }
 }

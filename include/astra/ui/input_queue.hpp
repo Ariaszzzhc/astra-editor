@@ -37,8 +37,8 @@ class InputQueue final {
     [[nodiscard]] bool empty() const noexcept;
     [[nodiscard]] Identity fence(std::string_view document, Identity caller) const;
     [[nodiscard]] bool pending(std::string_view document, Identity fence) const;
-    // Successors wait for running handlers to return from their own idle fence.
-    [[nodiscard]] bool waiting_only(std::span<const Identity> tasks) const;
+    // Successors pause while running handlers await their own fence or modal input.
+    [[nodiscard]] bool waiting_only(std::span<const Identity> tasks) const noexcept;
 
   private:
     Identity sequence_{};

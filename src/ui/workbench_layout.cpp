@@ -108,25 +108,44 @@ PickerLayout PickerLayout::measure(float width, float height, float scale, std::
     return result;
 }
 
-TextPanelLayout TextPanelLayout::measure(float width, float height, float scale, std::size_t rows) {
+TextPanelLayout TextPanelLayout::measure(
+    float width, float height, float scale, std::size_t rows, std::size_t actions) {
     if (!std::isfinite(width) || !std::isfinite(height) || !std::isfinite(scale) || width <= 0 ||
-        height <= 0 || scale <= 0)
+        height <= 0 || scale <= 0 || actions > 8)
         throw std::invalid_argument("Invalid text panel dimensions");
     TextPanelLayout result;
     const auto margin = std::min(24 * scale, width / 6),
                pw = std::min(900 * scale, width - 2 * margin);
+    const auto pad = std::min(18 * scale, pw / 6);
+    const auto columns = std::max(
+        std::size_t{1},
+        std::min(actions, static_cast<std::size_t>(std::floor((pw - 2 * pad) / (120 * scale)))));
+    const auto action_rows = actions ? (actions + columns - 1) / columns : 0;
+    const auto toolbar = static_cast<float>(action_rows) * 40 * scale;
     const auto y = std::min(64 * scale, height / 6),
                ph = std::min(std::min(620.0F,
-                                      56 + 20 * static_cast<float>(std::clamp(
-                                                    rows, std::size_t{4}, std::size_t{32}))) *
+                                      56 + toolbar / scale +
+                                          20 * static_cast<float>(std::clamp(
+                                                   rows, std::size_t{4}, std::size_t{32}))) *
                                  scale,
                              std::max(0.0F, height - y - 24 * scale));
-    const auto x = (width - pw) / 2, pad = std::min(18 * scale, pw / 6);
+    const auto x = (width - pw) / 2;
     result.panel = {x, y, pw, ph};
     result.title = {x + pad, y + 10 * scale, pw - 2 * pad, std::min(24 * scale, ph)};
     const auto cy = std::min(y + 44 * scale, result.panel.bottom());
-    result.content = {
-        x + pad, cy, pw - 2 * pad, std::max(0.0F, result.panel.bottom() - cy - 12 * scale)};
+    const auto available = std::max(0.0F, result.panel.bottom() - cy - 12 * scale);
+    const auto used_toolbar = std::min(toolbar, available);
+    result.content = {x + pad, cy, pw - 2 * pad, available - used_toolbar};
+    if (actions) {
+        const auto step_y = used_toolbar / static_cast<float>(action_rows);
+        const auto step_x = result.content.width / static_cast<float>(columns);
+        for (std::size_t index = 0; index < actions; ++index)
+            result.actions.push_back(
+                {x + pad + static_cast<float>(index % columns) * step_x,
+                 result.content.bottom() + static_cast<float>(index / columns) * step_y,
+                 std::max(0.0F, step_x - 4 * scale),
+                 std::max(0.0F, step_y - 4 * scale)});
+    }
     return result;
 }
 

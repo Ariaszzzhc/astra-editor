@@ -9,6 +9,113 @@ not establish acceptance of the requested JS-owned workbench, asynchronous user
 API, cohesive UI, or indexed incremental presentation model. That revision is
 **in progress**, and is not a completed product or milestone.
 
+### JS-owned Git comparison and generic text actions (2026-10-10)
+
+Git comparison no longer owns a special C++ prompt, path/staged/preview state,
+S/U/D command dispatch or diff-prefix color classification. The JS workflow
+captures the service preview, projects semantic row tones and awaits the generic
+`ui.showText` component. That component returns a declared action identity or
+null; JS performs stage/unstage and the existing guarded discard confirmation.
+Dismissal releases JS preview state. JS projects row tones with a streaming
+newline iterator and yields through cancellable `astra.sleep(0)` every 512 rows.
+Domain-neutral native buttons, shortcut validation, measured row-tone ranges,
+layout/hit testing and bounded visible-row
+shaping remain in C++. Code panels use monospace fonts and support horizontal
+scrolling. Button geometry is shared by painting and pointer input and adapts
+to narrow panels. The native read primitive no longer exports Git dialog state.
+
+Working-tree gutter publication is a generic revision-guarded decoration update.
+JS chooses matching clean open documents; a changed document revision prevents
+publication. Service preview validation and disk conflict checks remain intact.
+
+Windows focused evidence:
+
+- `./scripts/xmake.ps1 build -y astra-tests astra gui-services-smoke
+  gui-presentation-smoke`: passed in Debug.
+- `./build/windows/x64/debug/astra-tests.exe --no-version
+  '--source-file=*presentation_tests.cpp,*workbench_tests.cpp'`: 97 cases /
+  923,094 assertions passed. Coverage includes atomic validation, immutable tone
+  snapshots, flat-reference row queries (seed `0xA57A71`), action bounds and narrow
+  geometry, JS diff classification/captured targets, dismissal, stage dispatch
+  and confirmation cancellation. These counts precede the additional
+  unadvertised-action regression in the integrated run.
+
+The first integrated invocation passed all 553 Debug cases / 1,185,605 assertions
+but failed `gui-services-smoke` with a timeout after activating a Git file row.
+The row's command now awaits modal dismissal, while the old native idle check
+treated its owning input task as unfinished background work. Generic dialogs now
+retain their task owner; idle observation recognizes precisely those modal/fence
+owners while preserving ordering and waiting for other scopes. Owner/scoped
+idle checks use bounded stack storage. Focused real Git GUI and text-panel GUI
+checks passed after this fix. Failure evidence is retained under
+`build/text-panel-acceptance-first-failed.log`.
+
+Integrated Windows evidence:
+
+- `./scripts/test.ps1 -Mode all -Gui`: passed with the modal-owner fix and
+  mixed-newline/yield/staged-binary regression. All 554 cases passed in each mode:
+  Debug 1,185,876 assertions; Release 1,185,656. Zero failures/skips. Both modes'
+  CLI, actual D3D12/Graphite/Dawn readback, renderer, Unicode/viewport layout,
+  local and TCP editing, real clangd/Git, recovery, workspace and presentation
+  checks passed. Package helpers passed 12 checks; no new distribution package
+  was produced.
+- Subsequent JS-only session cleanup removes unconditional prompt dismissal from
+  Git operations. Actions close only their own cancellable comparison handles;
+  pending metadata reads share that signal. Selected actions release the modal
+  session before starting the service operation. A later unrelated dialog stays
+  open when a delayed stage completes.
+- Final `astra-tests.exe --no-version
+  '--source-file=*workbench_tests.cpp,*presentation_tests.cpp'` passed in both
+  Debug and Release: 101 cases / 923,177 assertions each. Three additional
+  ownership regressions cover delayed stage completion preserving another
+  modal, direct action abort/drain of the current comparison, and cancellation
+  of a pending gutter metadata read. The other 456 cases were intentionally
+  filtered in these final affected-source runs; the preceding integrated counts
+  above are not inflated to claim a new full-suite run.
+- Final `gui-services-smoke.exe` passed in both modes after session/read cleanup:
+  real clangd navigation/editing and Git diff, stage/unstage, commit and guarded
+  discard. Generic `gui-presentation-smoke.exe` also passed in both modes after
+  session cleanup: shortcuts, pointer selection, cancellation, existing
+  picker/choice/review behavior and shutdown are exercised.
+- `./scripts/format.ps1 -Check -Offline`: all 137 C++ / 12 JS files passed;
+  `git diff --check` passed. The final expanded JS guard formatting preserves
+  behavior and both affected-source suites passed again. Configuration restored
+  to Debug.
+- `build/graphics/gui-git-diff.png` and `gui-text-actions.png` were visually
+  inspected: monospace diff text, added/removed/hunk tones, Chinese/emoji and
+  separate action buttons render correctly. Shape caches remain bounded.
+
+Logs: `build/text-panel-*`. This change does not establish whole-project
+completion; remaining native component extraction, incremental long-line
+display and final packaging remain open.
+
+The additional real-SDL shortcut regression initially failed with
+`Text shortcut lost the action identity`: the shortcut closed the modal, then
+its queued `SDL_EVENT_TEXT_INPUT` reached the editor and changed document state.
+Artifact: `build/text-panel-shortcut-before-fix-debug.log`, with its preserved
+presentation fixture. Read-only modal shortcuts now retain their keystroke
+through release, consuming associated text/composition packets and auto-repeat
+even after the panel closes. Independent keydown, pointer input and a new dialog
+start a fresh text sequence; focus loss clears held shortcut state. This covers
+generic text actions and choice shortcuts. The presentation regression sends
+keydown/text, then repeat/text/release in another pump and verifies that document
+revision/selections remain unchanged.
+
+Final Windows acceptance of the complete change:
+
+- `./scripts/test.ps1 -Mode all -Gui`: passed. Debug 557 cases / 1,185,790
+  assertions; Release 557 cases / 1,185,636 assertions. Zero failures/skips.
+- Both modes passed CLI, D3D12/Graphite/Dawn readback, renderer, Unicode text and
+  viewport layout, local/TCP editing, real clangd/Git, recovery, workspace and
+  presentation checks, including shortcut text/auto-repeat isolation.
+- Package helpers passed 12 checks; this is not a distribution package.
+- `./scripts/format.ps1 -Check -Offline`: 137 C++ / 12 JS files passed;
+  `git diff --check` passed. `./scripts/xmake.ps1 f -m debug -y` restored Debug.
+- Earlier passing invocations remain in
+  `build/text-panel-acceptance-before-shortcut-fix.log` and
+  `text-panel-acceptance-before-repeat-fix.log`; the final complete invocation
+  is `build/text-panel-acceptance-all.log`.
+
 ### Persistent document viewport and layout reuse (2026-10-10)
 
 `EditorWindow` now delegates published line storage and paragraph lifetime/reuse
