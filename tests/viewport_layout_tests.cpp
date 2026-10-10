@@ -5,6 +5,7 @@
 #include <astra/ui/text_labels.hpp>
 #include <astra/ui/text_field.hpp>
 #include <astra/ui/tab_bar.hpp>
+#include "../src/ui/glyph_cache.hpp"
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkImageInfo.h"
@@ -605,6 +606,35 @@ void background_layout(TextLayoutEngine& engine) {
 }
 
 void background_viewport(TextLayoutEngine& engine) {
+    {
+        LayoutJobs workers;
+        const std::string original(12000, 'a');
+        const auto first_ticket = workers.submit(original, {});
+        require(first_ticket.has_value(), "Glyph seed worker admission failed");
+        const auto first = result(workers, *first_ticket);
+        require(first.paragraph && !first.error, "Glyph seed worker failed");
+        const auto before = GlyphCache::glyph_digest(first.paragraph->glyph_snapshot());
+        auto changed = original;
+        changed.replace(6000, 1, "x");
+        const auto second_ticket = workers.submit(
+            changed, {}, first.paragraph->source_snapshot(), first.paragraph->glyph_snapshot());
+        require(second_ticket.has_value(), "Glyph edit worker admission failed");
+        const auto second = result(workers, *second_ticket);
+        require(second.paragraph && !second.error, "Glyph edit worker failed");
+        const auto reference = engine.layout(changed);
+        equal(*second.paragraph, reference);
+        require(GlyphCache::glyph_digest(second.paragraph->glyph_snapshot()) ==
+                        GlyphCache::glyph_digest(reference.glyph_snapshot()) &&
+                    GlyphCache::glyph_digest(first.paragraph->glyph_snapshot()) == before,
+                "Worker splicing changed native raw glyphs or the retained snapshot");
+        const auto stats = second.paragraph->glyph_snapshot().statistics();
+        require(stats.spliced_runs > 0 && stats.equivalent_fonts > 0 &&
+                    stats.shared_glyphs > 10000 && stats.shaped_bytes < original.size(),
+                "Actual background owners did not splice persistent native glyphs");
+        std::cout << "Worker glyph splice: input=" << changed.size()
+                  << ", shaped=" << stats.shaped_bytes << ", shared=" << stats.shared_glyphs
+                  << ", equivalent fonts=" << stats.equivalent_fonts << ": PASS\n";
+    }
     auto jobs = std::make_shared<LayoutJobs>();
     DocumentViewport viewport(engine, {}, jobs);
     std::string text;

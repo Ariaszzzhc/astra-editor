@@ -107,7 +107,10 @@ class TextLayout final {
 // outlive the engine object. Callers serialize all paragraph access.
 class TextLayoutEngine final {
   public:
-    TextLayoutEngine();
+    enum class FontIdentity { native_instance, content };
+    // Content fingerprints read native SFNT tables; use only on background
+    // owners. Interactive short-caption engines use native instance identity.
+    explicit TextLayoutEngine(FontIdentity identity = FontIdentity::native_instance);
     ~TextLayoutEngine();
     TextLayoutEngine(const TextLayoutEngine&) = delete;
     TextLayoutEngine& operator=(const TextLayoutEngine&) = delete;

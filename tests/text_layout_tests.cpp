@@ -1,11 +1,15 @@
 #include "astra/ui/renderer.hpp"
 #include "astra/ui/text_layout.hpp"
 #include "../src/ui/glyph_cache.hpp"
+#include "../src/ui/glyph_sequence.hpp"
+#include "../src/ui/font_signatures.hpp"
+#include "astra/core/utf8.hpp"
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkSurface.h"
+#include "include/core/SkTypeface.h"
 #include "modules/skparagraph/include/FontCollection.h"
 #include "modules/skparagraph/include/Paragraph.h"
 #include "modules/skparagraph/include/ParagraphBuilder.h"
@@ -88,6 +92,314 @@ std::vector<std::uint32_t> glyph_pixels(const TextLayout& line) {
                                 0),
             "Glyph snapshot pixel read failed");
     return result;
+}
+
+void glyph_sequence_snapshots() {
+    using Sequence = astra::ui::GlyphSequence;
+    Sequence::Glyphs raw;
+    for (std::size_t i = 0; i < 4097; ++i) {
+        raw.push_back({static_cast<SkGlyphID>(i % 60000),
+                       static_cast<std::uint32_t>(i + 7),
+                       {0, 0},
+                       {1, 0},
+                       true,
+                       false,
+                       i % 3 == 0});
+    }
+    const auto original = Sequence::capture(raw, 7, 4104);
+    require(original.validate() && original.summary().chunks == 17,
+            "Glyph chunks exceeded their fixed bound or tree invariants");
+    const auto check = [&](const Sequence& sequence, const Sequence::Glyphs& expected) {
+        require(sequence.validate(), "Glyph splice broke persistent tree invariants");
+        const auto actual = sequence.flatten(7);
+        require(actual.size() == expected.size(), "Glyph sequence count differs");
+        for (std::size_t i = 0; i < actual.size(); ++i) {
+            require(actual[i].cluster == expected[i].cluster && actual[i].id == expected[i].id &&
+                        actual[i].advance == expected[i].advance &&
+                        actual[i].unsafeToConcat == expected[i].unsafeToConcat,
+                    "Glyph relocation rewrote an immutable raw value");
+        }
+    };
+    std::mt19937 random(0xA57A91U);
+    for (std::size_t round = 0; round < 500; ++round) {
+        const auto first = std::size_t{300} + random() % 1800;
+        const auto last = first + random() % 500;
+        auto [prefix, rest] = original.split(first, first);
+        auto [removed, suffix] = rest.split(last - first, last - first);
+        const Sequence::Glyph replacement{
+            60000, static_cast<std::uint32_t>(first + 7), {0, 0}, {3, 0}, true, false, false};
+        auto middle = Sequence::capture(std::span(&replacement, 1), first + 7, first + 10);
+        const auto edited = prefix.concat(middle).concat(suffix);
+        Sequence::Glyphs expected(raw.begin(), raw.begin() + first);
+        expected.push_back(replacement);
+        for (std::size_t i = last; i < raw.size(); ++i) {
+            auto glyph = raw[i];
+            glyph.cluster = static_cast<std::uint32_t>(i - last + first + 10);
+            expected.push_back(glyph);
+        }
+        check(edited, expected);
+        check(original, raw);
+        require(edited.shared_glyphs(original) > 2000,
+                "Glyph edit rebuilt unchanged persistent interiors");
+    }
+    // A cluster can span several bounded blocks; flags must combine across
+    // seams, and a zero-byte block still contains real glyphs.
+    Sequence::Glyphs huge_cluster(600, {1, 10, {0, 0}, {0, 0}, true, false, false});
+    huge_cluster[300].unsafeToConcat = true;
+    huge_cluster.push_back({2, 12, {0, 0}, {1, 0}, true, false, false});
+    const auto grouped = Sequence::capture(huge_cluster, 10, 15);
+    const auto cuts = grouped.boundaries(10);
+    require(grouped.validate() && cuts.size() == 3 && cuts[0].unsafe && cuts[1].byte == 12 &&
+                cuts[1].glyph == 600,
+            "Cluster groups or flags were lost across bounded blocks");
+    auto [cluster, tail] = grouped.split(600, 2);
+    const auto joined = cluster.concat(tail).flatten(10);
+    require(joined.size() == huge_cluster.size() && joined[300].unsafeToConcat &&
+                joined.back().cluster == 12,
+            "Large cluster split damaged raw glyphs");
+    bool rejected{};
+    try {
+        (void)grouped.split(300, 1);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    require(rejected, "A split inside a single glyph cluster was accepted");
+    const auto invisible = Sequence::capture({}, 10, 17);
+    auto [a, b] = invisible.split(0, 3);
+    require(a.summary().bytes == 3 && b.summary().bytes == 4 && a.concat(b).summary().bytes == 7 &&
+                a.concat(b).flatten(0).empty(),
+            "Glyph-free source extents were discarded");
+    const auto small = original.split(1, 1).first;
+    require(small.summary().payload >= Sequence::chunk_limit * sizeof(Sequence::Glyph),
+            "A sliced glyph block was charged only for visible glyphs");
+    std::cout
+        << "Persistent bounded glyph blocks, random relocation, sharing and cluster seams: PASS\n";
+}
+
+void glyph_parity(const TextLayout& edited, const TextLayout& fresh) {
+    require(
+        astra::ui::GlyphCache::glyph_digest(edited.glyph_snapshot()) ==
+            astra::ui::GlyphCache::glyph_digest(fresh.glyph_snapshot()),
+        "Incremental raw glyph IDs/clusters/advances/offsets/flags differ from complete shaping: " +
+            astra::ui::GlyphCache::glyph_difference(edited.glyph_snapshot(),
+                                                    fresh.glyph_snapshot()));
+    require(glyph_pixels(edited) == glyph_pixels(fresh),
+            "Incremental glyph pixels differ from independent complete shaping");
+    near(edited.width(), fresh.width(), "Incremental glyph width differs", 0.001F);
+    near(edited.height(), fresh.height(), "Incremental glyph height differs", 0.001F);
+    for (const auto offset : fresh.grapheme_boundaries()) {
+        for (const auto affinity : {CaretAffinity::upstream, CaretAffinity::downstream}) {
+            const auto a = edited.caret(offset, affinity);
+            const auto b = fresh.caret(offset, affinity);
+            near(a.x, b.x, "Incremental caret X differs", 0.001F);
+            near(a.y, b.y, "Incremental caret Y differs", 0.001F);
+        }
+    }
+    for (float x = -2; x < fresh.width() + 2; x += 29.75F) {
+        const auto a = edited.hit_test(x, fresh.height() / 2);
+        const auto b = fresh.hit_test(x, fresh.height() / 2);
+        require(a.byte_offset == b.byte_offset && a.affinity == b.affinity,
+                "Incremental hit testing differs");
+    }
+}
+
+void incremental_glyphs() {
+    std::size_t spliced{}, shared{};
+    for (const std::string unit : {"office ffi affinity constant; ",
+                                   "中文编辑文本 字形连接 ",
+                                   "مرحبا بالعالم سلام ",
+                                   "שלום עולם ",
+                                   "हिन्दी परीक्षण ",
+                                   "é 👩‍💻 🇨🇳 😀 ",
+                                   "abc\t中文\tאבג\tffi "}) {
+        std::string text;
+        for (int i = 0; i < 24; ++i) {
+            text += unit;
+        }
+        for (const auto dpi : {1.0F, 1.5F, 2.0F}) {
+            TextLayoutEngine owner, reference;
+            TextLayoutOptions options;
+            options.dpi_scale = dpi;
+            options.direction = TextDirection::automatic;
+            auto old = owner.layout(text, options);
+            const auto before = astra::ui::GlyphCache::glyph_digest(old.glyph_snapshot());
+            const auto retained_pixels = glyph_pixels(old);
+            auto cut = text.size() / 2;
+            while (!astra::utf8::is_boundary(text, cut)) {
+                --cut;
+            }
+            const auto size = astra::utf8::decode(text, cut).bytes;
+            const auto changed = text.substr(0, cut) + "x" + text.substr(cut + size);
+            auto edited =
+                owner.layout(changed, options, old.source_snapshot(), old.glyph_snapshot());
+            auto fresh = reference.layout(changed, options);
+            glyph_parity(edited, fresh);
+            const auto stats = edited.glyph_snapshot().statistics();
+            spliced += stats.spliced_runs;
+            shared += stats.shared_glyphs;
+            require(glyph_pixels(old) == retained_pixels &&
+                        astra::ui::GlyphCache::glyph_digest(old.glyph_snapshot()) == before,
+                    "Local glyph splicing mutated the retained paragraph or blocks");
+        }
+    }
+    require(spliced > 0 && shared > 1000,
+            "Native local edits did not share real glyph tree interiors");
+    TextLayoutEngine owner, reference;
+    TextLayoutOptions options;
+    options.direction = TextDirection::automatic;
+    std::string text;
+    for (int i = 0; i < 15; ++i) {
+        text += "office ffi 中文 é 👩‍💻 אבג مرحبا हिन्दी ";
+    }
+    auto current = owner.layout(text, options);
+    std::mt19937 random(0xA57A92U);
+    const std::array<std::string_view, 8> replacements{"", "ffi", "中", "🙂", "́", "a", "م", "\t"};
+    for (std::size_t round = 0; round < 80; ++round) {
+        std::vector<std::size_t> scalars{0};
+        for (std::size_t offset = 0; offset < text.size();) {
+            offset += astra::utf8::decode(text, offset).bytes;
+            scalars.push_back(offset);
+        }
+        const auto first = random() % scalars.size();
+        const auto last = std::min(scalars.size() - 1, first + random() % 4);
+        const auto replacement = replacements[random() % replacements.size()];
+        text.replace(scalars[first], scalars[last] - scalars[first], replacement);
+        auto next =
+            owner.layout(text, options, current.source_snapshot(), current.glyph_snapshot());
+        auto fresh = reference.layout(text, options);
+        try {
+            glyph_parity(next, fresh);
+        } catch (const std::exception& error) {
+            throw std::runtime_error("glyph random seed 0xA57A92 round " + std::to_string(round) +
+                                     " edit [" + std::to_string(scalars[first]) + "," +
+                                     std::to_string(scalars[last]) + ") replacement " +
+                                     std::string(replacement) + ": " + error.what());
+        }
+        current = std::move(next);
+    }
+    // Independent managers emulate retired worker ownership. Content identity
+    // must certify reuse even when native typeface instance IDs differ.
+    TextLayoutEngine first(TextLayoutEngine::FontIdentity::content);
+    auto retained = first.layout(std::string(1500, 'a'));
+    require(retained.glyph_snapshot().statistics().font_bytes_hashed > 0,
+            "Background font content identity was not derived from native tables");
+    TextLayoutEngine second(TextLayoutEngine::FontIdentity::content);
+    auto changed = std::string(1500, 'a');
+    changed.replace(750, 1, "x");
+    auto moved = second.layout(changed, {}, retained.source_snapshot(), retained.glyph_snapshot());
+    auto fresh = reference.layout(changed);
+    glyph_parity(moved, fresh);
+    const auto stats = moved.glyph_snapshot().statistics();
+    require(stats.spliced_runs > 0 && stats.shaped_bytes < changed.size() &&
+                stats.shared_glyphs > 1000 && stats.equivalent_fonts > 0,
+            "Distinct native font owners did not skip unchanged glyph shaping");
+    std::cout << "Native local glyph splicing, Unicode random edits, raw/pixel/caret/hit parity, "
+                 "font content identity and cross-owner sharing: PASS\n";
+}
+
+void native_ligature_splicing() {
+#if defined(_WIN32)
+    class Observed final : public SkShapers::HB::RunCache {
+      public:
+        explicit Observed(astra::ui::GlyphSource previous)
+            : cache(std::move(previous), std::make_shared<astra::ui::FontSignatures>()) {
+        }
+
+        astra::ui::GlyphCache cache;
+        std::size_t bytes{}, largest{};
+        bool merged{};
+
+        Glyphs shape(const SkShapers::HB::CacheInput& input,
+                     const Shape& uncached) noexcept override {
+            return cache.shape(input, [&](SkShaper::RunHandler::Range range) {
+                bytes += range.size();
+                largest = std::max(largest, range.size());
+                auto glyphs = uncached(range);
+                if (std::string_view(input.text.data(), input.text.size()) == "ffi" &&
+                    range.size() == 3) {
+                    merged |= glyphs.size() < 3;
+                }
+                return glyphs;
+            });
+        }
+
+        bool failed() const noexcept override {
+            return cache.failed();
+        }
+    };
+
+    auto fonts = sk_make_sp<skia::textlayout::FontCollection>();
+    fonts->setDefaultFontManager(SkFontMgr_New_DirectWrite());
+    fonts->getParagraphCache()->turnOn(false);
+    const auto layout =
+        [&](std::string_view text, astra::ui::GlyphSource previous, bool kerning = true) {
+            auto collector = std::make_shared<Observed>(std::move(previous));
+            fonts->setShapingCache(collector);
+            struct Detach {
+                skia::textlayout::FontCollection& fonts;
+                ~Detach() {
+                    fonts.setShapingCache({});
+                }
+            } detach{*fonts};
+            skia::textlayout::TextStyle text_style;
+            text_style.setFontFamilies({SkString("Calibri")});
+            text_style.setFontSize(18);
+            text_style.setLocale(SkString("en"));
+            text_style.addFontFeature(SkString("liga"), 1);
+            text_style.addFontFeature(SkString("dlig"), 1);
+            text_style.addFontFeature(SkString("kern"), kerning ? 1 : 0);
+            skia::textlayout::ParagraphStyle style;
+            style.setTextStyle(text_style);
+            auto builder =
+                skia::textlayout::ParagraphBuilder::make(style, fonts, SkUnicodes::ICU::Make());
+            builder->addText(text.data(), text.size());
+            auto paragraph = builder->Build();
+            paragraph->layout(100000);
+            collector->cache.rethrow_error();
+            return std::pair{std::move(paragraph), std::move(collector)};
+        };
+    const auto [ffi, observed] = layout("ffi", {});
+    require(observed->merged, "Native Calibri fixture did not form an actual Latin ligature");
+    std::string text;
+    for (int i = 0; i < 40; ++i) {
+        text += "office ffi AVATAR fXfi ";
+    }
+    auto [old, seed] = layout(text, {});
+    const auto original = astra::ui::GlyphCache::glyph_digest(seed->cache.snapshot());
+    for (const std::string_view needle : {"fXfi", "ffi", "AVATAR"}) {
+        auto changed = text;
+        const auto at = changed.find(needle, changed.size() / 2);
+        require(at != changed.npos, "Cannot locate native ligature edit fixture");
+        changed.erase(at + 1, 1);
+        auto [incremental, reused] = layout(changed, seed->cache.snapshot());
+        auto [fresh, cold] = layout(changed, {});
+        require(astra::ui::GlyphCache::glyph_digest(reused->cache.snapshot()) ==
+                    astra::ui::GlyphCache::glyph_digest(cold->cache.snapshot()),
+                "Native Latin ligature or kerning splice differs from complete shaping: " +
+                    astra::ui::GlyphCache::glyph_difference(reused->cache.snapshot(),
+                                                            cold->cache.snapshot()));
+        near(incremental->getLongestLine(),
+             fresh->getLongestLine(),
+             "Ligature splice width differs",
+             0.001F);
+        const auto stats = reused->cache.snapshot().statistics();
+        require(reused->bytes == stats.shaped_bytes,
+                "Native callback byte count differs from published shaping statistics");
+        if (seed->cache.snapshot().statistics().safe_boundaries == 0) {
+            require(stats.spliced_runs == 0 && stats.reused_bytes == 0 &&
+                        reused->bytes == cold->bytes && reused->largest == changed.size(),
+                    "Font with no native concat certificate bypassed complete shaping");
+        } else {
+            require(stats.spliced_runs > 0 && reused->bytes < cold->bytes &&
+                        reused->largest < changed.size(),
+                    "Certified native ligature edit did not skip unchanged shaping");
+        }
+        require(astra::ui::GlyphCache::glyph_digest(seed->cache.snapshot()) == original,
+                "Ligature edits mutated the original raw snapshot");
+    }
+    std::cout << "Actual native Latin ligature formation/deletion, kerning and observed safe "
+                 "fallback/shaping: PASS\n";
+#endif
 }
 
 void glyph_snapshots() {
@@ -175,6 +487,8 @@ void glyph_snapshots() {
             const auto old_pixels = glyph_pixels(old);
             require(old_stats.runs > 0 && old_stats.glyphs > 0 && old_stats.shaped_bytes > 0,
                     "Native HarfBuzz glyphs were not captured");
+            require(old_stats.font_bytes_hashed == 0,
+                    "Interactive caption owner performed background font fingerprint work");
             require(old_stats.safe_boundaries + old_stats.unsafe_boundaries > 0,
                     "Native concatenation boundary metadata was not captured");
 
@@ -243,6 +557,9 @@ void glyph_snapshots() {
 
 int main() {
     try {
+        glyph_sequence_snapshots();
+        incremental_glyphs();
+        native_ligature_splicing();
         glyph_snapshots();
         TextLayoutEngine engine;
         auto empty = engine.layout("");

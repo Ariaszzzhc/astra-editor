@@ -101,7 +101,7 @@ struct LayoutJobs::Impl {
                 return;
             }
             if (!job.stopped.load(std::memory_order_acquire)) {
-                TextLayoutEngine engine;
+                TextLayoutEngine engine(TextLayoutEngine::FontIdentity::content);
                 job.result.paragraph =
                     std::make_shared<const TextLayout>(engine.layout(std::move(job.text),
                                                                      job.options,

@@ -20,6 +20,94 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### Persistent local glyph splicing and font identity (2026-10-11)
+
+Native logical glyphs now live in a measured persistent `GlyphSequence`, with
+at most 256 glyphs per immutable backing block. Splits/concatenation preserve
+unchanged interior nodes; cached UTF-8 extents relocate retained clusters without
+rewriting old raw arrays. Sliced leaves charge their whole backing block, including
+large clusters spanning several blocks and invisible source extents. Snapshot
+admission remains 1,024 runs / 4 MiB of accounted payload, excluding capacities,
+tree/container, native font/paragraph and GPU heaps.
+
+Local edits use scalar-aligned differences, old/new ICU grapheme boundaries and
+genuine old/new HarfBuzz unsafe-to-concat certificates. An extra cluster exposes
+the right cut's native flag; failed certificates expand the window geometrically
+for at most eight attempts before complete shaping. Unchanged surrounding context,
+font geometry, bidi/script/language/tracking and whole-item feature applications
+must match. Partial feature ranges and absent certificates retain full shaping.
+No ASCII or whitespace approximation establishes a reusable boundary.
+
+Background owners now fingerprint sorted native SFNT tables, variation positions,
+style/synthetic attributes and glyph metrics with incremental SHA-256. A private
+engine memo retains at most 128 identities, scans at most 128 MiB in total and
+uses a fixed 64 KiB table buffer. Unsupported/failed/bounded-out reads cannot
+certify cross-owner reuse. Snapshots retain digest values, never native fonts;
+interactive caption owners continue using native instance IDs without table scans.
+Font fingerprinting and native calls have the existing worker's soft cancellation
+and deadline semantics: input stays responsive, and a running native call drains.
+
+Windows evidence and retained failures:
+
+- Initial `./scripts/xmake.ps1 build -y -j 2 astra-core-tests text-layout-tests`
+  rejected the new tree summary's missing equality operator; added value equality
+  without changing warning settings. `build/glyph-splice-initial-build-debug.log`.
+- `./build/windows/x64/debug/astra-core-tests.exe '--test-case=content hash*' --no-version`
+  passed three cases / 4,108 assertions. Standard vectors and 2,050 binary sizes
+  compare streaming/padding against independent Windows BCrypt; seed `0xA57A256`.
+  `build/glyph-splice-hash-tests-debug.log`.
+- The first real Unicode differential failed at seed `0xA57A92`, round 18:
+  deleting Indic consonants left a proposed cut inside the new combining cluster.
+  Geometry matched but native break/concat flags differed. Added old/new ICU
+  grapheme certification; retained raw-field comparison, independent native pixels,
+  both caret affinities and hit testing. Temporary full-shaping diagnostics were
+  removed before acceptance. `build/glyph-splice-native-debug.log`,
+  `build/glyph-splice-diagnostic-native-debug.log` and
+  `build/glyph-splice-final-native-debug.log` retain failure/final evidence.
+- `./scripts/xmake.ps1 build -y -j 2 astra-tests text-layout-tests viewport-layout-tests astra`
+  passed; `build/glyph-splice-final-build-debug.log`. Native tests include 500
+  persistent block edits (seed `0xA57A91`), retained snapshots, bounded chunks,
+  multi-block clusters, whole-block charging, seven Unicode/script/tab inputs at
+  three DPI values, 80 scalar edits, exact raw fields and cross-owner font identity.
+- `./build/windows/x64/debug/viewport-layout-tests.exe --coordinates` passed
+  actual libuv publication, cancellation and old-paragraph lifetime checks;
+  `build/glyph-splice-final-worker-debug.log`. In both full acceptance modes,
+  the 12,000-byte ASCII replacement shaped two bytes, shared 11,745 glyphs and
+  certified two different native font instances. This is a measured test case,
+  not a guarantee for all scripts/fonts or an end-to-end latency benchmark.
+- `./scripts/test.ps1 -Mode all -Gui` exited 0 with source/runtime resources
+  unchanged during acceptance. Debug: 594 cases / 1,736,095 assertions;
+  Release: 594 cases / 1,736,043 assertions, zero failed/skipped. Both passed
+  native renderer/font/viewport/input checks, all editing/service/recovery/
+  workspace/presentation GUI workflows, TCP editing, 12 package-helper checks
+  and seven shaping-provenance checks. `build/glyph-splice-acceptance-all.log`.
+- An additional actual Latin-ligature fixture first failed because native Cambria
+  did not merge `ffi`; Calibri does. Subsequent fixtures incorrectly demanded
+  partial shaping despite all 720 captured Calibri cluster starts being unsafe.
+  Those failures remain under `build/glyph-splice-ligature-*.log`. The final
+  fixture requires actual glyph merging, complete raw parity for ligature creation/
+  deletion and kerning, independent native callback byte counts, immutable old
+  snapshots, and complete shaping when no native certificate exists. Production
+  logic is unchanged. Updated `text-layout-tests` passed both modes;
+  `build/glyph-splice-ligature-final-build-{debug,release}.log` and
+  `build/glyph-splice-ligature-final-native-{debug,release}.log`.
+- Restored Debug with `./scripts/xmake.ps1 f -m debug -y`;
+  `build/glyph-splice-restore-debug.log`. Final
+  `./scripts/xmake.ps1 build -y -j 2 text-layout-tests astra` passed;
+  `build/glyph-splice-commit-build-debug.log`. The final native executable and
+  `astra-tests.exe '--test-case=content hash*' --no-version` passed again
+  (three hash cases / 4,108 assertions); `build/glyph-splice-commit-native-debug.log`
+  and `build/glyph-splice-commit-hash-debug.log`.
+  `./scripts/format.ps1 -Check -Offline` passed 172 C++ / 13 JS files, and
+  `git diff --check` passed; `build/glyph-splice-commit-check.log`.
+
+Text comparison, grapheme segmentation and native output materialization still
+process whole context; this does not establish logarithmic total paragraph layout.
+Fonts without native certificates may reshape entirely. Further native component
+extraction, cohesive whole-product visual acceptance, Explorer active-path reveal,
+same-text selection metadata ordering, physical installed-IME interaction and a
+new distribution remain incomplete. Only Windows evidence is claimed.
+
 ### Native glyph snapshots and exact run replay (2026-10-11)
 
 The real pinned Skia/HarfBuzz path now exposes logical-order glyphs, UTF-8

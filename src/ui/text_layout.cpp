@@ -1,5 +1,6 @@
 #include "astra/ui/text_layout.hpp"
 #include "glyph_cache.hpp"
+#include "font_signatures.hpp"
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkFontMgr.h"
@@ -244,6 +245,7 @@ class TabUnicode final : public SkUnicode {
 } // namespace
 
 struct TextLayoutEngine::Impl {
+    std::shared_ptr<FontSignatures> signatures;
     sk_sp<paragraph::FontCollection> fonts = sk_make_sp<paragraph::FontCollection>();
     sk_sp<SkUnicode> unicode = SkUnicodes::ICU::Make();
 
@@ -333,7 +335,10 @@ struct TextLayout::Impl {
     }
 };
 
-TextLayoutEngine::TextLayoutEngine() : impl_(std::make_shared<Impl>()) {
+TextLayoutEngine::TextLayoutEngine(FontIdentity identity) : impl_(std::make_shared<Impl>()) {
+    if (identity == FontIdentity::content) {
+        impl_->signatures = std::make_shared<FontSignatures>();
+    }
 }
 
 TextLayoutEngine::~TextLayoutEngine() = default;
@@ -359,7 +364,7 @@ TextLayout TextLayoutEngine::layout(std::string text,
     }
 
     auto result = std::make_unique<TextLayout::Impl>();
-    auto collector = std::make_shared<GlyphCache>(std::move(glyphs));
+    auto collector = std::make_shared<GlyphCache>(std::move(glyphs), impl_->signatures);
 
     // Detached on every success/error path. Published paragraphs never retain
     // mutable shaping collectors; native font ownership remains unchanged.

@@ -48,6 +48,10 @@ target("astra-core")
     set_exceptions("cxx")
 
 target("astra-tests")
+    add_files("tests/content_hash_tests.cpp")
+    if is_plat("windows") then
+        add_syslinks("bcrypt")
+    end
     add_deps("astra-text-source")
     add_files("tests/text_source_tests.cpp")
     add_files("tests/tab_index_tests.cpp")
@@ -69,6 +73,10 @@ target("astra-tests")
     add_tests("unit", {runargs = {"--no-version", "--duration=true"}})
 
 target("astra-core-tests")
+    add_files("tests/content_hash_tests.cpp")
+    if is_plat("windows") then
+        add_syslinks("bcrypt")
+    end
     set_kind("binary")
     set_rundir(os.projectdir())
     set_default(false)
@@ -180,7 +188,8 @@ target("astra-renderer")
     add_packages("skia-graphite", "libsdl3", {public = true})
     add_packages("utf8proc")
     add_deps("astra-text-source")
-    add_files("src/ui/renderer.cpp", "src/ui/text_layout.cpp", "src/ui/glyph_cache.cpp")
+    add_files("src/ui/renderer.cpp", "src/ui/text_layout.cpp", "src/ui/glyph_cache.cpp",
+              "src/ui/glyph_sequence.cpp", "src/ui/font_signatures.cpp")
     set_exceptions("cxx")
 
 target("graphics-smoke")
