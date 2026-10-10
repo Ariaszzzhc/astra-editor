@@ -94,6 +94,80 @@ TEST_CASE("presentation document metadata orders snapshots without advancing tex
     }
 }
 
+TEST_CASE("presentation closed document identities retain measured normalized ranges") {
+    using astra::ui::ClosedDocumentIds;
+    using astra::ui::document_id;
+    CHECK(document_id("9007199254740993") == 9007199254740993ULL);
+    CHECK(document_id("18446744073709551615") == std::numeric_limits<std::uint64_t>::max());
+    for (const auto text : {"0", "", "01", "-1", "+1", " 1", "1x", "18446744073709551616"})
+        CHECK_THROWS(static_cast<void>(document_id(text)));
+    CHECK_THROWS(static_cast<void>(document_id(std::string_view("1\0x", 3))));
+
+    ClosedDocumentIds closed;
+    CHECK_FALSE(closed.contains(0));
+    CHECK_FALSE(closed.contains(1));
+    CHECK(closed.validate());
+    std::set<std::uint64_t> reference;
+    std::mt19937 random(0xA57A97);
+    for (int round = 0; round < 2000; ++round) {
+        const std::uint64_t id = 1 + random() % 2000;
+        const auto retained = closed;
+        const auto already = reference.contains(id);
+        CHECK(closed.retire(id) == !already);
+        reference.insert(id);
+        CHECK(retained.contains(id) == already);
+        CHECK(closed.contains(id));
+        CHECK(closed.validate());
+        CHECK(retained.validate());
+        for (int sample = 0; sample < 16; ++sample) {
+            const std::uint64_t probe = 1 + random() % 2000;
+            CHECK(closed.contains(probe) == reference.contains(probe));
+            CHECK(retained.contains(probe) == (probe == id ? already : reference.contains(probe)));
+        }
+        std::size_t expected_ranges{};
+        std::uint64_t previous{};
+        for (const auto value : reference) {
+            if (!previous || value - previous > 1)
+                ++expected_ranges;
+            previous = value;
+        }
+        CHECK(closed.range_count() == expected_ranges);
+    }
+    const auto count = closed.range_count();
+    CHECK_THROWS(static_cast<void>(closed.retire(0)));
+    CHECK(closed.range_count() == count);
+    CHECK(closed.validate());
+
+    ClosedDocumentIds sparse;
+    for (std::uint64_t id = 1; id < 2000; id += 2)
+        REQUIRE(sparse.retire(id));
+    const auto old_sparse = sparse;
+    CHECK(sparse.range_count() == 1000);
+    for (std::uint64_t id = 2; id <= 2000; id += 2)
+        REQUIRE(sparse.retire(id));
+    CHECK(sparse.range_count() == 1);
+    CHECK(sparse.validate());
+    CHECK(old_sparse.validate());
+    CHECK(old_sparse.range_count() == 1000);
+    CHECK_FALSE(old_sparse.contains(2));
+    CHECK(sparse.contains(2));
+    CHECK_FALSE(sparse.retire(2));
+
+    const auto maximum = std::numeric_limits<std::uint64_t>::max();
+    REQUIRE(sparse.retire(maximum));
+    REQUIRE(sparse.retire(maximum - 2));
+    CHECK(sparse.range_count() == 3);
+    REQUIRE(sparse.retire(maximum - 1));
+    CHECK(sparse.range_count() == 2);
+    CHECK(sparse.contains(maximum));
+    CHECK(sparse.validate());
+    ClosedDocumentIds sequential;
+    for (std::uint64_t id = 1; id <= 10000; ++id)
+        REQUIRE(sequential.retire(id));
+    CHECK(sequential.range_count() == 1);
+    CHECK(sequential.validate());
+}
+
 TEST_CASE("presentation row viewport shares clipped paint pointer and page boundaries") {
     using astra::ui::ViewRowsLayout;
     const auto layout = ViewRowsLayout::measure({10, 20, 200, 50.5F}, 1.5F, 24, 10000, 5000);

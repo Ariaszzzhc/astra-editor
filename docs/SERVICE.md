@@ -64,8 +64,24 @@ tabs, selections or JS event delivery. Both revision and sequence must be at lea
 the accepted values, and an equal sequence must retain the same revision. An event
 for the exact currently accepted snapshot still reaches JS even if a read arrived
 first. Client `astra.ui.read` and native `WorkbenchViewState.document` expose the
-accepted document metadata. Closed-buffer late-response fencing remains incomplete;
-the retained-buffer guard alone does not prevent recreation after removal.
+accepted document metadata.
+
+The GUI also retains closed buffer IDs for its connection. Service IDs are not
+reused within that lifetime: a same-path reopen creates a fresh ID. Persistent
+measured ranges merge adjacent closed IDs and support logarithmic lookup/update
+in the number of ranges, preserving retained snapshots. Sparse close histories
+can still grow; there is no fixed heap bound or expiry that allows resurrection.
+Late metadata responses, creation and change events for a retired ID cannot
+create a tab, activate it or reach the corresponding JS metadata listener.
+`ui.update({closedDocument:id})` records an acknowledged close; ordinary workbench
+commands send this only after `document.close` succeeds.
+
+A background `document.lines`, `document.syntax` or `language.diagnostics` reply
+with error `-32002` and an object `data.id` matching its requested document also
+confirms retirement. This reply may beat the close notification on another
+connection. The GUI removes that document without reporting an action failure;
+later duplicate close observation is idempotent. Other error codes, unrelated
+IDs, transport failures and edit failures retain their normal error handling.
 
 ## Document methods
 

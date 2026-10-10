@@ -141,6 +141,13 @@ class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
     std::future<std::optional<std::string>> submit(std::string body) override {
         const auto request = Json::parse(body);
         const auto method = request.at("method").get<std::string>();
+        if (method == "document.lines" && defer_next_lines) {
+            require(!held_lines_, "A presentation request is already withheld");
+            defer_next_lines = false;
+            held_lines_.emplace();
+            held_lines_->request = std::move(body);
+            return held_lines_->reply.get_future();
+        }
         if (method == "document.get" && hold_next_metadata) {
             require(!held_metadata_, "A metadata response is already withheld");
             hold_next_metadata = false;
@@ -182,6 +189,12 @@ class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
     }
 
     std::vector<std::string> take_notifications() override {
+        if (held_lines_ && held_lines_->future &&
+            held_lines_->future->wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            held_lines_->body = held_lines_->future->get();
+            held_lines_->future.reset();
+            require(held_lines_->body.has_value(), "Actual presentation request returned no body");
+        }
         if (held_metadata_ && held_metadata_->future &&
             held_metadata_->future->wait_for(std::chrono::seconds(0)) ==
                 std::future_status::ready) {
@@ -208,6 +221,18 @@ class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
         for (const auto& body : notifications) {
             const auto event = Json::parse(body);
             const auto method = event.value("method", std::string{});
+            if (method == "document.closed" && hold_next_close) {
+                require(!held_close_, "A close notification is already held");
+                hold_next_close = false;
+                held_close_ = body;
+                continue;
+            }
+            if (method == "document.created" && hold_next_creation) {
+                require(!held_creation_, "A creation notification is already held");
+                hold_next_creation = false;
+                held_creation_ = body;
+                continue;
+            }
             if (method == "document.changed" || method == "document.created") {
                 const auto& metadata = event.at("params");
                 if (withheld_selection_ && metadata.at("id") == withheld_selection_->at("id") &&
@@ -247,8 +272,56 @@ class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
 
     void release_selection() {
         require(held_notification_.has_value(), "No actual selection notification to release");
+        require(!released_notification_, "An earlier notification still awaits delivery");
         released_notification_ = std::move(held_notification_);
         held_notification_.reset();
+    }
+
+    bool creation_held() const {
+        return held_creation_.has_value();
+    }
+
+    void release_creation() {
+        require(held_creation_.has_value(), "No actual creation notification to release");
+        require(!released_notification_, "An earlier notification still awaits delivery");
+        released_notification_ = std::move(held_creation_);
+        held_creation_.reset();
+    }
+
+    bool lines_deferred() const {
+        return held_lines_.has_value();
+    }
+
+    void submit_deferred_lines() {
+        require(held_lines_ && !held_lines_->request.empty(),
+                "No deferred lines request to submit");
+        held_lines_->future = channel_->submit(std::move(held_lines_->request));
+        held_lines_->request.clear();
+    }
+
+    bool missing_lines_ready(const std::string& id) const {
+        if (!held_lines_ || !held_lines_->body)
+            return false;
+        const auto reply = Json::parse(*held_lines_->body);
+        return reply.contains("error") && reply.at("error").at("code") == -32002 &&
+               reply.at("error").at("data").at("id") == id;
+    }
+
+    void release_lines() {
+        require(held_lines_ && held_lines_->body, "No completed lines response to release");
+        held_lines_->reply.set_value(std::move(held_lines_->body));
+        held_lines_.reset();
+    }
+
+    bool close_held() const {
+        return held_close_.has_value();
+    }
+
+    void release_close() {
+        require(held_close_.has_value(), "No actual close notification to release");
+        require(!released_notification_, "An earlier notification still awaits delivery");
+        released_notification_ = std::move(held_close_);
+        held_close_.reset();
     }
 
     bool observed_selection(const Json& expected) const {
@@ -270,6 +343,8 @@ class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
     bool changed{};
     bool hold_next_find{};
     bool hold_next_metadata{};
+    bool hold_next_creation{};
+    bool hold_next_close{}, defer_next_lines{};
     unsigned find_requests{}, preview_requests{}, replace_requests{}, text_downloads{};
     unsigned notification_deferrals{};
 
@@ -286,11 +361,15 @@ class ConcurrentSyntaxChannel final : public astra::ui::EditorChannel {
         std::promise<std::optional<std::string>> reply;
         std::optional<std::future<std::optional<std::string>>> future;
         std::optional<std::string> body;
+        std::string request;
     };
 
     std::optional<HeldMetadata> held_metadata_;
+    std::optional<HeldMetadata> held_lines_;
     std::optional<Json> withheld_selection_;
     std::optional<std::string> held_notification_, released_notification_;
+    std::optional<std::string> held_creation_;
+    std::optional<std::string> held_close_;
     std::map<std::string, Json> observed_;
     bool defer_notifications_{};
     std::shared_ptr<astra::ui::EditorChannel> channel_;
@@ -395,8 +474,16 @@ int main(int argc, char* argv[]) {
                 const old = await astra.request('document.get', {id:document.id});
                 await astra.ui.update({document:old,status:'Delayed metadata response completed'});
             });
+            astra.registerCommand('acceptance.delayedClosingMetadata', async () => {
+                const {document} = await astra.ui.read({immediate:true});
+                const old = await astra.request('document.get', {id:document.id});
+                await astra.ui.update({document:old,activate:old.id,status:'Delayed closing response completed'});
+            });
             astra.registerCommand('acceptance.metadataEvent', async () => {
                 await astra.ui.update({status:'Selection event '+latestSelectionEvent.selections[0].head});
+            });
+            astra.registerCommand('acceptance.metadataEventId', async () => {
+                await astra.ui.update({status:'Selection event buffer '+latestSelectionEvent.id});
             });
             let releaseClientInput;
             astra.registerCommand('editor.insert_text', async parameters => {
@@ -615,6 +702,95 @@ int main(int argc, char* argv[]) {
         std::cerr << "GUI metadata order: delayed real RPC and notification, same-text selection, "
                      "JS stale filtering, legitimate event delivery and original revision "
                      "preserved: PASS\n";
+        const auto original_tabs = window.view_state().tabs;
+        concurrent->hold_next_creation = true;
+        concurrent->defer_next_lines = true;
+        window.open_path("closing.txt");
+        pump_until(
+            window,
+            [&] {
+                return concurrent->creation_held() && concurrent->lines_deferred() &&
+                       window.active_document_id() != id;
+            },
+            "Could not retain the actual creation event while its open response completed");
+        const auto closed_id = window.active_document_id();
+        const auto closing_metadata = window.view_state().document;
+        concurrent->hold_next_metadata = true;
+        window.execute_ui_command("acceptance.delayedClosingMetadata");
+        pump_until(
+            window,
+            [&] {
+                return concurrent->metadata_ready();
+            },
+            "Could not retain actual metadata for the soon-to-close buffer");
+        concurrent->hold_selection(
+            {{"id", closed_id}, {"selections", Json::array({{{"anchor", 1}, {"head", 1}}})}});
+        static_cast<void>(call(host,
+                               "document.setSelections",
+                               {{"id", closed_id},
+                                {"baseRevision", closing_metadata.at("revision")},
+                                {"selections", Json::array({{{"anchor", 1}, {"head", 1}}})}}));
+        pump_until(
+            window,
+            [&] {
+                return concurrent->selection_held();
+            },
+            "Could not retain the closing buffer's actual selection event");
+        concurrent->hold_next_close = true;
+        const auto closed = call(host,
+                                 "document.close",
+                                 {{"id", closed_id},
+                                  {"baseRevision", closing_metadata.at("revision")},
+                                  {"discardChanges", false}});
+        require(closed.at("closed") == true, "Service did not acknowledge actual close");
+        concurrent->submit_deferred_lines();
+        pump_until(
+            window,
+            [&] {
+                return concurrent->close_held() && concurrent->missing_lines_ready(closed_id);
+            },
+            "Did not receive actual missing-buffer response ahead of withheld close notification");
+        concurrent->release_lines();
+        pump_until(
+            window,
+            [&] {
+                return window.active_document_id() == id &&
+                       window.view_state().tabs == original_tabs;
+            },
+            "Actual missing-buffer read did not remove the tab before the close notification");
+        concurrent->release_close();
+        concurrent->release_metadata();
+        settle(window);
+        require(window.active_document_id() == id && window.view_state().tabs == original_tabs,
+                "A completed old RPC recreated or activated a closed buffer");
+        concurrent->release_selection();
+        settle(window);
+        concurrent->release_creation();
+        settle(window);
+        require(window.active_document_id() == id && window.view_state().tabs == original_tabs,
+                "Old creation/selection events recreated a closed buffer");
+        window.execute_ui_command("acceptance.metadataEventId");
+        settle(window);
+        require(window.status_text() == "Selection event buffer " + id,
+                "A closed buffer's late event reached the JS selection listener");
+        window.open_path("closing.txt");
+        settle(window);
+        const auto reopened_id = window.active_document_id();
+        require(reopened_id != id && reopened_id != closed_id,
+                "Reopening did not create a fresh service buffer identity");
+        require(read_document(host, reopened_id).at("text") == "baseline",
+                "Closed-ID fencing prevented a legitimate same-path reopen");
+        static_cast<void>(call(host,
+                               "document.close",
+                               {{"id", reopened_id},
+                                {"baseRevision", window.view_state().document.at("revision")},
+                                {"discardChanges", false}}));
+        settle(window);
+        require(window.active_document_id() == id && window.view_state().tabs == original_tabs,
+                "Lifecycle checks did not restore the original document and tab set");
+        std::cerr << "GUI document lifetime: delayed real RPC/creation/selection after close, "
+                     "missing read before close notification, JS stale filtering, no tab "
+                     "resurrection, same-path fresh reopen: PASS\n";
         key(window, SDLK_B, SDL_KMOD_CTRL);
         require(window.status_text() == "User sidebar policy",
                 "Native UI command bypassed the user JS override");

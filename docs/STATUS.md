@@ -20,6 +20,77 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### Closed-buffer metadata lifetime fencing (2026-10-11)
+
+The GUI now retains closed service IDs independently of its live documents.
+`ClosedDocumentIds` uses a persistent measured SumTree of sorted, disjoint,
+non-adjacent inclusive ranges; zero is the summary identity and maximum endpoint
+is the associative composition. Adjacent closes coalesce. Lookup and insertion
+seek cached endpoints without flattening and merge at most two neighbors. Retained
+copies keep old trees unchanged. Sparse histories can grow with distinct ranges;
+no fixed heap bound or eviction is claimed. IDs are canonical positive uint64
+decimals, parsed without floating-point conversion. Service IDs are never reused
+within the connection, including a legitimate same-path reopen.
+
+Close handling prepares the closed-ID allocation before removing live state.
+Metadata for a retired ID cannot recreate/activate a tab or deliver obsolete
+creation/selection events to JS. Native background line/syntax/diagnostic reads
+also recognize a real `-32002` response carrying the exact requested `data.id`:
+it confirms retirement even before the close notification arrives. This does not
+hide arbitrary missing-object, transport or edit errors. Existing dispatcher,
+JavaScript policy and production graphics remain in place.
+
+Windows evidence and retained failures:
+
+- Initial `./scripts/xmake.ps1 build -y -j 2 astra-tests astra gui-smoke` passed
+  (`build/closed-document-build-debug.log`).
+  `./build/windows/x64/debug/astra-tests.exe
+  '--test-case=presentation closed document*,presentation document metadata*'
+  --no-version` passed two cases / 92,063 assertions, with 606 unrelated cases
+  filtered out (`build/closed-document-focused-debug.log`). Tests cover 2,000
+  differential rounds (seed `0xA57A97`), old-tree preservation, normalized cached
+  summaries/balance, 1,000 disjoint ranges bridged into one, 10,000 consecutive
+  closes compressed into one, duplicate closes, invalid input and uint64 edges.
+- The first GUI run failed its existing full-metadata equality assertion:
+  adding activation to the retained-read fixture forced a new viewport read.
+  The closing scenario now has a separate command; the original assertion and
+  command behavior are preserved. `build/closed-document-gui-debug.log` retains
+  the failure. The next local GUI passed, while TCP exposed a real background
+  read/close race (`build/closed-document-gui-fixed-debug.log` and
+  `build/closed-document-tcp-fixed-debug.log`): a missing-document reply could
+  arrive before the close notification and produce an action failure.
+- Final formatting and the same targeted build passed
+  (`build/closed-document-format-race.log`, `closed-document-build-race-debug.log`).
+  `./build/windows/x64/debug/gui-smoke.exe` and the same binary with `--tcp`
+  both exited 0 (`build/closed-document-gui-race-debug.log`,
+  `closed-document-tcp-race-debug.log`). The channel proxy retains actual
+  response/event bodies. It forwards a real deferred lines request after the
+  service closes its buffer, deliberately delivers the resulting missing-ID
+  error before the held close notification, then releases old metadata,
+  selection and creation bodies. No tab resurrection or stale JS selection
+  delivery occurs. A same-path reopen has a fresh ID and correct disk content;
+  the original active document/tab set and subsequent editing workflows survive.
+  These are production local/TCP/GPU integrations, not a mock editor.
+- Final `./scripts/test.ps1 -Mode all -Gui` exited 0 with source/runtime resources
+  unchanged throughout execution: Debug 608 cases / 2,548,728 assertions;
+  Release 608 / 2,548,623, zero failed/skipped. Real renderer/fonts/worker/viewport,
+  all editing/service/recovery/workspace/workbench GUI flows, TCP editing,
+  12 package-helper and seven shaping-provenance checks passed.
+  `build/closed-document-acceptance-all.log`. During this run the generated Debug
+  captures `build/graphics/gui-editor.png` and `gui-chrome-command-center.png`
+  were inspected; later matrix stages overwrite those paths. Inspection does
+  not establish whole-product visual acceptance.
+- Restored Debug with `./scripts/xmake.ps1 f -m debug -y`
+  (`build/closed-document-restore-debug.log`). Final `./scripts/format.ps1 -Check
+  -Offline` passed 180 C++ / 13 JS files (`build/closed-document-final-format-check.log`);
+  `git diff --check` passed. Only documentation changed after full acceptance.
+
+Live and closed-buffer metadata ordering now have acceptance evidence. Sidebar
+outer chrome, headers and Outline extraction, complete font adaptation, native
+title-bar theme integration and whole-product visual acceptance remain work to
+finish, as do physical installed-IME interaction and a new distribution. Only
+Windows evidence is claimed.
+
 ### Published asynchronous document metadata (2026-10-11)
 
 Service document metadata now carries a positive canonical uint64 decimal-string

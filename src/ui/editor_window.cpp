@@ -212,6 +212,7 @@ struct EditorWindow::Impl {
     bool document_composition_drawn{};
     std::uint32_t document_composition_color{};
     std::map<std::string, Document> documents;
+    ClosedDocumentIds closed_documents;
     TabIndex tabs;
     std::string active_id;
     std::deque<Request> requests;
@@ -523,6 +524,8 @@ struct EditorWindow::Impl {
     bool accept_metadata(const Json& metadata) {
         const auto incoming = DocumentMetadataStamp::read(metadata);
         const auto id = metadata.at("id").get<std::string>();
+        if (closed_documents.contains(document_id(id)))
+            return false;
         if (const auto found = documents.find(id);
             found != documents.end() && !found->second.metadata.empty() &&
             !incoming.follows(DocumentMetadataStamp::read(found->second.metadata)))
@@ -580,6 +583,11 @@ struct EditorWindow::Impl {
     }
 
     void remove_document(const std::string& id) {
+        const auto numeric_id = document_id(id);
+        if (active_id == id && document_activity == std::numeric_limits<std::uint64_t>::max())
+            throw protocol::RpcError(-32004, "Document activity identity exhausted");
+        // Allocate the persistent closed-ID update before dropping live state.
+        static_cast<void>(closed_documents.retire(numeric_id));
         if (active_id == id)
             change_document_activity();
         tabs.erase(id);
@@ -861,6 +869,18 @@ void EditorWindow::Impl::service_responses() {
                 const auto* rpc_failure = dynamic_cast<const protocol::RpcError*>(&failure);
                 const bool obsolete_syntax = completed.request.method == "document.syntax" &&
                                              rpc_failure && rpc_failure->code() == -32001;
+                const bool presentation_read = completed.request.method == "document.lines" ||
+                                               completed.request.method == "document.syntax" ||
+                                               completed.request.method == "language.diagnostics";
+                const bool missing_document =
+                    presentation_read && !completed.request.document.empty() && rpc_failure &&
+                    rpc_failure->code() == -32002 && rpc_failure->data() &&
+                    rpc_failure->data()->is_object() &&
+                    rpc_failure->data()->value("id", Json{}) == completed.request.document;
+                // A real missing-buffer reply can beat the close notification on
+                // another connection. It confirms this background target retired.
+                if (missing_document)
+                    remove_document(completed.request.document);
                 settle_edit(completed.request.edit, nullptr, std::current_exception());
                 if (completed.request.failure) {
                     completed.request.failure();
@@ -881,7 +901,7 @@ void EditorWindow::Impl::service_responses() {
                         return operation->id == id;
                     });
                 }
-                if (!script_handles_failure && !obsolete_syntax) {
+                if (!script_handles_failure && !obsolete_syntax && !missing_document) {
                     error = failure.what();
                     status = "Action failed";
                 }
