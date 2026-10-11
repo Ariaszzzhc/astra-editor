@@ -727,6 +727,7 @@ struct EditorWindow::Impl {
     Json native_ui_request(std::string_view method, const Json& params);
     void apply_settings(Json candidate);
     [[nodiscard]] Json style_model() const;
+    [[nodiscard]] Json window_frame_model() const;
     std::future<Json> begin_style(const Json& params);
     void validate_style_patch(const Json& params) const;
     void finish_styles();
@@ -2144,7 +2145,14 @@ void EditorWindow::Impl::apply_settings(Json candidate) {
                                         ui_style.colors.foreground != prepared.colors.foreground ||
                                         ui_style.syntax != prepared.syntax;
     candidate["workbench"]["sidebarWidth"] = prepared.sidebar_width;
-    if (settings.value("fileIcons", Json::object()) != candidate.at("fileIcons")) {
+    const auto icons_changed =
+        settings.value("fileIcons", Json::object()) != candidate.at("fileIcons");
+    if (icons_changed &&
+        std::stoull(file_icons.generation()) == std::numeric_limits<std::uint64_t>::max())
+        throw protocol::RpcError(-32004, "File icon generation exhausted");
+    renderer.set_window_frame(
+        {prepared.colors.activity, prepared.colors.foreground, prepared.colors.border});
+    if (icons_changed) {
         file_icons.invalidate();
     }
     settings.swap(candidate);
@@ -2160,6 +2168,14 @@ void EditorWindow::Impl::apply_settings(Json candidate) {
             document.needs_lines = document.needs_lines || editor_geometry_changed;
         }
     }
+}
+
+Json EditorWindow::Impl::window_frame_model() const {
+    const auto support = renderer.window_frame_support();
+    return {{"darkMode", support.dark_mode},
+            {"captionColor", support.caption},
+            {"textColor", support.text},
+            {"borderColor", support.border}};
 }
 
 Json EditorWindow::Impl::style_model() const {
@@ -2464,6 +2480,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
                     {"outlineVisible", show_outline},
                     {"tabs", tabs.ids()}};
         result["fileIcons"] = file_icons.state();
+        result["windowFrame"] = window_frame_model();
         if (params.contains("preferences")) {
             const auto& sections = params.at("preferences");
             if (!sections.is_array() || sections.size() > 16)
@@ -5160,6 +5177,7 @@ WorkbenchViewState EditorWindow::view_state() const {
                               impl_->sidebar_views.at("explorer").index.size()};
     const auto& sidebar = impl_->sidebar_views.at(impl_->active_view);
     result.style = impl_->style_model();
+    result.window_frame = impl_->window_frame_model();
     result.file_icons = impl_->file_icons.state();
     auto visible_icons = Json::array();
     const auto rows = impl_->view_rows_layout();

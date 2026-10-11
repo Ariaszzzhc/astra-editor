@@ -47,6 +47,7 @@ struct WorkbenchViewState {
     protocol::Json tab_layout;
     protocol::Json file_icons;
     protocol::Json style;
+    protocol::Json window_frame;
 };
 
 // Main-thread editor front end. Every document change goes through EditorChannel.

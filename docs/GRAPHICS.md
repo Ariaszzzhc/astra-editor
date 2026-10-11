@@ -6,6 +6,34 @@ been built and tested. The macOS Metal and Linux Vulkan paths and build recipes
 are prepared in source only; neither platform has been compiled or tested here.
 A raster backend, SDL renderer, Ganesh, or a mock renderer does not satisfy this contract.
 
+## Native Windows frame
+
+The SDL-owned window retains its OS title bar, buttons, sizing and input behavior.
+The renderer's narrow DWM adapter applies the JS-compiled `activityBar`,
+`foreground` and `border` roles to caption background, caption text and border.
+Caption luminance selects the native dark-mode allowance. It does not select a
+second application palette. The documented attributes are available starting
+with Windows 11 build 22000; actual writes determine per-window support.
+Unsupported attributes remain OS-controlled and are exposed as capability flags.
+See Microsoft's [DWM attribute reference](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute).
+
+The adapter validates opaque ARGB before mutation, borrows the SDL-owned HWND,
+retains its previous write-only color attributes and queries the readable dark
+flag. A partial write or frame-refresh failure restores every attempted attribute,
+including a possibly mutated failed write. It attempts the remaining restores
+after a rollback failure and reports both errors. Invalid or cancelled pending
+JS style updates never reach this mutation. Initial color rollback restores OS
+defaults. Identical accepted palettes do not rewrite the native frame.
+
+Renderer and GUI acceptance capture only their own HWND through
+[Windows Graphics Capture](https://learn.microsoft.com/en-us/windows/win32/api/windows.graphics.capture.interop/nf-windows-graphics-capture-interop-igraphicscaptureiteminterop-createforwindow).
+The test-only helper uses a free-threaded frame pool, bounded dimensions and a
+three-second wait, owns COM/frame/session lifetimes, reports capture/close failures
+and reads back the composed BGRA frame. Its D3D11 dependencies belong only to
+those test targets. Production client drawing and GPU PNG capture continue to
+use Skia Graphite/Dawn with D3D12 on Windows. These checks do not establish support
+on older Windows versions or on another platform.
+
 ## Source and tool lock
 
 The pinned Skia checkout includes the reviewed `glyph-cache.patch` under

@@ -4,6 +4,7 @@
 #include <astra/ui/icons.hpp>
 #include <astra/ui/text_layout.hpp>
 #include "support/temporary_directory.hpp"
+#include "support/window_frame.hpp"
 
 #include <SDL3/SDL.h>
 #include "include/codec/SkCodec.h"
@@ -285,6 +286,28 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
             astra.registerCommand('acceptance.style.restore', async () => {
                 await astra.ui.style.update(originalStyle);
                 await astra.ui.update({status: 'Style restored'});
+            });
+            astra.registerCommand('acceptance.style.lightFrame', async () => {
+                await astra.ui.style.update({theme: {
+                    name: 'Acceptance Light', background: '#FAF7EF', foreground: '#18212A',
+                    sidebar: '#F3EEE3', activityBar: '#ECE6D8', tabs: '#ECE6D8',
+                    panel: '#F3EEE3', activeTab: '#FAF7EF', border: '#B6AB96',
+                    selection: '#BED7ED', inactiveSelection: '#DFDDD5', accent: '#0067B8',
+                    status: '#ECE6D8', muted: '#64615A', statusForeground: '#18212A',
+                    hover: '#E2DED5', currentLine: '#F0EBDD', input: '#FFFFFF',
+                    cursor: '#18212A', scrollbar: '#B6AB96', folder: '#8A611C',
+                    codeIcon: '#0067B8', scriptIcon: '#876016', added: '#276C3E',
+                    changed: '#0067B8', noticeBackground: '#FFF1CA',
+                    recoveryBackground: '#E6F1DF', errorBackground: '#FCE6E1',
+                    error: '#AD312B', warning: '#806000', keyword: '#803E8F',
+                    string: '#9B3C24', comment: '#497333', number: '#4D6C37',
+                    type: '#16736A', function: '#79571B', property: '#125D88',
+                    variable: '#125D88', heading: '#0067B8', syntaxError: '#B02020'
+                }});
+                const state = await astra.ui.read({immediate:true});
+                if (!Object.values(state.windowFrame).every(value => value === true))
+                    throw Error('Actual window frame capabilities were not reported to JS');
+                await astra.ui.update({status: 'Light frame settled'});
             });
             astra.registerCommand('acceptance.style.race', async () => {
                 return await astra.ui.style.update({workbench: {uiFontSize: 16}});
@@ -625,6 +648,24 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         require(original.style.at("workbench").at("uiFontSize") == 13 &&
                     original.style.at("workbench").at("sidebarWidth") == 270,
                 "Service style preferences or explicit same-value client preference were lost");
+#if defined(_WIN32)
+        const auto verify_frame = [&] {
+            const auto state = window.view_state();
+            const auto color = [&](const char* role) {
+                return 0xFF000000U |
+                       static_cast<std::uint32_t>(
+                           std::stoul(state.style.at("theme").at(role).get<std::string>().substr(1),
+                                      nullptr,
+                                      16));
+            };
+            require(state.window_frame.at("darkMode") && state.window_frame.at("captionColor") &&
+                        state.window_frame.at("textColor") && state.window_frame.at("borderColor"),
+                    "Native frame capabilities were not exposed in Agent state");
+            astra::test::verify_window_frame(
+                window.window(), {color("activityBar"), color("foreground"), color("border")});
+        };
+        verify_frame();
+#endif
         window.execute_ui_command("acceptance.icons.update");
         settle(window);
         const auto custom_icons = window.view_state();
@@ -743,6 +784,33 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         settle(window);
         require(window.view_state().style == original.style,
                 "Restoring the effective style lost service/client preferences");
+#if defined(_WIN32)
+        verify_frame();
+        const auto frame_document = window.view_state().document;
+        window.execute_ui_command("acceptance.style.lightFrame");
+        settle(window);
+        require(window.status_text() == "Light frame settled",
+                "Awaited light frame did not settle");
+        verify_frame();
+        const auto light_frame = astra::test::read_window_frame(window.window());
+        astra::test::capture_window_frame(window.window(),
+                                          "build/graphics/gui-native-frame-light.png");
+        window.execute_ui_command("acceptance.style.invalid");
+        settle(window);
+        window.execute_ui_command("acceptance.style.cancelPending");
+        settle(window);
+        require(astra::test::read_window_frame(window.window()) == light_frame &&
+                    window.view_state().document == frame_document,
+                "Rejected/cancelled JS frame update changed OS attributes or document state");
+        window.execute_ui_command("acceptance.style.restore");
+        settle(window);
+        verify_frame();
+        astra::test::capture_window_frame(window.window(),
+                                          "build/graphics/gui-native-frame-dark.png");
+        std::cout
+            << "GUI JS window frame: actual DWM dark/light theme, Agent/async read capabilities, "
+               "invalid/cancel preservation and original document identity: PASS\n";
+#endif
         window.execute_ui_command("acceptance.verifyBody");
         settle(window);
         click(window, 18 * original.layout.scale, original.layout.header.height / 2);

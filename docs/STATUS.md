@@ -20,6 +20,80 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### JS theme on the native Windows frame (2026-10-11)
+
+Startup and accepted asynchronous style updates now apply the compiled JS
+`activityBar`, `foreground` and `border` roles to the SDL-owned Windows caption,
+caption text and border. Caption luminance controls the OS dark-mode allowance;
+the native adapter introduces no second application palette. Read-only support
+flags appear in `ui.read().windowFrame` and Agent presentation state. The style
+snapshot remains directly restorable. Unsupported OS attributes remain under OS
+control, while other native errors reject publication and attempt complete
+attribute rollback, reporting rollback failure too. Pending invalid/cancelled
+updates leave the frame and document identity unchanged.
+
+Windows evidence and retained failures:
+
+- The initial Debug targeted build failed with MSVC C4701/C2220 for an
+  uninitialized test array (`build/window-frame-build-debug.log`). Arrays now
+  initialize explicitly; no warning suppression was introduced.
+- `build/window-frame-probe-native.log` exposed an invalid acceptance assumption:
+  DWM color getters returned E_INVALIDARG although setters are supported on this
+  Windows system. Support now follows actual writes; the adapter retains its
+  previously owned color values and still reads the supported dark-mode flag.
+- Earlier native runs failed actual color assertions despite accepted writes:
+  `window-frame-renderer-write-debug.log` lacked the border in PrintWindow
+  output; the composed/presented/redraw/oracle/framechange logs retained stale
+  light-frame pixels through GDI capture. The visible-capture attempt failed
+  its foreground-ownership guard (`window-frame-renderer-visible-debug.log`)
+  before desktop capture. Those failures were not treated as acceptance.
+- The replacement test helper captures only the owned HWND with Windows Graphics
+  Capture and reads back a bounded composed frame. The first helper build failed
+  with C2227 for a void ABI pointer and C2872 for an ambiguous `DirectX` namespace
+  (`window-frame-build-capture-debug.log`). Projected close calls and explicit
+  namespace aliases fixed these issues. HRESULT exceptions become reported test
+  errors; capture/frame/session resources close explicitly and report failure.
+- `./scripts/format.ps1 -Offline` and
+  `./scripts/xmake.ps1 build -y -j 2 renderer-smoke gui-presentation-smoke astra`
+  passed (`window-frame-format-interop-debug.log`,
+  `window-frame-build-interop-debug.log`).
+  `./build/windows/x64/debug/renderer-smoke.exe` exited 0
+  (`window-frame-renderer-interop-debug.log`). It covers 2,000 differential rounds
+  (seed `0xA57A99`), partial write/rollback/refresh failures and unsupported
+  attributes, then actual dark/light caption/text/border pixels, invalid palette
+  preservation, minimize/restore, GPU output and renderer lifetime/restart.
+- `./build/windows/x64/debug/gui-presentation-smoke.exe` exited 0
+  (`window-frame-gui-interop-debug.log`). Real JS Promise updates expose frame
+  support and change the native colors, retain actual title-bar pixels through
+  invalid/cancelled updates, restore the original style and retain document
+  identity. Existing 5,005-file, 640-tab and custom-provider/chrome checks pass.
+  Both renderer PNGs and the real GUI dark/light PNGs were inspected. The initial
+  light fixture changed only three roles and had insufficient client text
+  contrast; the final fixture supplies a complete light palette. A fixed
+  equal-value capability-probe failure/rollback check was also added afterward.
+- Final formatting and targeted build passed
+  (`window-frame-format-final-debug.log`, `window-frame-build-final-debug.log`).
+  Final `./scripts/test.ps1 -Mode all -Gui` exited 0 with source/runtime resources
+  unchanged throughout execution (`build/window-frame-acceptance-all.log`).
+  Debug: 609 cases / 2,582,176 assertions; Release: 609 / 2,582,031, zero
+  failed/skipped. Both modes pass the actual native frame and JS GUI checks,
+  together with renderer/fonts/worker/viewport, editing, language/Git services,
+  recovery, workspace, workbench and TCP flows. Twelve package-helper and seven
+  shaping-provenance checks also pass. The final Release
+  `build/graphics/gui-native-frame-dark.png` and `gui-native-frame-light.png`
+  were inspected: both include the composed OS title bar, and the complete light
+  fixture retains readable client text. No new distribution was produced.
+- Restored Debug with `./scripts/xmake.ps1 f -m debug -y`
+  (`window-frame-restore-debug.log`). Final `./scripts/format.ps1 -Check -Offline`
+  passed 185 C++ / 13 JS files (`window-frame-final-format-check.log`);
+  `git diff --check` passed.
+
+This entry does not establish whole-product visual acceptance. Remaining work
+includes activity-bar and breadcrumb/status components, Outline content/provider/
+action ownership, complete font adaptation, whole-product visual acceptance,
+physical installed-IME acceptance and a new distribution. The requested
+architecture/UI revision remains in progress.
+
 ### Shared workbench header and sidebar chrome (2026-10-11)
 
 `WorkbenchChrome` now presents the root command center and sidebar headings,

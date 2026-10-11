@@ -3,6 +3,7 @@
 #include <SDL3/SDL.h>
 
 #include <filesystem>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -15,6 +16,16 @@ struct PixelSize {
     int width{};
     int height{};
     bool operator==(const PixelSize&) const = default;
+};
+
+struct WindowFrameColors {
+    // Opaque ARGB, matching the compiled JS workbench palette.
+    std::uint32_t caption{}, text{}, border{};
+    friend bool operator==(const WindowFrameColors&, const WindowFrameColors&) = default;
+};
+
+struct WindowFrameSupport {
+    bool dark_mode{}, caption{}, text{}, border{};
 };
 
 // Main-thread owner of the native window, IME, and Graphite/Dawn rendering state.
@@ -34,6 +45,11 @@ class Renderer final {
     [[nodiscard]] SDL_Window* window() const noexcept;
     [[nodiscard]] PixelSize pixel_size() const;
     [[nodiscard]] float dpi_scale() const;
+
+    // Applies supported OS-owned frame attributes transactionally. Unsupported
+    // attributes remain under OS control and are reported explicitly.
+    void set_window_frame(WindowFrameColors);
+    [[nodiscard]] WindowFrameSupport window_frame_support() const noexcept;
 
     // Canvas coordinates are physical pixels. A null canvas means that this frame
     // must be skipped (minimized, zero-sized, or an acquisition timeout).

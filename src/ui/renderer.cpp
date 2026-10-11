@@ -1,4 +1,5 @@
 #include "astra/ui/renderer.hpp"
+#include "window_frame_transaction.hpp"
 
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColorSpace.h"
@@ -24,15 +25,18 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <dwmapi.h>
 #elif defined(__APPLE__)
 #include <SDL3/SDL_metal.h>
 #endif
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string_view>
@@ -122,6 +126,14 @@ struct Renderer::Impl {
     PixelSize configured_size;
     bool configured{};
     bool reconfigure{true};
+    std::optional<WindowFrameColors> frame_colors;
+    WindowFrameSupport frame_support;
+#if defined(_WIN32)
+    // DWM color attributes are write-only. This renderer exclusively owns them;
+    // a freshly created SDL window starts with the documented system defaults.
+    std::array<std::uint32_t, 4> frame_attributes{
+        0, DWMWA_COLOR_DEFAULT, DWMWA_COLOR_DEFAULT, DWMWA_COLOR_DEFAULT};
+#endif
 
     explicit Impl(const std::string& title, int width, int height) {
         if (width <= 0 || height <= 0) {
@@ -587,6 +599,101 @@ void Renderer::capture_png(const std::filesystem::path& destination) {
     if (!output) {
         throw std::runtime_error("Write GPU screenshot failed");
     }
+}
+
+void Renderer::set_window_frame(WindowFrameColors colors) {
+    if ((colors.caption >> 24) != 255 || (colors.text >> 24) != 255 || (colors.border >> 24) != 255)
+        throw std::invalid_argument("Window frame colors must be opaque ARGB");
+    if (impl_->frame_colors == colors)
+        return;
+#if defined(_WIN32)
+    const auto properties = SDL_GetWindowProperties(window());
+    if (!properties)
+        sdl_failure("Read window frame properties");
+    const auto native = static_cast<HWND>(
+        SDL_GetPointerProperty(properties, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+    if (!native)
+        throw std::runtime_error("Window frame requires the SDL-owned Win32 window");
+    const auto rgb = [](std::uint32_t argb) {
+        return static_cast<DWORD>(RGB((argb >> 16) & 255, (argb >> 8) & 255, argb & 255));
+    };
+    const auto luminance = 299 * ((colors.caption >> 16) & 255) +
+                           587 * ((colors.caption >> 8) & 255) + 114 * (colors.caption & 255);
+    using Attribute = detail::FrameAttribute;
+    std::array attributes{Attribute{DWMWA_USE_IMMERSIVE_DARK_MODE, luminance < 128000},
+                          Attribute{DWMWA_CAPTION_COLOR, rgb(colors.caption)},
+                          Attribute{DWMWA_TEXT_COLOR, rgb(colors.text)},
+                          Attribute{DWMWA_BORDER_COLOR, rgb(colors.border)}};
+    std::array<bool, 4> supported{impl_->frame_support.dark_mode,
+                                  impl_->frame_support.caption,
+                                  impl_->frame_support.text,
+                                  impl_->frame_support.border};
+    for (std::size_t index = 0; index < attributes.size(); ++index) {
+        attributes[index].previous = impl_->frame_attributes[index];
+        attributes[index].supported = true;
+        attributes[index].probe = !impl_->frame_colors || !supported[index];
+    }
+    // The dark-mode flag can be queried; color getters return E_INVALIDARG even
+    // on supported Windows versions. Support is determined by actual writes.
+    const auto read_dark = DwmGetWindowAttribute(native,
+                                                 DWMWA_USE_IMMERSIVE_DARK_MODE,
+                                                 &attributes[0].previous,
+                                                 sizeof(attributes[0].previous));
+    if (FAILED(read_dark) && read_dark != E_INVALIDARG)
+        throw std::runtime_error("Read Windows frame dark mode failed: " +
+                                 std::to_string(static_cast<std::uint32_t>(read_dark)));
+    const auto updated = detail::update_frame(
+        attributes,
+        [&](std::uint32_t id, std::uint32_t value) {
+            const auto result = DwmSetWindowAttribute(native, id, &value, sizeof(value));
+            const auto index = static_cast<std::size_t>(
+                std::ranges::find(attributes, id, &Attribute::id) - attributes.begin());
+            if (result == E_INVALIDARG) {
+                supported[index] = false;
+                return std::int32_t{0};
+            }
+            if (SUCCEEDED(result))
+                supported[index] = true;
+            return static_cast<std::int32_t>(result);
+        },
+        [native] {
+            if (SetWindowPos(native,
+                             nullptr,
+                             0,
+                             0,
+                             0,
+                             0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE |
+                                 SWP_FRAMECHANGED) &&
+                RedrawWindow(native,
+                             nullptr,
+                             nullptr,
+                             RDW_FRAME | RDW_INVALIDATE | RDW_UPDATENOW | RDW_NOCHILDREN))
+                return std::int32_t{0};
+            const auto error = GetLastError();
+            return static_cast<std::int32_t>(HRESULT_FROM_WIN32(error ? error : ERROR_GEN_FAILURE));
+        });
+    if (updated.error < 0) {
+        // A rollback failure must not certify the old palette for future reuse.
+        impl_->frame_colors.reset();
+        throw std::runtime_error(
+            (updated.finalizing
+                 ? std::string("Redraw Windows frame")
+                 : "Apply Windows frame attribute " + std::to_string(updated.attribute)) +
+            " failed: " + std::to_string(static_cast<std::uint32_t>(updated.error)) +
+            "; rollback HRESULT: " +
+            std::to_string(static_cast<std::uint32_t>(updated.rollback_error)));
+    }
+    for (std::size_t index = 0; index < attributes.size(); ++index)
+        if (supported[index])
+            impl_->frame_attributes[index] = attributes[index].next;
+    impl_->frame_support = {supported[0], supported[1], supported[2], supported[3]};
+#endif
+    impl_->frame_colors = colors;
+}
+
+WindowFrameSupport Renderer::window_frame_support() const noexcept {
+    return impl_->frame_support;
 }
 
 void Renderer::set_text_input_area(const SDL_Rect& area, int cursor_offset) {

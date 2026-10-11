@@ -258,6 +258,18 @@ before an update publishes. Modal input may remain open. Cancellation removes
 unpublished updates; shutdown settles pending native futures without publication.
 The queue has a 30-second native deadline in addition to the request timeout.
 
+On Windows, startup and accepted live themes also apply `activityBar`,
+`foreground` and `border` to the native caption, caption text and window border.
+The native adapter uses the compiled palette; it has no separate product theme.
+`await astra.ui.read({immediate:true})` reports read-only `windowFrame` support
+flags: `darkMode`, `captionColor`, `textColor` and `borderColor`. A flag records
+whether the OS accepted that attribute, rather than its current color or the
+window's dark-mode value. Unsupported attributes stay under OS control. Other
+native failures reject the update and attempt to restore all changed attributes;
+rollback failures are reported too. Invalid and cancelled unpublished updates
+leave the frame unchanged. The style snapshot remains `{theme, workbench}` and
+can still be passed directly to `style.update` to restore presentation.
+
 `astra.ui.icons.read(options)`, `resolve(paths, options)`, `update(patch, options)`
 and `replace(theme, options)` return Promises. They operate on this window's
 effective file icon theme, independently of document content and service state.

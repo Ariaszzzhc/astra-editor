@@ -189,6 +189,9 @@ target("astra-renderer")
     add_packages("skia-graphite", "libsdl3", {public = true})
     add_packages("utf8proc")
     add_deps("astra-text-source")
+    if is_plat("windows") then
+        add_syslinks("dwmapi", {public = true})
+    end
     add_files("src/ui/renderer.cpp", "src/ui/text_layout.cpp", "src/ui/glyph_cache.cpp",
               "src/ui/glyph_sequence.cpp", "src/ui/font_signatures.cpp")
     set_exceptions("cxx")
@@ -210,6 +213,10 @@ target("renderer-smoke")
     add_packages("skia-graphite", "libsdl3")
     add_rules("astra.graphics-runtime")
     add_files("tests/renderer_smoke.cpp")
+    if is_plat("windows") then
+        add_files("tests/support/window_frame.cpp")
+        add_syslinks("d3d11", "runtimeobject")
+    end
     set_exceptions("cxx")
 
 target("text-layout-tests")
@@ -390,6 +397,10 @@ target("gui-presentation-smoke")
     add_packages("skia-graphite", "libsdl3")
     add_rules("astra.resources", "astra.graphics-runtime")
     add_files("tests/gui_presentation_smoke.cpp")
+    if is_plat("windows") then
+        add_files("tests/support/window_frame.cpp")
+        add_syslinks("d3d11", "runtimeobject")
+    end
     set_exceptions("cxx")
 
 target("astra-process-host")
