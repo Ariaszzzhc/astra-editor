@@ -6,8 +6,11 @@ description: Build, test, and record Windows acceptance evidence for Astra, incl
 Read `AGENTS.md`, `docs/BUILD.md`, and `docs/STATUS.md`. Execute only Windows validation in this
 environment. Do not infer non-Windows support from a successful Windows build.
 
-Use the pinned xmake toolchain and repository-local caches. Fail the build when a required
+Use the pinned CMake/Ninja toolchain, vcpkg submodule and repository-local caches. Fail the build when a required
 dependency or capability is missing; do not silently substitute a renderer or disable tests.
+Use CMake presets and CTest labels. During migration, earlier xmake artifacts are historical
+comparison evidence only. Validate the new build before removing the old entry points.
+Install only production targets/resources, then verify and package that installation.
 
 Choose tests from the changed behavior: core differential tests; real temporary-filesystem
 save/recovery tests; fragmented transport and cancellation tests; real grammar/LSP tests;

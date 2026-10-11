@@ -17,7 +17,7 @@
 
 ## 技术选型
 
-- 编程语言：C++、[xmake](https://xmake.io/zh/)、js
+- 编程语言：C++23、js；构建使用 [CMake](https://cmake.org/) + Ninja，依赖管理使用固定 commit 的 vcpkg submodule、manifest 和必要的 overlay ports。
 - 代码高亮：[treesitter](https://tree-sitter.github.io/tree-sitter/)
 - 窗口以及图形绘制：sdl3、skia、Graphite、Dawn
 - Scripting: [quickjs-ng](https://github.com/quickjs-ng/quickjs)

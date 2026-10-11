@@ -2,6 +2,26 @@
 
 Product contract: `EditorDoc.md`. Product name: Astra (confirmed by the user).
 
+## CMake migration: pinned dependency tool (2026-10-11)
+
+The user authorized the CMake/Ninja and vcpkg-submodule migration, directory/test
+organization and install-based distribution, with staged commits/pushes and
+Windows-only validation. `BUILD_MIGRATION.md` records the retention boundaries.
+Product/development/validation instructions now reflect that authorization.
+
+Added official `third_party/vcpkg` at commit
+`e456309491fd875487bf02b8a0dca76c1b1b00cc`. A full-history clone was interrupted
+because it made no useful progress; its verified owned Git descendants were
+stopped after a failed cleanup and an automatic-review rejection. A shallow
+submodule clone then completed. `bootstrap-vcpkg.bat -disableMetrics` verified
+the official tool signature and reports tool version 2026-09-26. No dependency
+version or application implementation has changed in this increment.
+
+Windows checks: `git submodule status`, submodule `git rev-parse HEAD`,
+`./scripts/format.ps1 -Check -Offline` (203 C++ / 15 JS), and `git diff --check`.
+The CMake build and install pipeline are still pending; previous xmake runtime
+evidence remains historical rather than acceptance of this migration.
+
 ## Historical draft-only formatting check (2026-10-10)
 
 The new, uncommitted `layout_jobs.hpp` and `layout_jobs.cpp` drafts contained
