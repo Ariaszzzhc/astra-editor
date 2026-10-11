@@ -135,6 +135,47 @@ checking `SDL_GetError()` alone cannot establish Windows contention detection.
 
 ## Product scope and remaining proof
 
+The requirement-by-requirement Windows evidence below is from the final
+`scripts/test.ps1 -Mode all -Gui -Benchmarks -InstalledIme` run recorded in
+`STATUS.md`, not a list of unexecuted test names. Source review checked the
+dispatcher/JS ownership table, real transport equality, Unicode/history
+assertions, default key bindings and icon/configuration cases. All 632 behavior
+cases ran in each mode with no skipped cases. GUI and package checks run real
+production adapters in separate fixtures. These results establish the indicated
+Windows behaviors, not unrestricted production or all-platform readiness.
+
+| Explicit requirement | Authoritative implementation/evidence | Current result |
+| --- | --- | --- |
+| C++, JS and xmake | `xmake.lua` selects C++23 and pinned QuickJS-NG; `script_tests.cpp` evaluates Unicode, overrides and actual service edits | Windows verified |
+| SDL3, Skia Graphite, Dawn | `renderer.cpp` creates the real native/Graphite/Dawn context; graphics/renderer/font tests and all native GUI targets | Windows verified on this GPU |
+| Tree-sitter highlighting | `syntax.cpp`, grammar manifest; real grammar/syntax tests and GUI syntax-object/highlight workflows | Windows verified |
+| libuv asynchronous I/O | Transport/service/process adapters; real socket/worker tests prove input-loop progress, errors, cancellation and owned shutdown | Windows verified; dedicated final delayed-clipboard recheck unrun |
+| Rope and persistent measured SumTrees | Core snapshot/differential tests check summaries, chunk bounds, UTF coordinate round trips; indexed presentation tests and measured history clone benchmark | Windows verified for stated invariants/costs |
+| Client/server, in-process and remote semantics | `tcp_tests.cpp` compares identical local/remote responses and notifications; actual GUI local and `--tcp` workflows | Loopback TCP verified; arbitrary remote-network environments unverified |
+| C++ core, JS high-level customization | Shipped `data/workbench/` workflows and user command/provider/keymap override tests; extracted production GUI accepts workspace-relative user JS | Windows verified; language percentages are not a gate |
+| Asynchronous public JS API | Promise/AbortSignal/deadline/late-reply tests, responsive native GUI workflows; public form/clipboard/update forwarding | Windows verified with documented delayed-provider limitation |
+| Agent command control | GUI fixture `execute_ui_command` and native events use production JS/shared dispatcher; service RPC/CLI tests | Windows verified; no parallel fake document model |
+| VS Code flavored default UI | Nine shipped-default real states, inspected native screenshots, fonts/forms/pickers/modal/error and resize tests | Windows default-state acceptance; subjective further feedback remains possible |
+| Complete editing, multicursor | GUI Unicode/multicursor/undo/redo/save/reopen/dirty-close; atomic stale/overlap rejection and history tests | Windows verified for exercised behaviors |
+| Textobjects | Unicode word/grapheme editing tests and real GUI function/syntax-object selection | Windows verified |
+| File tree and workspace | Actual 5,005-file indexed Explorer, collapse/scroll/activation and temporary-filesystem workspace tests | Windows verified |
+| Global search and replace | GUI workspace search/replacement, untitled/unsaved results, external conflict and guarded reload; application failure-path tests | Windows verified |
+| LSP and Outline | Real packaged clangd/TypeScript/Python diagnostics, GUI completion/hover/navigation/references/rename/formatting and indexed Outline | Windows verified with bundled defaults |
+| Git | Bundled real Git and GUI diff/stage/unstage/commit/guarded-discard; sanitized fixture environment | Windows verified |
+| VS Code keymap | `data/defaults.js` shipped bindings, actual GUI SDL key input and JS override tests | Windows verified |
+| EditorConfig | Parser/glob/layer/unset/save-policy tests plus application integration | Windows verified |
+| Request/response and notifications | Framing/RPC/TCP tests cover fragmentation, malformed/EOF/bounds and notification equality; reordered GUI notification tests | Windows verified |
+| File icons and themes out of box | Shipped descriptors/themes, icon identity/atomic-validation/bounds tests and inspected default captures | Windows verified |
+| Formatting, tests, coherent commits and push | Pinned formatter gate, full two-mode Windows log, Git commit history and upstream equality; `AGENTS.md` and repository skills exist | Current gates satisfied |
+| Deployable Windows artifact | Clean `37bae5c` ZIP inventory/hash, fresh extraction, minimal-PATH real Git/LSP/recovery, production GUI Unicode edit/save/close; formal GUI verifier adds undo/redo | Windows checks passed; dedicated delayed-provider final recheck remains |
+| macOS/Linux, including named Linux distributions | Native source/package paths are retained; no builds/emulators/tests launched on this host | Not verified; this host is explicitly Windows-only |
+
+Collaboration, an embedded Agent product UI, terminal, run and debugger remain
+excluded; the testing Agent uses the existing command API. Name selection is
+already resolved as Astra. Production-grade robustness across all requested
+platforms cannot be inferred from the above Windows acceptance or declared
+complete while the explicit unresolved validation remains.
+
 Editing/multicursor/textobjects map to core/editing and JS commands; file tree
 and workspace to JS files and service workspace; global search/replace to JS
 search and shared search services; LSP/Outline to JS language/Outline and native

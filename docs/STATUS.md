@@ -54,6 +54,26 @@ native-I/O finding; it does not establish whole-architecture completion.
 
 ### Clean Windows package acceptance (2026-10-11)
 
+Follow-up after `e4498e6`: promoted the retained ad-hoc packaged GUI script to
+`tests/package_gui_smoke.ps1` and added explicit `-RunGuiSmoke` to the verifier.
+The formal script constrains package/fixture paths to repository `build/`,
+verifies package inventory before launch and retains logs even after timeout.
+It adds observable Unicode atomic undo/redo checks before durable save/close.
+An initial promotion attempt split a PowerShell call across lines without
+continuation, leaving its Path argument empty; `Assert-ReleaseChild` rejected it
+before creating a fixture (`build/package-gui-reproducible-smoke.log` records
+the preceding inventory check; the shell reported the empty-path rejection).
+The corrected named candidate passed:
+`./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/extracted-37bae5c/astra-0.1.0-windows-x64 -RunSmoke -RunGuiSmoke`
+(`build/package-gui-reproducible-final.log`), plus all 12 package helper checks.
+This follow-up changes acceptance scripts/documentation, not application sources
+or the tested package's recorded runtime source identity.
+PowerShell parser checks, the pinned formatting gate (**202 C++ / 15 JS**) and
+`git diff --check` passed (`build/package-gui-reproducible-format.log`).
+`ARCHITECTURE_AUDIT.md` now maps each explicit contract requirement to source and
+executed Windows evidence, while retaining the final isolated-start and
+non-Windows validation gaps. No all-platform production completion is claimed.
+
 Runtime source: clean commit `37bae5c5b1a14d7979c80862522860189cb8d5cf`
 (`sourceDirty:false`, Release, native Windows x64). No source or binary edits
 followed the integrated acceptance before packaging. Package directory:

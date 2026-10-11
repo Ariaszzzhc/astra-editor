@@ -22,6 +22,13 @@ session; ordinary `-Gui` runs do not establish delayed-provider acceptance.
 The entry point checks that prerequisite before starting any tests and never
 silently elevates the entire development workflow.
 
+For a current Windows release directory or freshly extracted package, run
+`./scripts/verify-windows-package.ps1 -PackageDirectory <directory> -RunSmoke -RunGuiSmoke`.
+The opt-in GUI check uses the extracted production executable, shipped JS,
+isolated profile and a minimal Windows-only PATH; it verifies Unicode editing,
+atomic undo/redo, durable save and guarded close. It requires this native desktop
+and GPU, and preserves its owned fixture/stdout/stderr under `build/`.
+
 Run all commands from this repository. This document gives reproduction
 instructions; actual passed and failed checks are recorded in [STATUS.md](STATUS.md).
 Do not run Linux/macOS builds or tests from this Windows environment.

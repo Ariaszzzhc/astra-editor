@@ -27,6 +27,8 @@ The Windows preparation step must precede the application build/install:
 ./scripts/xmake.ps1 build -y astra astra-server
 ./scripts/package-windows.ps1 -Offline
 ./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/astra-0.1.0-windows-x64 -RunSmoke
+# On an interactive Windows desktop, also check the extracted production GUI:
+./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/astra-0.1.0-windows-x64 -RunSmoke -RunGuiSmoke
 ```
 
 The coordinator runs shared xmake and clean-package acceptance. The package
@@ -66,6 +68,18 @@ actual clangd/TypeScript/Python diagnostics and recovery checkpoint. It preserve
 the fixture and stderr after failures. No global language runtime or development
 cache is added to the child PATH. This smoke test does not replace the GPU/GUI
 workflow tests, physical DPI/IME checks or manual release acceptance.
+
+`-RunGuiSmoke` additionally invokes the repository-owned
+`tests/package_gui_smoke.ps1`. It starts the packaged production GUI with a fresh
+workspace-relative user script, isolated profile/state/temp and Windows-only PATH.
+Shipped JS opens a real file, inserts Unicode through the shared dispatcher,
+undoes/redoes the atomic edit, saves and closes through the guarded lifecycle.
+The fixture independently checks durable bytes after successful process exit.
+Its deadline is 30 seconds; child stdout/stderr and fixture files are retained
+under `build/`, including on timeout. This checks package relocation and actual
+native rendering/API integration. It does not replace SDL keyboard/pointer,
+default visual matrix or installed-IME tests. It is opt-in because it requires
+an interactive native Windows GPU session.
 
 The runtime includes upstream license files and component source references.
 Before externally distributing MinGit or other copyleft components, preserve

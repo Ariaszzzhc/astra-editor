@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$PackageDirectory, [switch]$RunSmoke)
+param([Parameter(Mandatory)][string]$PackageDirectory, [switch]$RunSmoke, [switch]$RunGuiSmoke)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'release-common.ps1')
 if (-not $IsWindows) { throw 'Windows package verification must run on Windows.' }
@@ -28,6 +28,9 @@ foreach ($exe in @('astra.exe','astra-server.exe','astra-process-host.exe','astr
     }
 }
 Write-Output "Windows package inventory: PASS ($($manifest.files.Count) files)"
+if ($RunGuiSmoke) {
+    & (Join-Path $ReleaseRepository 'tests/package_gui_smoke.ps1') -PackageDirectory $package
+}
 if (-not $RunSmoke) { return }
 
 # Fresh cwd and a minimal PATH prevent development .tools or globally installed
