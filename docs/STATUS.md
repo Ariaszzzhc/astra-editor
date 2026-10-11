@@ -14,13 +14,14 @@ that check established formatting only. Integration evidence follows below.
 ## Active architecture and workbench revision (2026-10-09)
 
 The previous Windows acceptance below covers the earlier implementation. It does
-not establish acceptance of the requested JS-owned workbench, asynchronous user
-API, cohesive UI, or indexed incremental presentation model. That revision is
-**in progress**, and is not a completed product or milestone.
+not by itself establish acceptance of the requested JS-owned workbench,
+asynchronous user API, cohesive UI, or indexed incremental presentation model.
+That revision was initially in progress; the current requested Windows closure
+and its explicit scope are recorded below.
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
-Current acceptance and remaining work (2026-10-11):
+Current requested Windows acceptance (2026-10-11):
 
 [ARCHITECTURE_AUDIT.md](ARCHITECTURE_AUDIT.md) records the source
 responsibility/index map and findings. Windows clipboard contention now has
@@ -45,15 +46,76 @@ native-I/O finding; it does not establish whole-architecture completion.
 - Installed-IME document, editor/sidebar forms and modal input now have Windows
   Debug/Release acceptance for the tested Chinese profile. Other input services,
   physical monitor DPI transitions and driver-reset/adapter-removal failures
-  remain unverified. The owned native Dawn device-loss path now has explicit
+  remain unverified limitations, not completion blockers under the user's latest
+  scope. The owned native Dawn device-loss path has explicit
   callback/recovery/pixel acceptance below.
 - Current clean-source Windows package `bfd122e` passed inventory/hash checks,
   fresh extraction, isolated service/runtime acceptance and the extracted real
   GUI edit/undo/redo/save/close workflow. The final-source dedicated delayed-provider
-  fixture passed Release; Debug elevation failed to start and its final-source
-  isolated recheck remains unresolved. Ordinary Debug GUI acceptance passed.
+  fixture now passed both Release and Debug, including the corrected Debug
+  rerun recorded below. Ordinary Debug/Release GUI acceptance also passed.
   Earlier two-mode isolated evidence remains attributed to its recorded snapshot.
   No macOS/Linux runtime verification is claimed.
+
+### Requested Windows acceptance closure (2026-10-11)
+
+The user explicitly changed this task's validation scope to Windows only,
+retained visual-quality review personally, and instructed that unavailable
+physical-monitor DPI transitions, driver resets and adapter removal are recorded
+as limitations rather than completion blockers. macOS/Linux support requirements
+and source paths remain in the product contract; their runtime validation is
+outside this requested acceptance, not waived or claimed passed.
+
+The requirement matrix in `ARCHITECTURE_AUDIT.md`, the actual production test
+entry point, final two-mode logs, package provenance and owned-process state were
+rechecked against that scope. All implementation/acceptance work executable in
+this Windows environment is complete for the requested task. This is repository
+test/runtime acceptance, not third-party certification, an all-platform release
+claim or proof of every possible hardware/network environment.
+
+The user explained that the immediately preceding UAC request had accidentally
+been rejected and authorized retry. At **21:17:48 Asia/Hong_Kong**, the retry
+successfully launched owned Debug PID **45716**, but the launcher incorrectly
+passed a log pathname after `--log`. The fixture accepts only `--log` and generates
+its own unique filename; it exited before acceptance and produced no log. The
+guarded launcher correctly failed, exit **1**. This was a launcher argument error,
+not a passed test or an implementation failure, and it is retained here.
+
+Corrected execution at **21:18:26 Asia/Hong_Kong** used:
+
+```powershell
+$fixtureProcess = Start-Process -FilePath ./build/windows/x64/debug/gui-clipboard-async-smoke.exe -ArgumentList '--log' -WorkingDirectory (Get-Location).Path -Verb RunAs -WindowStyle Hidden -PassThru
+```
+
+The guard recorded the existing log paths before launch, required exactly one
+new `clipboard-isolated-*.log`, waited for the owned process with a 60-second
+execution deadline and checked its actual exit code. Only the already-authorized
+dedicated fixture was elevated. Owned PID **35016** exited **0**, with new log
+`build/windows/x64/debug/clipboard-isolated-25029218.log`. It reports PASS for
+real delayed-provider loop progress, Unicode, cancellation, timeout, owner
+shutdown, and production SDL/Skia Graphite/Dawn input/rendering, AbortSignal,
+save and bounded shutdown. Native provider entry times were **138/92/91 ms**.
+Together with Release PID **32604** / exit **0** /
+`build/windows/x64/release/clipboard-isolated-23176109.log`, this closes the
+final-source two-mode isolated recheck. Earlier failed/cancelled starts below
+remain historical evidence and do not invalidate this later successful run.
+
+Final integrated Debug/Release each passed **632 cases**, zero failed/skipped;
+their **2,704,792 / 2,704,649 assertions**, native local/TCP GUI, services/Git/LSP,
+recovery, workspace, Unicode/history, default states, real installed Chinese IME,
+four idle/active and eight concurrent actual Dawn-loss rounds are recorded below.
+The **203 C++ / 15 JS** pinned format gate, **12** package helper checks and
+**seven** Skia provenance tests passed. Earlier recorded differential benchmarks
+remain applicable; the final runtime change is confined to renderer loss
+classification and does not change the document/index implementation.
+
+Rechecked the clean `bfd122e` package after the corrected fixture: all **163**
+runtime source hashes and **eight** Release input hashes still match. Its original
+and freshly extracted production GUI/service acceptance and archive identity
+remain valid. Nine native default-state PNGs under `build/graphics/default-ui/`
+are available for the user's visual-quality review. No owned acceptance/GUI
+process remains running. There is no unresolved implementation/test failure
+within the user's requested, executable Windows scope.
 
 ### Concurrent-loss fix clean Windows package (2026-10-11)
 

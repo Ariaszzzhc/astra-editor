@@ -21,6 +21,17 @@ input order, responsive production rendering/input, and bounded shutdown.
 session; ordinary `-Gui` runs do not establish delayed-provider acceptance.
 The entry point checks that prerequisite before starting any tests and never
 silently elevates the entire development workflow.
+The fixture takes only `--log`, with no following pathname. For a dedicated
+Debug run without elevating the whole workflow:
+
+```powershell
+Start-Process -FilePath ./build/windows/x64/debug/gui-clipboard-async-smoke.exe -ArgumentList '--log' -WorkingDirectory (Get-Location).Path -Verb RunAs -WindowStyle Hidden -PassThru
+```
+
+Wait for that owned process, check its actual exit code and require a newly
+generated `clipboard-isolated-*.log` in the binary directory. A failed/cancelled
+launch or absent new log is not acceptance. Replace `debug` with `release` for
+the other configuration. Request OS elevation only for the dedicated fixture.
 
 For a current Windows release directory or freshly extracted package, run
 `./scripts/verify-windows-package.ps1 -PackageDirectory <directory> -RunSmoke -RunGuiSmoke`.

@@ -6,6 +6,12 @@ default-workbench increment following it, 2026-10-11. This is a requirement map
 and a record of tested boundaries, not a
 whole-product completion claim. Runtime evidence and failed attempts belong in
 [STATUS.md](STATUS.md); source wiring alone does not prove runtime acceptance.
+Latest requested acceptance is Windows only, explicitly set by the user on
+2026-10-11. All executable implementation/test obligations in that scope passed;
+visual-quality judgment belongs to the user. Unavailable physical DPI/driver/
+adapter tests and macOS/Linux runtime checks are documented limits, not blockers
+to this requested task. Current runtime/package identity is `bfd122e`; the final
+corrected Debug isolated clipboard rerun is recorded in `STATUS.md`.
 Clipboard/request corrections below refer to the tested increment whose parent
 is `efa8a24`; process-isolated clipboard work has parent `e3b275d`, with exact
 commands and limitations in `STATUS.md`.
@@ -150,13 +156,13 @@ Windows behaviors, not unrestricted production or all-platform readiness.
 | C++, JS and xmake | `xmake.lua` selects C++23 and pinned QuickJS-NG; `script_tests.cpp` evaluates Unicode, overrides and actual service edits | Windows verified |
 | SDL3, Skia Graphite, Dawn | `renderer.cpp` creates the real native/Graphite/Dawn context; graphics/renderer/font tests, four idle/active and eight concurrent actual owned Dawn losses; callback/recovery/readback and reproduced classification-race correction | Windows Debug/Release verified on this GPU; physical driver reset/adapter removal unverified |
 | Tree-sitter highlighting | `syntax.cpp`, grammar manifest; real grammar/syntax tests and GUI syntax-object/highlight workflows | Windows verified |
-| libuv asynchronous I/O | Transport/service/process adapters; real socket/worker tests prove input-loop progress, errors, cancellation and owned shutdown; real dedicated delayed-clipboard fixture | Ordinary Windows Debug/Release verified; current isolated Release passed, current isolated Debug launch unresolved |
+| libuv asynchronous I/O | Transport/service/process adapters; real socket/worker tests prove input-loop progress, errors, cancellation and owned shutdown; real dedicated delayed-clipboard fixture | Ordinary and isolated Windows Debug/Release verified |
 | Rope and persistent measured SumTrees | Core snapshot/differential tests check summaries, chunk bounds, UTF coordinate round trips; indexed presentation tests and measured history clone benchmark | Windows verified for stated invariants/costs |
 | Client/server, in-process and remote semantics | `tcp_tests.cpp` compares identical local/remote responses and notifications; actual GUI local and `--tcp` workflows | Loopback TCP verified; arbitrary remote-network environments unverified |
 | C++ core, JS high-level customization | Shipped `data/workbench/` workflows and user command/provider/keymap override tests; extracted production GUI accepts workspace-relative user JS | Windows verified; language percentages are not a gate |
-| Asynchronous public JS API | Promise/AbortSignal/deadline/late-reply tests, responsive native GUI workflows; public form/clipboard/update forwarding; recorded two-mode delayed-provider cancellation/exit and current Release recheck | Windows verified for recorded bounds/snapshots; current isolated Debug launch unresolved |
+| Asynchronous public JS API | Promise/AbortSignal/deadline/late-reply tests, responsive native GUI workflows; public form/clipboard/update forwarding; final two-mode delayed-provider cancellation/exit | Windows verified for stated bounds and behaviors |
 | Agent command control | GUI fixture `execute_ui_command` and native events use production JS/shared dispatcher; service RPC/CLI tests | Windows verified; no parallel fake document model |
-| VS Code flavored default UI | Nine shipped-default real states, inspected native screenshots, fonts/forms/pickers/modal/error and resize tests | Windows default-state acceptance; subjective further feedback remains possible |
+| VS Code flavored default UI | Nine shipped-default real states, native screenshots, fonts/forms/pickers/modal/error and resize tests | Windows functional/layout acceptance passed; visual-quality review owned by user |
 | Complete editing, multicursor | GUI Unicode/multicursor/undo/redo/save/reopen/dirty-close; atomic stale/overlap rejection and history tests | Windows verified for exercised behaviors |
 | Textobjects | Unicode word/grapheme editing tests and real GUI function/syntax-object selection | Windows verified |
 | File tree and workspace | Actual 5,005-file indexed Explorer, collapse/scroll/activation and temporary-filesystem workspace tests | Windows verified |
@@ -169,13 +175,14 @@ Windows behaviors, not unrestricted production or all-platform readiness.
 | File icons and themes out of box | Shipped descriptors/themes, icon identity/atomic-validation/bounds tests and inspected default captures | Windows verified |
 | Formatting, tests, coherent commits and push | Pinned formatter gate, full two-mode Windows log, Git commit history and upstream equality; `AGENTS.md` and repository skills exist | Current gates satisfied |
 | Deployable Windows artifact | Clean `bfd122e` ZIP inventory/hash, fresh extraction, minimal-PATH real Git/LSP/recovery, production GUI Unicode edit/undo/redo/save/close; 163 runtime source and eight Release input hash comparisons | Windows checks passed for recorded scope |
-| macOS/Linux, including named Linux distributions | Native source/package paths are retained; no builds/emulators/tests launched on this host | Not verified; this host is explicitly Windows-only |
+| macOS/Linux, including named Linux distributions | Native source/package paths are retained; no builds/emulators/tests launched on this host | Not verified; excluded from this task's validation by user |
 
 Collaboration, an embedded Agent product UI, terminal, run and debugger remain
 excluded; the testing Agent uses the existing command API. Name selection is
 already resolved as Astra. Production-grade robustness across all requested
 platforms cannot be inferred from the above Windows acceptance or declared
-complete while the explicit unresolved validation remains.
+complete from Windows results alone. The user's requested Windows task does not
+require that all-platform acceptance claim.
 
 Editing/multicursor/textobjects map to core/editing and JS commands; file tree
 and workspace to JS files and service workspace; global search/replace to JS
@@ -200,15 +207,19 @@ the reproduced classification-race correction. Physical DPI transitions, driver 
 removal and other installed IMEs are outside that evidence. Clean-source Windows
 package `bfd122e` passed inventory, ZIP hash, fresh extraction, isolated service
 runtime and the extracted production GUI's JS edit/undo/redo/save/close workflow.
-Final-source delayed-provider rechecking passed Release; Debug elevation did not
-start a fixture and that final-source isolated recheck remains unresolved.
-Ordinary Debug GUI/full regression passed. Earlier two-mode fixture results
+Final-source delayed-provider rechecking passed Release and the corrected Debug
+rerun, each with its actual owned process, newly generated log and exit zero.
+Ordinary Debug/Release GUI/full regression passed. Earlier fixture results
 remain explicitly attributed to their recorded source snapshot. Current runtime
 source and Release binary hashes match the clean `bfd122e` package; exact
 commands, failed launch attempts and evidence are in `STATUS.md`.
 No macOS/Linux build or runtime verification was performed in this environment;
 platform source/configuration is not all-platform acceptance. The user confirmed
-there is no macOS/Linux acceptance host; those requirements remain unverified.
+there is no macOS/Linux acceptance host and explicitly excluded that validation
+from this task. Physical DPI transitions, driver resets/adapter removal and
+other installed IMEs remain limits of the evidence, not claimed passes or
+blockers under the user's scope. No executable Windows requirement in the matrix
+has an unresolved implementation/acceptance failure.
 
 Collaboration/embedded Agent UI/terminal/run/debug remain excluded by the contract.
 The contract's Agent control of editor commands for testing remains in scope.
