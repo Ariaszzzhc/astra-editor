@@ -47,13 +47,59 @@ native-I/O finding; it does not establish whole-architecture completion.
   physical monitor DPI transitions and driver-reset/adapter-removal failures
   remain unverified. The owned native Dawn device-loss path now has explicit
   callback/recovery/pixel acceptance below.
-- Current clean-source Windows package `37bae5c` passed inventory/hash checks,
+- Current clean-source Windows package `bfd122e` passed inventory/hash checks,
   fresh extraction, isolated service/runtime acceptance and the extracted real
-  GUI edit/save/close workflow. The final-source dedicated delayed-provider fixture
-  recheck now passed in both Windows configurations; new process/log identities
-  and source/binary comparisons are recorded below. The older two-mode evidence
-  remains explicitly attributed to `83671c3` below.
+  GUI edit/undo/redo/save/close workflow. The final-source dedicated delayed-provider
+  fixture passed Release; Debug elevation failed to start and its final-source
+  isolated recheck remains unresolved. Ordinary Debug GUI acceptance passed.
+  Earlier two-mode isolated evidence remains attributed to its recorded snapshot.
   No macOS/Linux runtime verification is claimed.
+
+### Concurrent-loss fix clean Windows package (2026-10-11)
+
+Committed and pushed `bfd122e` (`fix: classify concurrent GPU loss atomically`).
+Final `./scripts/format.ps1 -Check -Offline` passed **203 C++ / 15 JS**
+(`build/renderer-final-format-check.log`), and `git diff --check` passed.
+Full Debug/Release behavior evidence and the unresolved isolated Debug launch
+are recorded in the following entry; neither is substituted with an older result.
+
+Commands after the clean implementation commit:
+
+```powershell
+./scripts/xmake.ps1 f -m release -y
+./scripts/package-windows.ps1 -Offline -OutputDirectory build/packages/astra-bfd122e-windows-x64
+./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/astra-bfd122e-windows-x64 -RunSmoke -RunGuiSmoke
+Expand-Archive -LiteralPath build/packages/astra-bfd122e-windows-x64.zip -DestinationPath build/packages/extracted-bfd122e
+./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/extracted-bfd122e/astra-0.1.0-windows-x64 -RunSmoke -RunGuiSmoke
+```
+
+The extraction destination was checked absent before use, and the ZIP SHA-256
+was compared with its sidecar before extraction. All commands completed with
+exit **0**. Logs: `build/renderer-final-package-config.log`,
+`build/renderer-final-package.log`, `build/renderer-final-package-smoke.log`,
+`build/renderer-final-extracted-smoke.log`.
+
+- Source commit: **bfd122ef45d002ec837047350512e5ddf18795c5**;
+  `sourceDirty: false`, native Windows x64 Release, **6,549 payload files**.
+- Archive: `build/packages/astra-bfd122e-windows-x64.zip`, **143,652,073 bytes**.
+  SHA-256: **e37b8b8cae44fdb419d126c0344cbd6a154afcc42e58216eae6fd5ca5a36179b**.
+- Both original and fresh extraction passed inventory/x64 identities and the
+  actual production GUI's shipped JS/native renderer Unicode editing, atomic
+  undo/redo, durable save and guarded close. Owned GUI fixtures are retained at
+  `build/package-gui-a7b97a140a9747a68aba87bc968c8d8b` and
+  `build/package-gui-eb31d6447a0f42e488a39277f6a28b82`.
+- Both passed minimal-Windows-PATH isolated packaged service/process-host,
+  Unicode save, real bundled Git, clangd/TypeScript/Python diagnostics and recovery.
+  No developer `.tools` path or global language-server installation supplied
+  the child runtime.
+- Compared all **163 runtime C++/header/JS source hashes** and **eight Release
+  executable/runtime input hashes** with package provenance: zero mismatches.
+  The following evidence-only documentation commit does not change that runtime.
+
+This supersedes the earlier `37bae5c` artifact for the current renderer source.
+It establishes the stated Windows scope, not macOS/Linux, physical monitor DPI,
+physical GPU driver-reset/adapter-removal or final-source Debug isolated clipboard
+acceptance. No running acceptance process remains after these commands.
 
 ### Concurrent native loss classification correction (2026-10-11)
 
@@ -103,10 +149,15 @@ GUI input/rendering/AbortSignal/save/bounded shutdown. The Debug fixture rebuilt
 successfully, but its first elevation attempt returned Windows cancellation
 before any process/log was created; the enclosing launcher exited **1**. This
 does not establish Debug final-source isolated acceptance or prove a human
-cancelled a visible prompt. The authorized Debug retry and fresh clean-source
-package remain pending. Earlier two-mode isolated acceptance remains attributed
-to its earlier snapshot. No physical driver-reset or other-platform validation
-is inferred.
+cancelled a visible prompt. The authorized Debug retry also produced no process
+or new log while its elevation launcher waited. To avoid an indefinite wait or
+later unintended launch, uniquely matched only that owned PowerShell launcher
+(PID **43156**) by this invocation's command signature, confirmed no dedicated
+fixture process was running, and stopped it. Its execution session terminated
+with **-1**, not success. No unrelated process was stopped. Debug final-source
+isolated acceptance remains unresolved; the ordinary Debug GUI/full suite did
+pass. Earlier two-mode isolated acceptance remains attributed to its earlier
+snapshot. No physical driver-reset or other-platform validation is inferred.
 
 The user confirmed there is no macOS/Linux acceptance host. Those contract
 requirements remain unverified; this does not waive them or authorize

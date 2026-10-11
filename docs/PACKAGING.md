@@ -7,9 +7,12 @@ packaged Git, clangd, TypeScript, Python and recovery through the real service.
 That archive predates the current workbench and clipboard changes; it is not
 acceptance of the current source. See [STATUS.md](STATUS.md) for archive identities
 and the current acceptance commands.
-The current 6,549-file package from clean source `37bae5c` passed inventory,
-ZIP hash, fresh extraction, isolated bundled-service checks and production GUI
-JS edit/save/close acceptance. Its exact commands and hash are in `STATUS.md`.
+The current 6,549-file package from clean source `bfd122e` includes the concurrent
+GPU-loss classification correction. It passed inventory, ZIP hash, fresh
+extraction, isolated bundled-service checks and production GUI JS Unicode
+edit/undo/redo/save/close acceptance. Artifact:
+`build/packages/astra-bfd122e-windows-x64.zip`. Its exact commands, SHA-256,
+source/binary comparisons and remaining acceptance limits are in `STATUS.md`.
 Native Linux/macOS preparation and packaging now have source
 implementations, but have never been run or tested on this Windows host.
 
