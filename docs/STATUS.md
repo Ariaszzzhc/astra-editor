@@ -29,11 +29,96 @@ Current remaining work (2026-10-11):
 - Finish whole-workbench visual acceptance across editing, Explorer, search,
   Git, Outline, pickers, forms and modal/error states. Measured typography and
   individual component tests do not establish a cohesive final UI.
-- Extend real installed-IME acceptance to forms/modal fields; physical monitor
-  DPI transitions and real GPU device-loss behavior remain unverified.
+- Installed-IME document, editor/sidebar forms and modal input now have Windows
+  Debug/Release acceptance for the tested Chinese profile. Other input services,
+  physical monitor DPI transitions and real GPU device-loss remain unverified.
 - Validate and package the final source snapshot on Windows, including clean
   extraction and isolated runtime acceptance. The earlier package is stale for
   this revision. No macOS/Linux runtime verification is claimed.
+
+### Installed IME forms and modal acceptance (2026-10-11)
+
+Passed in Windows Debug and Release for the installed Chinese profile. The fixture now
+opens editor-mounted and search-sidebar forms using the production asynchronous
+JS UI API, then opens a modal input with an awaited JS result. Every field receives
+actual OS `NI` and candidate-selection input; none receives an injected SDL text
+packet. Native result strings are compared with SDL and the actual form value or
+accepted modal result. Text, revision and selections of the shared document must
+remain unchanged throughout all field workflows.
+
+Native caret coordinates are converted from SDL window units to physical pixels
+and required to lie inside the current production form/modal field geometry.
+Native-only composition additionally requires a newly visible owned popup near
+that caret, valid native candidate metadata and a captured real popup. Every field
+also receives a second real composition cancelled with Escape: no native result,
+SDL commit, field content change or owner dismissal is allowed. Mode restoration
+drains events, rechecks observations/content and verifies conversion/open state;
+final profile restoration verifies original identity and document preservation.
+
+Evidence and retained failures:
+
+- The paused draft build failed (`installed-ime-fields-build-debug.log`) because
+  dynamically labelled waits passed `std::string` to a `const char*` helper. The
+  helper now accepts a string. Form/modal first acceptance then passed in Debug
+  (`installed-ime-fields-first-debug.log`).
+- Adding physical field geometry produced an explicit int-to-float warning under
+  warnings-as-errors (`installed-ime-fields-geometry-build-debug.log`); corrected
+  conversions passed the next Debug build.
+- The strengthened first run failed obtaining the installed input context after
+  process-local profile switching (`installed-ime-fields-accepted-debug.log`),
+  preserving `build/graphics/gui-ime-342080348100`. Astra idle is not an input
+  service readiness observation. A bounded message-pumped context readiness wait
+  now leases/releases the actual context and requires SDL text input active;
+  absent contexts still fail after the deadline.
+- `./scripts/format.ps1 -Offline` and
+  `./scripts/xmake.ps1 build -y -j 2 gui-ime-smoke` passed
+  (`installed-ime-fields-context-format.log`,
+  `installed-ime-fields-context-build-debug.log`). Running
+  `./build/windows/x64/debug/gui-ime-smoke.exe` passed document commit/history/save
+  plus all three field commit/cancel/isolation routes
+  (`installed-ime-fields-context-debug.log`). Earlier actual form/modal screenshots
+  and the actual modal native popup were visually inspected.
+- Release initially stopped before key injection on lost focus
+  (`installed-ime-fields-accepted-release.log`). The retry still failed context
+  readiness (`installed-ime-fields-focus-retry-release.log`), and continuous
+  single-profile activation alone did not correct it
+  (`installed-ime-fields-session-release.log`). No vendor or production cause is
+  inferred from these failures. Each field now independently obtains verified
+  focus on the owned root, with the same guards before/during every OS keystroke.
+  A later run safely stopped on lost focus during modal composition
+  (`installed-ime-fields-owned-focus-release.log`).
+- The next native trace observed a Unicode `WM_CHAR` commit without an IMM
+  result packet (`installed-ime-fields-focus-diagnostic-release.log`). The oracle
+  previously required `GCS_RESULTSTR` exclusively. It now independently captures
+  Unicode-window `WM_CHAR` units, strictly validates/encodes complete UTF-16 when
+  no IMM result exists, and still requires exact equality with SDL and actual UI
+  values. It never substitutes candidate labels or expected text for native data.
+  This follows Microsoft's [WM_CHAR Unicode contract](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-char).
+- Another run failed context acquisition after field composition began
+  (`installed-ime-fields-native-char-release.log`). Focus fallback also used an
+  unscaled caption offset, which could hit a resize border. It now uses the actual
+  window DPI and frame/caption metrics, requires native `HTCAPTION` hit testing and
+  verifies the pointer target is owned before clicking. These changes do not
+  establish a unique cause for every historical failure.
+- Final-source Release build and all four real input routes passed
+  (`installed-ime-fields-caption-build-release.log`,
+  `installed-ime-fields-caption-release.log`). Restored Debug configuration,
+  rebuilt the same source and passed all four routes again
+  (`installed-ime-fields-final-config-debug.log`,
+  `installed-ime-fields-final-source-build-debug.log`,
+  `installed-ime-fields-final-source-debug.log`). Final accepted captures use
+  `gui-ime-1146219496400-*` (Release) and `gui-ime-1259810772900-*` (Debug).
+  These final runs used the native IMM result route; they do not establish another
+  installed provider's character-only route or platform behavior.
+- Final `./scripts/format.ps1 -Check -Offline` passed 194 C++ and 15 JavaScript
+  files (`installed-ime-fields-final-check.log`); `git diff --check` passed.
+  Final Debug committed editor/sidebar/modal screenshots were visually inspected.
+  Only this acceptance fixture and its documentation changed in this increment;
+  the unrelated integrated suite was not rerun or relabelled as current evidence.
+
+Other installed profiles, physical DPI transitions and real GPU device-loss
+behavior remain unverified. This increment does not complete whole-workbench
+visual or whole-product architecture/release acceptance.
 
 ### Actual installed Windows IME acceptance (2026-10-11)
 

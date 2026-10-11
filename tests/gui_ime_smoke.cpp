@@ -26,6 +26,7 @@
 #include <functional>
 #include <future>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -240,7 +241,8 @@ struct AwaitTimeout : std::runtime_error {
     using std::runtime_error::runtime_error;
 };
 
-template <class Predicate> void await(Window& window, Predicate predicate, const char* message) {
+template <class Predicate>
+void await(Window& window, Predicate predicate, const std::string& message) {
     const auto deadline = Clock::now() + std::chrono::seconds(15);
     do {
         require(window.pump(), "Installed-IME fixture window closed");
@@ -275,6 +277,25 @@ struct CaptionVisibility {
     CaptionVisibility& operator=(const CaptionVisibility&) = delete;
 };
 
+std::string focus_description(HWND expected, HWND target) {
+    const auto foreground = GetForegroundWindow();
+    DWORD foreground_process{};
+    GetWindowThreadProcessId(foreground, &foreground_process);
+    std::string description =
+        " foreground=" + std::to_string(foreground == expected) +
+        " foregroundOwned=" + std::to_string(foreground_process == GetCurrentProcessId()) +
+        " focus=" + std::to_string(GetFocus() == target);
+    // Inspect only this fixture's window metadata, never another app's text.
+    if (foreground_process == GetCurrentProcessId()) {
+        std::array<wchar_t, 256> name{};
+        const auto count = GetClassNameW(foreground, name.data(), static_cast<int>(name.size()));
+        description += " ownedClass=";
+        for (int index = 0; index < count; ++index)
+            description += name[index] < 128 ? static_cast<char>(name[index]) : '?';
+    }
+    return description;
+}
+
 struct Focus {
     std::function<void()> pump;
     HWND window;
@@ -294,8 +315,24 @@ struct Focus {
             POINT cursor{};
             require(GetWindowRect(window, &bounds) && GetCursorPos(&cursor),
                     "Cannot read owned IME window focus coordinates");
+            const auto dpi = GetDpiForWindow(window);
+            require(dpi != 0, "Cannot measure owned native caption DPI");
+            const auto border = GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi) +
+                                GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
             const POINT caption{bounds.left + (bounds.right - bounds.left) / 3,
-                                bounds.top + GetSystemMetrics(SM_CYCAPTION) / 2};
+                                bounds.top + border +
+                                    GetSystemMetricsForDpi(SM_CYCAPTION, dpi) / 2};
+            require(caption.x >= std::numeric_limits<short>::min() &&
+                        caption.x <= std::numeric_limits<short>::max() &&
+                        caption.y >= std::numeric_limits<short>::min() &&
+                        caption.y <= std::numeric_limits<short>::max(),
+                    "Owned caption is outside native hit-test coordinates");
+            require(SendMessageW(window,
+                                 WM_NCHITTEST,
+                                 0,
+                                 MAKELPARAM(static_cast<WORD>(caption.x),
+                                            static_cast<WORD>(caption.y))) == HTCAPTION,
+                    "Owned IME focus point is not inside the actual native caption");
             const auto target = GetAncestor(WindowFromPoint(caption), GA_ROOT);
             require(target == window,
                     "Owned IME window focus point is obscured: point=" + std::to_string(caption.x) +
@@ -339,7 +376,8 @@ struct Focus {
             target = window;
         require(GetAncestor(target, GA_ROOT) == window && GetForegroundWindow() == window &&
                     GetFocus() == target,
-                "Owned IME fixture lost focus before OS keyboard injection");
+                "Owned IME fixture lost focus before OS keyboard injection" +
+                    focus_description(window, target));
         for (const auto modifier : {VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN})
             require((GetAsyncKeyState(modifier) & 0x8000) == 0,
                     "A user-held modifier prevents isolated IME input");
@@ -377,7 +415,8 @@ struct Focus {
         const auto until = Clock::now() + std::chrono::milliseconds(35);
         do {
             require(GetForegroundWindow() == window && GetFocus() == target,
-                    "Owned IME focus changed while delivering OS key");
+                    "Owned IME focus changed while delivering OS key" +
+                        focus_description(window, target));
             pump();
             Sleep(1);
         } while (Clock::now() < until);
@@ -511,6 +550,8 @@ class NativeImeTrace {
     explicit NativeImeTrace(HWND window) : window_(window) {
         require(GetWindowThreadProcessId(window_, nullptr) == GetCurrentThreadId(),
                 "IME observation requires a test-owned window on this thread");
+        require(IsWindowUnicode(window_) != 0,
+                "Native character observation needs a Unicode window");
         require(SetWindowSubclass(window_, observe, 1, reinterpret_cast<DWORD_PTR>(this)) != 0,
                 "Cannot observe synchronous native IME messages");
         attached_ = true;
@@ -527,11 +568,40 @@ class NativeImeTrace {
         std::cout << label << ": start=" << starts_ << " composition=" << compositions_
                   << " end=" << ends_ << " flags=" << flags_ << " comp bytes=" << comp_bytes_
                   << " reading bytes=" << reading_bytes_ << " result bytes=" << result_bytes_
-                  << " candidate lists=" << candidate_lists_ << " chars=" << characters_ << '\n';
+                  << " candidate lists=" << candidate_lists_ << " chars=" << characters_
+                  << " char units=" << character_text_.size() << '\n';
     }
 
-    const std::string& result_text() const noexcept {
-        return result_text_;
+    std::string result_text() const {
+        if (error_)
+            std::rethrow_exception(error_);
+        if (!result_text_.empty() || character_text_.empty())
+            return result_text_;
+        // Some native text services deliver Unicode WM_CHAR without an IMM
+        // result packet. Preserve that independent payload, including surrogate
+        // pairs; never infer committed text from a candidate's display label.
+        const auto length = static_cast<int>(character_text_.size());
+        const auto bytes = WideCharToMultiByte(CP_UTF8,
+                                               WC_ERR_INVALID_CHARS,
+                                               character_text_.data(),
+                                               length,
+                                               nullptr,
+                                               0,
+                                               nullptr,
+                                               nullptr);
+        require(bytes > 0 && bytes <= 64 * 1024,
+                "Native character result has invalid Unicode or size");
+        std::string result(static_cast<std::size_t>(bytes), '\0');
+        require(WideCharToMultiByte(CP_UTF8,
+                                    WC_ERR_INVALID_CHARS,
+                                    character_text_.data(),
+                                    length,
+                                    result.data(),
+                                    bytes,
+                                    nullptr,
+                                    nullptr) == bytes,
+                "Cannot encode native character result");
+        return result;
     }
 
     NativeImeTrace(const NativeImeTrace&) = delete;
@@ -544,6 +614,7 @@ class NativeImeTrace {
     LPARAM flags_{};
     LONG comp_bytes_{}, reading_bytes_{}, result_bytes_{};
     std::string result_text_;
+    std::wstring character_text_;
     DWORD candidate_lists_{};
     std::exception_ptr error_;
 
@@ -561,6 +632,11 @@ class NativeImeTrace {
                 ++self.ends_;
             if (message == WM_CHAR || message == WM_IME_CHAR)
                 ++self.characters_;
+            if (message == WM_CHAR) {
+                require(parameter <= 0xFFFF && self.character_text_.size() < 32 * 1024,
+                        "Native Unicode character observation exceeds fixture bounds");
+                self.character_text_.push_back(static_cast<wchar_t>(parameter));
+            }
             if (message == WM_IME_COMPOSITION) {
                 require(++self.compositions_ <= 4096, "Native IME observation exceeded bound");
                 self.flags_ |= flags;
@@ -1096,6 +1172,198 @@ void reference(bool activate_thread_services) {
         << "Independent Win32 EDIT installed-IME reference: composition and Chinese commit: PASS\n";
 }
 
+void await_input_context(Window& window, HWND native, const std::string& role) {
+    // Window-idle describes Astra's work, not the installed input service's
+    // context readiness after changing its process-local profile.
+    std::cout << role << " context readiness: foreground=" << (GetForegroundWindow() == native)
+              << " focus=" << (GetFocus() == native)
+              << " SDL focus=" << (SDL_GetKeyboardFocus() == window.window())
+              << " text input=" << SDL_TextInputActive(window.window()) << '\n';
+    await(
+        window,
+        [&] {
+            const auto context = ImmGetContext(native);
+            if (!context)
+                return false;
+            require(ImmReleaseContext(native, context) != 0,
+                    role + " input context readiness lease could not be released");
+            return SDL_TextInputActive(window.window());
+        },
+        role + " installed input context did not become available");
+}
+
+std::string field_candidate(Window& window,
+                            const Focus& focus,
+                            HWND native,
+                            const fs::path& workspace,
+                            const std::string& role,
+                            astra::ui::Box field_box,
+                            const std::function<Json()>& field_state,
+                            const std::function<void()>& check_document) {
+    std::cout << "Starting real IME field: " << role << '\n';
+    await_input_context(window, native, role);
+    Context context(native);
+    context.enable();
+    Observations observed(window.window());
+    NativeImeTrace trace(native);
+    const auto before = field_state();
+    const auto before_windows = owned_native_windows();
+    focus.key('N');
+    focus.key('I');
+    await(
+        window,
+        [&] {
+            InputContext current(native);
+            DWORD count{};
+            return !observed.preedit.empty() ||
+                   (ImmGetCandidateListCountW(current.context, &count) > 0 && count > 0);
+        },
+        role + " produced no real composition/candidates");
+    require(field_state() == before, role + " preedit changed field content");
+    check_document();
+    SDL_Rect area{};
+    int cursor{};
+    require(SDL_GetTextInputArea(window.window(), &area, &cursor) && area.h > 0,
+            role + " has no native text input area");
+    int logical_width{}, logical_height{}, pixel_width{}, pixel_height{};
+    require(SDL_GetWindowSize(window.window(), &logical_width, &logical_height) &&
+                SDL_GetWindowSizeInPixels(window.window(), &pixel_width, &pixel_height) &&
+                logical_width > 0 && logical_height > 0,
+            role + " cannot convert its native caret coordinates");
+    const auto x_scale = static_cast<float>(pixel_width) / logical_width;
+    const auto y_scale = static_cast<float>(pixel_height) / logical_height;
+    require(field_box.contains(area.x * x_scale, area.y * y_scale),
+            role + " native caret remained outside actual field geometry");
+    POINT caret{area.x, area.y};
+    require(ClientToScreen(native, &caret) != 0, role + " has no native caret position");
+    std::optional<VisibleNativeWindow> native_popup;
+    const auto find_popup = [&] {
+        for (const auto& popup : owned_native_windows()) {
+            const bool newly_visible =
+                std::none_of(before_windows.begin(), before_windows.end(), [&](const auto& old) {
+                    return old.window == popup.window;
+                });
+            if (newly_visible && popup.thread == GetCurrentThreadId() &&
+                std::abs(popup.bounds.left - caret.x) <= std::max(32L, area.h * 2L) &&
+                popup.bounds.top >= caret.y - area.h && popup.bounds.top <= caret.y + area.h * 3L) {
+                native_popup = popup;
+                return true;
+            }
+        }
+        return false;
+    };
+    if (observed.preedit.empty()) {
+        await(window, find_popup, role + " native composition UI is not near field caret");
+        const auto capture = workspace.parent_path() / (workspace.filename().string() + "-" + role +
+                                                        "-native-composition.png");
+        capture_owned_native_window(*native_popup, capture);
+        std::cout << role << " native composition capture: " << capture << '\n';
+        require(selected_native_candidate(native).has_value(),
+                role + " has no native candidate metadata");
+    }
+    window.request_screenshot(workspace.parent_path() /
+                              (workspace.filename().string() + "-" + role + "-preedit.png"));
+    await(
+        window,
+        [&] {
+            return window.idle();
+        },
+        role + " preedit presentation did not settle");
+    focus.key(VK_SPACE);
+    await(
+        window,
+        [&] {
+            return !observed.committed.empty() && window.idle();
+        },
+        role + " did not commit Chinese candidate");
+    if (observed.error)
+        std::rethrow_exception(observed.error);
+    trace.report((role + " native commit").c_str());
+    require(observed.committed == trace.result_text(),
+            role + " SDL commit differs from native result");
+    require(std::any_of(observed.committed.begin(),
+                        observed.committed.end(),
+                        [](unsigned char value) {
+                            return value >= 0x80;
+                        }),
+            role + " did not commit Chinese text");
+    check_document();
+    const auto committed_field = field_state();
+    context.restore();
+    window.request_screenshot(workspace.parent_path() /
+                              (workspace.filename().string() + "-" + role + "-committed.png"));
+    await(
+        window,
+        [&] {
+            return window.idle();
+        },
+        role + " restored input mode did not settle");
+    if (observed.error)
+        std::rethrow_exception(observed.error);
+    trace.report((role + " restored commit").c_str());
+    require(observed.committed == trace.result_text() && field_state() == committed_field,
+            role + " restoring IME mode changed committed field content");
+    check_document();
+    return observed.committed;
+}
+
+void cancel_field_candidate(Window& window,
+                            const Focus& focus,
+                            HWND native,
+                            const std::string& role,
+                            const std::function<Json()>& field_state,
+                            const std::function<void()>& check_document) {
+    await_input_context(window, native, role);
+    Context context(native);
+    context.enable();
+    Observations observed(window.window());
+    NativeImeTrace trace(native);
+    const auto before = field_state();
+    focus.key('N');
+    focus.key('I');
+    await(
+        window,
+        [&] {
+            InputContext current(native);
+            DWORD count{};
+            return !observed.preedit.empty() ||
+                   (ImmGetCandidateListCountW(current.context, &count) > 0 && count > 0);
+        },
+        role + " cancellation composition did not start");
+    require(field_state() == before, role + " cancelled preedit changed content before Escape");
+    focus.key(VK_ESCAPE);
+    await(
+        window,
+        [&] {
+            InputContext current(native);
+            DWORD count{};
+            const auto bytes = ImmGetCandidateListCountW(current.context, &count);
+            return window.idle() && !bytes && !count;
+        },
+        role + " Escape did not dismiss native candidates");
+    if (observed.error)
+        std::rethrow_exception(observed.error);
+    trace.report((role + " native cancellation").c_str());
+    require(observed.committed.empty() && trace.result_text().empty(),
+            role + " Escape committed cancelled composition");
+    require(field_state() == before, role + " Escape changed content or dismissed its owner");
+    check_document();
+    context.restore();
+    await(
+        window,
+        [&] {
+            return window.idle();
+        },
+        role + " cancelled mode restoration did not settle");
+    if (observed.error)
+        std::rethrow_exception(observed.error);
+    trace.report((role + " restored cancellation").c_str());
+    require(observed.committed.empty() && trace.result_text().empty() && field_state() == before,
+            role + " cancelled input leaked after mode restoration");
+    check_document();
+    std::cout << role << " real candidate commit/cancel and document isolation: PASS\n";
+}
+
 void run(const fs::path& workspace) {
     astra::service::ServiceHostOptions services;
     services.workspace = workspace;
@@ -1105,7 +1373,28 @@ void run(const fs::path& workspace) {
     auto host = std::make_shared<astra::service::ServiceHost>(std::move(services));
     {
         Window window(host,
-                      {.title = "Astra — installed IME acceptance", .open_paths = {"ime.txt"}});
+                      {.title = "Astra — installed IME acceptance",
+                       .open_paths = {"ime.txt"},
+                       .user_script = R"JS(
+            for (const view of ['', 'search']) {
+                const id = view ? 'ime-sidebar' : 'ime-editor';
+                astra.ui.registerCommand({ id: 'acceptance.' + id, title: id }, async () => {
+                    if (view) await astra.ui.showView(view);
+                    await astra.ui.forms.open({
+                        id, title: 'Installed Chinese IME', view,
+                        fields: [{ id: 'value', value: '', submit: 'accept' }],
+                        actions: [{ id: 'accept', label: 'Accept' }]
+                    });
+                });
+                astra.ui.registerCommand({ id: 'acceptance.close-' + id, title: 'Close ' + id },
+                    () => astra.ui.forms.close(id));
+            }
+            astra.ui.registerCommand({ id: 'acceptance.ime-modal', title: 'Installed IME modal' },
+                async () => {
+                    const value = await astra.ui.input({ title: 'Installed Chinese IME', value: '' });
+                    await astra.ui.update({ status: value === null ? 'IME modal cancelled' : 'IME modal ' + value });
+                });
+        )JS"});
         await(
             window,
             [&] {
@@ -1311,13 +1600,12 @@ void run(const fs::path& workspace) {
                         committed.at("text").get<std::string>(),
                     "Durable file content differs from the OS Chinese candidate commit");
             std::cout << "Actual Astra OS Chinese commit: undo, redo and durable save: PASS\n";
-            profiles.restore();
             await(
                 window,
                 [&] {
                     return window.idle();
                 },
-                "Original IME profile restoration did not settle");
+                "Document IME mode restoration did not settle");
             if (observed.error)
                 std::rethrow_exception(observed.error);
             trace.report("Astra native restored messages");
@@ -1337,7 +1625,105 @@ void run(const fs::path& workspace) {
                       << (preedit_observed ? "app preedit" : "owned native composition UI")
                       << ": PASS\n";
         }
+        // Keep one selected profile for this continuous editing session; each
+        // route restores its mode, and the original profile is verified on exit.
+        const auto preserved_document = document(host, window.active_document_id());
+        const auto check_document = [&] {
+            const auto current = document(host, window.active_document_id());
+            require(current.at("revision") == preserved_document.at("revision") &&
+                        current.at("text") == preserved_document.at("text") &&
+                        current.at("selections") == preserved_document.at("selections"),
+                    "Installed field IME mutated document text/revision/selections");
+        };
+        for (const bool sidebar : {false, true}) {
+            const std::string role = sidebar ? "ime-sidebar" : "ime-editor";
+            window.execute_ui_command("acceptance." + role);
+            const auto field_state = [&]() -> Json {
+                const auto state = window.view_state();
+                const auto& form = sidebar ? state.sidebar_form : state.inline_form;
+                return form.is_object() && form.value("id", "") == role
+                           ? form.at("values").at("value")
+                           : Json(nullptr);
+            };
+            await(
+                window,
+                [&] {
+                    return window.idle() && field_state() == "";
+                },
+                role + " not ready");
+            const auto state = window.view_state();
+            const auto& geometry = sidebar ? state.sidebar_form_layout : state.inline_form_layout;
+            require(geometry && geometry->fields.size() == 1, role + " field geometry missing");
+            Focus field_focus(native, focus.pump);
+            const auto text = field_candidate(window,
+                                              field_focus,
+                                              native,
+                                              workspace,
+                                              role,
+                                              geometry->fields.front(),
+                                              field_state,
+                                              check_document);
+            require(field_state() == text, role + " native commit differs from actual form value");
+            cancel_field_candidate(window, field_focus, native, role, field_state, check_document);
+            window.execute_ui_command("acceptance.close-" + role);
+            await(
+                window,
+                [&] {
+                    return window.idle() && field_state().is_null();
+                },
+                role + " close did not settle");
+        }
+        window.execute_ui_command("acceptance.ime-modal");
+        const auto modal_state = [&]() -> Json {
+            const auto input = window.view_state().input_layout;
+            return input.contains("bytes") ? input.at("bytes") : Json(nullptr);
+        };
+        await(
+            window,
+            [&] {
+                return window.idle() && modal_state() == 0;
+            },
+            "IME modal not ready");
+        const auto modal_view = window.view_state();
+        int width{}, height{};
+        require(SDL_GetWindowSizeInPixels(window.window(), &width, &height),
+                "Cannot measure actual modal field owner");
+        const auto modal_box = astra::ui::PickerLayout::measure(static_cast<float>(width),
+                                                                static_cast<float>(height),
+                                                                modal_view.layout.scale,
+                                                                0,
+                                                                modal_view.dialog_metrics)
+                                   .input;
+        Focus modal_focus(native, focus.pump);
+        const auto modal_text = field_candidate(window,
+                                                modal_focus,
+                                                native,
+                                                workspace,
+                                                "ime-modal",
+                                                modal_box,
+                                                modal_state,
+                                                check_document);
+        require(modal_state() == modal_text.size(), "IME modal commit did not enter actual input");
+        cancel_field_candidate(
+            window, modal_focus, native, "ime-modal", modal_state, check_document);
+        modal_focus.key(VK_RETURN);
+        await(
+            window,
+            [&] {
+                return window.idle() && modal_state().is_null();
+            },
+            "IME modal accept did not settle");
+        require(window.status_text() == "IME modal " + modal_text,
+                "Accepted modal value differs from exact native Chinese result");
+        check_document();
         profiles.restore();
+        await(
+            window,
+            [&] {
+                return window.idle();
+            },
+            "Final field IME profile restoration did not settle");
+        check_document();
     }
     host->shutdown();
 }

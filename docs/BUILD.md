@@ -90,7 +90,7 @@ desktop and an already-enabled Chinese keyboard text service:
 
 ```powershell
 ./scripts/test.ps1 -Mode all -Gui -InstalledIme
-# Or build/run the document-input fixture independently:
+# Or build/run the installed-input fixture independently:
 ./scripts/xmake.ps1 build -y gui-ime-smoke
 ./build/windows/x64/debug/gui-ime-smoke.exe --probe
 ./build/windows/x64/debug/gui-ime-smoke.exe
@@ -104,9 +104,15 @@ an actual owned native composition popup near the caret for native-only IMEs,
 then verifies native candidate metadata and compares the exact native IME result
 string with the SDL commit and shared document. One transaction, selection-history
 undo/redo and durable save are checked. Native composition-window PNGs remain
-under `build/graphics/` after
-successful fixture cleanup. This target covers document input; form/modal IME
-workflows need their own acceptance. It never injects SDL text packets.
+under `build/graphics/` after successful fixture cleanup. The fixture also uses
+the production JS API to open editor/sidebar forms and modal input, verifies
+native caret placement inside each actual field, Chinese commit values and
+Escape cancellation, and rejects mutations of the shared document. Native
+Unicode `WM_CHAR` is observed independently when no IMM result packet is offered.
+Every editable surface obtains owned native focus; input guards stop on focus
+loss. Caption fallback uses actual window DPI and native hit testing. The entire
+editing session uses one process-local profile activation and verifies original
+profile restoration on exit. It never injects SDL text packets.
 
 Use `astra --server --workspace DIR --port 7777` or the headless `astra-server`
 for a loopback service, and `astra --connect 127.0.0.1:7777` for a GUI client.
