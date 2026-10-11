@@ -94,6 +94,17 @@ that nonterminating start error and returned zero; neither that shell status nor
 the older fixture log is counted as new acceptance. The retry sets
 `$ErrorActionPreference='Stop'` and requires a new fixture log. This OS elevation
 prerequisite is separate from automatic tool approval and package acceptance.
+The guarded retry also returned Windows cancellation before a process/log existed
+(exit 1). No third elevation request was issued. Release fixture rebuild passed
+(`build/visual-clipboard-release-build.log`); this proves compilation only. The
+dedicated final-source delayed-provider recheck remains unrun, awaiting an OS
+elevation path that actually starts the already-authorized fixture. No test was
+silently skipped or relabelled complete.
+The same-source Debug fixture also rebuilt successfully after native Windows
+configuration (`build/visual-clipboard-debug-config.log`,
+`build/visual-clipboard-debug-build.log`). It was not launched elevated after the
+two Release start cancellations. Both dedicated binaries are prepared for the
+remaining isolated check; no native fixture process is left running.
 
 ### Default workbench presentation and native pointer regression (2026-10-11)
 
