@@ -10,7 +10,6 @@
 #include "include/gpu/graphite/Surface.h"
 #include "include/gpu/graphite/dawn/DawnBackendContext.h"
 #include "modules/skunicode/include/SkUnicode_icu.h"
-#include "dawn/dawn_proc.h"
 #include "dawn/native/DawnNative.h"
 #include <atomic>
 #include <cstdint>
@@ -18,8 +17,6 @@
 #include <memory>
 
 int main() {
-    const auto procs = dawn::native::GetProcs();
-    dawnProcSetProcs(&procs);
     wgpu::InstanceDescriptor descriptor;
     constexpr auto timed = wgpu::InstanceFeatureName::TimedWaitAny;
     descriptor.requiredFeatureCount = 1;

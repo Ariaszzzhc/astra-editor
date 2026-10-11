@@ -1,9 +1,14 @@
-param([ValidateSet('debug', 'release')][string]$Mode = 'release')
+param(
+    [ValidateSet('debug', 'release')][string]$Mode = 'release',
+    [string]$ServerExecutable = ''
+)
 $ErrorActionPreference = 'Stop'
 $testRepo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $testBuild = [IO.Path]::GetFullPath((Join-Path $testRepo 'build'))
 $testRoot = Join-Path $testBuild ('cli smoke 中文 ' + [Guid]::NewGuid().ToString('N'))
-$testExe = Join-Path $testBuild "windows/x64/$Mode/astra-server.exe"
+$testExe = if ($ServerExecutable) { $ServerExecutable } else {
+    Join-Path $testBuild "cmake/windows-$Mode/bin/astra-server.exe"
+}
 if (-not (Test-Path -LiteralPath $testExe -PathType Leaf)) { throw "Build astra-server ($Mode) first" }
 [void][IO.Directory]::CreateDirectory($testRoot)
 

@@ -3,8 +3,10 @@
 #include <doctest/doctest.h>
 
 #include <chrono>
+#include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 using astra::script::Runtime;
 using astra::script::ScriptError;
@@ -185,6 +187,84 @@ TEST_CASE("QuickJS retains a command while it replaces its own registration") {
         "astra.registerCommand('self', () => {astra.registerCommand('self',()=>2); return 1;})");
     CHECK(runtime.execute_command("self") == 1);
     CHECK(runtime.execute_command("self") == 2);
+}
+
+TEST_CASE("JavaScript defers continuations at a slice boundary without losing task ownership") {
+    Runtime::Limits limits;
+    limits.execution_time = std::chrono::milliseconds(5);
+    Runtime* active_runtime{};
+    std::vector<Runtime::TaskId> owners;
+    Runtime runtime(
+        [&](std::string_view, const Json& params) -> Json {
+            owners.push_back(active_runtime->request_owner());
+            // Model bounded host processing that consumes this fixture's short
+            // slice. Its already-settled Promise must resume on another tick.
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            return params;
+        },
+        limits);
+    active_runtime = &runtime;
+    (void)runtime.evaluate(R"js(
+        astra.registerCommand('paced', async () => {
+            await astra.request('slow', {step:1});
+            await astra.request('slow', {step:2});
+            return await astra.request('slow', {step:3});
+        });
+        astra.registerCommand('ping', () => 42);
+    )js");
+    const auto paced = runtime.start_command("paced");
+    CHECK_NOTHROW(runtime.poll());
+    CHECK_FALSE(runtime.take_result(paced));
+    CHECK_FALSE(runtime.idle());
+    const auto ping = runtime.start_command("ping");
+    runtime.poll();
+    const auto immediate = runtime.take_result(ping);
+    REQUIRE(immediate);
+    CHECK_FALSE(immediate->error);
+    CHECK(immediate->value == 42);
+    CHECK_FALSE(runtime.take_result(paced));
+    std::optional<Runtime::Outcome> result;
+    for (int tick = 0; tick < 32 && !result; ++tick) {
+        runtime.poll();
+        result = runtime.take_result(paced);
+    }
+    REQUIRE(result);
+    CHECK_FALSE(result->error);
+    CHECK(result->value == Json{{"step", 3}});
+    CHECK(owners == std::vector<Runtime::TaskId>{paced, paced, paced});
+    CHECK(runtime.take_errors().empty());
+    CHECK(runtime.idle());
+}
+
+TEST_CASE("JavaScript cancels a continuation retained across an expired slice") {
+    Runtime::Limits limits;
+    limits.execution_time = std::chrono::milliseconds(5);
+    int mutations{};
+    Runtime runtime(
+        [&](std::string_view method, const Json&) -> Json {
+            if (method == "slow") {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            } else {
+                ++mutations;
+            }
+            return nullptr;
+        },
+        limits);
+    const auto task = runtime.start_evaluation(
+        "(async()=>{await astra.request('slow'); await astra.request('mutate');})()");
+    runtime.poll();
+    CHECK_FALSE(runtime.take_result(task));
+    CHECK_FALSE(runtime.idle());
+    runtime.cancel(task);
+    const auto cancelled = runtime.take_result(task);
+    REQUIRE(cancelled);
+    REQUIRE(cancelled->error);
+    CHECK(cancelled->error->at("name") == "AbortError");
+    for (int tick = 0; tick < 32 && !runtime.idle(); ++tick) {
+        runtime.poll();
+    }
+    CHECK(mutations == 0);
+    CHECK(runtime.idle());
 }
 
 TEST_CASE("JavaScript requests are deferred promises and independent tasks stay responsive") {

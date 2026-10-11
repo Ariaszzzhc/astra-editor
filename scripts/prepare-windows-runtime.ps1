@@ -8,17 +8,10 @@ if (-not $IsWindows -or [Runtime.InteropServices.RuntimeInformation]::OSArchitec
 $repo = $ReleaseRepository
 $languages = Get-Content (Join-Path $repo 'languages/manifest.json') -Raw | ConvertFrom-Json
 $windows = Get-Content (Join-Path $repo 'release/windows-tools.json') -Raw | ConvertFrom-Json
-$core = Get-Content (Join-Path $repo 'release/core-notices.json') -Raw | ConvertFrom-Json
-$graphics = Get-Content (Join-Path $repo 'release/graphics-notices.json') -Raw | ConvertFrom-Json
 $grammars = Get-Content (Join-Path $repo 'grammars/manifest.json') -Raw | ConvertFrom-Json
-$lockFiles = @('languages/manifest.json','release/windows-tools.json','release/core-notices.json','release/graphics-notices.json','grammars/manifest.json','dependencies.lock.json','release/THIRD-PARTY.md','scripts/prepare-windows-runtime.ps1','scripts/release-common.ps1',
-    'xmake/packages/astra-quickjs/host-async-context.patch',
-    'xmake/packages/astra-quickjs/xmake.lua',
-    'xmake/packages/astra-quickjs/README.md',
-    'xmake/packages/skia-graphite/glyph-cache.patch',
-    'xmake/packages/skia-graphite/glyph-cache.json',
-    'xmake/packages/skia-graphite/README.md',
-    'scripts/apply-skia-patch.py')
+$lockFiles = @('languages/manifest.json','release/windows-tools.json','grammars/manifest.json',
+    'dependencies.lock.json','release/THIRD-PARTY.md','scripts/prepare-windows-runtime.ps1',
+    'scripts/release-common.ps1','vcpkg.json','vcpkg-configuration.json','.gitmodules','dependencies/tools.json')
 $dependencyLock = Get-Content (Join-Path $repo 'dependencies.lock.json') -Raw | ConvertFrom-Json
 foreach ($entry in $dependencyLock.patches.psobject.Properties) {
     $patch = $entry.Value
@@ -27,6 +20,8 @@ foreach ($entry in $dependencyLock.patches.psobject.Properties) {
         throw "Dependency patch hash mismatch: $($entry.Name)"
     }
 }
+$lockFiles += @(Get-ChildItem (Join-Path $repo 'dependencies/ports') -Recurse -File |
+    ForEach-Object { [IO.Path]::GetRelativePath($repo, $_.FullName).Replace('\','/') })
 $lockHashes = [ordered]@{}
 foreach ($file in $lockFiles) { $lockHashes[$file] = Get-ReleaseHash (Join-Path $repo $file) }
 $identityBytes = [Text.Encoding]::UTF8.GetBytes(($lockHashes | ConvertTo-Json -Compress))
@@ -69,24 +64,6 @@ if (Test-Path -LiteralPath $destination) {
             if (-not (Test-Path -LiteralPath (Join-Path $tools ('git/' + $required)))) { throw "MinGit archive missing $required" }
         }
         Write-Output 'Prepared verified MinGit'
-        foreach ($package in $core.packages) {
-            $candidates = @((Join-Path $repo ('.tools/downloads/' + $package.cacheName)), (Join-Path $repo ('.tools/release-downloads/' + $package.cacheName)))
-            $candidates += @(Get-ChildItem (Join-Path $repo '.tools/package-cache') -Recurse -Filter $package.cacheName -File | Select-Object -ExpandProperty FullName)
-            $archive = Get-ReleaseArchive $package $candidates -Offline:$Offline
-            $target = Join-Path $staging ('licenses/' + $package.name)
-            if ($package.archive.EndsWith('.zip')) { Expand-ReleaseZip $archive $target $package.prefix $package.files }
-            else { Expand-ReleaseTarNotices $archive $target $package.prefix $package.files }
-            foreach ($file in $package.files) {
-                if (-not (Test-Path -LiteralPath (Join-Path $target $file) -PathType Leaf)) { throw "Missing $($package.name) license: $file" }
-            }
-        }
-        foreach ($entry in $graphics.notices) {
-            $source = Assert-ReleaseChild $repo (Join-Path $repo ('.tools/graphics/src/skia/' + $entry.path))
-            Assert-ReleaseHash $source $entry.sha256
-            $target = Assert-ReleaseChild $staging (Join-Path $staging ('licenses/graphics/' + $entry.path))
-            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
-            [IO.File]::Copy($source, $target)
-        }
         foreach ($grammar in $grammars.packages) {
             $archive = Get-ReleaseArchive $grammar @((Join-Path $repo ('.tools/grammars/' + $grammar.name + '.zip'))) -Offline:$Offline
             $target = Join-Path $staging ('licenses/grammars/' + $grammar.name)

@@ -8,3 +8,4 @@
 *.ilk
 *.dmp
 compile_commands.json
+/CMakeUserPresets.json

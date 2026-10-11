@@ -1,6 +1,6 @@
 # Astra
 
-Astra is a native, scriptable code editor built around C++23, xmake, SDL3,
+Astra is a native, scriptable code editor built around C++23, CMake/Ninja, vcpkg, SDL3,
 Skia Graphite, Dawn, QuickJS-NG and libuv. It is developed against the contract in
 [EditorDoc.md](EditorDoc.md): editing, multicursor undo, a workspace tree,
 search and replacement, Tree-sitter syntax, language services, Git and recovery.
@@ -23,21 +23,19 @@ SDK and C++23 support. Run from the repository root. Downloads are pinned and
 verified; tools and caches stay under `.tools/`, outputs under `build/`.
 
 ```powershell
-./scripts/prepare-grammars.ps1
-./scripts/build-graphics.ps1 -Stage Build -Configuration Release -Jobs 8
-./scripts/build-graphics.ps1 -Stage Build -Configuration Debug -Jobs 8
-./scripts/prepare-language-tools.ps1 -IncludeClangd
-./scripts/prepare-windows-runtime.ps1
-./scripts/xmake.ps1 f -m debug -y
-./scripts/xmake.ps1 build -y astra astra-server
-./scripts/xmake.ps1 run astra --workspace . --open README.md
+git submodule update --init --recursive
+./scripts/cmake.ps1 --preset windows-debug
+./scripts/cmake.ps1 --build --preset windows-debug
+./build/cmake/windows-debug/bin/astra.exe --workspace . --open README.md
+./scripts/test.ps1 -Mode all -Gui
 ```
 
-The graphics build compiles real Skia/Dawn and takes substantial time and disk
-space. Runtime preparation supplies bundled language servers and Git; the build
-copies them, their licenses, ICU data, SDL3 and DXC beside the applications.
-Keep that directory together when running an executable. See
-[BUILD.md](docs/BUILD.md) for prerequisites, test targets and package commands.
+Configuration prepares fixed grammars, official vcpkg dependencies, bundled
+language servers and Git. The required Skia shaping/QuickJS context patches
+remain in reviewed overlays. /MD is the Windows default, /MDd in Debug.
+Keep the staged runtime directory together. See [BUILD.md](docs/BUILD.md) for
+prerequisites and test options, and [PACKAGING.md](docs/PACKAGING.md) for the
+install-based Windows distribution pipeline. Results are recorded in STATUS.md.
 
 ## Editing
 
@@ -72,14 +70,14 @@ The normal GUI uses an in-process service. To run a separate local service and
 attach a GUI, use two terminals:
 
 ```powershell
-./scripts/xmake.ps1 run astra-server --workspace . --port 7777
-./scripts/xmake.ps1 run astra --connect 127.0.0.1:7777 --open README.md
+./build/cmake/windows-debug/bin/astra-server.exe --workspace . --port 7777
+./build/cmake/windows-debug/bin/astra.exe --connect 127.0.0.1:7777 --open README.md
 ```
 
 An automation client can send the same JSON-RPC requests:
 
 ```powershell
-./scripts/xmake.ps1 run astra-server --connect 127.0.0.1:7777 --request '{"jsonrpc":"2.0","id":"info","method":"workspace.info","params":{}}'
+./build/cmake/windows-debug/bin/astra-server.exe --connect 127.0.0.1:7777 --request '{"jsonrpc":"2.0","id":"info","method":"workspace.info","params":{}}'
 ```
 
 The listener accepts loopback addresses only. Remote use goes through an
@@ -99,7 +97,7 @@ astra.bind("Ctrl+Alt+C", "custom.comment");
 ```
 
 ```powershell
-./scripts/xmake.ps1 run astra --workspace . --config astra.user.js
+./build/cmake/windows-debug/bin/astra.exe --workspace . --config astra.user.js
 ```
 
 Settings merge with defaults; bindings and commands override individually.

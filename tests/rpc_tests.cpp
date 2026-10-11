@@ -34,6 +34,10 @@ void check_error(const std::optional<Json>& response, int code, const Json& id =
     CHECK((*response)["error"]["message"].is_string());
 }
 
+void check_error(const Json& response, int code, const Json& id = nullptr) {
+    check_error(std::optional<Json>(std::in_place, response), code, id);
+}
+
 Json nested_value(std::size_t depth) {
     Json value = true;
     for (std::size_t level = 0; level < depth; ++level) {

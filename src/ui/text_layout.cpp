@@ -11,7 +11,7 @@
 #include "modules/skparagraph/include/ParagraphBuilder.h"
 #include "modules/skparagraph/include/ParagraphStyle.h"
 #include "modules/skunicode/include/SkUnicode_icu.h"
-#include "src/core/SkUTF.h"
+#include "src/base/SkUTF.h"
 #include <utf8proc.h>
 
 #if defined(_WIN32)
@@ -251,7 +251,7 @@ struct TextLayoutEngine::Impl {
 
     Impl() {
         if (!unicode) {
-            throw std::runtime_error("ICU text layout initialization failed; check icudtl.dat");
+            throw std::runtime_error("ICU text layout initialization failed");
         }
         auto manager = native_font_manager();
         if (!manager || manager->countFamilies() == 0) {

@@ -6,10 +6,10 @@ This distribution preserves the notices of its statically linked libraries in
 fixed source archives included under `provenance/sources/`. `provenance/` records fixed upstream versions, source locations and
 archive hashes. `package-manifest.json` identifies every distributed file.
 
-Skia, Dawn and their fixed dependency checkouts have individual license texts under
-`licenses/graphics/`. This collection conservatively includes notices from those
-source trees, including components not linked into Astra. ICU data, DXC and SDL
-retain their separate notices. Tree-sitter parsers retain each grammar's license.
+Skia, Dawn and the installed C++ dependency graph retain the official vcpkg port
+copyright collections under `licenses/vcpkg/`. Exact package versions/features
+are recorded in `provenance/vcpkg-status.txt`; the vcpkg source commit is recorded
+in `package-manifest.json`. Tree-sitter parsers retain each grammar's license.
 
 The Node.js license includes its bundled component notices. TypeScript's third-party
 notice, basedpyright's typeshed license, LLVM's license and MinGit's complete
@@ -29,5 +29,7 @@ Astra loads system fonts through DirectWrite. No font files are redistributed.
 
 QuickJS-NG v0.15.1 includes Astra's host async context extension. Its verified
 patch, recipe and rationale are included under
-`provenance/xmake/packages/astra-quickjs/`; the source and patch hashes are recorded
-in `provenance/dependencies.lock.json`. The upstream MIT notice remains in `licenses/`.
+`provenance/dependencies/ports/astra-quickjs/`; the source and patch hashes are recorded
+in `provenance/dependencies.lock.json`. The upstream MIT notice remains in
+`licenses/vcpkg/astra-quickjs/copyright`. The Skia glyph-cache adapter and its
+official-based recipe are preserved under `provenance/dependencies/ports/skia/`.

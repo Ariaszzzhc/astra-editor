@@ -1,0 +1,26 @@
+{
+  "name": "astra",
+  "version-semver": "0.1.0",
+  "builtin-baseline": "e456309491fd875487bf02b8a0dca76c1b1b00cc",
+  "dependencies": [
+    "libuv",
+    "nlohmann-json",
+    "re2",
+    "utf8proc",
+    "tree-sitter",
+    "astra-quickjs",
+    "sdl3",
+    { "name": "skia", "default-features": false,
+      "features": ["dawn", "graphite", "harfbuzz", "icu", "jpeg", "png", "webp"] },
+    { "name": "skia", "default-features": false, "platform": "linux | bsd",
+      "features": ["fontconfig", "freetype"] }
+  ],
+  "features": {
+    "tests": {
+      "description": "Behavior tests",
+      "dependencies": [
+        "doctest"
+      ]
+    }
+  }
+}

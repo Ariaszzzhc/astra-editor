@@ -6,7 +6,7 @@ if (-not $IsWindows -or [Runtime.InteropServices.RuntimeInformation]::OSArchitec
     throw 'This formatting entry point supports native Windows x64.'
 }
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$manifest = Get-Content (Join-Path $repository 'tools/formatters.json') -Raw | ConvertFrom-Json
+$manifest = Get-Content (Join-Path $repository 'dependencies/tools.json') -Raw | ConvertFrom-Json
 $cache = Join-Path $repository '.tools/format'
 New-Item -ItemType Directory -Path $cache -Force | Out-Null
 
@@ -97,10 +97,16 @@ $prettierDirectory = Join-Path $cache ('prettier-' + $manifest.prettier.version)
 [IO.Compression.ZipFile]::ExtractToDirectory($clangArchive, $clangDirectory, $true)
 Expand-NpmArchive $prettierArchive $prettierDirectory
 $clang = Join-Path $clangDirectory $manifest.clangFormat.executable
-$node = Join-Path $repository '.tools/lsp/tools/node/node.exe'
-if (-not (Test-Path -LiteralPath $node -PathType Leaf)) {
-    throw 'Prepare the pinned Node runtime first: ./scripts/prepare-language-tools.ps1'
+. (Join-Path $PSScriptRoot 'release-common.ps1')
+$runtimePointer = Join-Path $repository '.tools/runtime/windows-x64.json'
+if (-not (Test-Path -LiteralPath $runtimePointer -PathType Leaf)) {
+    & (Join-Path $PSScriptRoot 'prepare-windows-runtime.ps1') -Offline:$Offline
 }
+$pointer = Get-Content $runtimePointer -Raw | ConvertFrom-Json
+$runtimeDirectory = Assert-ReleaseChild (Join-Path $repository '.tools/runtime') (Join-Path $repository $pointer.directory)
+Assert-ReleaseHash (Join-Path $runtimeDirectory 'runtime-manifest.json') $pointer.manifestSha256
+[void](Assert-ReleaseInventory $runtimeDirectory 'runtime-manifest.json')
+$node = Join-Path $runtimeDirectory 'tools/node/node.exe'
 $expectedNode = (Get-Content (Join-Path $repository 'languages/manifest.json') -Raw | ConvertFrom-Json).node.version
 $actualNode = & $node --version
 if ($LASTEXITCODE -ne 0 -or $actualNode -cne ('v' + $expectedNode)) {

@@ -8,8 +8,10 @@ patches. Validation on this host is Windows only.
 ## Increments
 
 1. Record the contract and introduce the pinned vcpkg tool source.
-2. Add manifest/overlay dependencies and CMake production targets; retain current
-   dependency versions and MT/iterator-level-zero ABI in both configurations.
+2. Add official manifest dependencies and CMake production targets. Use the
+   pinned official Dawn/Skia recipes, with a Skia shaping patch overlay and the
+   QuickJS async-context extension only. Use dynamic CRT (Release MD, Debug MDd)
+   with matching STL iterator ABI throughout the dependency graph.
 3. Move entry points, resources, dependency manifests and packaging inputs;
    automatically prepare pinned grammar sources and share runtime preparation.
 4. Partition behavior tests without duplicate compilation; keep integration,

@@ -382,7 +382,14 @@ struct Runtime::Impl {
     void run_jobs() {
         std::size_t count{};
         while (JS_IsJobPending(runtime)) {
-            if (++count > limits.max_pending_jobs || interrupt(runtime, this)) {
+            // A completed job may have consumed the slice in a native adapter.
+            // Preserve its continuations for the next owner-loop tick. Individual
+            // JS execution still uses the interrupt handler; runaway job chains
+            // still fail the per-drain count limit.
+            if (interrupt(runtime, this)) {
+                return;
+            }
+            if (++count > limits.max_pending_jobs) {
                 // QuickJS has no API to discard pending jobs individually. Leave
                 // this runtime disabled until its owner rebuilds it on reload.
                 poisoned = true;
@@ -805,6 +812,7 @@ struct Runtime::Impl {
                                          {"error", std::move(failure)}});
             }
         }
+        run_jobs();
         for (auto& [id, task] : tasks) {
             static_cast<void>(id);
             if (task.outcome) {
@@ -1129,7 +1137,8 @@ void Runtime::cancel(TaskId id) {
 bool Runtime::idle() const {
     impl_->require_owner();
     return impl_->pending.empty() && impl_->tasks.empty() && impl_->cancellations.empty() &&
-           impl_->abandoned.empty() && impl_->drain_reports.empty();
+           impl_->abandoned.empty() && impl_->drain_reports.empty() &&
+           !JS_IsJobPending(impl_->runtime);
 }
 
 Runtime::TaskId Runtime::request_owner() const {

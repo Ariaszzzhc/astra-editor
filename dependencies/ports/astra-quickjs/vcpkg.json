@@ -1,0 +1,16 @@
+{
+  "name": "astra-quickjs",
+  "version": "0.15.1",
+  "description": "Pinned Astra dependency with project configuration",
+  "license": "MIT",
+  "dependencies": [
+    {
+      "name": "vcpkg-cmake",
+      "host": true
+    },
+    {
+      "name": "vcpkg-cmake-config",
+      "host": true
+    }
+  ]
+}

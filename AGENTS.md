@@ -48,7 +48,9 @@
   under `src/`, and behavior tests under `tests/`.
 - Pin fetched dependencies and verify artifact hashes. The vcpkg source submodule lives
   under `third_party/vcpkg`; tool binaries/dependency caches stay under `.tools/` and
-  build outputs under `build/`. Never commit caches or generated outputs. Keep upstream
+  build outputs under `build/`. The ignored vcpkg bootstrap executable stays in
+  its upstream root as required by the official toolchain. Never commit caches
+  or generated outputs. Keep upstream
   source unchanged; required patches and recipes belong in `dependencies/ports/`.
 - CMake install rules are the authority for distribution contents. Do not maintain a
   second payload file list in packaging scripts. Tests, fixtures and benchmarks are

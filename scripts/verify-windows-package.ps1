@@ -8,14 +8,32 @@ $manifest = Assert-ReleaseInventory $package 'package-manifest.json'
 if ($manifest.schema -ne 1 -or $manifest.product -cne 'Astra' -or $manifest.platform -cne 'windows' -or $manifest.architecture -cne 'x64') {
     throw 'Unexpected package identity'
 }
-$required = @('astra.exe','astra-server.exe','astra-process-host.exe','astra-clipboard-host.exe','SDL3.dll','dxcompiler.dll','dxil.dll','icudtl.dat',
+# Runtime archives were independently pinned before installation. Verify their
+# original inventory as a subset, rather than trusting newly generated package
+# hashes to bless modified cached language tools or provenance.
+$runtimeManifest = Get-Content (Join-Path $package 'runtime-manifest.json') -Raw | ConvertFrom-Json
+foreach ($entry in $runtimeManifest.files) {
+    $file = Get-ArchiveTarget $package $entry.path
+    if ((Get-Item -LiteralPath $file).Length -ne $entry.bytes) { throw "Runtime size mismatch: $($entry.path)" }
+    Assert-ReleaseHash $file $entry.sha256
+}
+$required = @('astra.exe','astra-server.exe','astra-process-host.exe','astra-clipboard-host.exe','SDL3.dll','dxcompiler.dll','dxil.dll',
+    'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll',
     'data/defaults.js','tools/clangd/bin/clangd.exe','tools/clangd/LICENSE.TXT','tools/node/node.exe','tools/node/LICENSE',
     'tools/node_modules/typescript/lib/typescript.js','tools/node_modules/typescript/LICENSE.txt',
     'tools/node_modules/typescript/ThirdPartyNoticeText.txt','tools/node_modules/typescript-language-server/lib/cli.mjs',
     'tools/node_modules/typescript-language-server/LICENSE','tools/node_modules/basedpyright/dist/pyright-langserver.js',
     'tools/node_modules/basedpyright/LICENSE.txt','tools/node_modules/basedpyright/dist/typeshed-fallback/LICENSE',
-    'tools/git/cmd/git.exe','tools/git/LICENSE.txt','THIRD-PARTY.md','README.md','licenses/SDL3/LICENSE.txt',
-    'licenses/graphics/third_party/externals/icu/LICENSE','provenance/graphics-build.json','provenance/source-files.json')
+    'tools/git/cmd/git.exe','tools/git/LICENSE.txt','THIRD-PARTY.md','README.md',
+    'licenses/vcpkg/sdl3/copyright','licenses/vcpkg/skia/copyright','licenses/vcpkg/dawn/copyright',
+    'licenses/vcpkg/icu/copyright','licenses/vcpkg/directx-dxc/copyright',
+    'provenance/vcpkg-status.txt','provenance/build-provenance.json','provenance/source-files.json')
+if ($manifest.configuration -cne 'Release' -or $manifest.crt -cne 'MD') { throw 'Release /MD package required' }
+foreach ($entry in $manifest.files) {
+    if ($entry.path -match '(?i)(^|/)(tests|fixtures|benchmarks)/|(?:smoke|fixture|benchmark|tests)\.exe$|(?:msvcp140d|vcruntime140d|ucrtbased)\.dll$') {
+        throw "Development-only payload: $($entry.path)"
+    }
+}
 foreach ($relative in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $package $relative) -PathType Leaf)) { throw "Required package file missing: $relative" }
 }

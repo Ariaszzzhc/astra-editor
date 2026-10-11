@@ -18,7 +18,6 @@
 #include "include/gpu/graphite/Surface.h"
 #include "include/gpu/graphite/dawn/DawnBackendContext.h"
 #include "include/gpu/graphite/dawn/DawnGraphiteTypes.h"
-#include "dawn/dawn_proc.h"
 #include "dawn/native/DawnNative.h"
 
 #if defined(_WIN32)
@@ -160,11 +159,6 @@ struct Renderer::Impl {
             sdl_failure("Enable editor text input");
         }
 
-        static std::once_flag install_procs;
-        std::call_once(install_procs, [] {
-            const auto procs = dawn::native::GetProcs();
-            dawnProcSetProcs(&procs);
-        });
         constexpr auto timed_wait = wgpu::InstanceFeatureName::TimedWaitAny;
         wgpu::InstanceDescriptor descriptor;
         descriptor.requiredFeatureCount = 1;

@@ -33,21 +33,19 @@ Push-Location $repository
 try {
     & "$PSScriptRoot/format.ps1" -Check
     foreach ($configuration in $configurations) {
-        & "$PSScriptRoot/xmake.ps1" f -m $configuration -y
+        $guiOption = if ($Gui) { 'ON' } else { 'OFF' }
+        $environmentOption = if ($IsolatedClipboard -or $InstalledIme) { 'ON' } else { 'OFF' }
+        $benchmarkOption = if ($Benchmarks) { 'ON' } else { 'OFF' }
+        & "$PSScriptRoot/cmake.ps1" --preset "windows-$configuration" "-DASTRA_BUILD_GUI_TESTS=$guiOption" "-DASTRA_BUILD_ENVIRONMENT_TESTS=$environmentOption" "-DASTRA_BUILD_BENCHMARKS=$benchmarkOption"
         $targets = @('astra-tests','astra-server')
         if ($Gui) { $targets += @('astra','graphics-smoke','renderer-smoke','text-layout-tests','viewport-layout-tests','gui-smoke','gui-services-smoke','gui-recovery-smoke','gui-workspace-smoke','gui-presentation-smoke','gui-visual-smoke','gui-body-smoke','gui-clipboard-smoke') }
         if ($IsolatedClipboard) { $targets += 'gui-clipboard-async-smoke' }
         if ($InstalledIme) { $targets += 'gui-ime-smoke' }
         if ($Benchmarks -and $configuration -eq 'release') { $targets += @('astra-core-benchmark', 'astra-view-benchmark') }
-        & "$PSScriptRoot/xmake.ps1" build -y @targets
-        $directory = Join-Path $repository ('build/windows/x64/' + $configuration)
-        Invoke-AcceptanceBinary $directory 'astra-tests' @('--no-version','--duration=true')
-        & "$repository/tests/cli_smoke.ps1" -Mode $configuration
+        & "$PSScriptRoot/cmake.ps1" --build --preset "windows-$configuration" --target @targets
+        $directory = Join-Path $repository ("build/cmake/windows-$configuration/bin")
+        & "$PSScriptRoot/cmake.ps1" -CTest --preset "windows-$configuration" -LE environment
         if ($Gui) {
-            foreach ($name in @('graphics-smoke','renderer-smoke','text-layout-tests','viewport-layout-tests','gui-smoke','gui-services-smoke','gui-recovery-smoke','gui-workspace-smoke','gui-presentation-smoke','gui-visual-smoke','gui-body-smoke','gui-clipboard-smoke')) {
-                Invoke-AcceptanceBinary $directory $name
-            }
-            Invoke-AcceptanceBinary $directory 'gui-smoke' @('--tcp')
             if ($IsolatedClipboard) { Invoke-AcceptanceBinary $directory 'gui-clipboard-async-smoke' }
             if ($InstalledIme) { Invoke-AcceptanceBinary $directory 'gui-ime-smoke' }
         }
@@ -58,8 +56,6 @@ try {
         }
     }
     & "$repository/tests/package_scripts_tests.ps1"
-    & "$repository/.tools/graphics/python/python.exe" "$repository/tests/skia_patch_tests.py"
-    if ($LASTEXITCODE -ne 0) { throw 'Skia shaping provenance tests failed' }
 } finally {
     Pop-Location
 }

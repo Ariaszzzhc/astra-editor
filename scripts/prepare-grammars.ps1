@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param()
+param([switch]$Offline)
 
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -16,6 +16,7 @@ function Assert-Hash([string] $Path, [string] $Expected) {
 foreach ($package in $manifest.packages) {
     $archive = Join-Path $cache ($package.name + '.zip')
     if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+        if ($Offline) { throw "Missing cached grammar archive: $archive" }
         $download = $archive + '.download'
         Invoke-WebRequest -Uri $package.archive -OutFile $download -TimeoutSec 180
         Assert-Hash $download $package.sha256

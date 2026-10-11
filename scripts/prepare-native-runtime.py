@@ -42,45 +42,17 @@ def build_clangd(asset, build_root, destination, arch, cmake, ninja, jobs, offli
     return {"kind": "source", "archiveSha256": sha256(bundle)}
 
 
-def build_git(manifest, build_root, runtime, host, graphics, cmake, ninja, jobs, offline):
+def build_git(manifest, build_root, runtime, host, dependency_prefix, cmake, ninja, jobs, offline):
     dependencies = build_root / "git-dependencies"
     (dependencies / "lib").mkdir(parents=True)
     (dependencies / "include").mkdir()
-    graphics_sources = REPO / ".tools/graphics/src/skia/third_party/externals"
-    fixed_dependencies = read_json(REPO / "release/graphics-notices.json")["dependencies"]
-    built_dependencies = read_json(graphics / "dependencies.json")
+    # Use the configured official vcpkg libraries; do not export or rebuild
+    # dependencies from an unrelated Skia checkout.
+    for filename in ("libz.a", "libexpat.a"):
+        shutil.copy2(dependency_prefix / "lib" / filename, dependencies / "lib" / filename)
+    for filename in ("zlib.h", "zconf.h", "expat.h", "expat_external.h"):
+        shutil.copy2(dependency_prefix / "include" / filename, dependencies / "include" / filename)
     source_archives = []
-    for name in ("zlib", "expat"):
-        key = "third_party/externals/" + name
-        pin = fixed_dependencies[key]
-        if built_dependencies[key] != pin:
-            raise RuntimeError("Graphics dependency differs from the fixed source: " + name)
-        # Export the committed object tree, not mutable worktree files. zlib's
-        # CMake renames zconf.h, so configuration must use this private copy.
-        bundle = build_root / (name + "-" + pin["commit"] + ".tar")
-        run("git", "-C", graphics_sources / name, "archive", "--format=tar", "--output=" + str(bundle), pin["commit"])
-        directory = build_root / (name + "-source")
-        extract(bundle, directory, source_links=True)
-        source_archives.append((name, directory, bundle))
-    # Skia's GN libzlib.a omits source_set objects (including inflate/SIMD).
-    # Build the complete upstream static target and install its matching header.
-    zlib_source = build_root / "zlib-source"
-    zlib_build = build_root / "zlib-build"
-    run(cmake, "-S", zlib_source, "-B", zlib_build, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={ninja}",
-        "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-        "-DENABLE_SIMD_OPTIMIZATIONS=OFF", "-DBUILD_UNITTESTS=OFF")
-    run(cmake, "--build", zlib_build, "--parallel", jobs, "--target", "zlibstatic")
-    shutil.copy2(zlib_build / "libz.a", dependencies / "lib/libz.a")
-    shutil.copy2(zlib_source / "zlib.h", dependencies / "include/zlib.h")
-    shutil.copy2(zlib_build / "zconf.h", dependencies / "include/zconf.h")
-    expat_build = build_root / "expat-build"
-    run(cmake, "-S", build_root / "expat-source/expat", "-B", expat_build, "-G", "Ninja",
-        f"-DCMAKE_MAKE_PROGRAM={ninja}", "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
-        "-DCMAKE_INSTALL_PREFIX=" + str(dependencies), "-DCMAKE_INSTALL_LIBDIR=lib",
-        "-DEXPAT_SHARED_LIBS=OFF", "-DEXPAT_BUILD_TOOLS=OFF", "-DEXPAT_BUILD_EXAMPLES=OFF",
-        "-DEXPAT_BUILD_TESTS=OFF", "-DEXPAT_BUILD_DOCS=OFF", "-DEXPAT_BUILD_FUZZERS=OFF")
-    run(cmake, "--build", expat_build, "--parallel", jobs)
-    run(cmake, "--install", expat_build)
     openssl_source, openssl_archive = source(manifest["openssl"], build_root, "openssl-source", offline)
     openssl_target = {("linux", "x64"): "linux-x86_64", ("linux", "arm64"): "linux-aarch64",
                       ("macosx", "x64"): "darwin64-x86_64-cc", ("macosx", "arm64"): "darwin64-arm64-cc"}[host]
@@ -135,38 +107,32 @@ def main():
     parser.add_argument("--offline", action="store_true")
     parser.add_argument("--clangd-source", action="store_true", help="Build fixed LLVM sources for the native CPU/ABI")
     parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1))
+    parser.add_argument("--cmake", type=Path, required=True)
+    parser.add_argument("--ninja", type=Path, required=True)
+    parser.add_argument("--dependency-prefix", type=Path, required=True)
     args = parser.parse_args()
     if args.jobs < 1 or args.jobs > 128:
         raise RuntimeError("jobs must be between 1 and 128")
     key = "-".join(host)
     manifest = read_json(REPO / "release/native-tools.json")
     languages = read_json(REPO / "languages/manifest.json")
-    graphics = REPO / f".tools/graphics/install/{host[0]}/{host[1]}/release"
-    graphics_manifest = read_json(graphics / "manifest.json")
-    if (graphics_manifest["platform"], graphics_manifest["architecture"]) != host or graphics_manifest["configuration"] != "Release":
-        raise RuntimeError("Build the native Release graphics package first")
-    for artifact in graphics_manifest["artifacts"]:
-        check_hash(child(graphics, graphics / artifact["file"]), artifact["sha256"])
-    tools = REPO / ".tools/graphics/native" / key
-    suffix = "macos-universal" if host[0] == "macosx" else ("linux-x86_64" if host[1] == "x64" else "linux-aarch64")
-    cmake = tools / "cmake" / ("cmake-3.31.8-" + suffix) / ("CMake.app/Contents/bin/cmake" if host[0] == "macosx" else "bin/cmake")
-    ninja = tools / "ninja/ninja"
+    cmake, ninja = args.cmake, args.ninja
     if not cmake.is_file() or not ninja.is_file():
-        raise RuntimeError("Prepare the pinned native graphics toolchain before the runtime")
-    locks = ["release/native-tools.json", "languages/manifest.json", "release/core-notices.json", "release/graphics-notices.json",
-             "grammars/manifest.json", "dependencies.lock.json", "release/THIRD-PARTY.md",
-             "scripts/native_release.py", "scripts/prepare-native-runtime.py",
-             "xmake/packages/astra-quickjs/host-async-context.patch",
-             "xmake/packages/astra-quickjs/xmake.lua", "xmake/packages/astra-quickjs/README.md",
-             "xmake/packages/skia-graphite/glyph-cache.patch",
-             "xmake/packages/skia-graphite/glyph-cache.json",
-             "xmake/packages/skia-graphite/README.md", "scripts/apply-skia-patch.py"]
+        raise RuntimeError("Use the configured CMake/Ninja toolchain")
+    dependency_prefix = child(REPO / ".tools", args.dependency_prefix)
+    locks = ["release/native-tools.json", "languages/manifest.json", "grammars/manifest.json",
+             "dependencies.lock.json", "release/THIRD-PARTY.md", "vcpkg.json", "vcpkg-configuration.json",
+             "dependencies/tools.json", ".gitmodules", "scripts/native_release.py", "scripts/prepare-native-runtime.py"]
+    locks += [str(path.relative_to(REPO)).replace("\\", "/") for path in
+              sorted((REPO / "dependencies/ports").rglob("*")) if path.is_file()]
     for name, patch in read_json(REPO / "dependencies.lock.json").get("patches", {}).items():
         if sha256(child(REPO, REPO / patch["path"])) != patch["sha256"]:
             raise RuntimeError("Dependency patch hash mismatch: " + name)
     hashes = {name: sha256(REPO / name) for name in locks}
     source_clangd = args.clangd_source or key not in manifest["clangd"]["assets"]
-    identity = hashlib.sha256((key + json_text(hashes) + str(source_clangd) + sha256(graphics / "manifest.json")).encode()).hexdigest()
+    identity = hashlib.sha256((key + json_text(hashes) + str(source_clangd)
+                               + sha256(dependency_prefix / "lib/libz.a")
+                               + sha256(dependency_prefix / "lib/libexpat.a")).encode()).hexdigest()
     runtime_root = child(REPO, REPO / ".tools/runtime")
     destination = runtime_root / (key + "-" + identity[:16])
     if destination.exists():
@@ -213,19 +179,9 @@ def main():
             for executable in ("tools/node/bin/node", "tools/clangd/bin/clangd"):
                 native_binary(staging / executable, *host)
                 run(staging / executable, "--version")
-            build_git(manifest, build_root, staging, host, graphics, cmake, ninja, args.jobs, args.offline)
+            build_git(manifest, build_root, staging, host, dependency_prefix, cmake, ninja, args.jobs, args.offline)
             native_binary(staging / "tools/git/bin/git", *host)
             run(staging / "tools/git/bin/git", "--version")
-            for package in read_json(REPO / "release/core-notices.json")["packages"]:
-                if package["name"] == "DXC":
-                    continue
-                extract(archive(package, args.offline), staging / "licenses" / package["name"], package["prefix"], package["files"])
-            for entry in read_json(REPO / "release/graphics-notices.json")["notices"]:
-                source_path = REPO / ".tools/graphics/src/skia" / entry["path"]
-                check_hash(source_path, entry["sha256"])
-                target = staging / "licenses/graphics" / entry["path"]
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source_path, target)
             for grammar in read_json(REPO / "grammars/manifest.json")["packages"]:
                 target = staging / "licenses/grammars" / grammar["name"]
                 extract(archive(grammar, args.offline), target, grammar["directory"] + "/", ("LICENSE",))

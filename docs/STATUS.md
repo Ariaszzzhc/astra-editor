@@ -2,6 +2,88 @@
 
 Product contract: `EditorDoc.md`. Product name: Astra (confirmed by the user).
 
+## CMake migration: official ports (2026-10-12)
+
+The new graph uses pinned CMake 4.4.3, Ninja 1.13.1 and official ports at vcpkg
+`e456309491fd875487bf02b8a0dca76c1b1b00cc`. Dawn uses its official monolithic
+target; Skia 148 uses the official recipe with only the glyph-cache patch added.
+The other overlay retains QuickJS-NG 0.15.1 and its host async-context patch.
+Both dependency configurations built successfully. Windows Release uses /MD;
+Debug uses /MDd and standard STL iterator diagnostics. Skia's internal GN and
+Dawn's build are owned by the official ports, without a second graphics builder.
+
+CMake owns production sources, generated grammar libraries, tests and Runtime
+installation. Configuration automatically verifies the seven fixed grammar
+archives and shared Node/clangd/TypeScript/Python/Git runtime. Install rules ship
+the app-local Release CRT, SDL/DXC DLLs, resources, licenses and provenance.
+Package wrappers verify the installation before CPack archives it; native
+packaging sources are maintained but have not been executed on this Windows host.
+
+Preserved failures and corrections:
+
+- `cmake-official-build-debug.log`: obsolete `src/core/SkUTF.h` and Dawn proc
+  installation includes. Adapted to official exported headers and direct native
+  entry points; no Dawn overlay was added.
+- The first relink reused prototype doctest objects after restored dependency
+  headers retained archive timestamps. A clean Debug/Release build removed that
+  mismatch (`cmake-official-build-debug-clean.log`, `cmake-official-build-release.log`).
+- `cmake-official-test-debug.log`: six behavior failures during concurrent
+  Release compilation, including a checkpoint wait and script slice exhaustion.
+  Quiet isolation reproduced interpreter failures. QuickJS's Windows Debug
+  dispatch loop now uses /O2 while retaining /MDd, symbols and assertions; Astra's
+  own Debug runtime checks remain enabled. All 100 affected cases then passed
+  (`cmake-debug-optimized-affected.log`). The 8 ms workbench budget is unchanged.
+- The initial 180 s viewport CTest wrapper expired after several differential
+  sections passed. The heavy layout tests now have a 600 s outer limit; internal
+  cancellation/deadline assertions are unchanged. Debug viewport then completed
+  in 401.25 s and text layout in 66.64 s (`cmake-debug-acceptance.log`).
+- One relink overlapped the old GUI acceptance and encountered a locked Windows
+  image (`cmake-qjs-optimized-build.log`). Stopped that owned CTest tree and
+  resumed serial build/acceptance rather than accepting stale binaries.
+- The subsequent Debug suite passed 632 behavior cases and 12 of 13 GUI checks;
+  GUI presentation exposed poisoning of a valid continuation batch when its
+  cumulative slice elapsed. The host now defers remaining jobs to the next tick,
+  resumes them before observing completion, and includes queued jobs in idle
+  detection. Individual JS interrupts and runaway job-count limits remain.
+  Two regression cases verify independent-task progress, captured task identity
+  and cancellation without late mutations. All 135 affected cases passed;
+  full GUI presentation then passed in 175.51 s
+  (`cmake-slice-debug-affected-final.log`, `cmake-slice-debug-gui.log`). A draft regression initially omitted
+  the explicit poll required by the API; corrected before acceptance.
+
+Commands already verified on Windows:
+
+- `./scripts/cmake.ps1 --preset windows-debug -DASTRA_BUILD_GUI_TESTS=ON -DASTRA_OFFLINE=ON`
+  and corresponding Debug build; the same official Release graph built cleanly.
+- `./scripts/cmake.ps1 -CTest --preset windows-debug -LE environment`, with the
+  preserved GUI-presentation failure above. After the correction, Debug passed
+  all 634 cases / 2,704,799 assertions with zero failed/skipped cases. The 13
+  affected CTest checks passed using `--exclude-regex '^(text-layout-tests|viewport-layout-tests)$'`
+  (`cmake-debug-closure-test.log`); those two unchanged heavy layout checks had
+  already passed completely as recorded above. A rejected `-E` spelling collided
+  with PowerShell common parameters; the long CTest spelling resolved it.
+- `./scripts/cmake.ps1 --preset windows-release -DASTRA_BUILD_GUI_TESTS=ON -DASTRA_OFFLINE=ON`,
+  corresponding build and `-CTest --preset windows-release -LE environment`:
+  all 15 CTest checks passed (`cmake-release-acceptance.log`), including both
+  heavy native layout suites and the local/TCP GUI workflows. All 634 behavior
+  cases passed with zero failed/skipped cases.
+- `./scripts/format.ps1 -Offline` and `-Check -Offline`: 203 C++ / 15 JS.
+  PowerShell syntax, Python AST parsing only, and `git diff --check` passed.
+- `./tests/package_scripts_tests.ps1`: 12 package-helper checks passed.
+- `./scripts/package-windows.ps1 -BuildDirectory build/cmake/windows-release -OutputDirectory build/packages/astra-cmake-phase2 -Offline`:
+  6,340 installed files passed inventory checks. ZIP SHA-256:
+  `df00f4ad05334d7d49549cb43d759ee0cf2ca754159a0f384851a6519829509e`.
+  This intermediate package truthfully records its dirty source snapshot.
+- `./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/astra-cmake-phase2 -RunSmoke`:
+  isolated server/process host, Unicode save, Git, recovery and all three real
+  language diagnostic checks passed (`cmake-package-phase2-smoke.log`).
+
+This official-port/CMake increment is Windows-validated. Source-directory
+partition, final install/archive relocation and removal of obsolete build entry
+points are still in progress. Installed IME, isolated delayed clipboard, physical DPI and actual
+driver/adapter-removal acceptance have not been re-established by this migration.
+No Linux/macOS build or test has run.
+
 ## CMake migration: pinned dependency tool (2026-10-11)
 
 The user authorized the CMake/Ninja and vcpkg-submodule migration, directory/test
