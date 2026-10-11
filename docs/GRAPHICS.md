@@ -416,7 +416,7 @@ hidden sidebar captions are not prepared. Native-font pixel checks cover three
 font sizes and four DPI scales, including warm reuse and control separation.
 
 `WorkbenchChrome` also owns activity, path and status presentation. `ChromeState`
-retains six bounded immutable measured row banks and a guarded owner context;
+retains ten bounded immutable measured row banks and a guarded owner context;
 the shipped `astra/chrome` JS provider supplies all captions and actions. The
 controller passes native document/primary-caret metrics, including distinct
 UTF-16 and optional matching shaped visual columns. JS formats their labels.
@@ -430,6 +430,14 @@ Text uses configured UI fonts and grapheme-aware elision; providers select
 theme tones and bounded shared glyphs. Provider waits support cancellation and
 1..30,000 ms deadlines, with late-error suppression. JS exit policy suspends
 them before the first idle fence and restores them afterwards.
+Optional welcome/title/detail/action and notice banks share that same publication.
+The body component derives welcome row heights from actual native paragraphs,
+separates labels from badges, and clips every painted/hit target to the document
+region. An active document hides retained welcome targets immediately. Notice
+admission reserves room for direct host diagnostics; diagnostics remain visible
+without a successful JS publication and their shared box blocks editor pointer
+fallthrough. Caption display bounds and malformed-byte replacement preserve the
+original host error. Recovery review and workspace dismissal are JS actions.
 The native Windows frame follows the compiled JS theme as documented above;
 whole-product visual acceptance remains outstanding.
 

@@ -20,6 +20,127 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### JS-owned welcome and notice surfaces (2026-10-11)
+
+`data/workbench/chrome.js` now supplies welcome title/detail, New/Open/Commands
+actions with registered shortcut captions, recovery review and workspace-notice
+dismissal. Four optional banks extend the existing asynchronous chrome provider:
+`welcomeTitle`, `welcomeDetail`, `welcomeActions`, `notices`. Existing providers
+may omit them; native publication normalizes empty banks before total 64 KiB
+admission. Title/detail accept one row each, actions/notices eight each. Actions
+and notices allow a validated 64-byte badge. These are original immutable
+measured `ViewIndex` rows under the same context, publication and action fences.
+
+The active context includes bounded notice text, original notice identity and recovery availability. The
+window's former fixed welcome labels and recovery/workspace-banner paint/hit
+rectangles are removed. `WorkbenchChrome` admits body rows inside the document
+region, derives welcome heights from actual native paragraphs, reserves separate
+badge text, and shares the painted/hit boxes. Welcome targets disappear as soon
+as the owner has an active document, even while old pixels/models are retained.
+Notice banks have bounded height admission, favoring earlier rows. Host
+diagnostics take priority and reserve their own occluding target; they are
+presented directly by this same component even when a JS provider fails. Their
+display is bounded to 4 KiB with scalar-safe cuts, newline normalization and
+visible replacement of malformed bytes; the original host error remains intact.
+
+Windows work so far:
+
+- `./scripts/format.ps1 -Offline` passed for 191 C++ / 15 JS files
+  (`body-policy-format-debug.log`). Targeted Debug compilation passed
+  (`body-policy-build-debug.log`), including `astra-tests`, native-font pixels,
+  the new independent `gui-body-smoke`, recovery GUI and application.
+- Recovery acceptance now clicks the actual published JS recovery notice using
+  native SDL pointer events before reviewing/restoring genuine recovery state.
+  Its formatted rebuild passed (`body-policy-format-recovery-debug.log`,
+  `body-policy-build-recovery-debug.log`).
+- Final model validation and its negative required-bank case compiled successfully
+  (`body-policy-format-final-debug.log`, `body-policy-build-final-debug.log`).
+  New behavioral coverage checks legacy normalization, original body descriptors,
+  stale notice actions, atomic invalid/count/badge rejection, shipped JS action
+  routing, font/DPI/narrow-window pixels, host diagnostics independent of failed
+  providers, and real welcome/notice replacement and restoration.
+- `./build/windows/x64/debug/astra-tests.exe
+  '--test-case=presentation chrome*,workbench JS chrome*' --no-version` exited 0:
+  nine cases / 67,459 assertions, with 614 unrelated cases filtered out
+  (`body-policy-focused-debug.log`).
+- `./build/windows/x64/debug/viewport-layout-tests.exe --chrome` exited 0
+  (`body-policy-native-pixels-debug.log`). Native body pixels additionally cover
+  three UI sizes, four DPI values, narrow/wide and short/tall frames, Unicode
+  badges, long/malformed host error display, warm reuse, owner clips, identical
+  paint/hit identities and no overlap with diagnostics.
+- First `gui-body-smoke.exe` exited 1 before welcome checks because its fixture
+  used the nonexistent `ui.close` command (`body-policy-gui-debug.log`). The
+  retained fixture is `build/graphics/gui-body-350423059222100`. Corrected the
+  fixture to the registered `ui.closeTab`; formatted rebuild passed
+  (`body-policy-format-gui-fixed-debug.log`, `body-policy-build-gui-fixed-debug.log`).
+  Corrected `gui-body-smoke.exe` exited 0 (`body-policy-gui-fixed-debug.log`):
+  actual default New/Open/Commands actions, JS workspace dismissal, asynchronous
+  Unicode body replacement at UI size 16 / 480-by-420 logical resize, notice
+  actions without selection fallthrough, visible failed-provider diagnostics,
+  restoration and unchanged source files. `gui-recovery-smoke.exe` also exited 0
+  (`body-policy-recovery-gui-debug.log`), entering real recovery review through
+  the published notice and retaining its existing save/exit/failure coverage.
+- Inspected real GPU captures `build/graphics/gui-body-welcome.png`,
+  `gui-body-custom.png` and `gui-body-diagnostic.png`. Welcome commands and
+  shortcut columns are separated; original Chinese/emoji and custom notices
+  remain visible at the narrow size; failed-provider diagnostics remain visible
+  below retained notice pixels. These are fixture-level visual checks.
+- `./scripts/test.ps1 -Mode all -Gui` finished producing its acceptance log on this source and
+  unchanged runtime resources (`body-policy-acceptance-all.log`). The entry
+  point now builds/runs `gui-body-smoke` in both Windows configurations.
+  Debug passed all 623 cases / 2,690,421 assertions, with no failed/skipped
+  cases. Debug native GPU/window/text and all GUI/TCP targets passed, including
+  the new body and recovery-notice-click checks. Release passed all 623 cases /
+  2,690,273 assertions, with no failed/skipped cases. Its native and GUI/TCP
+  checks also passed; the log reaches the final packaging helper (12 checks) and
+  shaping provenance (seven tests) passes. The original process handle is no
+  longer available, so its shell exit status was not recovered. These results
+  precede the additional identity regression below.
+
+After the initial matrix, a real Release `gui-body-smoke.exe` regression through
+the existing `workspaceNotice` primitive exited 1: an old action cleared a newer
+original notice sharing its first 4 KiB (`body-identity-repro-gui.log`). Preserved
+fixture: `build/graphics/gui-body-352122453741500`. The test-only build and
+formatting passed (`body-identity-repro-build.log`, `body-identity-repro-format.log`).
+Native notice facts now receive distinct owner-local sequence identities; chrome
+includes the selected original sequence independently of its truncated caption.
+Default JS actions forward that identity through command handlers, and native
+dismissal rechecks it immediately before mutation. Added real GUI coverage for
+same-prefix replacement and replacement arriving inside an awaited handler;
+explicit unguarded dismissal continues to clear the current warning. A related
+default shortcut projection now caps badge UTF-8 bytes at 64 without splitting
+scalars; its unit regression uses 20 emoji in registered shortcut metadata.
+Final-source Release acceptance passed: formatted rebuild
+(`body-identity-format.log`, `body-identity-build-release.log`), then
+`./build/windows/x64/release/astra-tests.exe --no-version` exited 0 with all
+623 cases / 2,690,116 assertions (`body-identity-unit-release.log`). The embedded
+GUI JS fixture was separately expanded using pinned Prettier, then formatted
+and rebuilt (`body-identity-fixture-format.log`,
+`body-identity-fixture-build-release.log`). A single affected-GUI invocation
+exited 0 after `gui-body-smoke`, `gui-recovery-smoke`, `gui-workspace-smoke`, and
+`gui-presentation-smoke`; each log is
+`body-identity-<target>-release.log`. The body fixture proves same displayed
+prefix/distinct original sequence, stale-action preservation, replacement during
+an awaited command handler, original editor selections, and explicit current
+dismissal. Recovery/workspace/presentation preserve their full existing real
+renderer/service workflows.
+Final-source Debug configuration/build passed (`body-identity-config-debug.log`,
+`body-identity-build-debug.log`). The affected invocation exited 0:
+`astra-tests.exe '--test-case=presentation chrome*,workbench JS chrome*'
+--no-version` passed nine cases / 67,463 assertions, with 614 unrelated cases
+filtered out (`body-identity-focused-debug.log`), `viewport-layout-tests.exe
+--chrome` passed actual native-font body pixels (`body-identity-native-pixels-debug.log`),
+and all four affected GUI targets passed (`body-identity-<target>-debug.log`).
+These final-source checks supplement the initial full matrix rather than claiming
+the unchanged initial matrix was rerun after the notice-identity fix.
+
+This Windows increment is validated; the complete requested revision is still
+in progress. Final `./scripts/format.ps1 -Check -Offline` passed for 191 C++ /
+15 JS files (`body-identity-final-format-check.log`), and `git diff --check`
+passed. Debug remains the configured local application build.
+Modal/input typography and whole-product visual acceptance, physical installed
+IME acceptance and a new distribution remain within the full requested revision.
+
 ### JS-owned outer chrome (2026-10-11)
 
 The shipped `data/workbench/chrome.js` supplies the brand, command hint, activity

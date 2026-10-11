@@ -1,5 +1,6 @@
 #include <astra/ui/workbench_chrome.hpp>
 #include <astra/ui/icons.hpp>
+#include <astra/core/utf8.hpp>
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
 #include <algorithm>
@@ -31,6 +32,32 @@ void icon(SkCanvas* canvas, Icon value, Box box, float size, std::uint32_t color
               box.y + (box.height - size) / 2,
               size,
               color);
+}
+
+std::string diagnostic_caption(std::string_view original) {
+    // The full error remains in host state. Bound the displayed caption, keep
+    // scalar boundaries, and make malformed host bytes visible as replacements.
+    std::string result;
+    for (std::size_t offset = 0; offset < original.size() && result.size() < 4096;) {
+        std::size_t bytes{};
+        try {
+            bytes = utf8::decode(original, offset).bytes;
+        } catch (const std::invalid_argument&) {
+            if (result.size() + 3 > 4096)
+                break;
+            result += "\xEF\xBF\xBD";
+            ++offset;
+            continue;
+        }
+        if (result.size() + bytes > 4096)
+            break;
+        const auto scalar = original.substr(offset, bytes);
+        result += scalar == "\n" || scalar == "\r" || scalar == std::string_view("\0", 1)
+                      ? std::string_view(" ")
+                      : scalar;
+        offset += bytes;
+    }
+    return result;
 }
 } // namespace
 
@@ -184,7 +211,8 @@ std::optional<WorkbenchChrome::Item> WorkbenchChrome::OuterLayout::hit(float x, 
 WorkbenchChrome::OuterLayout WorkbenchChrome::measure_outer(const WorkbenchLayout& geometry,
                                                             const WorkbenchStyle& theme,
                                                             const ChromeState& source,
-                                                            std::size_t activity_first) {
+                                                            std::size_t activity_first,
+                                                            bool diagnostic) {
     OuterLayout result;
     const auto scale = geometry.scale;
     const auto add = [&](ChromeBank bank, std::size_t index, Box box) {
@@ -284,6 +312,54 @@ WorkbenchChrome::OuterLayout WorkbenchChrome::measure_outer(const WorkbenchLayou
         add(ChromeBank::status_left, index, {x, status.y, extent, status.height});
         x += extent;
     }
+    const auto editor = geometry.editor;
+    const auto pad = std::min(12 * scale, std::min(editor.width, editor.height) / 8);
+    const auto available_width = std::max(0.0F, editor.width - 2 * pad);
+    auto bottom = editor.bottom() - pad;
+    const auto gap = std::min(6 * scale, editor.height / 16);
+    auto notice_budget = std::max(0.0F, editor.height * 0.45F - pad);
+    const auto banner_height = std::max(
+        36 * scale, std::ceil(theme.text(12, scale, 0).font_size * scale * 1.15F + 16 * scale));
+    if (diagnostic && available_width > 0 && notice_budget > 0) {
+        const auto extent = std::min(banner_height, notice_budget);
+        result.diagnostic = {editor.x + pad, bottom - extent, available_width, extent};
+        bottom -= extent + gap;
+        notice_budget -= extent + gap;
+    }
+    const auto& notices = source.rows(ChromeBank::notices);
+    for (std::size_t index = 0; index < notices.size() && notice_budget >= banner_height; ++index) {
+        add(ChromeBank::notices,
+            index,
+            {editor.x + pad, bottom - banner_height, available_width, banner_height});
+        bottom -= banner_height + gap;
+        notice_budget -= banner_height + gap;
+    }
+    const bool empty = !source.context().is_object() || !source.context().contains("document") ||
+                       source.context().at("document").is_null();
+    if (empty && available_width > 0 && bottom > editor.y + pad) {
+        const auto welcome_width = std::min(500 * scale, available_width);
+        const auto welcome_x = editor.x + (editor.width - welcome_width) / 2;
+        auto y = editor.y + pad + std::min(64 * scale, (bottom - editor.y - pad) / 6);
+        for (const auto [bank, reference] : {std::pair{ChromeBank::welcome_title, 32.0F},
+                                             std::pair{ChromeBank::welcome_detail, 14.0F},
+                                             std::pair{ChromeBank::welcome_actions, 13.0F}}) {
+            const auto& rows = source.rows(bank);
+            for (std::size_t index = 0; index < rows.size() && y < bottom; ++index) {
+                const auto height =
+                    labels_
+                        .prepare(rows.at(index).value->at("label").get_ref<const std::string&>(),
+                                 theme.text(reference, scale, 0))
+                        ->height();
+                const auto desired =
+                    height + (bank == ChromeBank::welcome_actions ? 16 : 8) * scale;
+                if (index > 0 && desired > bottom - y)
+                    break;
+                const auto extent = std::min(desired, bottom - y);
+                add(bank, index, {welcome_x, y, welcome_width, extent});
+                y += extent + 8 * scale;
+            }
+        }
+    }
     return result;
 }
 
@@ -343,7 +419,7 @@ void WorkbenchChrome::paint_outer(SkCanvas* canvas,
          {geometry.status.x, geometry.status.y, geometry.status.width, scale},
          theme.colors.border);
     for (const auto& item : layout.items) {
-        if (item.bank == ChromeBank::command)
+        if (item.bank == ChromeBank::command || item.bank >= ChromeBank::welcome_title)
             continue;
         const auto& value = *source.rows(item.bank).at(item.index).value;
         const SkAutoCanvasRestore row_restore(canvas, true);
@@ -401,6 +477,96 @@ void WorkbenchChrome::paint_outer(SkCanvas* canvas,
             canvas->rotate(180, box.x + box.width / 2, box.y + box.height / 2);
         }
         icon(canvas, Icon::chevron_down, box, 16 * scale, theme.colors.muted);
+    }
+}
+
+void WorkbenchChrome::paint_body(SkCanvas* canvas,
+                                 const WorkbenchLayout& geometry,
+                                 const WorkbenchStyle& theme,
+                                 const ChromeState& source,
+                                 const OuterLayout& layout,
+                                 float pointer_x,
+                                 float pointer_y,
+                                 std::string_view diagnostic) {
+    if (!canvas)
+        throw std::invalid_argument("Workbench body requires a canvas");
+    const SkAutoCanvasRestore restore(canvas, true);
+    canvas->clipRect(rect(geometry.editor));
+    const auto scale = geometry.scale;
+    for (const auto& item : layout.items) {
+        if (item.bank < ChromeBank::welcome_title)
+            continue;
+        const SkAutoCanvasRestore row_restore(canvas, true);
+        canvas->clipRect(rect(item.bounds));
+        if (canvas->getDeviceClipBounds().isEmpty())
+            continue;
+        const auto& value = *source.rows(item.bank).at(item.index).value;
+        const auto role = value.value("tone", std::string{});
+        const auto notice = item.bank == ChromeBank::notices;
+        const auto action = item.bank == ChromeBank::welcome_actions;
+        const auto title = item.bank == ChromeBank::welcome_title;
+        const auto color =
+            notice && role == "changed"
+                ? theme.colors.warning
+                : tone(role,
+                       theme,
+                       item.bank == ChromeBank::welcome_detail ? theme.colors.muted
+                                                               : theme.colors.foreground);
+        if (notice) {
+            fill(canvas,
+                 item.bounds,
+                 role == "error"     ? theme.colors.error_background
+                 : role == "added"   ? theme.colors.recovery_background
+                 : role == "changed" ? theme.colors.notice_background
+                                     : theme.colors.panel);
+            fill(canvas, {item.bounds.x, item.bounds.y, 2 * scale, item.bounds.height}, color);
+        } else if (action) {
+            fill(canvas, item.bounds, theme.colors.panel);
+        }
+        if ((action || notice) && value.contains("data") &&
+            item.bounds.contains(pointer_x, pointer_y))
+            fill(canvas, item.bounds, theme.colors.hover);
+        auto text = item.bounds;
+        const auto inset = std::min((notice || action ? 12 : 0) * scale, text.width / 2);
+        text.x += inset;
+        text.width = std::max(0.0F, text.width - 2 * inset);
+        const auto glyph = value.value("icon", std::string{});
+        if (!glyph.empty()) {
+            icon(canvas,
+                 view_icon(glyph),
+                 {text.x, text.y, 18 * scale, text.height},
+                 18 * scale,
+                 tone(value.value("iconTone", std::string{}), theme, color));
+            const auto extent = std::min(26 * scale, text.width);
+            text.x += extent;
+            text.width -= extent;
+        }
+        const auto badge = value.value("badge", std::string{});
+        if (!badge.empty()) {
+            const auto style = theme.text(11, scale, theme.colors.muted);
+            const auto width = std::min(labels_.prepare(badge, style)->width(), text.width * 0.35F);
+            caption(canvas, {text.right() - width, text.y, width, text.height}, badge, style);
+            text.width = std::max(0.0F, text.width - width - 12 * scale);
+        }
+        caption(canvas,
+                text,
+                value.at("label").get_ref<const std::string&>(),
+                theme.text(title                                     ? 32.0F
+                           : item.bank == ChromeBank::welcome_detail ? 14.0F
+                           : notice                                  ? 12.0F
+                                                                     : 13.0F,
+                           scale,
+                           color));
+    }
+    if (!diagnostic.empty() && layout.diagnostic.width > 0 && layout.diagnostic.height > 0) {
+        const auto box = layout.diagnostic;
+        fill(canvas, box, theme.colors.error_background);
+        fill(canvas, {box.x, box.y, 2 * scale, box.height}, theme.colors.error);
+        const auto inset = std::min(12 * scale, box.width / 2);
+        caption(canvas,
+                {box.x + inset, box.y, std::max(0.0F, box.width - 2 * inset), box.height},
+                diagnostic_caption(diagnostic),
+                theme.text(12, scale, theme.colors.foreground));
     }
 }
 

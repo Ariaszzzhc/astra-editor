@@ -1802,6 +1802,64 @@ TEST_CASE("presentation chrome candidate failure cannot partially publish row ba
     CHECK(state.state() == before);
 }
 
+TEST_CASE("presentation chrome body banks are optional bounded and atomically validated") {
+    using namespace astra::ui;
+    using Json = astra::protocol::Json;
+    ChromeState state;
+    state.sync({{"document", nullptr}, {"notice", "Current notice"}});
+    auto legacy = state.model();
+    for (std::size_t bank = 6; bank < chrome_banks.size(); ++bank)
+        legacy.erase(chrome_banks[bank]);
+    REQUIRE(state.publish({{"version", state.state().at("version")}, {"model", legacy}}));
+    for (std::size_t bank = 6; bank < chrome_banks.size(); ++bank)
+        CHECK(state.model().at(chrome_banks[bank]).empty());
+    state.refresh();
+    auto model = state.model();
+    model["welcomeTitle"] = Json::array({{{"id", "title"}, {"label", "Astra 中🙂"}}});
+    model["welcomeActions"] = Json::array({{{"id", "new"},
+                                            {"label", "New file"},
+                                            {"badge", "Ctrl+N"},
+                                            {"data", {{"command", "custom.new"}}}}});
+    model["notices"] = Json::array({{{"id", "review"},
+                                     {"label", "Preserved buffer 中🙂"},
+                                     {"badge", "Review"},
+                                     {"tone", "added"},
+                                     {"data", {{"document", "exact"}}}}});
+    REQUIRE(state.publish({{"version", state.state().at("version")}, {"model", model}}));
+    const auto retained = state.rows(ChromeBank::notices).snapshot();
+    const auto selected =
+        state.activate(state.state().at("version").get<std::string>(), "notices", "review");
+    CHECK(selected.at("row").at("data").at("document") == "exact");
+    CHECK(selected.at("context").at("notice") == "Current notice");
+    state.sync({{"document", nullptr}, {"notice", "A newer warning"}});
+    CHECK(state.activate(state.state().at("version").get<std::string>(), "notices", "review")
+              .is_null());
+    const auto before = state.state();
+    for (const auto failure :
+         {"title-count", "action-count", "notice-count", "badge", "field", "required"}) {
+        auto bad = model;
+        bad["welcomeTitle"][0]["label"] = "Changed candidate";
+        const auto kind = std::string_view(failure);
+        if (kind == "title-count")
+            bad["welcomeTitle"].push_back({{"id", "second"}, {"label", "Extra"}});
+        if (kind == "action-count" || kind == "notice-count") {
+            const auto bank = kind == "action-count" ? "welcomeActions" : "notices";
+            for (int index = 0; index < 8; ++index)
+                bad[bank].push_back({{"id", std::to_string(index)}, {"label", "Extra"}});
+        }
+        if (kind == "badge")
+            bad["notices"][0]["badge"] = std::string(65, 'x');
+        if (kind == "field")
+            bad["notices"][0]["command"] = "Hidden policy";
+        if (kind == "required")
+            bad.erase("command");
+        CHECK_THROWS(
+            static_cast<void>(state.publish({{"version", before.at("version")}, {"model", bad}})));
+        CHECK(state.state() == before);
+        CHECK(retained.at(0).value->at("label") == "Preserved buffer 中🙂");
+    }
+}
+
 TEST_CASE("presentation tabs use measured labels reveal active tabs and expose close hits") {
     auto strip = measure_tabs({44, 32, 600, 34}, 1, {40, 150, 20}, 0, 0, true);
     REQUIRE(strip.visible.size() == 3);

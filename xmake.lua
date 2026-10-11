@@ -404,6 +404,16 @@ target("gui-presentation-smoke")
     end
     set_exceptions("cxx")
 
+target("gui-body-smoke")
+    set_kind("binary")
+    set_rundir(os.projectdir())
+    set_default(false)
+    add_deps("astra-ui", "astra-service")
+    add_packages("skia-graphite", "libsdl3")
+    add_rules("astra.resources", "astra.graphics-runtime")
+    add_files("tests/gui_body_smoke.cpp")
+    set_exceptions("cxx")
+
 target("astra-process-host")
     set_kind("binary")
     set_default(false)

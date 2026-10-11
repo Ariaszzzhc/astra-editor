@@ -254,9 +254,16 @@ struct EditorWindow::Impl {
     std::uint64_t document_activity{};
     bool pending_document_activity{};
     std::string focused_view_version;
-    std::map<std::string, std::string> workspace_notices;
-    std::string watch_error;
-    std::string replace_notice;
+
+    struct NoticeRecord {
+        std::string text;
+        std::uint64_t sequence{};
+    };
+
+    std::map<std::string, NoticeRecord> workspace_notices;
+    NoticeRecord watch_error;
+    NoticeRecord replace_notice;
+    std::uint64_t notice_sequence{};
     std::string workspace_branch{"Astra"};
     TextLabels labels{fonts};
     TabBar tab_bar{labels};
@@ -654,18 +661,34 @@ struct EditorWindow::Impl {
         command("ui.refreshTree");
     }
 
-    std::string workspace_notice() const {
-        if (!watch_error.empty()) {
-            return watch_error;
+    NoticeRecord notice_record(std::string text) {
+        if (notice_sequence == std::numeric_limits<std::uint64_t>::max())
+            throw protocol::RpcError(-32004, "Workspace notice identity exhausted");
+        return {std::move(text), ++notice_sequence};
+    }
+
+    const NoticeRecord* selected_notice() const {
+        if (!watch_error.text.empty()) {
+            return &watch_error;
         }
         if (const auto found = workspace_notices.find(active_id);
             found != workspace_notices.end()) {
-            return found->second;
+            return &found->second;
         }
-        if (!replace_notice.empty()) {
-            return replace_notice;
+        if (!replace_notice.text.empty()) {
+            return &replace_notice;
         }
-        return workspace_notices.empty() ? std::string{} : workspace_notices.begin()->second;
+        return workspace_notices.empty() ? nullptr : &workspace_notices.begin()->second;
+    }
+
+    std::string workspace_notice() const {
+        const auto* notice = selected_notice();
+        return notice ? notice->text : std::string{};
+    }
+
+    std::string workspace_notice_sequence() const {
+        const auto* notice = selected_notice();
+        return std::to_string(notice && !notice->text.empty() ? notice->sequence : 0);
     }
 
     void service_responses();
@@ -799,24 +822,27 @@ void EditorWindow::Impl::service_responses() {
                 ++found->second.diagnostics_generation;
             }
         } else if (method == "workspace.watchError") {
-            watch_error = "File monitoring: " +
-                          notification.at("params").value(
-                              "message", std::string("Monitoring failed; reload files explicitly"));
+            watch_error = notice_record(
+                "File monitoring: " +
+                notification.at("params").value(
+                    "message", std::string("Monitoring failed; reload files explicitly")));
         } else if (method == "workspace.fileChanged") {
             const auto& value = notification.at("params");
             const auto id = value.at("id").get<std::string>();
             const auto path = value.at("path").get<std::string>();
             const auto change = value.at("status").get<std::string>();
             if (change == "reloaded") {
-                workspace_notices[id] = "External changes reloaded: " + path;
+                workspace_notices[id] = notice_record("External changes reloaded: " + path);
             } else if (change == "deleted") {
-                workspace_notices[id] = "File deleted outside Astra; buffer preserved: " + path;
+                workspace_notices[id] =
+                    notice_record("File deleted outside Astra; buffer preserved: " + path);
             } else if (change == "conflict") {
                 workspace_notices[id] =
-                    "File changed outside Astra; unsaved buffer preserved: " + path;
+                    notice_record("File changed outside Astra; unsaved buffer preserved: " + path);
             } else {
-                workspace_notices[id] = "Cannot read " + path + ": " +
-                                        value.value("message", std::string("External file error"));
+                workspace_notices[id] =
+                    notice_record("Cannot read " + path + ": " +
+                                  value.value("message", std::string("External file error")));
             }
             refresh_tree(false);
         }
@@ -2585,7 +2611,20 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         return result;
     }
     if (method == "_ui.action") {
-        native_command(params.at("command").get<std::string>());
+        const auto command = params.at("command").get<std::string>();
+        const auto parameters = params.value("parameters", Json::object());
+        if (command == "ui.dismissWorkspaceNotice" && parameters.contains("noticeSequence")) {
+            if (!parameters.at("noticeSequence").is_string())
+                throw protocol::RpcError(-32602, "Workspace notice sequence requires a string");
+            const auto* notice = selected_notice();
+            if (!notice || notice->text.empty() ||
+                parameters.at("noticeSequence").get_ref<const std::string&>() !=
+                    workspace_notice_sequence())
+                return false;
+            native_command(command);
+            return true;
+        }
+        native_command(command);
         return nullptr;
     }
     if (method != "_ui.update") {
@@ -2619,7 +2658,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             else if (name == "branch")
                 workspace_branch = std::move(text);
             else
-                replace_notice = std::move(text);
+                replace_notice = notice_record(std::move(text));
         } else if (name == "recoveryAvailable") {
             recovery_available = value.get<bool>();
         } else if (name == "error") {
@@ -2675,7 +2714,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             }
         } else if (name == "workspaceNotice") {
             workspace_notices[value.at("id").get<std::string>()] =
-                value.at("text").get<std::string>();
+                notice_record(value.at("text").get<std::string>());
         } else if (name == "gutter") {
             const auto found = documents.find(value.at("id").get<std::string>());
             if (found != documents.end() &&
@@ -2855,12 +2894,12 @@ void EditorWindow::Impl::native_command(std::string_view name) {
     if (name.starts_with("editor.")) {
         editor_command(std::string(name));
     } else if (name == "ui.dismissWorkspaceNotice") {
-        if (!watch_error.empty()) {
-            watch_error.clear();
+        if (!watch_error.text.empty()) {
+            watch_error = {};
         } else if (workspace_notices.contains(active_id)) {
             workspace_notices.erase(active_id);
-        } else if (!replace_notice.empty()) {
-            replace_notice.clear();
+        } else if (!replace_notice.text.empty()) {
+            replace_notice = {};
         } else if (!workspace_notices.empty()) {
             workspace_notices.erase(workspace_notices.begin());
         }
@@ -3784,15 +3823,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         focus_view(std::nullopt);
         forms.blur();
         clear_preedit();
-        if (!workspace_notice().empty() && mouse_x >= left + 12 * scale &&
-            mouse_x < right - 12 * scale && mouse_y >= content_bottom - 142 * scale &&
-            mouse_y < content_bottom - 106 * scale) {
-            command("ui.dismissWorkspaceNotice");
-            break;
-        }
-        if (recovery_available && mouse_x >= left + 12 * scale && mouse_x < right - 12 * scale &&
-            mouse_y >= content_bottom - 100 * scale && mouse_y < content_bottom - 64 * scale) {
-            command("ui.recovery");
+        if (chrome_layout.diagnostic.contains(mouse_x, mouse_y)) {
             break;
         }
         if (chrome_layout.previous.contains(mouse_x, mouse_y)) {
@@ -4076,14 +4107,25 @@ void EditorWindow::Impl::measure_layout(bool prepare_tabs) {
                           : 0,
                   visible});
     sync_chrome();
-    chrome_layout = chrome.measure_outer(geometry, ui_style, chrome_state, activity_first);
+    chrome_layout =
+        chrome.measure_outer(geometry, ui_style, chrome_state, activity_first, !error.empty());
     activity_first = chrome_layout.activity_first;
 }
 
 void EditorWindow::Impl::sync_chrome() {
+    auto notice = workspace_notice();
+    if (notice.size() > 4096) {
+        auto end = std::size_t{4096};
+        while (!utf8::is_boundary(notice, end))
+            --end;
+        notice.resize(end);
+    }
     Json context{{"workspace", options.workspace_name},
                  {"branch", workspace_branch},
                  {"message", status},
+                 {"notice", std::move(notice)},
+                 {"noticeSequence", workspace_notice_sequence()},
+                 {"recoveryAvailable", recovery_available},
                  {"activity", std::to_string(document_activity)},
                  {"activeView", active_view},
                  {"sidebarVisible", show_sidebar},
@@ -4964,37 +5006,6 @@ void EditorWindow::Impl::draw() {
                                   static_cast<float>(std::max(std::size_t{1}, lines - 1));
             rectangle(canvas, right - 7 * scale, y, 5 * scale, thumb, ui_style.colors.scrollbar);
         }
-    } else {
-        label(canvas,
-              "ASTRA",
-              left + 85 * scale,
-              content_top + 96 * scale,
-              40,
-              ui_style.colors.muted);
-        label(canvas,
-              "A focused place to write code.",
-              left + 88 * scale,
-              content_top + 159 * scale,
-              15,
-              ui_style.colors.muted);
-        label(canvas,
-              "New file        Ctrl+N",
-              left + 90 * scale,
-              content_top + 211 * scale,
-              13,
-              ui_style.colors.muted);
-        label(canvas,
-              "Open file       Ctrl+P",
-              left + 90 * scale,
-              content_top + 248 * scale,
-              13,
-              ui_style.colors.muted);
-        label(canvas,
-              "Commands        Ctrl+Shift+P",
-              left + 90 * scale,
-              content_top + 285 * scale,
-              13,
-              ui_style.colors.muted);
     }
 
     static_cast<void>(view_rows.paint(
@@ -5005,60 +5016,8 @@ void EditorWindow::Impl::draw() {
         ui_style,
         {"", outline.message(), false, true, mouse_x, mouse_y},
         {}));
-    if (recovery_available) {
-        rectangle(canvas,
-                  left + 12 * scale,
-                  content_bottom - 100 * scale,
-                  std::max(100 * scale, right - left - 24 * scale),
-                  36 * scale,
-                  ui_style.colors.recovery_background);
-        label(canvas,
-              "Unsaved recovery sessions are available — click to review",
-              left + 24 * scale,
-              content_bottom - 91 * scale,
-              12,
-              ui_style.colors.foreground);
-    }
-    if (const auto notice = workspace_notice(); !notice.empty()) {
-        rectangle(canvas,
-                  left + 12 * scale,
-                  content_bottom - 142 * scale,
-                  std::max(100 * scale, right - left - 24 * scale),
-                  36 * scale,
-                  ui_style.colors.notice_background);
-        canvas->save();
-        canvas->clipRect(SkRect::MakeLTRB(left + 24 * scale,
-                                          content_bottom - 142 * scale,
-                                          right - 44 * scale,
-                                          content_bottom - 106 * scale));
-        label(canvas,
-              notice,
-              left + 24 * scale,
-              content_bottom - 133 * scale,
-              12,
-              ui_style.colors.warning);
-        canvas->restore();
-        label(canvas,
-              "×",
-              right - 34 * scale,
-              content_bottom - 133 * scale,
-              13,
-              ui_style.colors.warning);
-    }
-    if (!error.empty()) {
-        rectangle(canvas,
-                  left + 12 * scale,
-                  content_bottom - 58 * scale,
-                  std::max(100 * scale, right - left - 24 * scale),
-                  46 * scale,
-                  ui_style.colors.error_background);
-        label(canvas,
-              error,
-              left + 24 * scale,
-              content_bottom - 44 * scale,
-              12,
-              ui_style.colors.foreground);
-    }
+    chrome.paint_body(
+        canvas, geometry, ui_style, chrome_state, chrome_layout, mouse_x, mouse_y, error);
     draw_inline_form(canvas);
     draw_prompt(canvas, width, height);
     if (screenshot) {
@@ -5269,6 +5228,7 @@ WorkbenchViewState EditorWindow::view_state() const {
     };
     result.chrome["previous"] = box_json(impl_->chrome_layout.previous);
     result.chrome["next"] = box_json(impl_->chrome_layout.next);
+    result.chrome["diagnostic"] = box_json(impl_->chrome_layout.diagnostic);
     result.chrome["targets"] = Json::array();
     for (const auto& item : impl_->chrome_layout.items)
         result.chrome["targets"].push_back(

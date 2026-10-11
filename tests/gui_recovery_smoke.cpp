@@ -5,6 +5,7 @@
 
 #include <SDL3/SDL.h>
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <future>
@@ -194,7 +195,31 @@ int main() {
         require(channel->received_available, "Lazy recovery discovery did not notify the GUI");
         window.request_screenshot("build/graphics/gui-recovery-available.png");
         settle(window);
-        window.execute_ui_command("ui.recovery");
+        const auto notice_targets = window.view_state().chrome.at("targets");
+        const auto recovery_target =
+            std::find_if(notice_targets.begin(), notice_targets.end(), [](const auto& target) {
+                return target.at("bank") == "notices" && target.at("row") == "recovery";
+            });
+        require(recovery_target != notice_targets.end(), "JS recovery notice is not visible");
+        const auto& recovery_box = recovery_target->at("bounds");
+        int window_width{}, window_height{}, pixels_width{}, pixels_height{};
+        require(SDL_GetWindowSize(window.window(), &window_width, &window_height) &&
+                    SDL_GetWindowSizeInPixels(window.window(), &pixels_width, &pixels_height),
+                "Cannot read recovery notice dimensions");
+        for (const auto type : {SDL_EVENT_MOUSE_BUTTON_DOWN, SDL_EVENT_MOUSE_BUTTON_UP}) {
+            SDL_Event pointer{};
+            pointer.type = type;
+            pointer.button.windowID = SDL_GetWindowID(window.window());
+            pointer.button.button = SDL_BUTTON_LEFT;
+            pointer.button.down = type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+            pointer.button.x =
+                (recovery_box.at("x").get<float>() + recovery_box.at("width").get<float>() / 2) *
+                static_cast<float>(window_width) / static_cast<float>(pixels_width);
+            pointer.button.y =
+                (recovery_box.at("y").get<float>() + recovery_box.at("height").get<float>() / 2) *
+                static_cast<float>(window_height) / static_cast<float>(pixels_height);
+            require(SDL_PushEvent(&pointer), "Cannot click real recovery notice");
+        }
         settle(window);
         window.request_screenshot("build/graphics/gui-recovery-sessions.png");
         settle(window);

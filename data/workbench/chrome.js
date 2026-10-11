@@ -4,17 +4,24 @@ export function registerChrome() {
     ui.registerChrome(present, { activate });
 }
 
-function caption(value, limit = 512) {
+function caption(value, limit = 512, byteLimit = Infinity) {
     let result = '',
-        count = 0;
+        count = 0,
+        bytes = 0;
     for (const scalar of String(value ?? '')) {
         if (count++ === limit) break;
-        result += /[\r\n\0]/.test(scalar) ? ' ' : scalar;
+        const text = /[\r\n\0]/.test(scalar) ? ' ' : scalar;
+        const size = astra.utf8ByteLength(text);
+        if (bytes + size > byteLimit) break;
+        bytes += size;
+        result += text;
     }
     return result;
 }
 
 function present(context) {
+    const shortcut = (name) =>
+        caption(astra.settings().workbench?.commands?.[name]?.shortcut, 32, 64);
     const command = (id, label, name, icon) => ({
         id,
         label,
@@ -23,7 +30,7 @@ function present(context) {
     });
     const model = {
         brand: 'Astra',
-        hint: caption(astra.settings().workbench?.commands?.['ui.commandPalette']?.shortcut, 32),
+        hint: shortcut('ui.commandPalette'),
         command: [
             command(
                 'commands',
@@ -44,8 +51,37 @@ function present(context) {
         statusLeft: [
             command('branch', caption(context.branch, 96) || 'Astra', 'ui.gitStatus', 'branch')
         ],
-        statusRight: []
+        statusRight: [],
+        welcomeTitle: [{ id: 'title', label: 'Astra' }],
+        welcomeDetail: [{ id: 'detail', label: 'A focused place to write code.' }],
+        welcomeActions: [
+            ['new', 'New file', 'ui.new', 'document'],
+            ['open', 'Open file', 'ui.quickOpen', 'search'],
+            ['commands', 'Commands', 'ui.commandPalette', 'settings']
+        ].map(([id, label, name, icon]) => ({
+            ...command(id, label, name, icon),
+            badge: shortcut(name)
+        })),
+        notices: []
     };
+    if (context.recoveryAvailable)
+        model.notices.push({
+            ...command(
+                'recovery',
+                'Unsaved recovery sessions are available',
+                'ui.recovery',
+                'document'
+            ),
+            tone: 'added',
+            badge: 'Review'
+        });
+    const notice = caption(context.notice);
+    if (notice)
+        model.notices.push({
+            ...command('workspace', notice, 'ui.dismissWorkspaceNotice', 'warning'),
+            tone: 'changed',
+            badge: 'Dismiss'
+        });
     const message = caption(context.message);
     if (message) model.statusLeft.push({ id: 'message', label: message });
     const document = context.document;
@@ -82,7 +118,13 @@ function present(context) {
 }
 
 async function activate(data, row, context) {
-    if (data?.action === 'command') return await ui.execute(data.name);
+    if (data?.action === 'command') {
+        const parameters =
+            data.name === 'ui.dismissWorkspaceNotice' && typeof context.noticeSequence === 'string'
+                ? { noticeSequence: context.noticeSequence }
+                : {};
+        return await ui.execute(data.name, parameters);
+    }
     if (data?.action === 'view') return await ui.showView(data.id);
     if (data?.action === 'reveal') {
         await ui.execute('ui.explorer');

@@ -377,6 +377,110 @@ void workbench_chrome(TextLayoutEngine& engine) {
             }
         }
     }
+    ChromeState body;
+    auto body_model = body.model();
+    body_model["welcomeTitle"] =
+        astra::protocol::Json::array({{{"id", "title"}, {"label", "Astra 中🙂"}}});
+    body_model["welcomeDetail"] =
+        astra::protocol::Json::array({{{"id", "detail"}, {"label", long_caption}}});
+    for (int index = 0; index < 3; ++index)
+        body_model["welcomeActions"].push_back({{"id", std::to_string(index)},
+                                                {"label", long_caption},
+                                                {"badge", "Ctrl+Shift+P"},
+                                                {"icon", "document"},
+                                                {"data", index}});
+    for (int index = 0; index < 2; ++index)
+        body_model["notices"].push_back({{"id", std::to_string(index)},
+                                         {"label", long_caption},
+                                         {"badge", "Review 中🙂"},
+                                         {"icon", "warning"},
+                                         {"tone", index ? "changed" : "added"},
+                                         {"data", index}});
+    body.sync({{"document", nullptr}});
+    require(body.publish({{"version", body.state().at("version")}, {"model", body_model}}),
+            "Cannot publish body fixture");
+    const auto diagnostic = std::string("\xFF") + "Host error\n中🙂 " + std::string(8192, 'x');
+    theme.colors.panel = 0xFF232323;
+    theme.colors.error_background = 0xFF381A1A;
+    theme.colors.recovery_background = 0xFF163018;
+    theme.colors.notice_background = 0xFF383018;
+    theme.colors.error = 0xFFF48771;
+    theme.colors.warning = 0xFFE0C060;
+    for (const auto size : {9.0F, 13.0F, 16.0F}) {
+        theme.font_size = size;
+        for (const auto scale : {0.75F, 1.0F, 1.5F, 2.0F}) {
+            for (const auto logical_width : {240.0F, 1000.0F}) {
+                for (const auto logical_height : {180.0F, 600.0F}) {
+                    const auto geometry = WorkbenchLayout::measure(logical_width * scale,
+                                                                   logical_height * scale,
+                                                                   scale,
+                                                                   true,
+                                                                   248,
+                                                                   true,
+                                                                   true,
+                                                                   size);
+                    const auto layout = chrome.measure_outer(geometry, theme, body, 0, true);
+                    const auto width = static_cast<int>(std::ceil(logical_width * scale + 8));
+                    const auto height = static_cast<int>(std::ceil(logical_height * scale + 8));
+                    const auto info = SkImageInfo::MakeN32Premul(width, height);
+                    const auto render = [&](float px, float py) {
+                        auto surface = SkSurfaces::Raster(info);
+                        auto* canvas = surface->getCanvas();
+                        canvas->clear(untouched);
+                        const auto saves = canvas->getSaveCount();
+                        const auto clip = canvas->getDeviceClipBounds();
+                        chrome.paint_body(
+                            canvas, geometry, theme, body, layout, px, py, diagnostic);
+                        require(canvas->getSaveCount() == saves &&
+                                    canvas->getDeviceClipBounds() == clip,
+                                "Body leaked its canvas ownership");
+                        std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width * height));
+                        require(surface->readPixels(
+                                    info, pixels.data(), width * sizeof(std::uint32_t), 0, 0),
+                                "Cannot read native body pixels");
+                        return pixels;
+                    };
+                    const auto pixels = render(-1, -1);
+                    const auto shaped = labels.statistics().shaped;
+                    require(render(-1, -1) == pixels && labels.statistics().shaped == shaped,
+                            "Warm body changed pixels or reshaped captions");
+                    require(layout.diagnostic.height > 0, "Host diagnostic is hidden");
+                    for (int y = 0; y < height; ++y)
+                        for (int x = 0; x < width; ++x)
+                            if (!geometry.editor.contains(static_cast<float>(x) + 0.5F,
+                                                          static_cast<float>(y) + 0.5F))
+                                require(pixels[static_cast<std::size_t>(y * width + x)] ==
+                                            untouched,
+                                        "Body painting escaped the document region");
+                    for (const auto& item : layout.items) {
+                        if (item.bank < ChromeBank::welcome_title)
+                            continue;
+                        require(item.bounds.x >= geometry.editor.x &&
+                                    item.bounds.right() <= geometry.editor.right() &&
+                                    item.bounds.y >= geometry.editor.y &&
+                                    item.bounds.bottom() <= geometry.editor.bottom(),
+                                "Body target escaped its owner");
+                        const auto hit = layout.hit(item.bounds.x + item.bounds.width / 2,
+                                                    item.bounds.y + item.bounds.height / 2);
+                        require(hit && hit->bank == item.bank && hit->index == item.index,
+                                "Body painted and hit different identities");
+                        require(item.bounds.bottom() <= layout.diagnostic.y,
+                                "Body row overlaps host diagnostics");
+                        if (item.bank == ChromeBank::notices)
+                            require(render(item.bounds.x + item.bounds.width / 2,
+                                           item.bounds.y + item.bounds.height / 2) != pixels,
+                                    "Notice action hover produced no native pixels");
+                    }
+                }
+            }
+        }
+    }
+    body.sync({{"document", "active"}});
+    const auto document_body = chrome.measure_outer(
+        WorkbenchLayout::measure(1000, 600, 1, true, 248, true, true), theme, body, 0);
+    for (const auto& item : document_body.items)
+        require(item.bank < ChromeBank::welcome_title || item.bank == ChromeBank::notices,
+                "Retained welcome pixels overlay an active document");
     auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(1000, 360));
     require(surface != nullptr, "Cannot create chrome failure surface");
     auto* canvas = surface->getCanvas();
@@ -399,7 +503,8 @@ void workbench_chrome(TextLayoutEngine& engine) {
     chrome.paint_sidebar(canvas, hidden, theme, {"Hidden", "Hidden", "Hidden"});
     require(labels.statistics().shaped == shaped, "Hidden sidebar prepared captions");
     std::cout << "Native workbench chrome: Unicode elision, control separation, font/DPI pixels, "
-                 "hover/cancel, warm reuse and canvas failure ownership: PASS\n";
+                 "welcome/notice/host diagnostic pixels, hover/cancel, warm reuse and canvas "
+                 "failure ownership: PASS\n";
 }
 
 void text_fields(TextLayoutEngine& engine) {

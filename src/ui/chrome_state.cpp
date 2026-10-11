@@ -1,5 +1,6 @@
 #include <astra/ui/chrome_state.hpp>
 #include <astra/core/utf8.hpp>
+#include <algorithm>
 #include <limits>
 #include <utility>
 
@@ -8,6 +9,8 @@ using Json = protocol::Json;
 
 namespace {
 void caption(const Json& value) {
+    if (!value.is_string())
+        throw protocol::RpcError(-32602, "Chrome caption must be a string");
     const auto text = value.get<std::string>();
     if (text.size() > 128 || text.find_first_of("\r\n") != text.npos ||
         text.find('\0') != text.npos)
@@ -55,15 +58,33 @@ bool ChromeState::publish(const Json& params) {
     if (params.size() != 2 || !params.contains("model"))
         throw protocol::RpcError(-32602, "Chrome publication requires version and model");
     auto candidate = params.at("model");
-    if (!candidate.is_object() || candidate.size() != 8 || candidate.dump().size() > 64 * 1024)
-        throw protocol::RpcError(-32602,
-                                 "Chrome model requires six bounded row banks and captions");
+    if (!candidate.is_object())
+        throw protocol::RpcError(-32602, "Chrome model must be an object");
+    if (!candidate.contains("brand") || !candidate.contains("hint"))
+        throw protocol::RpcError(-32602, "Chrome model requires brand and hint");
+    for (std::size_t bank = 0; bank < 6; ++bank)
+        if (!candidate.contains(chrome_banks[bank]))
+            throw protocol::RpcError(-32602, "Chrome model requires its outer row banks");
+    for (const auto& [field, unused] : candidate.items()) {
+        static_cast<void>(unused);
+        if (field != "brand" && field != "hint" &&
+            std::find(chrome_banks.begin(), chrome_banks.end(), field) == chrome_banks.end())
+            throw protocol::RpcError(-32602, "Unknown chrome model field");
+    }
+    // Existing providers may omit the body banks. Normalize them before the
+    // whole-model byte admission and prepare every bank before publication.
+    for (std::size_t bank = 6; bank < chrome_banks.size(); ++bank)
+        if (!candidate.contains(chrome_banks[bank]))
+            candidate[chrome_banks[bank]] = Json::array();
+    if (candidate.dump().size() > 64 * 1024)
+        throw protocol::RpcError(-32602, "Chrome model exceeds 64 KiB");
     caption(candidate.at("brand"));
     caption(candidate.at("hint"));
-    std::array<ViewIndex, 6> prepared;
+    std::array<ViewIndex, chrome_banks.size()> prepared;
     for (std::size_t bank = 0; bank < chrome_banks.size(); ++bank) {
         const auto& values = candidate.at(chrome_banks[bank]);
-        const auto maximum = bank == 0 || bank == 2 ? 1U : bank == 1 ? 16U : 32U;
+        constexpr std::array<unsigned, 10> capacities{1, 16, 1, 32, 32, 32, 1, 1, 8, 8};
+        const auto maximum = capacities[bank];
         if (!values.is_array() || values.size() > maximum)
             throw protocol::RpcError(-32602, "Chrome row bank exceeds its capacity");
         for (const auto& value : values) {
@@ -72,7 +93,8 @@ bool ChromeState::publish(const Json& params) {
             for (const auto& [field, unused] : value.items()) {
                 static_cast<void>(unused);
                 if (field != "id" && field != "label" && field != "icon" && field != "tone" &&
-                    field != "iconTone" && field != "selected" && field != "data")
+                    field != "iconTone" && field != "selected" && field != "data" &&
+                    !(field == "badge" && bank >= 8))
                     throw protocol::RpcError(-32602, "Unknown chrome row field");
             }
         }

@@ -7,9 +7,28 @@
 #include <string_view>
 
 namespace astra::ui {
-enum class ChromeBank { command, activity, manage, breadcrumb, status_left, status_right };
-inline constexpr std::array<std::string_view, 6> chrome_banks{
-    "command", "activity", "manage", "breadcrumb", "statusLeft", "statusRight"};
+enum class ChromeBank {
+    command,
+    activity,
+    manage,
+    breadcrumb,
+    status_left,
+    status_right,
+    welcome_title,
+    welcome_detail,
+    welcome_actions,
+    notices
+};
+inline constexpr std::array<std::string_view, 10> chrome_banks{"command",
+                                                               "activity",
+                                                               "manage",
+                                                               "breadcrumb",
+                                                               "statusLeft",
+                                                               "statusRight",
+                                                               "welcomeTitle",
+                                                               "welcomeDetail",
+                                                               "welcomeActions",
+                                                               "notices"};
 
 // Owner-local, bounded presentation publication. All captions and actions are
 // supplied by JS; retained old pixels cannot activate after context invalidation.
@@ -33,6 +52,10 @@ class ChromeState final {
         return model_;
     }
 
+    [[nodiscard]] const protocol::Json& context() const noexcept {
+        return context_;
+    }
+
     [[nodiscard]] bool needs_request() const noexcept {
         return dirty_;
     }
@@ -44,7 +67,7 @@ class ChromeState final {
   private:
     void invalidate(protocol::Json);
     protocol::Json context_, model_;
-    std::array<ViewIndex, 6> rows_;
+    std::array<ViewIndex, chrome_banks.size()> rows_;
     std::uint64_t version_{}, published_{};
     bool dirty_{}, pending_{};
 };

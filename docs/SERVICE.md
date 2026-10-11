@@ -671,10 +671,12 @@ the measured semantic index. Native highlight requests use `includeOutline:false
 highlight preparation and Outline policy are independent clients of shared parsing.
 
 `astra.ui.registerChrome(provider, handlers = {}, {timeoutMs = 30000} = {})`
-installs local policy for the outer workbench. Registration performs no I/O and
+installs local policy for the workbench and empty-editor body. Registration performs no I/O and
 returns the previous frozen `{provider, handlers, timeoutMs}` registration.
 The provider receives `(context, {signal, timeoutMs})` and may return a Promise.
-`context` contains workspace/branch/message, active view and sidebar visibility,
+`context` contains workspace/branch/message, bounded notice text, decimal-string
+`noticeSequence` identifying the selected original notice, recovery availability,
+active view and sidebar visibility,
 the bounded registered view descriptors, active-document activity, and optional
 document identity/revision/metadata sequence/path/encoding/indent/language data.
 The primary caret has zero-based `line`, `utf16Column` and, when a matching
@@ -686,8 +688,17 @@ The model requires `brand`, `hint`, and six arrays: `command`, `activity`, `mana
 32 each. Rows are flat immutable measured descriptors: `id`, `label`, optional
 `icon`, `tone`, `iconTone`, `selected` and `data`. `selected` marks icon buttons;
 text items use their tone. The shared `settings` glyph is also available.
+Four optional arrays extend that same model: `welcomeTitle`, `welcomeDetail`
+(at most one row each), `welcomeActions`, and `notices` (at most eight each).
+Omitted body banks normalize to empty arrays before the complete byte admission.
+Action/notice rows additionally allow `badge` (64 bytes). Welcome captions use
+native title/detail roles; actions place a separate shortcut badge. Welcome
+targets are hidden as soon as an active document exists. Earlier notice rows
+have higher fit priority within the reserved body area. In notices, `added`
+uses the recovery surface, `changed` uses the warning surface, and `error` uses
+the error surface; other tones use the panel. These roles do not imply commands.
 `handlers.activate(data, row, context, bank)` receives a native-fenced original
-descriptor. Caption, view-selection, path-navigation and status actions have no
+descriptor. Caption, view-selection, path-navigation, welcome and notice actions have no
 native product fallback. Earlier right status items have higher fit priority;
 native layout exposes overflowing activity items through controls and wheel
 navigation, and retains fitting final path components.
@@ -706,7 +717,20 @@ pending publication and surface their error. `await chrome.suspend()` returns
 the prior suspension state, cancels the wait and invalidates actions;
 `await chrome.resume()` refreshes current policy. Exit policy suspends before
 its first idle fence and resumes afterwards. Agent presentation state adds
-the original chrome snapshot, activity page and bounded visible target boxes.
+the original chrome snapshot, activity page and bounded visible target boxes,
+including the host diagnostic box. Host failures use a separate direct native
+diagnostic caption so a failed provider cannot hide its own error. Display is
+bounded and single-line; the original error remains in host state. That region
+blocks editor pointer fallthrough and has no product action.
+
+The shipped workspace-notice action forwards its captured `noticeSequence` through
+the registered `ui.dismissWorkspaceNotice` command. At the native mutation boundary,
+`await astra.ui.native('ui.dismissWorkspaceNotice', {noticeSequence})` returns false
+without clearing anything if that original notice has changed, or true after clearing
+the matching notice. This also fences changes arriving while a custom command handler
+awaits other work. Display truncation does not define notice identity. Explicit command
+execution without a sequence dismisses the currently selected notice; replacement
+handlers should forward the supplied parameters to preserve captured-action semantics.
 
 `astra.ui.registerOutline(spec, provider, handlers = {})` installs local policy for
 the active document's Outline pane. `spec.loading` is its pending message.

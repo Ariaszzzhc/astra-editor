@@ -5480,6 +5480,92 @@ TEST_CASE("workbench JS chrome projects coordinates paths and dispatches registe
     CHECK(workbench.idle());
 }
 
+TEST_CASE("workbench JS chrome body projects welcome notice and recovery command policy") {
+    auto channel = std::make_shared<Channel>();
+    astra::ui::ChromeState state;
+    state.sync({{"workspace", "Body"},
+                {"views", Json::array()},
+                {"document", nullptr},
+                {"activeView", "explorer"},
+                {"sidebarVisible", false},
+                {"accepting", true},
+                {"recoveryAvailable", true},
+                {"noticeSequence", "17"},
+                {"notice", "File changed 中🙂\nBuffer preserved"}});
+    std::vector<std::string> actions;
+    Json notice_parameters;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.chrome.publish")
+                return ready(state.publish(params));
+            if (method == "_ui.chrome.activate")
+                return ready(state.activate(params.at("version").get<std::string>(),
+                                            params.at("bank").get<std::string>(),
+                                            params.at("row").get<std::string>()));
+            if (method == "_ui.chrome.reject")
+                return ready(state.reject(params.at("version").get<std::string>()));
+            REQUIRE(method == "_ui.update");
+            if (params.contains("capturedNotice")) {
+                notice_parameters = params.at("capturedNotice");
+                return ready(nullptr);
+            }
+            actions.push_back(params.at("status").get<std::string>());
+            return ready(nullptr);
+        },
+        modules(),
+        R"js(
+        for (const name of ['ui.new','ui.quickOpen','ui.commandPalette','ui.recovery','ui.dismissWorkspaceNotice']) {
+            astra.registerCommand(name, async (parameters) => {
+                if (name === 'ui.dismissWorkspaceNotice')
+                    await astra.ui.update({capturedNotice:parameters});
+                await astra.ui.update({status:name});
+            });
+        }
+        astra.registerCommand('acceptance.body.unicodeBadge', () => {
+            astra.configure({workbench:{commands:{'ui.new':{shortcut:'🙂'.repeat(20)}}}});
+        });
+        )js");
+    workbench.emit("ui.chrome.request", *state.take_request());
+    for (int tick = 0; tick < 24; ++tick)
+        workbench.poll();
+    REQUIRE_FALSE(state.pending());
+    CHECK(state.model().at("welcomeTitle")[0].at("label") == "Astra");
+    CHECK(state.model().at("welcomeActions")[0].at("badge") == "Ctrl+N");
+    CHECK(state.model().at("notices")[0].at("badge") == "Review");
+    CHECK(state.model().at("notices")[1].at("label") == "File changed 中🙂 Buffer preserved");
+    for (const auto [bank, row] : {std::pair{"welcomeActions", "new"},
+                                   {"welcomeActions", "open"},
+                                   {"welcomeActions", "commands"},
+                                   {"notices", "recovery"},
+                                   {"notices", "workspace"}}) {
+        workbench.execute("workbench.chrome.activate",
+                          {{"version", state.state().at("version")}, {"bank", bank}, {"row", row}},
+                          {});
+        for (int tick = 0; tick < 24; ++tick)
+            workbench.poll();
+    }
+    const std::vector<std::string> expected{
+        "ui.new", "ui.quickOpen", "ui.commandPalette", "ui.recovery", "ui.dismissWorkspaceNotice"};
+    CHECK(actions == expected);
+    CHECK(notice_parameters == Json{{"noticeSequence", "17"}});
+    workbench.execute("acceptance.body.unicodeBadge", Json::object(), {});
+    for (int tick = 0; tick < 24; ++tick)
+        workbench.poll();
+    state.refresh();
+    workbench.emit("ui.chrome.request", *state.take_request());
+    for (int tick = 0; tick < 24; ++tick)
+        workbench.poll();
+    REQUIRE_FALSE(state.pending());
+    std::string expected_badge;
+    for (int scalar = 0; scalar < 16; ++scalar)
+        expected_badge += "🙂";
+    CHECK(state.model().at("welcomeActions")[0].at("badge") == expected_badge);
+    CHECK(channel->requests.empty());
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
+
 TEST_CASE("workbench JS chrome retired provider failure is suppressed before its next event") {
     auto channel = std::make_shared<Channel>();
     astra::ui::ChromeState state;

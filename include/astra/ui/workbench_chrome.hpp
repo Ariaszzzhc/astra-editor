@@ -36,7 +36,7 @@ class WorkbenchChrome final {
 
     struct OuterLayout {
         std::vector<Item> items;
-        Box previous, next;
+        Box previous, next, diagnostic;
         std::size_t activity_first{}, activity_page{};
         [[nodiscard]] std::optional<Item> hit(float x, float y) const;
     };
@@ -50,7 +50,8 @@ class WorkbenchChrome final {
     [[nodiscard]] OuterLayout measure_outer(const WorkbenchLayout&,
                                             const WorkbenchStyle&,
                                             const ChromeState&,
-                                            std::size_t activity_first);
+                                            std::size_t activity_first,
+                                            bool diagnostic = false);
     void paint_outer(SkCanvas*,
                      const WorkbenchLayout&,
                      const WorkbenchStyle&,
@@ -58,6 +59,16 @@ class WorkbenchChrome final {
                      const OuterLayout&,
                      float pointer_x,
                      float pointer_y);
+    // Paint after document content; these targets share the outer publication
+    // and hit geometry. Host diagnostics remain visible if a JS provider fails.
+    void paint_body(SkCanvas*,
+                    const WorkbenchLayout&,
+                    const WorkbenchStyle&,
+                    const ChromeState&,
+                    const OuterLayout&,
+                    float pointer_x,
+                    float pointer_y,
+                    std::string_view diagnostic = {});
 
     [[nodiscard]] static std::optional<Target>
     hit_sidebar(const WorkbenchLayout& geometry, float x, float y) {
