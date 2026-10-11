@@ -20,6 +20,96 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### JS-owned outer chrome (2026-10-11)
+
+The shipped `data/workbench/chrome.js` supplies the brand, command hint, activity
+and management buttons, segmented document path and left/right status items.
+It formats native caret metrics explicitly as visual columns or UTF-16 columns,
+and owns command/view/Explorer-reveal actions. User scripts can replace and
+restore the asynchronous provider and handler through `ui.registerChrome` and
+Promise-based `ui.chrome` primitives. The native window no longer contains the
+old activity paint/hit loop, path caption, or status-string formatting policy.
+
+Native `ChromeState` fences the complete owner context, including active-document
+activity, revision, metadata sequence and primary-caret coordinates. Six bounded
+row banks use immutable measured `ViewIndex` snapshots. Candidate validation is
+atomic, generations are immutable, and pending/failed/retired pixels cannot
+activate. Models are capped at 64 KiB, activity at 16 rows, path/status banks at
+32 rows each, and command/manage at one row each. `WorkbenchChrome` measures and
+paints the same targets. Activity overflow has pointer controls and wheel
+navigation; path layout retains fitting final segments; status admission keeps
+left/right targets separate and favors earlier right-hand items. All captions
+use configured UI fonts and shared native grapheme-aware elision.
+
+Provider waits have a configurable 1..30,000 ms deadline, bounded host requests,
+supersession cancellation, late-error suppression and retained failure pixels.
+JS exit policy suspends chrome before its first idle fence, and resumes
+it when that attempt finishes, so a signal-ignoring provider cannot force exit
+to wait for its deadline. Status messages now have the same validated 4 KiB
+single-line UTF-8 bound as other window labels. Agent state exposes the original
+model/context and visible target identities/rectangles.
+
+Windows evidence and retained failures:
+
+- Initial targeted build failed with MSVC C4244/C2220 for an integer reference
+  font size passed to a float interface (`outer-chrome-build-debug.log`). Float
+  literals fixed the warning; no suppression was introduced.
+- Corrected build and focused tests passed
+  (`outer-chrome-build-fixed-debug.log`, `outer-chrome-focused-debug.log`): six
+  cases / 67,410 assertions. Native publication coverage uses 2,000 rounds with
+  seed `0xA57A9B`, preserving old snapshots and checking action guards and atomic
+  malformed/capacity rejection.
+- Expanded GUI-test build failed with MSVC C2666 for ambiguous JSON/string-view
+  equality (`outer-chrome-build-expanded-debug.log`). Explicit original-string
+  reads fixed the comparison (`outer-chrome-build-expanded-fixed-debug.log`).
+- `./build/windows/x64/debug/viewport-layout-tests.exe --chrome` passed
+  (`outer-chrome-native-pixels-debug.log`). Actual native-font pixels cover three
+  UI sizes, four DPI values and narrow/wide windows: bounded overflowing activity
+  targets, hit identity, separated status items, hover pixels, warm-cache reuse
+  and canvas/clip ownership.
+- Final formatting/build passed (`outer-chrome-format-final-debug.log`,
+  `outer-chrome-build-final-debug.log`), covering 190 C++ and 15 JS files.
+  `./build/windows/x64/debug/astra-tests.exe
+  '--test-case=presentation chrome*,workbench JS chrome*' --no-version` passed
+  seven cases / 67,418 assertions (`outer-chrome-focused-final-debug.log`). Added
+  behavior covers native-context retirement before the next JS event, original
+  path/coordinate projection, registered action dispatch, deadline settlement and
+  cancellation of a signal-ignoring provider on a nonaccepting context.
+- Real `gui-presentation-smoke.exe` passed custom Unicode header/manage/path/
+  status actions, activity overflow and restoration, but exited 1 on the new
+  signal-ignoring-provider shutdown case (`build/outer-chrome-gui-debug.log`).
+  The preserved fixture is `build/graphics/gui-presentation-348120284800500`.
+  Exit policy suspended too late: its first idle fence still awaited the provider.
+  Suspension now surrounds the whole exit workflow, with restoration in `finally`.
+  Formatting/build and the seven focused cases / 67,418 assertions passed again
+  (`outer-chrome-format-exit-fixed-debug.log`, `outer-chrome-build-exit-fixed-debug.log`,
+  `outer-chrome-focused-exit-fixed-debug.log`). Fresh
+  `./scripts/test.ps1 -Mode all -Gui` exited 0 on this fixed source and unchanged
+  runtime resources (`build/outer-chrome-acceptance-all.log`). Debug passed all
+  621 cases / 2,690,270 assertions; Release passed all 621 cases / 2,690,183
+  assertions, with no failed or skipped cases. Both modes passed native GPU/text
+  checks, editing/services/recovery/workspace GUI workflows, presentation including
+  custom chrome actions, overflow/restoration and signal-ignoring-provider exit,
+  and the TCP editing variant. Packaging helpers passed 12 checks and shaping
+  provenance passed seven tests. This is not a new packaged distribution.
+  Inspected the current `build/graphics/gui-outer-chrome-custom.png` and
+  `gui-workbench.png`: original Unicode captions, fitting path segments,
+  separated status banks and bounded activity controls are visible. These
+  fixture captures do not establish whole-product visual acceptance.
+- Final `./scripts/format.ps1 -Check -Offline` passed for 190 C++ / 15 JS files
+  (`outer-chrome-final-format-check.log`), and `git diff --check` passed. Restored
+  Debug with `./scripts/xmake.ps1 f -m debug -y`, then
+  `./scripts/xmake.ps1 build -y -j 2 astra` passed
+  (`outer-chrome-final-debug-config.log`, `outer-chrome-final-debug-build.log`).
+
+This Windows increment is validated; the full revision is still in progress.
+The empty-editor welcome
+captions and recovery/notice presentation still live in `EditorWindow::draw`,
+with fixed offsets and separate pointer rectangles. Moving that product policy
+to JS and sharing bounded native geometry, complete font adaptation outside
+these components, whole-product visual acceptance, physical installed-IME
+acceptance and a new distribution remain part of the full requested revision.
+
 ### JS-owned Outline pages and actions (2026-10-11)
 
 The shipped `data/workbench/outline.js` now owns visible symbol queries,

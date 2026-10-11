@@ -4,6 +4,43 @@ export const ui = {
     read: (parameters = {}, options) => read(parameters, options),
     update: (model) => request('_ui.update', model),
     selectObject,
+    chrome: {
+        read: (options) => request('_ui.chrome.read', {}, options),
+        refresh: (options) => request('_ui.chrome.refresh', {}, options),
+        publish: (model, options) => request('_ui.chrome.publish', model, options),
+        async suspend(options) {
+            const previous = chromeSuspended;
+            chromeSuspended = true;
+            chromeControl?.abort();
+            publishedChrome = undefined;
+            if (lastChromeSnapshot) await ui.chrome.refresh(options);
+            return previous;
+        },
+        async resume(options) {
+            chromeSuspended = false;
+            if (lastChromeSnapshot) return await ui.chrome.refresh(options);
+            return null;
+        }
+    },
+    registerChrome(provider, handlers = {}, { timeoutMs = 30000 } = {}) {
+        if (
+            typeof provider !== 'function' ||
+            !handlers ||
+            typeof handlers !== 'object' ||
+            (handlers.activate !== undefined && typeof handlers.activate !== 'function') ||
+            !Number.isInteger(timeoutMs) ||
+            timeoutMs < 1 ||
+            timeoutMs > 30000
+        )
+            throw new TypeError('Invalid chrome provider');
+        const previous = chromeProvider;
+        chromeProvider = Object.freeze({
+            provider,
+            handlers: Object.freeze({ ...handlers }),
+            timeoutMs
+        });
+        return previous;
+    },
     outline: {
         read: (options) => request('_ui.outline.read', {}, options),
         publish: (model, options) => request('_ui.outline.publish', model, options),
@@ -545,16 +582,25 @@ async function dynamicPick(spec, options = {}) {
 }
 // Race cancellation even for a user provider which ignores its signal. Observe
 // both outcomes; its late continuation cannot publish to a newer query/dialog.
-async function providerWork(work, signal) {
+async function providerWork(work, signal, timeoutMs) {
     let abort;
     const cancelledWork = new Promise((_, reject) => {
-        abort = () => reject(cancelled('Picker query cancelled'));
+        abort = () => reject(cancelled('Provider cancelled'));
         signal.addEventListener('abort', abort);
         if (signal.aborted) abort();
     });
+    const timer = timeoutMs === undefined ? undefined : new AbortController();
+    const expired = timer
+        ? astra.sleep(timeoutMs, { signal: timer.signal }).then(() => {
+              throw Object.assign(new Error('Provider deadline exceeded'), {
+                  name: 'TimeoutError'
+              });
+          })
+        : undefined;
     try {
-        return await Promise.race([work, cancelledWork]);
+        return await Promise.race(expired ? [work, cancelledWork, expired] : [work, cancelledWork]);
     } finally {
+        timer?.abort();
         signal.removeEventListener('abort', abort);
     }
 }
@@ -610,6 +656,53 @@ astra.on('ui.picker.query', async ({ id, generation, query }) => {
         }
     }
 });
+let chromeProvider, chromeControl, publishedChrome, lastChromeSnapshot;
+let chromeSuspended = false;
+astra.on('ui.chrome.request', async (snapshot) => {
+    lastChromeSnapshot = snapshot;
+    chromeControl?.abort();
+    const control = new AbortController();
+    chromeControl = control;
+    publishedChrome = undefined;
+    const registration = chromeProvider;
+    if (!registration || chromeSuspended || snapshot.context.accepting === false) return;
+    const current = () => chromeControl === control && !control.signal.aborted;
+    const options = { signal: control.signal, timeoutMs: registration.timeoutMs };
+    try {
+        const model = await providerWork(
+            Promise.resolve().then(() =>
+                registration.provider(Object.freeze(snapshot.context), options)
+            ),
+            control.signal,
+            registration.timeoutMs
+        );
+        if (!current()) return;
+        if (await ui.chrome.publish({ version: snapshot.version, model }, options)) {
+            if (current()) publishedChrome = { version: snapshot.version, registration };
+        }
+    } catch (error) {
+        if (!current()) return;
+        const accepted = await request('_ui.chrome.reject', { version: snapshot.version }, options);
+        if (accepted && current() && error?.name !== 'AbortError') throw error;
+    } finally {
+        control.abort();
+    }
+});
+ui.registerCommand(
+    { id: 'workbench.chrome.activate', title: 'Activate chrome item', palette: false },
+    async ({ version, bank, row }) => {
+        const publication = publishedChrome;
+        if (!publication || publication.version !== version) return null;
+        const selected = await request('_ui.chrome.activate', { version, bank, row });
+        if (!selected || publishedChrome !== publication) return null;
+        return await publication.registration.handlers.activate?.(
+            selected.row.data,
+            selected.row,
+            selected.context,
+            selected.bank
+        );
+    }
+);
 let outlineProvider, outlineControl, publishedOutline;
 function outlineGuard(snapshot) {
     return {

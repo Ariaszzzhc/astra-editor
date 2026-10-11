@@ -1725,6 +1725,83 @@ TEST_CASE("presentation chrome shares font-aware bounded heading and action geom
     CHECK(store.at("custom").spec == before);
 }
 
+TEST_CASE("presentation chrome publications retain pixels but fence stale actions") {
+    using namespace astra::ui;
+    using Json = astra::protocol::Json;
+    ChromeState state;
+    auto model = state.model();
+    model["brand"] = "Astra 中🙂";
+    model["command"] = Json::array(
+        {{{"id", "commands"}, {"label", "Workspace"}, {"data", {{"action", "command"}}}}});
+    model["activity"] = Json::array({{{"id", "files"}, {"label", "Explorer"}, {"icon", "files"}}});
+    model["manage"] = Json::array({{{"id", "manage"}, {"label", "Manage"}, {"icon", "settings"}}});
+    std::mt19937 random(0xA57A9B);
+    for (unsigned round = 0; round < 2000; ++round) {
+        const auto context = Json{{"document", std::to_string(round)}, {"caret", random() % 10000}};
+        state.sync(context);
+        const auto request = *state.take_request();
+        CHECK(state.pending());
+        CHECK_FALSE(state.needs_request());
+        CHECK(state.activate(request.at("version").get<std::string>(), "command", "commands")
+                  .is_null());
+        CHECK(state.publish({{"version", request.at("version")}, {"model", model}}));
+        const auto before = state.state();
+        const auto retained = state.rows(ChromeBank::activity).snapshot();
+        CHECK_FALSE(state.publish({{"version", request.at("version")}, {"model", model}}));
+        CHECK(state.state() == before);
+        const auto selected =
+            state.activate(request.at("version").get<std::string>(), "command", "commands");
+        REQUIRE_FALSE(selected.is_null());
+        CHECK(selected.at("context") == context);
+        CHECK(selected.at("row").at("data").at("action") == "command");
+        state.refresh();
+        CHECK(state.pending());
+        CHECK(state.model() == model);
+        CHECK(state.activate(request.at("version").get<std::string>(), "command", "commands")
+                  .is_null());
+        CHECK_FALSE(state.reject(request.at("version").get<std::string>()));
+        CHECK(state.reject(state.state().at("version").get<std::string>()));
+        CHECK_FALSE(state.pending());
+        CHECK(state.activate(state.state().at("version").get<std::string>(), "command", "commands")
+                  .is_null());
+        CHECK(retained.at(0).value->at("id") == "files");
+    }
+}
+
+TEST_CASE("presentation chrome candidate failure cannot partially publish row banks") {
+    using Json = astra::protocol::Json;
+    astra::ui::ChromeState state;
+    state.sync({{"document", "1"}});
+    auto model = state.model();
+    model["statusRight"] = Json::array({{{"id", "caret"}, {"label", "Ln 1"}}});
+    REQUIRE(state.publish({{"version", state.state().at("version")}, {"model", model}}));
+    state.refresh();
+    const auto before = state.state();
+    for (const auto failure : {"duplicate", "group", "caption", "capacity", "data", "field"}) {
+        auto bad = model;
+        bad["brand"] = "Changed candidate";
+        bad["command"] = Json::array({{{"id", "new"}, {"label", "New command"}}});
+        if (std::string_view(failure) == "duplicate")
+            bad["statusRight"].push_back(bad["statusRight"][0]);
+        if (std::string_view(failure) == "group")
+            bad["statusRight"][0]["group"] = true;
+        if (std::string_view(failure) == "caption")
+            bad["hint"] = "Bad\nCaption";
+        if (std::string_view(failure) == "capacity")
+            for (int index = 0; index < 17; ++index)
+                bad["activity"].push_back({{"id", std::to_string(index)}, {"label", "View"}});
+        if (std::string_view(failure) == "data")
+            bad["statusRight"][0]["data"] = std::string(8193, 'x');
+        if (std::string_view(failure) == "field")
+            bad["extra"] = true;
+        CHECK_THROWS(
+            static_cast<void>(state.publish({{"version", before.at("version")}, {"model", bad}})));
+        CHECK(state.state() == before);
+    }
+    CHECK_FALSE(state.publish({{"version", "0"}, {"model", nullptr}}));
+    CHECK(state.state() == before);
+}
+
 TEST_CASE("presentation tabs use measured labels reveal active tabs and expose close hits") {
     auto strip = measure_tabs({44, 32, 600, 34}, 1, {40, 150, 20}, 0, 0, true);
     REQUIRE(strip.visible.size() == 3);

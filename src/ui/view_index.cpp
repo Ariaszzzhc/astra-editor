@@ -41,7 +41,7 @@ ViewRow parse(const Json& value, std::size_t ordinal) {
         throw protocol::RpcError(-32602, "Unknown view icon tone");
     if (!icon.empty() && icon != "files" && icon != "search" && icon != "branch" &&
         icon != "folder" && icon != "document" && icon != "code" && icon != "braces" &&
-        icon != "symbol" && icon != "function" && icon != "warning")
+        icon != "symbol" && icon != "function" && icon != "warning" && icon != "settings")
         throw protocol::RpcError(-32602, "Unknown view icon");
     if (!tone.empty() && tone != "normal" && tone != "muted" && tone != "added" &&
         tone != "changed" && tone != "error")

@@ -5,6 +5,7 @@
 #include <astra/ui/view_store.hpp>
 #include <astra/ui/picker_index.hpp>
 #include <astra/ui/view_page.hpp>
+#include <astra/ui/chrome_state.hpp>
 #include <astra/io/file_store.hpp>
 #include <doctest/doctest.h>
 
@@ -63,6 +64,7 @@ std::map<std::string, std::string> modules() {
                                             {"astra/recovery", "recovery.js"},
                                             {"astra/lifecycle", "lifecycle.js"},
                                             {"astra/outline", "outline.js"},
+                                            {"astra/chrome", "chrome.js"},
                                             {"astra/commands", "commands.js"},
                                             {"astra/workbench", "workbench.js"}}) {
         result[name] = astra::io::read_file(std::filesystem::path("data/workbench") / file).text;
@@ -5408,6 +5410,175 @@ TEST_CASE("workbench JS Outline retired failures stay quiet before the next view
     CHECK_FALSE(page.pending());
     REQUIRE(page.rows().size() == 1);
     CHECK(page.rows().at(0).value->at("id") == "current");
+    CHECK(workbench.take_errors().empty());
+    CHECK(channel->requests.empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench JS chrome projects coordinates paths and dispatches registered actions") {
+    auto channel = std::make_shared<Channel>();
+    astra::ui::ChromeState state;
+    state.sync(
+        {{"workspace", "Workspace 中🙂"},
+         {"branch", "main"},
+         {"message", "Ready"},
+         {"activity", "7"},
+         {"activeView", "explorer"},
+         {"sidebarVisible", true},
+         {"accepting", true},
+         {"views", Json::array({{{"id", "explorer"}, {"title", "Explorer"}, {"icon", "files"}}})},
+         {"document",
+          {{"id", "1"},
+           {"revision", "3"},
+           {"path", "src/中🙂/module.cpp"},
+           {"encoding", "UTF-8"},
+           {"tabSize", 4},
+           {"insertSpaces", true},
+           {"languageActive", true},
+           {"caret", {{"line", 2}, {"utf16Column", 4}, {"visualColumn", 7}}}}}});
+    unsigned activated{};
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.chrome.publish")
+                return ready(state.publish(params));
+            if (method == "_ui.chrome.activate")
+                return ready(state.activate(params.at("version").get<std::string>(),
+                                            params.at("bank").get<std::string>(),
+                                            params.at("row").get<std::string>()));
+            REQUIRE(method == "_ui.update");
+            CHECK(params.at("status") == "Registered header action");
+            ++activated;
+            return ready(nullptr);
+        },
+        modules(),
+        R"js(
+        astra.registerCommand('ui.commandPalette', async () => {
+            await astra.ui.update({status: 'Registered header action'});
+        });
+    )js");
+    workbench.emit("ui.chrome.request", *state.take_request());
+    for (int tick = 0; tick < 24; ++tick)
+        workbench.poll();
+    REQUIRE_FALSE(state.pending());
+    CHECK(state.model().at("brand") == "Astra");
+    CHECK(state.model().at("hint") == "Ctrl+Shift+P");
+    CHECK(state.model().at("activity")[0].at("selected") == true);
+    CHECK(state.model().at("breadcrumb").size() == 3);
+    CHECK(state.model().at("breadcrumb")[1].at("label") == "中🙂");
+    CHECK(state.model().at("statusRight")[0].at("label") == "Ln 3, Col 8");
+    CHECK(state.model().at("statusRight")[2].at("label") == "Spaces: 4");
+    workbench.execute(
+        "workbench.chrome.activate",
+        {{"version", state.state().at("version")}, {"bank", "command"}, {"row", "commands"}},
+        {});
+    for (int tick = 0; tick < 24; ++tick)
+        workbench.poll();
+    CHECK(activated == 1);
+    CHECK(channel->requests.empty());
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench JS chrome retired provider failure is suppressed before its next event") {
+    auto channel = std::make_shared<Channel>();
+    astra::ui::ChromeState state;
+    state.sync({{"accepting", true}});
+    unsigned rejected{};
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.chrome.refresh") {
+                state.refresh();
+                return ready(state.state());
+            }
+            if (method == "_ui.chrome.reject") {
+                const auto accepted = state.reject(params.at("version").get<std::string>());
+                if (!accepted)
+                    ++rejected;
+                return ready(accepted);
+            }
+            REQUIRE(method == "_ui.chrome.publish");
+            return ready(state.publish(params));
+        },
+        modules(),
+        R"js(
+        let firstChrome = true;
+        astra.ui.registerChrome(async () => {
+            if (firstChrome) {
+                firstChrome = false;
+                await astra.ui.chrome.refresh();
+                throw Error('Retired chrome error');
+            }
+            return {brand: 'Current', hint: '', command: [], activity: [], manage: [],
+                    breadcrumb: [], statusLeft: [], statusRight: []};
+        });
+    )js");
+    workbench.emit("ui.chrome.request", *state.take_request());
+    for (int tick = 0; tick < 24; ++tick)
+        workbench.poll();
+    CHECK(rejected == 1);
+    CHECK(state.pending());
+    CHECK(workbench.take_errors().empty());
+    workbench.emit("ui.chrome.request", *state.take_request());
+    for (int tick = 0; tick < 24; ++tick)
+        workbench.poll();
+    CHECK_FALSE(state.pending());
+    CHECK(state.model().at("brand") == "Current");
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench JS chrome deadline settles a signal-ignoring provider") {
+    auto channel = std::make_shared<Channel>();
+    astra::ui::ChromeState state;
+    state.sync({{"accepting", true}});
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            REQUIRE(method == "_ui.chrome.reject");
+            return ready(state.reject(params.at("version").get<std::string>()));
+        },
+        modules(),
+        R"js(
+        astra.ui.registerChrome(() => new Promise(() => {}), {}, {timeoutMs: 20});
+    )js");
+    workbench.emit("ui.chrome.request", *state.take_request());
+    for (int tick = 0; tick < 100 && (tick < 4 || state.pending() || !workbench.idle()); ++tick) {
+        workbench.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    CHECK_FALSE(state.pending());
+    const auto errors = workbench.take_errors();
+    REQUIRE(errors.size() == 1);
+    CHECK(errors.front().at("name") == "TimeoutError");
+    CHECK(channel->requests.empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE(
+    "workbench JS chrome shutdown context cancels a provider without waiting for its deadline") {
+    auto channel = std::make_shared<Channel>();
+    astra::ui::ChromeState state;
+    state.sync({{"accepting", true}});
+    astra::ui::Workbench workbench(
+        channel,
+        [](std::string_view, const Json&) {
+            FAIL("Retired chrome provider reached the native host");
+            return ready(nullptr);
+        },
+        modules(),
+        R"js(
+        astra.ui.registerChrome(() => new Promise(() => {}));
+    )js");
+    workbench.emit("ui.chrome.request", *state.take_request());
+    for (int tick = 0; tick < 8; ++tick)
+        workbench.poll();
+    REQUIRE_FALSE(workbench.idle());
+    state.sync({{"accepting", false}});
+    workbench.emit("ui.chrome.request", *state.take_request());
+    for (int tick = 0; tick < 24; ++tick)
+        workbench.poll();
     CHECK(workbench.take_errors().empty());
     CHECK(channel->requests.empty());
     CHECK(workbench.idle());

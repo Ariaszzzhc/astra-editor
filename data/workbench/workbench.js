@@ -8,6 +8,7 @@ import { registerLanguage } from 'astra/language';
 import { registerRecovery } from 'astra/recovery';
 import { registerLifecycle } from 'astra/lifecycle';
 import { registerOutline } from 'astra/outline';
+import { registerChrome } from 'astra/chrome';
 export function initialize() {
     registerIcons();
     registerNativeCommands();
@@ -19,4 +20,5 @@ export function initialize() {
     registerRecovery();
     registerLifecycle();
     registerOutline();
+    registerChrome();
 }

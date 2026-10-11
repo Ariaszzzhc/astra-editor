@@ -415,7 +415,21 @@ rejects. The component clips captions/icons and restores canvas state on failure
 hidden sidebar captions are not prepared. Native-font pixel checks cover three
 font sizes and four DPI scales, including warm reuse and control separation.
 
-Activity-bar and breadcrumb/status painting remain separate controller work.
+`WorkbenchChrome` also owns activity, path and status presentation. `ChromeState`
+retains six bounded immutable measured row banks and a guarded owner context;
+the shipped `astra/chrome` JS provider supplies all captions and actions. The
+controller passes native document/primary-caret metrics, including distinct
+UTF-16 and optional matching shaped visual columns. JS formats their labels.
+Candidate publication validates the complete 64 KiB model before mutation;
+pending, failed and retired generations retain pixels but cannot activate them.
+The shared native measurement exposes the same visible boxes to painting,
+pointer input and Agent state. Activity overflow has controls/wheel navigation,
+path layout retains final fitting components, and status items admit earlier
+right-hand descriptors first while reserving separate left/right regions.
+Text uses configured UI fonts and grapheme-aware elision; providers select
+theme tones and bounded shared glyphs. Provider waits support cancellation and
+1..30,000 ms deadlines, with late-error suppression. JS exit policy suspends
+them before the first idle fence and restores them afterwards.
 The native Windows frame follows the compiled JS theme as documented above;
 whole-product visual acceptance remains outstanding.
 
@@ -600,8 +614,9 @@ symbol range, projects labels/icons and supplies all pane messages and actions.
 No complete symbol list is copied into JS on scrolling. The native highlighter
 no longer fetches or projects Outline content. User providers can replace and
 restore this policy through Promise-based reads, refresh and publication.
-The remaining outer components retain separate controller paths. This evidence
-does not establish whole-product visual acceptance.
+Outer activity/path/status content and actions now use the shared guarded chrome
+provider/component above. This evidence does not establish whole-product visual
+acceptance.
 
 Quick Open and user-provided asynchronous pickers share `PickerLayout`, native
 editable text geometry and the persistent `PickerIndex`. Painting and pointer

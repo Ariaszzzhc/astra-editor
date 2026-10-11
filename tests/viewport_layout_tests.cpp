@@ -291,6 +291,92 @@ void workbench_chrome(TextLayoutEngine& engine) {
             require(first.back() == untouched, "Chrome escaped the window bounds");
         }
     }
+    ChromeState outer;
+    auto model = outer.model();
+    model["brand"] = "Astra 中🙂";
+    model["hint"] = "Ctrl+Shift+P";
+    model["command"] = astra::protocol::Json::array(
+        {{{"id", "command"}, {"label", long_caption}, {"icon", "search"}}});
+    model["manage"] = astra::protocol::Json::array(
+        {{{"id", "manage"}, {"label", "Manage"}, {"icon", "settings"}}});
+    for (int index = 0; index < 16; ++index)
+        model["activity"].push_back({{"id", std::to_string(index)},
+                                     {"label", "View"},
+                                     {"icon", "symbol"},
+                                     {"data", index},
+                                     {"selected", index == 15}});
+    for (int index = 0; index < 4; ++index) {
+        model["breadcrumb"].push_back({{"id", std::to_string(index)},
+                                       {"label", "Path 中🙂"},
+                                       {"icon", "folder"},
+                                       {"data", index}});
+        model["statusRight"].push_back({{"id", std::to_string(index)}, {"label", "Detail 中🙂"}});
+    }
+    model["statusLeft"] =
+        astra::protocol::Json::array({{{"id", "message"}, {"label", long_caption}}});
+    outer.sync({{"id", "1"}});
+    require(outer.publish({{"version", outer.state().at("version")}, {"model", model}}),
+            "Cannot publish outer chrome fixture");
+    for (const auto size : {9.0F, 13.0F, 16.0F}) {
+        theme.font_size = size;
+        theme.colors.background = 0xFF151515;
+        theme.colors.status = 0xFF151515;
+        theme.colors.status_foreground = 0xFFF0F0F0;
+        for (const auto scale : {0.75F, 1.0F, 1.5F, 2.0F}) {
+            for (const auto logical_width : {340.0F, 1000.0F}) {
+                const auto geometry = WorkbenchLayout::measure(
+                    logical_width * scale, 360 * scale, scale, true, 248, true, true, size);
+                const auto layout = chrome.measure_outer(geometry, theme, outer, 16);
+                require(layout.activity_first > 0 && layout.previous.height > 0 &&
+                            layout.next.height > 0,
+                        "Overflow activity items became inaccessible");
+                const auto width = static_cast<int>(std::ceil(logical_width * scale + 8));
+                const auto height = static_cast<int>(std::ceil(360 * scale + 8));
+                const auto info = SkImageInfo::MakeN32Premul(width, height);
+                const auto render = [&](float pointer_x, float pointer_y) {
+                    auto surface = SkSurfaces::Raster(info);
+                    auto* canvas = surface->getCanvas();
+                    canvas->clear(untouched);
+                    const auto saves = canvas->getSaveCount();
+                    const auto clip = canvas->getDeviceClipBounds();
+                    chrome.paint_outer(
+                        canvas, geometry, theme, outer, layout, pointer_x, pointer_y);
+                    require(canvas->getSaveCount() == saves &&
+                                canvas->getDeviceClipBounds() == clip,
+                            "Outer chrome leaked its clip or canvas stack");
+                    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width * height));
+                    require(surface->readPixels(
+                                info, pixels.data(), width * sizeof(std::uint32_t), 0, 0),
+                            "Cannot read outer chrome pixels");
+                    return pixels;
+                };
+                const auto pixels = render(-1, -1);
+                const auto shaped = labels.statistics().shaped;
+                require(render(-1, -1) == pixels && labels.statistics().shaped == shaped,
+                        "Warm outer chrome reshaped labels or changed pixels");
+                require(pixels.back() == untouched, "Outer chrome escaped its frame");
+                for (const auto& item : layout.items) {
+                    const auto hit = layout.hit(item.bounds.x + item.bounds.width / 2,
+                                                item.bounds.y + item.bounds.height / 2);
+                    require(hit && hit->bank == item.bank && hit->index == item.index,
+                            "Chrome painted and hit different items");
+                    if (item.bank == ChromeBank::status_left)
+                        for (const auto& right : layout.items)
+                            if (right.bank == ChromeBank::status_right)
+                                require(item.bounds.right() <= right.bounds.x,
+                                        "Status text overlaps its right items");
+                }
+                const auto activity =
+                    std::find_if(layout.items.begin(), layout.items.end(), [](const auto& item) {
+                        return item.bank == ChromeBank::activity;
+                    });
+                require(activity != layout.items.end(), "Activity viewport has no rows");
+                require(render(activity->bounds.x + activity->bounds.width / 2,
+                               activity->bounds.y + activity->bounds.height / 2) != pixels,
+                        "Activity hover produced no actual pixels");
+            }
+        }
+    }
     auto surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(1000, 360));
     require(surface != nullptr, "Cannot create chrome failure surface");
     auto* canvas = surface->getCanvas();

@@ -3,6 +3,7 @@
 #include "include/core/SkCanvas.h"
 #include "include/core/SkPaint.h"
 #include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 namespace astra::ui {
@@ -83,7 +84,7 @@ void WorkbenchChrome::paint_header(SkCanvas* canvas,
                                                                      : theme.colors.border);
     canvas->drawRoundRect(rect(search), 4 * scale, 4 * scale, paint);
     icon(canvas,
-         Icon::search,
+         model.command_icon,
          {search.x + 9 * scale, search.y, 15 * scale, search.height},
          15 * scale,
          theme.colors.muted);
@@ -171,6 +172,236 @@ void WorkbenchChrome::paint_sidebar(SkCanvas* canvas,
     fill(canvas,
          {geometry.sidebar.right() - scale, geometry.sidebar.y, scale, geometry.sidebar.height},
          theme.colors.border);
+}
+
+std::optional<WorkbenchChrome::Item> WorkbenchChrome::OuterLayout::hit(float x, float y) const {
+    for (const auto& item : items)
+        if (item.bounds.contains(x, y))
+            return item;
+    return std::nullopt;
+}
+
+WorkbenchChrome::OuterLayout WorkbenchChrome::measure_outer(const WorkbenchLayout& geometry,
+                                                            const WorkbenchStyle& theme,
+                                                            const ChromeState& source,
+                                                            std::size_t activity_first) {
+    OuterLayout result;
+    const auto scale = geometry.scale;
+    const auto add = [&](ChromeBank bank, std::size_t index, Box box) {
+        if (box.width > 0 && box.height > 0)
+            result.items.push_back({bank, index, box});
+    };
+    if (source.rows(ChromeBank::command).size())
+        add(ChromeBank::command, 0, geometry.command_center);
+    auto activity = geometry.activity;
+    const auto& views = source.rows(ChromeBank::activity);
+    const auto step = std::round(48 * scale);
+    if (source.rows(ChromeBank::manage).size()) {
+        const auto height = std::min(activity.height, std::round(40 * scale));
+        add(ChromeBank::manage,
+            0,
+            {activity.x, activity.bottom() - height, activity.width, height});
+        activity.height -= height;
+    }
+    if (static_cast<float>(views.size()) * step > activity.height) {
+        const auto height = std::min(std::round(24 * scale), activity.height / 2);
+        result.previous = {activity.x, activity.y, activity.width, height};
+        result.next = {activity.x, activity.bottom() - height, activity.width, height};
+        activity.y += height;
+        activity.height -= 2 * height;
+    }
+    result.activity_page =
+        static_cast<std::size_t>(std::max(0.0F, std::floor(activity.height / step)));
+    const auto maximum =
+        views.size() > result.activity_page ? views.size() - result.activity_page : 0;
+    result.activity_first = std::min(activity_first, maximum);
+    const auto end = std::min(views.size(), result.activity_first + result.activity_page);
+    for (auto index = result.activity_first; index < end; ++index)
+        add(ChromeBank::activity,
+            index,
+            {activity.x,
+             activity.y + static_cast<float>(index - result.activity_first) * step,
+             activity.width,
+             step});
+    const auto width = [&](const ViewRow& row, float reference) {
+        const auto& value = *row.value;
+        return labels_
+                   .prepare(value.at("label").get_ref<const std::string&>(),
+                            theme.text(reference, scale, theme.colors.foreground))
+                   ->width() +
+               (value.value("icon", std::string{}).empty() ? 0 : 22 * scale) + 16 * scale;
+    };
+    // Keep the final path components visible. A single oversized leaf is elided.
+    auto breadcrumb = geometry.breadcrumb;
+    breadcrumb.x += std::min(8 * scale, breadcrumb.width);
+    breadcrumb.width = std::max(0.0F, breadcrumb.width - 16 * scale);
+    const auto& paths = source.rows(ChromeBank::breadcrumb);
+    float used{};
+    std::size_t first = paths.size();
+    while (first > 0 && breadcrumb.height > 0 && breadcrumb.width > 0) {
+        const auto wanted = width(paths.at(first - 1), 12) + (used > 0 ? 12 * scale : 0);
+        if (used > 0 && used + wanted > breadcrumb.width)
+            break;
+        used = std::min(breadcrumb.width, used + wanted);
+        --first;
+    }
+    auto x = breadcrumb.x;
+    for (auto index = first; index < paths.size(); ++index) {
+        const auto extent = std::min(width(paths.at(index), 12), breadcrumb.right() - x);
+        add(ChromeBank::breadcrumb, index, {x, breadcrumb.y, extent, breadcrumb.height});
+        x += extent + 12 * scale;
+    }
+    const auto status = geometry.status;
+    // Earlier right-hand items have higher admission priority, preserving caret
+    // coordinates while lower-priority details disappear in narrow windows.
+    const auto& right = source.rows(ChromeBank::status_right);
+    const auto budget = std::max(0.0F, std::min(status.width * 0.65F, status.width - 44 * scale));
+    std::vector<float> widths;
+    used = 0;
+    for (std::size_t index = 0; index < right.size() && status.height > 0; ++index) {
+        const auto wanted = width(right.at(index), 11);
+        if (used > 0 && wanted > budget - used)
+            break;
+        const auto admitted = std::min(wanted, budget - used);
+        if (admitted <= 0)
+            break;
+        widths.push_back(admitted);
+        used += admitted;
+    }
+    const auto right_begin = status.right() - used;
+    x = right_begin;
+    for (std::size_t index = 0; index < widths.size(); ++index) {
+        add(ChromeBank::status_right, index, {x, status.y, widths[index], status.height});
+        x += widths[index];
+    }
+    const auto& left = source.rows(ChromeBank::status_left);
+    x = status.x;
+    for (std::size_t index = 0; index < left.size() && status.height > 0; ++index) {
+        const auto extent =
+            std::min(width(left.at(index), 11), std::max(0.0F, right_begin - x - 8 * scale));
+        if (extent <= 0)
+            break;
+        add(ChromeBank::status_left, index, {x, status.y, extent, status.height});
+        x += extent;
+    }
+    return result;
+}
+
+namespace {
+std::uint32_t tone(std::string_view name, const WorkbenchStyle& theme, std::uint32_t normal) {
+    if (name == "muted")
+        return theme.colors.muted;
+    if (name == "accent")
+        return theme.colors.accent;
+    if (name == "added")
+        return theme.colors.added;
+    if (name == "changed")
+        return theme.colors.changed;
+    if (name == "error")
+        return theme.colors.error;
+    return normal;
+}
+} // namespace
+
+void WorkbenchChrome::paint_outer(SkCanvas* canvas,
+                                  const WorkbenchLayout& geometry,
+                                  const WorkbenchStyle& theme,
+                                  const ChromeState& source,
+                                  const OuterLayout& layout,
+                                  float pointer_x,
+                                  float pointer_y) {
+    if (!canvas)
+        throw std::invalid_argument("Workbench chrome requires a canvas");
+    const SkAutoCanvasRestore restore(canvas, true);
+    const auto scale = geometry.scale;
+    canvas->clipRect(SkRect::MakeLTRB(0, 0, geometry.status.right(), geometry.status.bottom()));
+    const auto& command = source.rows(ChromeBank::command);
+    paint_header(canvas,
+                 geometry,
+                 theme,
+                 {source.model().at("brand").get_ref<const std::string&>(),
+                  command.size() ? command.at(0).value->at("label").get_ref<const std::string&>()
+                                 : std::string_view{},
+                  source.model().at("hint").get_ref<const std::string&>(),
+                  pointer_x,
+                  pointer_y,
+                  command.size() ? view_icon(command.at(0).value->value("icon", std::string{}))
+                                 : Icon::document});
+    fill(canvas, geometry.activity, theme.colors.activity);
+    fill(canvas, geometry.breadcrumb, theme.colors.background);
+    fill(canvas, geometry.status, theme.colors.status);
+    fill(canvas,
+         {geometry.activity.right() - scale, geometry.activity.y, scale, geometry.activity.height},
+         theme.colors.border);
+    fill(canvas,
+         {geometry.breadcrumb.x,
+          geometry.breadcrumb.bottom() - scale,
+          geometry.breadcrumb.width,
+          scale},
+         theme.colors.border);
+    fill(canvas,
+         {geometry.status.x, geometry.status.y, geometry.status.width, scale},
+         theme.colors.border);
+    for (const auto& item : layout.items) {
+        if (item.bank == ChromeBank::command)
+            continue;
+        const auto& value = *source.rows(item.bank).at(item.index).value;
+        const SkAutoCanvasRestore row_restore(canvas, true);
+        canvas->clipRect(rect(item.bounds));
+        if (canvas->getDeviceClipBounds().isEmpty())
+            continue;
+        const auto hovered = item.bounds.contains(pointer_x, pointer_y) && value.contains("data");
+        if (hovered)
+            fill(canvas, item.bounds, theme.colors.hover);
+        const bool activity = item.bank == ChromeBank::activity || item.bank == ChromeBank::manage;
+        const bool status =
+            item.bank == ChromeBank::status_left || item.bank == ChromeBank::status_right;
+        const auto selected = value.value("selected", false);
+        const auto normal = activity ? (selected ? theme.colors.foreground : theme.colors.muted)
+                            : status ? theme.colors.status_foreground
+                                     : theme.colors.muted;
+        const auto color = tone(value.value("tone", std::string{}), theme, normal);
+        auto text = item.bounds;
+        text.x += 8 * scale;
+        text.width = std::max(0.0F, text.width - 16 * scale);
+        const auto glyph = value.value("icon", std::string{});
+        if (!glyph.empty()) {
+            const auto icon_color = tone(value.value("iconTone", std::string{}), theme, color);
+            const auto box = activity ? item.bounds : Box{text.x, text.y, 16 * scale, text.height};
+            icon(canvas, view_icon(glyph), box, (activity ? 24 : 16) * scale, icon_color);
+            text.x += 22 * scale;
+            text.width = std::max(0.0F, text.width - 22 * scale);
+        }
+        if (activity) {
+            if (selected)
+                fill(canvas,
+                     {item.bounds.x, item.bounds.y, 2 * scale, item.bounds.height},
+                     theme.colors.accent);
+        } else {
+            caption(canvas,
+                    text,
+                    value.at("label").get_ref<const std::string&>(),
+                    theme.text(status ? 11.0F : 12.0F, scale, color));
+        }
+    }
+    for (const auto& item : layout.items)
+        if (item.bank == ChromeBank::breadcrumb && item.index + 1 < source.rows(item.bank).size())
+            icon(canvas,
+                 Icon::chevron_right,
+                 {item.bounds.right(), item.bounds.y, 12 * scale, item.bounds.height},
+                 12 * scale,
+                 theme.colors.muted);
+    for (const auto [box, previous] :
+         {std::pair{layout.previous, true}, std::pair{layout.next, false}}) {
+        if (box.contains(pointer_x, pointer_y))
+            fill(canvas, box, theme.colors.hover);
+        const SkAutoCanvasRestore control_restore(canvas, true);
+        canvas->clipRect(rect(box));
+        if (previous) {
+            canvas->rotate(180, box.x + box.width / 2, box.y + box.height / 2);
+        }
+        icon(canvas, Icon::chevron_down, box, 16 * scale, theme.colors.muted);
+    }
 }
 
 } // namespace astra::ui

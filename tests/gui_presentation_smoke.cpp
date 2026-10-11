@@ -310,6 +310,34 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
                 await astra.ui.update({status: 'Light frame settled'});
             });
             let previousOutline;
+            let previousChrome;
+            astra.registerCommand('acceptance.chrome.custom', async () => {
+                previousChrome = astra.ui.registerChrome(async (context, options) => {
+                    await astra.sleep(8, options);
+                    const row = (id, label, icon) => ({id, label, icon, data: {action: id}});
+                    return {
+                        brand: 'JS Astra 中🙂', hint: 'JS controls',
+                        command: [row('header', 'JS Workbench 中🙂', 'braces')],
+                        activity: Array.from({length: 16}, (_, index) => row(`activity-${index}`, `View ${index}`, 'symbol')),
+                        manage: [row('manage', 'Custom manage', 'settings')],
+                        breadcrumb: [row('parent', '路径中🙂', 'folder'), row('leaf', 'native.js', 'document')],
+                        statusLeft: [row('left', 'JS status 中🙂', 'branch')],
+                        statusRight: [row('right', 'JS coordinate 中🙂', 'code')]
+                    };
+                }, {activate: async (data) => {
+                    await astra.ui.update({status: 'Chrome ' + data.action});
+                }});
+                await astra.ui.chrome.refresh();
+            });
+            astra.registerCommand('acceptance.chrome.restore', async () => {
+                astra.ui.registerChrome(previousChrome.provider, previousChrome.handlers,
+                    {timeoutMs: previousChrome.timeoutMs});
+                await astra.ui.chrome.refresh();
+            });
+            astra.registerCommand('acceptance.chrome.hang', async () => {
+                astra.ui.registerChrome(() => new Promise(() => {}));
+                await astra.ui.chrome.refresh();
+            });
             astra.registerCommand('acceptance.outline.custom', async () => {
                 previousOutline = astra.ui.registerOutline({loading: 'Preparing custom symbols 中🙂'},
                     async (viewport, options) => {
@@ -1048,6 +1076,71 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         require(window.status_text() == "Custom page binding" &&
                     window.view_state().document_viewport.at("firstLine") == 0,
                 "Runtime JS rebinding was ignored or fell through to native page policy");
+        window.execute_ui_command("acceptance.chrome.custom");
+        settle(window);
+        require(window.view_state().chrome.at("model").at("brand") == "JS Astra 中🙂",
+                "Asynchronous JS chrome did not replace native captions");
+        const auto chrome_selections = window.view_state().document.at("selections");
+        const auto click_chrome = [&](std::string_view bank, std::string_view row) {
+            const auto targets = window.view_state().chrome.at("targets");
+            const auto found =
+                std::find_if(targets.begin(), targets.end(), [&](const auto& target) {
+                    return target.at("bank").template get_ref<const std::string&>() == bank &&
+                           target.at("row").template get_ref<const std::string&>() == row;
+                });
+            require(found != targets.end(), "Custom chrome target is not visible");
+            const auto& box = found->at("bounds");
+            click(window,
+                  box.at("x").get<float>() + box.at("width").get<float>() / 2,
+                  box.at("y").get<float>() + box.at("height").get<float>() / 2);
+            require(window.status_text() == "Chrome " + std::string(row),
+                    "Chrome click bypassed its JS action");
+            require(window.view_state().document.at("selections") == chrome_selections,
+                    "Chrome pointer fell through to document selection");
+        };
+        click_chrome("command", "header");
+        click_chrome("manage", "manage");
+        click_chrome("breadcrumb", "parent");
+        click_chrome("statusLeft", "left");
+        click_chrome("statusRight", "right");
+        const auto chrome_scale = window.layout().scale;
+        require(SDL_SetWindowSize(window.window(),
+                                  static_cast<int>(680 * chrome_scale),
+                                  static_cast<int>(360 * chrome_scale)),
+                "Cannot resize activity overflow fixture");
+        settle(window);
+        auto chrome_overflow = window.view_state().chrome;
+        require(chrome_overflow.at("next").at("height").get<float>() > 0,
+                "Activity overflow has no navigation controls");
+        const auto& next_activity = chrome_overflow.at("next");
+        click(window,
+              next_activity.at("x").get<float>() + next_activity.at("width").get<float>() / 2,
+              next_activity.at("y").get<float>() + next_activity.at("height").get<float>() / 2);
+        require(window.view_state().chrome.at("activityFirst").get<std::size_t>() == 1,
+                "Activity overflow control did not change the physical page");
+        SDL_Event chrome_wheel{};
+        chrome_wheel.type = SDL_EVENT_MOUSE_WHEEL;
+        chrome_wheel.wheel.windowID = SDL_GetWindowID(window.window());
+        chrome_wheel.wheel.mouse_x = 20;
+        chrome_wheel.wheel.mouse_y = 100;
+        chrome_wheel.wheel.y = -100;
+        require(SDL_PushEvent(&chrome_wheel), "Cannot enqueue activity wheel input");
+        settle(window);
+        click_chrome("activity", "activity-15");
+        window.request_screenshot("build/graphics/gui-outer-chrome-custom.png");
+        settle(window);
+        window.execute_ui_command("acceptance.chrome.restore");
+        settle(window);
+        require(window.view_state().chrome.at("model").at("brand") == "Astra",
+                "Restoring default chrome lost its policy");
+        require(SDL_SetWindowSize(window.window(),
+                                  static_cast<int>(1440 * chrome_scale),
+                                  static_cast<int>(900 * chrome_scale)),
+                "Cannot restore chrome fixture size");
+        settle(window);
+        std::cout << "GUI JS outer chrome: async replacement, original Unicode, "
+                     "header/manage/path/status actions, activity overflow, no selection "
+                     "fallthrough and restoration: PASS\n";
         window.execute_ui_command("acceptance.restorePage");
         settle(window);
         key(window, SDLK_PAGEDOWN);
@@ -2064,6 +2157,13 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
                 "Native tab close targeted another identity after reordering");
         std::cout << "640 real file tabs: cached measured widths, bounded font refresh, "
                      "active reveal, warm repaint reuse, overflow, drag and close identity: PASS\n";
+        window.execute_ui_command("acceptance.chrome.hang");
+        for (int frame = 0; frame < 24; ++frame) {
+            require(window.pump(), "Chrome hang fixture closed unexpectedly");
+            SDL_Delay(1);
+        }
+        require(window.view_state().chrome.at("pending") == true,
+                "Signal-ignoring chrome provider did not remain pending");
         window.execute_ui_command("acceptance.backgroundOpen");
         window.execute_ui_command("ui.closeWindow");
         const auto deadline = Clock::now() + std::chrono::seconds(20);

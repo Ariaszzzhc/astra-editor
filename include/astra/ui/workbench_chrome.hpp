@@ -3,6 +3,8 @@
 #include <astra/ui/text_labels.hpp>
 #include <astra/ui/workbench_layout.hpp>
 #include <astra/ui/workbench_style.hpp>
+#include <astra/ui/chrome_state.hpp>
+#include <astra/ui/icons.hpp>
 #include <optional>
 #include <string_view>
 
@@ -16,6 +18,7 @@ class WorkbenchChrome final {
     struct Header {
         std::string_view brand, workspace, hint;
         float pointer_x{}, pointer_y{};
+        Icon command_icon{Icon::search};
     };
 
     struct Sidebar {
@@ -25,12 +28,36 @@ class WorkbenchChrome final {
     };
     enum class Target { heading, refresh, section, outline };
 
+    struct Item {
+        ChromeBank bank;
+        std::size_t index{};
+        Box bounds;
+    };
+
+    struct OuterLayout {
+        std::vector<Item> items;
+        Box previous, next;
+        std::size_t activity_first{}, activity_page{};
+        [[nodiscard]] std::optional<Item> hit(float x, float y) const;
+    };
+
     explicit WorkbenchChrome(TextLabels& labels) : labels_(labels) {
     }
 
     void paint_header(SkCanvas*, const WorkbenchLayout&, const WorkbenchStyle&, const Header&);
     // Paint after indexed rows; owns the headings and final sidebar divider.
     void paint_sidebar(SkCanvas*, const WorkbenchLayout&, const WorkbenchStyle&, const Sidebar&);
+    [[nodiscard]] OuterLayout measure_outer(const WorkbenchLayout&,
+                                            const WorkbenchStyle&,
+                                            const ChromeState&,
+                                            std::size_t activity_first);
+    void paint_outer(SkCanvas*,
+                     const WorkbenchLayout&,
+                     const WorkbenchStyle&,
+                     const ChromeState&,
+                     const OuterLayout&,
+                     float pointer_x,
+                     float pointer_y);
 
     [[nodiscard]] static std::optional<Target>
     hit_sidebar(const WorkbenchLayout& geometry, float x, float y) {

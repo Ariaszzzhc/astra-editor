@@ -143,13 +143,19 @@ export function registerLifecycle() {
             if (exiting) return false;
             const control = new AbortController();
             exiting = control;
+            let suspended = true;
             try {
+                suspended = await ui.chrome.suspend();
                 return await closeWindow(control);
             } catch (error) {
                 if (error.name === 'AbortError') return false;
                 throw error;
             } finally {
-                if (exiting === control) exiting = undefined;
+                try {
+                    if (!suspended) await ui.chrome.resume();
+                } finally {
+                    if (exiting === control) exiting = undefined;
+                }
             }
         }
     );

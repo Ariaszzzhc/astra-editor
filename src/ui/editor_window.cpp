@@ -263,6 +263,10 @@ struct EditorWindow::Impl {
     ViewRows view_rows{labels};
     ViewPage outline;
     WorkbenchChrome chrome{labels};
+    ChromeState chrome_state;
+    WorkbenchChrome::OuterLayout chrome_layout;
+    std::size_t activity_first{};
+    std::string activity_selected;
     std::size_t painted_view_rows{};
     float scale{1};
     float row_height{26};
@@ -375,6 +379,7 @@ struct EditorWindow::Impl {
                                                 {"astra/recovery", "recovery.js"},
                                                 {"astra/lifecycle", "lifecycle.js"},
                                                 {"astra/outline", "outline.js"},
+                                                {"astra/chrome", "chrome.js"},
                                                 {"astra/commands", "commands.js"},
                                                 {"astra/workbench", "workbench.js"}}) {
             modules.emplace(
@@ -730,6 +735,7 @@ struct EditorWindow::Impl {
     void apply_settings(Json candidate);
     [[nodiscard]] Json style_model() const;
     [[nodiscard]] Json window_frame_model() const;
+    void sync_chrome();
     std::future<Json> begin_style(const Json& params);
     void validate_style_patch(const Json& params) const;
     void finish_styles();
@@ -1564,8 +1570,9 @@ bool EditorWindow::Impl::native_idle(bool waiting_inputs) const {
     }
     return requests.empty() && !active_request && operations.empty() && pending_edits.empty() &&
            pending_reads.empty() && closing_pending.empty() && form_events.empty() &&
-           !pending_document_activity && !outline.needs_request() && sidebar_views.quiescent() &&
-           inputs_idle && layout_jobs->idle() && !input_point && input_events.size() == 0 &&
+           !pending_document_activity && !outline.needs_request() &&
+           !chrome_state.needs_request() && sidebar_views.quiescent() && inputs_idle &&
+           layout_jobs->idle() && !input_point && input_events.size() == 0 &&
            pending_styles.empty() && !document_composition.pending();
 }
 
@@ -2167,6 +2174,38 @@ Json EditorWindow::Impl::style_model() const {
 }
 
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
+    if (method.starts_with("_ui.chrome.")) {
+        measure_layout();
+        if (method == "_ui.chrome.read")
+            return chrome_state.state();
+        if (method == "_ui.chrome.refresh") {
+            chrome_state.refresh();
+            return chrome_state.state();
+        }
+        if (method == "_ui.chrome.publish") {
+            const auto accepted = chrome_state.publish(params);
+            if (accepted) {
+                const auto& activity = chrome_state.rows(ChromeBank::activity);
+                std::string selected;
+                for (std::size_t index = 0; index < activity.size(); ++index)
+                    if (activity.at(index).value->value("selected", false)) {
+                        selected = activity.at(index).value->at("id").get<std::string>();
+                        if (selected != activity_selected)
+                            activity_first = index;
+                        break;
+                    }
+                activity_selected = std::move(selected);
+            }
+            return accepted;
+        }
+        if (method == "_ui.chrome.reject")
+            return chrome_state.reject(params.at("version").get<std::string>());
+        if (method == "_ui.chrome.activate")
+            return chrome_state.activate(params.at("version").get<std::string>(),
+                                         params.at("bank").get<std::string>(),
+                                         params.at("row").get<std::string>());
+        throw protocol::RpcError(-32601, "Unknown chrome primitive");
+    }
     if (method.starts_with("_ui.outline.")) {
         measure_layout();
         if (method == "_ui.outline.read")
@@ -2569,15 +2608,15 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
     for (const auto& [name, value] : params.items()) {
         if (name == "closedDocument") {
             remove_document(value.get<std::string>());
-        } else if (name == "status") {
-            status = value.get<std::string>();
-        } else if (name == "branch" || name == "notice") {
+        } else if (name == "status" || name == "branch" || name == "notice") {
             auto text = value.get<std::string>();
             if (text.size() > 4096 || text.find_first_of("\r\n") != text.npos ||
                 text.find('\0') != text.npos)
                 throw protocol::RpcError(-32602, "UI label exceeds its single-line bound");
             utf8::validate(text);
-            if (name == "branch")
+            if (name == "status")
+                status = std::move(text);
+            else if (name == "branch")
                 workspace_branch = std::move(text);
             else
                 replace_notice = std::move(text);
@@ -3756,10 +3795,27 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             command("ui.recovery");
             break;
         }
-        if (geometry.header.contains(mouse_x, mouse_y)) {
-            if (geometry.command_center.contains(mouse_x, mouse_y)) {
-                command("ui.commandPalette");
-            }
+        if (chrome_layout.previous.contains(mouse_x, mouse_y)) {
+            if (activity_first > 0)
+                --activity_first;
+            break;
+        }
+        if (chrome_layout.next.contains(mouse_x, mouse_y)) {
+            ++activity_first;
+            break;
+        }
+        if (const auto item = chrome_layout.hit(mouse_x, mouse_y)) {
+            const auto& row = *chrome_state.rows(item->bank).at(item->index).value;
+            if (row.contains("data"))
+                execute_policy("workbench.chrome.activate",
+                               {{"version", chrome_state.state().at("version")},
+                                {"bank", chrome_banks[static_cast<std::size_t>(item->bank)]},
+                                {"row", row.at("id")}});
+            break;
+        }
+        if (geometry.header.contains(mouse_x, mouse_y) ||
+            geometry.breadcrumb.contains(mouse_x, mouse_y) ||
+            geometry.status.contains(mouse_x, mouse_y)) {
             break;
         }
         if (geometry.sidebar_handle.contains(mouse_x, mouse_y)) {
@@ -3767,15 +3823,6 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             break;
         }
         if (geometry.activity.contains(mouse_x, mouse_y)) {
-            const auto index = static_cast<int>((mouse_y - geometry.activity.y) / (48 * scale));
-            if (mouse_y > geometry.status.y - 40 * scale)
-                command("ui.commandPalette");
-            else {
-                const auto views = sidebar_views.ordered();
-                if (index >= 0 && static_cast<std::size_t>(index) < views.size())
-                    execute_policy("workbench.showView",
-                                   {{"id", views[static_cast<std::size_t>(index)]}});
-            }
             break;
         }
         if (const auto target = WorkbenchChrome::hit_sidebar(geometry, mouse_x, mouse_y)) {
@@ -3890,7 +3937,11 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                 std::max(0LL, static_cast<long long>(prompt_choice) - shift));
             break;
         }
-        if (geometry.tabs.contains(mouse_x, mouse_y)) {
+        if (geometry.activity.contains(mouse_x, mouse_y)) {
+            const auto shift = static_cast<long long>(std::round(input.wheel.y * direction * 3));
+            activity_first = static_cast<std::size_t>(
+                std::max(0LL, static_cast<long long>(activity_first) - shift));
+        } else if (geometry.tabs.contains(mouse_x, mouse_y)) {
             const auto direction_step = input.wheel.y * direction < 0 ? 1 : -1;
             tab_bar.scroll(direction_step, tabs.size());
         } else if (geometry.outline_rows.contains(mouse_x, mouse_y)) {
@@ -4024,6 +4075,65 @@ void EditorWindow::Impl::measure_layout(bool prepare_tabs) {
                                 1
                           : 0,
                   visible});
+    sync_chrome();
+    chrome_layout = chrome.measure_outer(geometry, ui_style, chrome_state, activity_first);
+    activity_first = chrome_layout.activity_first;
+}
+
+void EditorWindow::Impl::sync_chrome() {
+    Json context{{"workspace", options.workspace_name},
+                 {"branch", workspace_branch},
+                 {"message", status},
+                 {"activity", std::to_string(document_activity)},
+                 {"activeView", active_view},
+                 {"sidebarVisible", show_sidebar},
+                 {"accepting", !quit_requested && !stopping_workbench},
+                 {"views", Json::array()},
+                 {"document", nullptr}};
+    for (const auto& id : sidebar_views.ordered()) {
+        const auto& spec = sidebar_views.at(id).spec;
+        context["views"].push_back(
+            {{"id", id}, {"title", spec.at("title")}, {"icon", spec.at("icon")}});
+    }
+    if (const auto* document = current()) {
+        auto tab_size = editor_settings.value("tabSize", 4U);
+        if (document->editor_config.contains("tab_width"))
+            tab_size = static_cast<unsigned>(
+                std::stoul(document->editor_config.at("tab_width").get<std::string>()));
+        const auto& positions = document->metadata.at("selectionPositions");
+        const auto line =
+            positions.empty() ? std::size_t{} : positions.front().value("line", std::size_t{});
+        Json caret{{"line", line},
+                   {"utf16Column",
+                    positions.empty() ? 0 : positions.front().value("utf16Column", std::size_t{})}};
+        const auto* found = document->viewport.lines().find(line);
+        const auto* shaped = document->viewport.layout(line);
+        const auto& selections = document->metadata.at("selections");
+        if (found && shaped && !selections.empty() &&
+            document->view_revision == document->metadata.at("revision").get<std::string>()) {
+            const auto head = selections.front().at("head").get<std::size_t>();
+            const auto advance = shaped->tab_stop_width() / static_cast<float>(tab_size);
+            if (advance > 0 && head >= found->begin && head <= found->end)
+                caret["visualColumn"] = static_cast<std::size_t>(
+                    std::round(shaped->caret(head - found->begin).x / advance));
+        }
+        const auto spaces =
+            document->editor_config.value(
+                "indent_style",
+                std::string(editor_settings.value("insertSpaces", true) ? "space" : "tab")) ==
+            "space";
+        context["document"] = {
+            {"id", active_id},
+            {"revision", document->metadata.at("revision")},
+            {"metadataSequence", document->metadata.value("metadataSequence", Json(nullptr))},
+            {"path", document->path},
+            {"encoding", document->encoding},
+            {"tabSize", tab_size},
+            {"insertSpaces", spaces},
+            {"languageActive", document->language_active},
+            {"caret", std::move(caret)}};
+    }
+    chrome_state.sync(std::move(context));
 }
 
 void EditorWindow::Impl::draw_inline_form(SkCanvas* canvas) {
@@ -4611,43 +4721,7 @@ void EditorWindow::Impl::draw() {
     const auto fill = [&](const Box& box, SkColor color) {
         rectangle(canvas, box.x, box.y, box.width, box.height, color);
     };
-    chrome.paint_header(canvas,
-                        geometry,
-                        ui_style,
-                        {"Astra", options.workspace_name, "Ctrl+Shift+P", mouse_x, mouse_y});
-    fill(geometry.activity, ui_style.colors.activity);
-    const auto activity_views = sidebar_views.ordered();
-    canvas->save();
-    canvas->clipRect(SkRect::MakeLTRB(geometry.activity.x,
-                                      geometry.activity.y,
-                                      geometry.activity.right(),
-                                      geometry.status.y - 40 * scale));
-    for (std::size_t index = 0; index < activity_views.size(); ++index) {
-        const auto& view = sidebar_views.at(activity_views[index]);
-        const auto y = geometry.header.bottom() + static_cast<float>(index) * 48 * scale;
-        const auto selected = active_view == activity_views[index];
-        if (selected && geometry.sidebar.width > 0)
-            rectangle(canvas, 0, y, 2 * scale, 48 * scale, ui_style.colors.accent);
-        draw_icon(canvas,
-                  view_icon(view.spec.value("icon", std::string("files"))),
-                  10 * scale,
-                  y + 13 * scale,
-                  24 * scale,
-                  selected ? ui_style.colors.foreground : ui_style.colors.muted);
-    }
-    canvas->restore();
-    draw_icon(canvas,
-              Icon::settings,
-              10 * scale,
-              geometry.status.y - 32 * scale,
-              22 * scale,
-              ui_style.colors.muted);
-    rectangle(canvas,
-              geometry.activity.right() - scale,
-              geometry.activity.y,
-              scale,
-              geometry.activity.height,
-              ui_style.colors.border);
+    chrome.paint_outer(canvas, geometry, ui_style, chrome_state, chrome_layout, mouse_x, mouse_y);
     painted_view_rows = 0;
     if (geometry.sidebar.width > 0) {
         fill(geometry.sidebar, ui_style.colors.sidebar);
@@ -4692,29 +4766,6 @@ void EditorWindow::Impl::draw() {
             return TabBar::Decoration{
                 icon.glyph, icon.color(ui_style.colors), document.metadata.value("dirty", false)};
         });
-    fill(geometry.breadcrumb, ui_style.colors.background);
-    if (const auto* document = current()) {
-        canvas->save();
-        canvas->clipRect(SkRect::MakeXYWH(geometry.breadcrumb.x,
-                                          geometry.breadcrumb.y,
-                                          geometry.breadcrumb.width,
-                                          geometry.breadcrumb.height));
-        elided_label(canvas,
-                     document->path.empty() ? "Untitled" : document->path,
-                     left + 18 * scale,
-                     geometry.breadcrumb.y + 5 * scale,
-                     12,
-                     geometry.breadcrumb.width - 36 * scale,
-                     ui_style.colors.muted);
-        canvas->restore();
-    }
-    rectangle(canvas,
-              left,
-              geometry.breadcrumb.bottom() - scale,
-              right - left,
-              scale,
-              ui_style.colors.border);
-
     if (auto* document = current()) {
         const auto& selections = document->metadata.at("selections");
         const auto& positions = document->metadata.contains("selectionPositions")
@@ -4954,72 +5005,6 @@ void EditorWindow::Impl::draw() {
         ui_style,
         {"", outline.message(), false, true, mouse_x, mouse_y},
         {}));
-    fill(geometry.status, ui_style.colors.status);
-    rectangle(canvas, 0, geometry.status.y, width, scale, ui_style.colors.border);
-    const auto status_y = geometry.status.y + 6 * scale;
-    draw_icon(canvas,
-              Icon::branch,
-              12 * scale,
-              geometry.status.y + 4 * scale,
-              16 * scale,
-              ui_style.colors.status_foreground);
-    const auto branch = workspace_branch;
-    elided_label(
-        canvas, branch, 34 * scale, status_y, 11, 90 * scale, ui_style.colors.status_foreground);
-    canvas->save();
-    canvas->clipRect(SkRect::MakeXYWH(130 * scale,
-                                      geometry.status.y,
-                                      std::max(0.0F, width - 600 * scale),
-                                      geometry.status.height));
-    label(canvas, status, 140 * scale, status_y, 11, ui_style.colors.status_foreground);
-    canvas->restore();
-    if (const auto* document = current()) {
-        const auto& positions = document->metadata.contains("selectionPositions")
-                                    ? document->metadata["selectionPositions"]
-                                    : document->metadata["selections"];
-        const auto line =
-            positions.empty() ? std::size_t{0} : positions.front().value("line", std::size_t{0});
-        auto column = positions.empty() ? std::size_t{0}
-                                        : positions.front().value("utf16Column", std::size_t{0});
-        std::string unit = "UTF16 Col ";
-        auto tab_size = editor_settings.value("tabSize", 4U);
-        if (document->editor_config.contains("tab_width"))
-            tab_size = static_cast<unsigned>(
-                std::stoul(document->editor_config.at("tab_width").get<std::string>()));
-        const auto* found = document->viewport.lines().find(line);
-        const auto* shaped = document->viewport.layout(line);
-        if (found && shaped) {
-            const auto head =
-                document->metadata.at("selections").front().at("head").get<std::size_t>();
-            if (head >= found->begin && head <= found->end) {
-                const auto advance = shaped->tab_stop_width() / static_cast<float>(tab_size);
-                if (advance > 0) {
-                    column = static_cast<std::size_t>(
-                        std::round(shaped->caret(head - found->begin).x / advance));
-                    unit = "Col ";
-                }
-            }
-        }
-        const auto spaces =
-            document->editor_config.value(
-                "indent_style",
-                std::string(editor_settings.value("insertSpaces", true) ? "space" : "tab")) ==
-            "space";
-        auto detail = "Ln " + std::to_string(line + 1) + ", " + unit + std::to_string(column + 1);
-        if (width > 500 * scale)
-            detail += "    " + document->encoding;
-        if (width > 820 * scale)
-            detail += "    " + std::string(spaces ? "Spaces: " : "Tab Size: ") +
-                      std::to_string(tab_size) + (document->language_active ? "    LSP" : "");
-        const auto detail_width =
-            label_layout(detail, 11, ui_style.colors.status_foreground)->width();
-        label(canvas,
-              detail,
-              std::max(130 * scale, width - detail_width - 16 * scale),
-              status_y,
-              11,
-              ui_style.colors.status_foreground);
-    }
     if (recovery_available) {
         rectangle(canvas,
                   left + 12 * scale,
@@ -5276,6 +5261,20 @@ WorkbenchViewState EditorWindow::view_state() const {
             {"workerJobs", impl_->layout_jobs->statistics().jobs}};
     }
     result.outline = impl_->outline.state();
+    result.chrome = impl_->chrome_state.state();
+    result.chrome["activityFirst"] = impl_->chrome_layout.activity_first;
+    result.chrome["activityPage"] = impl_->chrome_layout.activity_page;
+    const auto box_json = [](Box box) -> Json {
+        return {{"x", box.x}, {"y", box.y}, {"width", box.width}, {"height", box.height}};
+    };
+    result.chrome["previous"] = box_json(impl_->chrome_layout.previous);
+    result.chrome["next"] = box_json(impl_->chrome_layout.next);
+    result.chrome["targets"] = Json::array();
+    for (const auto& item : impl_->chrome_layout.items)
+        result.chrome["targets"].push_back(
+            {{"bank", chrome_banks[static_cast<std::size_t>(item.bank)]},
+             {"row", impl_->chrome_state.rows(item.bank).at(item.index).value->at("id")},
+             {"bounds", box_json(item.bounds)}});
     result.outline_first = impl_->outline.offset();
     result.outline_total = impl_->outline.total();
     result.visible_outline_rows = impl_->outline.rows().size();
@@ -5368,6 +5367,8 @@ bool EditorWindow::pump() {
         }
         const auto form_deadline = Clock::now() + std::chrono::milliseconds(4);
         impl_->measure_layout();
+        if (const auto context = impl_->chrome_state.take_request())
+            impl_->workbench->emit("ui.chrome.request", *context);
         if (const auto viewport = impl_->outline.take_request())
             impl_->workbench->emit("ui.outline.request", *viewport);
         if (impl_->pending_document_activity) {

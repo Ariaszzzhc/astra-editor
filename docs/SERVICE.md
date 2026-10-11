@@ -670,6 +670,44 @@ their total. The shipped JS Outline provider requests its viewport range through
 the measured semantic index. Native highlight requests use `includeOutline:false`;
 highlight preparation and Outline policy are independent clients of shared parsing.
 
+`astra.ui.registerChrome(provider, handlers = {}, {timeoutMs = 30000} = {})`
+installs local policy for the outer workbench. Registration performs no I/O and
+returns the previous frozen `{provider, handlers, timeoutMs}` registration.
+The provider receives `(context, {signal, timeoutMs})` and may return a Promise.
+`context` contains workspace/branch/message, active view and sidebar visibility,
+the bounded registered view descriptors, active-document activity, and optional
+document identity/revision/metadata sequence/path/encoding/indent/language data.
+The primary caret has zero-based `line`, `utf16Column` and, when a matching
+native shaped row is available, `visualColumn`. JS chooses how to label them.
+
+The model requires `brand`, `hint`, and six arrays: `command`, `activity`, `manage`,
+`breadcrumb`, `statusLeft`, `statusRight`. Total serialized size is at most
+64 KiB. Command/manage accept at most one row, activity 16, and path/status banks
+32 each. Rows are flat immutable measured descriptors: `id`, `label`, optional
+`icon`, `tone`, `iconTone`, `selected` and `data`. `selected` marks icon buttons;
+text items use their tone. The shared `settings` glyph is also available.
+`handlers.activate(data, row, context, bank)` receives a native-fenced original
+descriptor. Caption, view-selection, path-navigation and status actions have no
+native product fallback. Earlier right status items have higher fit priority;
+native layout exposes overflowing activity items through controls and wheel
+navigation, and retains fitting final path components.
+
+`await astra.ui.chrome.refresh()` invalidates the current generation and invokes
+the registered provider; call it after live replacement or changing local policy.
+Re-register the returned provider/handlers/deadline and refresh to restore them.
+`await astra.ui.chrome.read()` returns `{version, modelVersion, context, pending,
+model}`. Advanced `chrome.publish({version, model}, options)` returns false for
+retired or already-published generations and validates a candidate completely
+before mutation. Pending/failure retains prior pixels but rejects their actions.
+Context changes cancel the superseded wait, including a provider ignoring its
+signal; old replies/errors cannot publish or report current-window failures.
+The deadline accepts integer milliseconds 1..30,000. Current failures reject the
+pending publication and surface their error. `await chrome.suspend()` returns
+the prior suspension state, cancels the wait and invalidates actions;
+`await chrome.resume()` refreshes current policy. Exit policy suspends before
+its first idle fence and resumes afterwards. Agent presentation state adds
+the original chrome snapshot, activity page and bounded visible target boxes.
+
 `astra.ui.registerOutline(spec, provider, handlers = {})` installs local policy for
 the active document's Outline pane. `spec.loading` is its pending message.
 The provider receives `(viewport, {signal, timeoutMs})` and returns a value or

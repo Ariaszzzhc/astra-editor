@@ -15,7 +15,8 @@ Icon view_icon(std::string_view name) {
                                                        {"folder", Icon::folder},
                                                        {"code", Icon::code},
                                                        {"function", Icon::function},
-                                                       {"warning", Icon::warning}};
+                                                       {"warning", Icon::warning},
+                                                       {"settings", Icon::settings}};
     for (const auto& [id, icon] : icons)
         if (id == name)
             return icon;
