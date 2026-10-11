@@ -153,8 +153,11 @@ Native captures were inspected; this is concrete default-state acceptance,
 not a claim that visual quality can be inferred from test counts.
 Real installed Chinese IME document, editor/sidebar form and modal input passed
 both Windows modes at this checkpoint. Physical DPI transitions, real GPU device
-loss and other installed IMEs are outside that evidence. A current clean-source
-Windows package with fresh extraction and isolated runtime checks is still due.
+loss and other installed IMEs are outside that evidence. Clean-source Windows
+package `37bae5c` passed inventory, ZIP hash, fresh extraction, isolated service
+runtime and the extracted production GUI's JS edit/save/close workflow.
+Final-source delayed-provider rechecking still requires a successful elevated
+fixture start; earlier two-mode fixture evidence belongs to `83671c3`.
 No macOS/Linux build or runtime verification was performed in this environment;
 platform source/configuration is not all-platform acceptance.
 

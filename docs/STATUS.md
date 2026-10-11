@@ -26,7 +26,7 @@ Current acceptance and remaining work (2026-10-11):
 responsibility/index map and findings. Windows clipboard contention now has
 explicit error handling and real failure-path evidence; all ten public
 form/clipboard/update wrappers forward caller cancellation/deadline options.
-The process-isolated clipboard draft now has real delayed-provider and production
+The committed process-isolated clipboard implementation has real delayed-provider and production
 GUI input/rendering/cancellation/shutdown acceptance in both Windows modes.
 Final regression/commit evidence is recorded below. This closes that specific
 native-I/O finding; it does not establish whole-architecture completion.
@@ -45,9 +45,55 @@ native-I/O finding; it does not establish whole-architecture completion.
 - Installed-IME document, editor/sidebar forms and modal input now have Windows
   Debug/Release acceptance for the tested Chinese profile. Other input services,
   physical monitor DPI transitions and real GPU device-loss remain unverified.
-- Validate and package the final source snapshot on Windows, including clean
-  extraction and isolated runtime acceptance. The earlier package is stale for
-  this revision. No macOS/Linux runtime verification is claimed.
+- Current clean-source Windows package `37bae5c` passed inventory/hash checks,
+  fresh extraction, isolated service/runtime acceptance and the extracted real
+  GUI edit/save/close workflow. The dedicated delayed-provider fixture recheck
+  after the final UI increment requires successful Windows elevation; the older
+  two-mode evidence remains explicitly attributed to `83671c3` below.
+  No macOS/Linux runtime verification is claimed.
+
+### Clean Windows package acceptance (2026-10-11)
+
+Runtime source: clean commit `37bae5c5b1a14d7979c80862522860189cb8d5cf`
+(`sourceDirty:false`, Release, native Windows x64). No source or binary edits
+followed the integrated acceptance before packaging. Package directory:
+`build/packages/astra-37bae5c-windows-x64`, **6,549 hashed files**, including
+`astra-clipboard-host.exe`. ZIP SHA-256:
+`0f9b4bd1d8c589f09c42bce7589d9d48916c5321928fb52dabc362fe9be14699`.
+
+Commands and evidence:
+
+- `./scripts/package-windows.ps1 -Offline -OutputDirectory build/packages/astra-37bae5c-windows-x64`
+  passed (`build/visual-final-package.log`). Inventory and pinned runtime caches
+  were verified; the package records the clean source hash inventory.
+- `./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/astra-37bae5c-windows-x64 -RunSmoke`
+  passed (`build/visual-final-package-smoke.log`). ZIP SHA-256 matched its sidecar.
+- `Expand-Archive` into the previously absent owned
+  `build/packages/extracted-37bae5c` directory, then
+  `./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/extracted-37bae5c/astra-0.1.0-windows-x64 -RunSmoke`
+  passed (`build/visual-final-extracted-smoke.log`). Both runtime runs used fresh
+  Unicode/spaced workspaces, isolated profile/state/temp and Windows-only PATH.
+  Actual packaged Git, clangd, TypeScript, Python, TCP dispatcher, durable Unicode
+  save and recovery passed without developer tools in the child environment.
+- `./build/visual-package-gui-smoke.ps1 -PackageDirectory build/packages/extracted-37bae5c/astra-0.1.0-windows-x64`
+  passed (`build/visual-final-package-gui.log`). The retained bounded fixture
+  starts the extracted production `astra.exe` with an isolated workspace-relative
+  user script. The existing client recovery-scan hook invokes shipped JS open,
+  native shared-command Unicode insertion, save, content verification and guarded
+  window close. Durable bytes are checked independently after successful exit.
+  This is real SDL/Skia Graphite/Dawn GUI startup and API integration, not synthetic
+  SDL keystroke coverage; that separate evidence is in the integrated run above.
+  Fixture/script are retained under `build/` for inspection.
+- Final `./scripts/format.ps1 -Check -Offline` passed **202 C++ / 15 JS files**
+  (`build/visual-final-format-check.log`); `git diff --check` passed before commit.
+
+The first final-source Release delayed-provider launch was cancelled by Windows
+before `Start-Process -Verb RunAs` returned a process. It created no new fixture
+log and is **not a test pass**. The original shell mistakenly continued after
+that nonterminating start error and returned zero; neither that shell status nor
+the older fixture log is counted as new acceptance. The retry sets
+`$ErrorActionPreference='Stop'` and requires a new fixture log. This OS elevation
+prerequisite is separate from automatic tool approval and package acceptance.
 
 ### Default workbench presentation and native pointer regression (2026-10-11)
 
