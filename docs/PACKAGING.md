@@ -1,16 +1,19 @@
 # Windows release packaging
 
 Windows x64 runtime preparation, package helper checks and isolated-directory
-package acceptance have passed. The final 6,527-file ZIP from clean source commit
+package acceptance have passed for the earlier snapshot. The 6,527-file ZIP from clean source commit
 `afcfbac` passed archive hash verification and a fresh extraction's isolated smoke:
 packaged Git, clangd, TypeScript, Python and recovery through the real service.
-See [STATUS.md](STATUS.md) for the archive identity and final acceptance commands.
+That archive predates the current workbench and clipboard changes; it is not
+acceptance of the current source. See [STATUS.md](STATUS.md) for archive identities
+and the current acceptance commands.
 Native Linux/macOS preparation and packaging now have source
 implementations, but have never been run or tested on this Windows host.
 
 Build the Release application and `astra-server` with the repository's xmake
 wrapper. The `astra.resources` rule in `xmake/resources.lua` puts `data`, the full
-prepared language/Git payload, notices and `astra-process-host.exe` next to each
+prepared language/Git payload, notices, `astra-process-host.exe` and
+`astra-clipboard-host.exe` next to each
 application, and copies the same resources into `install/bin` on installation.
 `astra.graphics-runtime` adds SDL3, ICU data and DXC next to GUI applications.
 The Windows preparation step must precede the application build/install:
@@ -36,7 +39,7 @@ and rejects undeclared npm runtime dependencies. The pointer identifies a fully
 prepared inventory. All downloads remain in `.tools/`. Reusing a runtime cache
 validates every file and rejects unlisted files.
 
-The package includes three Astra executables, SDL3, ICU data, DXC, complete clangd
+The package includes four Astra executables, SDL3, ICU data, DXC, complete clangd
 resources, Node with its license, TypeScript, TypeScript Language Server,
 basedpyright with typeshed, and the complete official MinGit archive. Git and
 language services resolve these files relative to the application. C++ dependency

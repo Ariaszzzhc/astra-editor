@@ -528,6 +528,10 @@ accept, items}, options)` returns `true` or `null`. Optional `items` are a
 scrollable review list, bounded to 4,096 single-line labels, 4 KiB per label and
 64 KiB combined. `astra.ui.pick({title, items, placeholder}, options)` returns the
 selected original item or `null`; items can be strings or objects with a `label`.
+Object items can also supply a single-line `badge` (at most 128 UTF-8 bytes per
+item, 64 KiB combined), rendered separately at the right edge. The default
+command palette uses badges for shortcuts. Filtering matches labels, while
+badges and application data survive filtering and selection unchanged.
 Filtering uses ASCII case folding and literal Unicode text matching; row identity
 survives filtering and scrolling. Limits match the confirmation list. Native
 filtering occurs when the query changes, not on each frame.

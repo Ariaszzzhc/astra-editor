@@ -17,15 +17,20 @@ std::string fold(std::string_view value) {
 
 namespace {
 PickerIndex::Snapshot rows(const std::vector<std::string>& labels,
-                           const std::vector<std::string>& icon_paths) {
+                           const std::vector<std::string>& icon_paths,
+                           const std::vector<std::string>& badges) {
     if (!icon_paths.empty() && icon_paths.size() != labels.size()) {
         throw std::invalid_argument("Picker icon paths must match its labels");
+    }
+    if (!badges.empty() && badges.size() != labels.size()) {
+        throw std::invalid_argument("Picker badges must match its labels");
     }
     if (labels.size() > 4096)
         throw std::length_error("Picker exceeds its 4096 item limit");
     std::vector<PickerIndex::Row> rows;
     std::size_t bytes{};
     std::size_t path_bytes{};
+    std::size_t badge_bytes{};
     rows.reserve(labels.size());
     for (const auto& label : labels) {
         if (label.empty() || label.size() > 4096 || label.find_first_of("\r\n") != label.npos ||
@@ -40,7 +45,14 @@ PickerIndex::Snapshot rows(const std::vector<std::string>& labels,
         }
         utf8::validate(path);
         path_bytes += path.size();
-        rows.push_back({label, fold(label), rows.size(), path});
+        const auto badge = badges.empty() ? std::string{} : badges.at(rows.size());
+        if (badge.size() > 128 || badge.size() > 65536 - badge_bytes ||
+            badge.find_first_of("\r\n") != badge.npos || badge.find('\0') != badge.npos) {
+            throw std::length_error("Picker badges exceed their bounds");
+        }
+        utf8::validate(badge);
+        badge_bytes += badge.size();
+        rows.push_back({label, fold(label), rows.size(), path, badge});
     }
     return PickerIndex::Snapshot(std::move(rows));
 }
@@ -48,8 +60,9 @@ PickerIndex::Snapshot rows(const std::vector<std::string>& labels,
 
 void PickerIndex::reset(const std::vector<std::string>& labels,
                         bool dynamic,
-                        const std::vector<std::string>& icon_paths) {
-    auto replacement = rows(labels, icon_paths);
+                        const std::vector<std::string>& icon_paths,
+                        const std::vector<std::string>& badges) {
+    auto replacement = rows(labels, icon_paths, badges);
     std::string message = dynamic ? "Searching…" : "";
     source_ = replacement;
     visible_ = std::move(replacement);
@@ -102,7 +115,8 @@ bool PickerIndex::publish(std::string_view generation,
                           const std::vector<std::string>& labels,
                           std::string message,
                           bool error,
-                          const std::vector<std::string>& icon_paths) {
+                          const std::vector<std::string>& icon_paths,
+                          const std::vector<std::string>& badges) {
     if (!dynamic_ || generation != this->generation())
         return false;
     if (message.size() > 4096 || message.find_first_of("\r\n") != message.npos ||
@@ -110,7 +124,7 @@ bool PickerIndex::publish(std::string_view generation,
         throw std::length_error("Picker message exceeds its bounds");
     }
     utf8::validate(message);
-    auto replacement = rows(labels, icon_paths);
+    auto replacement = rows(labels, icon_paths, badges);
     source_ = replacement;
     visible_ = std::move(replacement);
     message_ = std::move(message);

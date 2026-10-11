@@ -187,6 +187,7 @@ For a focused check after configuring the desired mode:
 | `gui-recovery-smoke` | Restore review, dirty preservation, durable exit and checkpoint-error handling |
 | `gui-workspace-smoke` | Dirty/untitled search navigation, search options, confirmed replacement, external conflict and guarded reload |
 | `gui-presentation-smoke` | Indexed file-tree collapse, resizable sidebar, Outline, adaptive tabs/reorder/overflow, logical resize and same-batch prompt focus |
+| `gui-visual-smoke` | Shipped default theme/fonts, Explorer/Outline, command palette badges, quick open, document/workspace search, Git/diff, dirty close and narrow resize; screenshots under `build/graphics/default-ui` |
 | `gui-body-smoke` | JS welcome actions, notice dismissal/replacement, original Unicode at large fonts/narrow resize, provider-failure diagnostics and restoration |
 
 Screenshots and acceptance fixtures stay under `build/`; GUI failures preserve

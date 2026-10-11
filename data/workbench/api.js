@@ -159,7 +159,8 @@ export const ui = {
                 items: items.map((item) => (typeof item === 'string' ? item : item.label)),
                 iconPaths: items.map((item) =>
                     typeof item === 'string' ? '' : (item.iconPath ?? '')
-                )
+                ),
+                badges: items.map((item) => (typeof item === 'string' ? '' : (item.badge ?? '')))
             },
             options
         );
@@ -568,7 +569,7 @@ async function dynamicPick(spec, options = {}) {
     try {
         const result = await dialog(
             'pick',
-            { ...spec, items: [], iconPaths: [], dynamic: true },
+            { ...spec, items: [], iconPaths: [], badges: [], dynamic: true },
             options,
             id
         );
@@ -634,6 +635,7 @@ astra.on('ui.picker.query', async ({ id, generation, query }) => {
         const iconPaths = items.map((item) =>
             typeof item === 'string' ? '' : (item.iconPath ?? '')
         );
+        const badges = items.map((item) => (typeof item === 'string' ? '' : (item.badge ?? '')));
         const message = Array.isArray(output) ? '' : (output.message ?? '');
         // Capture the original items before publication: native Enter may finish
         // the dialog before the publication acknowledgement reaches this task.
@@ -641,7 +643,7 @@ astra.on('ui.picker.query', async ({ id, generation, query }) => {
         record.published = generation;
         await request(
             '_ui.picker.publish',
-            { id, generation, items: labels, iconPaths, message },
+            { id, generation, items: labels, iconPaths, badges, message },
             { signal: control.signal }
         );
     } catch (error) {

@@ -408,6 +408,16 @@ target("gui-presentation-smoke")
     end
     set_exceptions("cxx")
 
+target("gui-visual-smoke")
+    set_kind("binary")
+    set_rundir(os.projectdir())
+    set_default(false)
+    add_deps("astra-ui", "astra-service", "astra-process")
+    add_packages("skia-graphite", "libsdl3")
+    add_rules("astra.resources", "astra.graphics-runtime")
+    add_files("tests/gui_visual_smoke.cpp")
+    set_exceptions("cxx")
+
 if is_plat("windows") then
     target("gui-clipboard-async-smoke")
         set_kind("binary")

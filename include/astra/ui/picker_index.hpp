@@ -14,6 +14,7 @@ class PickerIndex final {
         std::string label, folded;
         std::size_t source{};
         std::string icon_path;
+        std::string badge;
     };
 
     struct Summary {
@@ -34,14 +35,16 @@ class PickerIndex final {
     using Snapshot = SumTree<Row, Summary, Measure>;
     void reset(const std::vector<std::string>& labels,
                bool dynamic = false,
-               const std::vector<std::string>& icon_paths = {});
+               const std::vector<std::string>& icon_paths = {},
+               const std::vector<std::string>& badges = {});
     void filter(std::string_view query);
     // Provider publication is atomic and only accepts the current query identity.
     bool publish(std::string_view generation,
                  const std::vector<std::string>& labels,
                  std::string message,
                  bool error = false,
-                 const std::vector<std::string>& icon_paths = {});
+                 const std::vector<std::string>& icon_paths = {},
+                 const std::vector<std::string>& badges = {});
 
     [[nodiscard]] bool dynamic() const noexcept {
         return dynamic_;

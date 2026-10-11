@@ -90,7 +90,8 @@ struct PickerHost {
             specification = params;
             picker.reset(params.at("items").get<std::vector<std::string>>(),
                          params.value("dynamic", false),
-                         params.value("iconPaths", Json::array()).get<std::vector<std::string>>());
+                         params.value("iconPaths", Json::array()).get<std::vector<std::string>>(),
+                         params.value("badges", Json::array()).get<std::vector<std::string>>());
             input.emplace();
             return input->get_future();
         }
@@ -103,13 +104,14 @@ struct PickerHost {
         }
         REQUIRE(method == "_ui.picker.publish");
         publications.push_back(params);
-        return ready(input && specification.at("id") == params.at("id") &&
-                     picker.publish(
-                         params.at("generation").get<std::string>(),
-                         params.at("items").get<std::vector<std::string>>(),
-                         params.value("message", std::string{}),
-                         params.value("error", false),
-                         params.value("iconPaths", Json::array()).get<std::vector<std::string>>()));
+        return ready(
+            input && specification.at("id") == params.at("id") &&
+            picker.publish(params.at("generation").get<std::string>(),
+                           params.at("items").get<std::vector<std::string>>(),
+                           params.value("message", std::string{}),
+                           params.value("error", false),
+                           params.value("iconPaths", Json::array()).get<std::vector<std::string>>(),
+                           params.value("badges", Json::array()).get<std::vector<std::string>>()));
     }
 
     void query(astra::ui::Workbench& workbench, std::string text) {
@@ -559,7 +561,7 @@ TEST_CASE("workbench dynamic picker cancels obsolete providers and returns captu
                     await new Promise(resolve => releaseOld = resolve);
                 }
                 if (query === 'error') throw new Error('Failed\nprovider');
-                return {items: [{label: query, path: query + '.cpp', iconPath: query + '.cpp'}],
+                return {items: [{label: query, path: query + '.cpp', iconPath: query + '.cpp', badge: 'F9'}],
                         message: '1 match'};
             }
         }));
@@ -588,6 +590,7 @@ TEST_CASE("workbench dynamic picker cancels obsolete providers and returns captu
     REQUIRE(host.picker.ready());
     CHECK(host.picker.at(0).label == "new🙂");
     CHECK(host.picker.at(0).icon_path == "new🙂.cpp");
+    CHECK(host.picker.at(0).badge == "F9");
     workbench.execute("acceptance.release", Json::object(), [&](const auto& value) {
         released = value;
     });
@@ -612,6 +615,7 @@ TEST_CASE("workbench dynamic picker cancels obsolete providers and returns captu
     REQUIRE(outcome);
     CHECK_FALSE(outcome->error);
     CHECK(outcome->value.at("path") == "recovered.cpp");
+    CHECK(outcome->value.at("badge") == "F9");
     CHECK(workbench.take_errors().empty());
     CHECK(channel->requests.empty());
     CHECK(workbench.idle());
@@ -629,7 +633,7 @@ TEST_CASE("workbench picker preserves static item data and rejects obsolete dyna
         R"js(
         astra.registerCommand('acceptance.static', () => astra.ui.pick({
             title: 'Static', dynamic: true,
-            items: [{label: 'First', data: 42, iconPath: 'first.cpp'}, 'Second']
+            items: [{label: 'First', data: 42, iconPath: 'first.cpp', badge: 'Ctrl+F9'}, 'Second']
         }));
         astra.registerCommand('acceptance.dynamic', () => astra.ui.pick({
             title: 'Dynamic', items: query => [{label: query, data: query}]
@@ -647,12 +651,14 @@ TEST_CASE("workbench picker preserves static item data and rejects obsolete dyna
     REQUIRE(host.input);
     CHECK_FALSE(host.picker.dynamic());
     CHECK(host.picker.at(0).icon_path == "first.cpp");
+    CHECK(host.picker.at(0).badge == "Ctrl+F9");
     host.input->set_value(0);
     host.input.reset();
     poll();
     REQUIRE(outcome);
     CHECK_FALSE(outcome->error);
     CHECK(outcome->value.at("data") == 42);
+    CHECK(outcome->value.at("badge") == "Ctrl+F9");
     outcome.reset();
     workbench.execute("acceptance.dynamic", Json::object(), [&](const auto& value) {
         outcome = value;
@@ -3726,6 +3732,7 @@ TEST_CASE(
     auto channel = std::make_shared<Channel>();
     std::optional<std::promise<Json>> selection;
     Json items;
+    Json badges;
     Json published;
     astra::ui::Workbench workbench(
         channel,
@@ -3736,6 +3743,7 @@ TEST_CASE(
             if (method == "_ui.dialog") {
                 CHECK(params.at("kind") == "pick");
                 items = params.at("items");
+                badges = params.at("badges");
                 selection.emplace();
                 return selection->get_future();
             }
@@ -3768,7 +3776,12 @@ TEST_CASE(
     CHECK(workbench.awaiting_input());
     CHECK_FALSE(outcome);
     CHECK(channel->requests.empty());
-    CHECK(std::ranges::count(items, Json("Undo    Ctrl+Z")) == 1);
+    const auto undo = std::ranges::find(items, Json("Undo"));
+    REQUIRE(undo != items.end());
+    CHECK(badges.at(static_cast<std::size_t>(undo - items.begin())) == "Ctrl+Z");
+    const auto custom = std::ranges::find(items, Json("Choose 中🙂"));
+    REQUIRE(custom != items.end());
+    CHECK(badges.at(static_cast<std::size_t>(custom - items.begin())) == "F9");
     CHECK(std::ranges::none_of(items, [](const Json& item) {
         return item.get<std::string>().starts_with("Hidden internal");
     }));

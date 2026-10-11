@@ -1822,10 +1822,10 @@ std::future<Json> EditorWindow::Impl::begin_dialog(const Json& spec) {
         }
     }
     if (kind == "pick") {
-        pending.picker.reset(
-            items.get<std::vector<std::string>>(),
-            dynamic,
-            spec.value("iconPaths", Json::array()).get<std::vector<std::string>>());
+        pending.picker.reset(items.get<std::vector<std::string>>(),
+                             dynamic,
+                             spec.value("iconPaths", Json::array()).get<std::vector<std::string>>(),
+                             spec.value("badges", Json::array()).get<std::vector<std::string>>());
         pending.picker.filter(value);
     } else if (!items.empty())
         pending.items.reset(item_text);
@@ -2363,7 +2363,8 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
             params.at("items").get<std::vector<std::string>>(),
             params.value("message", std::string{}),
             params.value("error", false),
-            params.value("iconPaths", Json::array()).get<std::vector<std::string>>());
+            params.value("iconPaths", Json::array()).get<std::vector<std::string>>(),
+            params.value("badges", Json::array()).get<std::vector<std::string>>());
         if (accepted)
             prompt_choice = 0;
         return accepted;
@@ -3741,6 +3742,11 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
     case SDL_EVENT_MOUSE_MOTION:
         mouse_x = input.motion.x * ratio_x;
         mouse_y = input.motion.y * ratio_y;
+        // SDL's motion state is authoritative. Hover updates still apply, but
+        // an outstanding down/up interaction must not turn native hover into a drag.
+        if ((input.motion.state & SDL_BUTTON_LMASK) == 0) {
+            break;
+        }
         if (dragging_dialog_input && dialog && dialog->input) {
             static_cast<void>(point_dialog_input(mouse_x, mouse_y, true));
         } else if (dragging_sidebar) {
@@ -4784,6 +4790,36 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                                   layout.row_height - 2 * scale,
                                   ui_style.colors.hover);
                     const auto icon_width = item.icon_path.empty() ? 0.0F : 24 * scale;
+                    const auto badge_width =
+                        item.badge.empty()
+                            ? 0.0F
+                            : std::min(
+                                  label_layout(item.badge, 13, ui_style.colors.muted)->width() +
+                                      16 * scale,
+                                  layout.rows.width * 0.4F);
+                    if (badge_width > 0) {
+                        const auto badge_x = layout.rows.right() - 8 * scale - badge_width;
+                        SkPaint border;
+                        border.setAntiAlias(true);
+                        border.setStyle(SkPaint::kStroke_Style);
+                        border.setStrokeWidth(scale);
+                        border.setColor(ui_style.colors.border);
+                        canvas->drawRoundRect(
+                            SkRect::MakeXYWH(badge_x,
+                                             y + 4 * scale,
+                                             badge_width,
+                                             std::max(0.0F, layout.row_height - 10 * scale)),
+                            3 * scale,
+                            3 * scale,
+                            border);
+                        elided_label(canvas,
+                                     item.badge,
+                                     badge_x + 8 * scale,
+                                     y + 7 * scale,
+                                     13,
+                                     std::max(0.0F, badge_width - 16 * scale),
+                                     ui_style.colors.muted);
+                    }
                     if (!item.icon_path.empty()) {
                         const auto icon = file_icons.lookup(item.icon_path, false);
                         draw_icon(canvas,
@@ -4798,7 +4834,9 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                                  layout.rows.x + 8 * scale + icon_width,
                                  y + 7 * scale,
                                  13,
-                                 layout.rows.width - 16 * scale - icon_width,
+                                 std::max(0.0F,
+                                          layout.rows.width - 16 * scale - icon_width -
+                                              (badge_width > 0 ? badge_width + 12 * scale : 0)),
                                  ui_style.colors.foreground);
                 });
             if (!dialog->picker.size())

@@ -58,7 +58,8 @@ export function registerNativeCommands() {
                 .filter((command) => command.palette)
                 .map((command) => ({
                     ...command,
-                    label: command.title + (command.shortcut ? `    ${command.shortcut}` : '')
+                    label: command.title,
+                    badge: command.shortcut ?? ''
                 }));
             const selected = await ui.pick({
                 title: 'COMMAND PALETTE',

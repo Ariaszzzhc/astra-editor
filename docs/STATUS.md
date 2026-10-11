@@ -20,7 +20,7 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
-Current remaining work (2026-10-11):
+Current acceptance and remaining work (2026-10-11):
 
 [ARCHITECTURE_AUDIT.md](ARCHITECTURE_AUDIT.md) records the source
 responsibility/index map and findings. Windows clipboard contention now has
@@ -31,22 +31,96 @@ GUI input/rendering/cancellation/shutdown acceptance in both Windows modes.
 Final regression/commit evidence is recorded below. This closes that specific
 native-I/O finding; it does not establish whole-architecture completion.
 
-- Audit the final C++ service/native-mechanism versus JavaScript policy/API
-  boundaries, asynchronous cancellation/error/lifecycle behavior, and measured
-  persistent indexes against every `EditorDoc.md` requirement. Component test
-  results do not establish whole-architecture acceptance.
+- The final source boundary and contract map is recorded in
+  `ARCHITECTURE_AUDIT.md`: JavaScript owns command/workflow/provider policy;
+  C++ owns persistent state, services and native mechanisms. The final integrated
+  Windows run verifies local/TCP dispatch and asynchronous cancellation/lifecycle
+  behavior. No language-percentage or whole-editor O(log n) claim is made.
 - Undo/redo now use persistent measured storage rather than copied deques. Final
   Windows core/service/GUI regression evidence for this correction is recorded
   below; this resolves history preparation, not the entire index audit.
-- Finish whole-workbench visual acceptance across editing, Explorer, search,
-  Git, Outline, pickers, forms and modal/error states. Measured typography and
-  individual component tests do not establish a cohesive final UI.
+- Default workbench visual acceptance now covers nine real states, with inspected
+  captures plus the existing native font/form/modal/error regressions in both
+  Windows modes. Subjective design feedback can still lead to further changes.
 - Installed-IME document, editor/sidebar forms and modal input now have Windows
   Debug/Release acceptance for the tested Chinese profile. Other input services,
   physical monitor DPI transitions and real GPU device-loss remain unverified.
 - Validate and package the final source snapshot on Windows, including clean
   extraction and isolated runtime acceptance. The earlier package is stale for
   this revision. No macOS/Linux runtime verification is claimed.
+
+### Default workbench presentation and native pointer regression (2026-10-11)
+
+The increment following `a5273e0` presents command shortcuts as independently
+measured right-aligned badges, instead of concatenating them into command labels.
+JS owns the palette metadata; the generic native picker owns geometry and drawing.
+Static and async providers retain original item data and source identities.
+Badges admit 128 single-line UTF-8 bytes each / 64 KiB combined; malformed,
+misaligned and oversized publications leave existing measured rows unchanged.
+Filtering matches labels. Native clipping reserves badge space without changing
+row hit targets. The same API is available to user providers.
+
+`gui-visual-smoke` uses the shipped theme, fonts, keybindings and UI providers.
+It isolates Git configuration, creates a real repository and keeps recovery state
+outside that fixture's workspace. It exercises nine production states:
+editor/Explorer/expanded Outline, command palette, quick open, document find,
+workspace search, source control, Git diff, dirty close and narrow resize. It
+performs actual SDL Unicode input, undo, cancellation and guarded clean shutdown.
+Screenshots are under `build/graphics/default-ui/`; this target is now included
+in `scripts/test.ps1 -Gui`. Inspected captures show aligned palette shortcuts,
+consistent text/icons, unclipped confirmation buttons, and a narrow layout that
+keeps the editor usable by hiding the sidebar. Pixel checks and source geometry
+do not replace physical monitor DPI/device-loss verification.
+
+Windows Debug preparation and failures are retained honestly:
+
+- `visual-build-debug.log`: the new fixture used nonexistent ProcessOptions
+  fields (C2039). It now uses the existing UTF-8 `argv/cwd/env` API with explicit
+  local Git configuration and bounded child output.
+- `visual-default-debug.log`: fixture overwrite correctly failed without a
+  FileVersion. The fixture now retains and supplies the expected save token.
+- `visual-default-version-debug.log` and `visual-default-active-debug.log`:
+  the fixture incorrectly expected a collapsed Outline to enumerate symbols.
+  It now activates the C++ document and expands Outline through shipped commands.
+- `visual-default-outline-debug.log`: placing recovery inside the searchable
+  workspace made its live `.lock` unreadable. Workspace and recovery are now
+  siblings under one owned fixture root, matching ordinary state separation.
+- `visual-badges-build-debug.log` and `visual-badges-width-build-debug.log`:
+  C2660 from an omitted native `label_layout` color argument. The corrected
+  native layout call built (`visual-badges-layout-build-debug.log`).
+- `visual-badges-tests-debug.log`: **155 affected cases / 2,232,354 assertions**
+  pass; 477 unrelated cases were intentionally excluded by the focused filter.
+  `visual-default-badges-debug.log`: all nine real default states pass.
+- `visual-integrated-all.log`: the first whole entry-point run passed Debug
+  **632 cases / 2,704,830 assertions / zero skipped cases**, CLI, native graphics,
+  shaping/viewport, local GUI, real LSP/Git, recovery and workspace workflows.
+  It then failed the existing configured-form pointer/native-font oracle check.
+  No Release result is claimed for that aborted entry-point run.
+- A diagnostic-only standalone rerun passed the entire presentation target
+  (`visual-pointer-diagnostic-debug.log`); the first failure's precise cause
+  was not established from its original message. Source inspection found that
+  motion events ignored their mouse-button state. A deterministic regression
+  sends hover motion with no buttons during a down/up interaction. Before the
+  fix, expected `01234界56789中🙂é` became `01234界`: the unintended drag selected
+  and replaced the suffix (`visual-no-button-before-debug.log`, DPI scale 2).
+  Native motion now updates hover but only drags when SDL reports the left button.
+- After the fix, full presentation and default visual targets pass
+  (`visual-no-button-after-debug.log`, `visual-default-final-debug.log`). The
+  independent native font oracle, Unicode, read-only body checks, large-font
+  editor/sidebar forms and actual tab drag/reorder assertions remain in place.
+
+Final command: `./scripts/test.ps1 -Mode all -Gui -Benchmarks -InstalledIme`
+(`build/visual-integrated-final-all.log`). Debug passed **632 cases / 2,704,833
+assertions**; Release passed **632 cases / 2,704,716 assertions**. Both had zero
+failed/skipped cases. Both passed CLI, actual native graphics/fonts/viewport,
+local and TCP GUI, LSP/Git, recovery/workspace, presentation including the new
+buttonless-motion regression, all nine default visual states, body, clipboard
+failure preservation and real installed Chinese IME. The entry point also passed
+the pinned formatting gate, 12 package-script checks and seven Skia provenance
+tests. Release 1/8/64 MiB edit P95 was 10.7/9.9/11.5 microseconds; all six history
+clone P95 rows were 0.1 microseconds. This does not mean zero cloning cost.
+The dedicated isolated clipboard recheck and fresh package are recorded separately
+when they finish. No whole-product or all-platform completion is claimed.
 
 ### Persistent document history (2026-10-11)
 

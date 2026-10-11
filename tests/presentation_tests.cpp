@@ -1566,6 +1566,49 @@ TEST_CASE("presentation dynamic picker rejects stale publications and preserves 
     CHECK(index.at(0).label == "static");
 }
 
+TEST_CASE(
+    "presentation picker badges preserve identities and reject invalid publication atomically") {
+    astra::ui::PickerIndex index;
+    index.reset({"Undo", "Unicode 中🙂", "Redo"}, false, {}, {"Ctrl+Z", "F9", "Ctrl+Y"});
+    const auto retained = index.snapshot();
+    index.filter("unicode");
+    REQUIRE(index.size() == 1);
+    CHECK(index.at(0).source == 1);
+    CHECK(index.at(0).badge == "F9");
+    index.filter("Ctrl");
+    CHECK(index.size() == 0);
+    CHECK(retained.at(2).badge == "Ctrl+Y");
+    CHECK(retained.validate());
+    index.reset({}, true);
+    const auto generation = index.generation();
+    REQUIRE(index.publish(generation, {"Current"}, "Ready", false, {}, {"中🙂"}));
+    const auto current = index.snapshot();
+    CHECK_THROWS_AS(index.publish(generation, {"Bad"}, "Changed", false, {}, {"a", "b"}),
+                    std::invalid_argument);
+    for (const auto& badge : {std::string(129, 'a'),
+                              std::string("line\nbreak"),
+                              std::string("nul\0byte", 8),
+                              std::string(1, '\xff')}) {
+        CHECK_THROWS(index.publish(generation, {"Bad"}, "Changed", false, {}, {badge}));
+        CHECK(index.at(0).label == "Current");
+        CHECK(index.at(0).badge == "中🙂");
+        CHECK(index.message() == "Ready");
+        CHECK(index.ready());
+    }
+    CHECK_THROWS_AS(index.reset(std::vector<std::string>(600, "row"),
+                                false,
+                                {},
+                                std::vector<std::string>(600, std::string(128, 'a'))),
+                    std::length_error);
+    CHECK(index.at(0).label == "Current");
+    index.filter("new");
+    CHECK_FALSE(index.publish(generation, {"Stale"}, "Old", false, {}, {"a", "b"}));
+    REQUIRE(index.publish(index.generation(), {"New"}, "Ready", false, {}, {"Shift+F9"}));
+    CHECK(index.at(0).badge == "Shift+F9");
+    CHECK(current.at(0).badge == "中🙂");
+    CHECK(index.snapshot().validate());
+}
+
 TEST_CASE("presentation modal layouts share bounded rows and pointer geometry") {
     for (const auto scale : {1.0F, 1.25F, 1.5F, 2.0F})
         for (const auto width : {160.0F, 260.0F, 584.0F, 640.0F, 680.0F, 1440.0F}) {

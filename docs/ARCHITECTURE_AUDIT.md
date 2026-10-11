@@ -1,7 +1,9 @@
 # Product and architecture acceptance audit
 
-Contract: [EditorDoc.md](../EditorDoc.md). Base source review: `c7d865c`, Windows,
-2026-10-11. This is a requirement map and a record of open findings, not a
+Contract: [EditorDoc.md](../EditorDoc.md). Initial source review: `c7d865c`; final
+Windows review includes committed clipboard `83671c3`, history `a5273e0` and the
+default-workbench increment following it, 2026-10-11. This is a requirement map
+and a record of tested boundaries, not a
 whole-product completion claim. Runtime evidence and failed attempts belong in
 [STATUS.md](STATUS.md); source wiring alone does not prove runtime acceptance.
 Clipboard/request corrections below refer to the tested increment whose parent
@@ -16,7 +18,7 @@ commands and limitations in `STATUS.md`.
 | Documents/workspace, parsing, I/O and external services | `src/service/`, `src/workspace/`, `src/language/`, `src/process/` | Service-owned state, asynchronous work, cancellation, failure preservation and shutdown |
 | User scripts and asynchronous requests | `src/script/runtime.cpp` | Deferred Promise dispatch, task identity across continuations, bounded queues, AbortSignal/timeouts, late-response draining and observable errors |
 | Product commands, labels, keymaps and default settings | `data/defaults.js`, `data/workbench/commands.js`, `workbench.js` | User overrides reach actual input/menus and the shared dispatcher |
-| Files, search, Git, language, recovery and exit workflows | `data/workbench/files.js`, `search.js`, `workspace-search.js`, `git.js`, `language.js`, `recovery.js`, `lifecycle.js` | JS owns workflow decisions; native/service adapters expose mechanisms |
+| Files, clipboard, search, Git, language, recovery and exit workflows | `data/workbench/files.js`, `clipboard.js`, `search.js`, `workspace-search.js`, `git.js`, `language.js`, `recovery.js`, `lifecycle.js` | JS owns workflow decisions; native/service adapters expose mechanisms |
 | Sidebar/Outline/chrome policy and file icon associations | `data/workbench/api.js`, `outline.js`, `chrome.js`, `icons.js` | JS providers publish bounded immutable generations; retired state cannot activate |
 | Window/input, shaping, retained layout and drawing | `src/ui/renderer.cpp`, `editor_window.cpp`, component files under `src/ui/` | SDL3 + Skia Graphite/Dawn, common paint/hit geometry, responsive input and exact Unicode/native glyph coordinates |
 | In-process and remote clients | `include/astra/ui/editor_channel.hpp`, `src/ui/workbench.cpp`, `src/service/service_host.cpp`, `src/transport/` | Common service requests/responses/notifications; local `_ui.*` primitives belong to the client window |
@@ -142,9 +144,15 @@ native configuration service; request/response/notifications to the shared
 protocol/transport. Their existing tests and GUI workflows must be checked
 against the final source snapshot before release acceptance.
 
+The final integrated entry point passed 632 behavior cases with no skipped cases
+in each Windows mode, plus native local/TCP GUI workflows and real services.
+The new default visual fixture exercises nine production states with shipped
+providers/theme/fonts: editing/Explorer/Outline, palette, quick open, document
+find, workspace search, source control, diff, dirty-close and narrow resize.
+Native captures were inspected; this is concrete default-state acceptance,
+not a claim that visual quality can be inferred from test counts.
 Real installed Chinese IME document, editor/sidebar form and modal input passed
-both Windows modes at this checkpoint. Whole-workbench visual acceptance across
-default product states remains open. Physical DPI transitions, real GPU device
+both Windows modes at this checkpoint. Physical DPI transitions, real GPU device
 loss and other installed IMEs are outside that evidence. A current clean-source
 Windows package with fresh extraction and isolated runtime checks is still due.
 No macOS/Linux build or runtime verification was performed in this environment;

@@ -78,7 +78,11 @@ void verify_selected_row(Window& window, const fs::path& path, const char* role)
             std::string("Selected row pixels do not follow theme role ") + role);
 }
 
-void enqueue_mouse(Window& window, Uint32 type, float x, float y) {
+void enqueue_mouse(Window& window,
+                   Uint32 type,
+                   float x,
+                   float y,
+                   SDL_MouseButtonFlags buttons = SDL_BUTTON_LMASK) {
     int width{}, height{}, pixels_x{}, pixels_y{};
     require(SDL_GetWindowSize(window.window(), &width, &height) &&
                 SDL_GetWindowSizeInPixels(window.window(), &pixels_x, &pixels_y),
@@ -87,7 +91,7 @@ void enqueue_mouse(Window& window, Uint32 type, float x, float y) {
     event.type = type;
     if (type == SDL_EVENT_MOUSE_MOTION) {
         event.motion.windowID = SDL_GetWindowID(window.window());
-        event.motion.state = SDL_BUTTON_LMASK;
+        event.motion.state = buttons;
         event.motion.x = x * static_cast<float>(width) / static_cast<float>(pixels_x);
         event.motion.y = y * static_cast<float>(height) / static_cast<float>(pixels_y);
     } else {
@@ -850,18 +854,32 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
                 settle(window);
                 const auto paragraph = form_fonts.layout(typed, form_style);
                 const auto local_x = 40 * window.layout().scale;
-                click(window,
-                      field.x + 6 * window.layout().scale + local_x,
-                      field.y + 5 * window.layout().scale + paragraph.height() / 2);
+                const auto pointer_x = field.x + 6 * window.layout().scale + local_x;
+                const auto pointer_y = field.y + 5 * window.layout().scale + paragraph.height() / 2;
+                mouse(window, SDL_EVENT_MOUSE_BUTTON_DOWN, pointer_x, pointer_y);
+                // Native hover motion can arrive while a synthetic down/up pair
+                // is awaiting input geometry. No pressed buttons means no drag.
+                enqueue_mouse(window,
+                              SDL_EVENT_MOUSE_MOTION,
+                              field.right() - 10 * window.layout().scale,
+                              pointer_y,
+                              0);
+                settle(window);
+                mouse(window, SDL_EVENT_MOUSE_BUTTON_UP, pointer_x, pointer_y);
                 text.text.text = "界";
                 require(SDL_PushEvent(&text), "Cannot queue form pointer insertion");
                 settle(window);
                 const auto offset = paragraph.hit_test(local_x, paragraph.height() / 2).byte_offset;
                 const auto state = window.view_state();
                 const auto& form = sidebar ? state.sidebar_form : state.inline_form;
-                require(form.at("values").at(value_id) ==
-                            typed.substr(0, offset) + "界" + typed.substr(offset),
-                        "Configured form pointer and native font oracle disagree");
+                const auto expected = typed.substr(0, offset) + "界" + typed.substr(offset);
+                require(form.at("values").at(value_id) == expected,
+                        "Configured form pointer and native font oracle disagree: expected=" +
+                            expected +
+                            "; actual=" + form.at("values").at(value_id).get<std::string>() +
+                            "; offset=" + std::to_string(offset) +
+                            "; scale=" + std::to_string(window.layout().scale) + "; sidebar=" +
+                            std::to_string(sidebar) + "; input=" + state.input_layout.dump());
                 require(state.document.at("revision") == body_before_forms.at("revision") &&
                             state.document.at("selections") == body_before_forms.at("selections"),
                         "Form Unicode input changed the body revision or selections");
