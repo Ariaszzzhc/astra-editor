@@ -1,4 +1,5 @@
 #include "astra/ui/renderer.hpp"
+#include "renderer_acceptance.hpp"
 #include "window_frame_transaction.hpp"
 
 #include "include/core/SkCanvas.h"
@@ -712,6 +713,19 @@ void Renderer::clear_composition() {
     if (!SDL_ClearComposition(window())) {
         sdl_failure("Dismiss IME composition");
     }
+}
+
+void detail::RendererAcceptance::force_device_loss(Renderer& renderer) {
+    renderer.impl_->device.ForceLoss(wgpu::DeviceLostReason::Unknown,
+                                     "Astra owned renderer acceptance loss");
+}
+
+bool detail::RendererAcceptance::native_device_lost(const Renderer& renderer) {
+    return dawn::native::IsDeviceLost(renderer.impl_->device.Get());
+}
+
+bool detail::RendererAcceptance::loss_callback_received(const Renderer& renderer) {
+    return renderer.impl_->device_state->lost.load();
 }
 
 } // namespace astra::ui

@@ -44,7 +44,9 @@ native-I/O finding; it does not establish whole-architecture completion.
   Windows modes. Subjective design feedback can still lead to further changes.
 - Installed-IME document, editor/sidebar forms and modal input now have Windows
   Debug/Release acceptance for the tested Chinese profile. Other input services,
-  physical monitor DPI transitions and real GPU device-loss remain unverified.
+  physical monitor DPI transitions and driver-reset/adapter-removal failures
+  remain unverified. The owned native Dawn device-loss path now has explicit
+  callback/recovery/pixel acceptance below.
 - Current clean-source Windows package `37bae5c` passed inventory/hash checks,
   fresh extraction, isolated service/runtime acceptance and the extracted real
   GUI edit/save/close workflow. The final-source dedicated delayed-provider fixture
@@ -53,7 +55,45 @@ native-I/O finding; it does not establish whole-architecture completion.
   remains explicitly attributed to `83671c3` below.
   No macOS/Linux runtime verification is claimed.
 
-### Final isolated clipboard recheck (2026-10-11)
+### Native Dawn device-loss recovery acceptance (2026-10-11)
+
+Increment following `1b3e356`: existing renderer recovery was not exercised by
+the original resize/minimize/restart fixture. The internal
+`src/ui/renderer_acceptance.hpp` seam invokes the real owned Dawn device's
+`ForceLoss(Unknown, ...)`, checks Dawn's actual lost state and observes the
+production asynchronous loss callback. It does not emulate a renderer, flip a
+synthetic recovery flag, reset the system driver or alter display settings.
+
+`renderer-smoke` now exercises four losses, alternating idle and active recording
+frames. Each round requires the real callback within two seconds, resumes drawing
+and GPU PNG readback, checks exact red/green pixels, verifies the new device is
+healthy and retains native SDL window identity/dimensions/text-input lifetime and
+actual DWM palette. Existing resize/minimize/restart/abandoned-frame tests remain.
+No product command or JS API exposes this internal acceptance seam.
+
+Commands: `./scripts/format.ps1 -Offline` passed **203 C++ / 15 JS**
+(`build/renderer-loss-format.log`),
+`./scripts/xmake.ps1 build -y -j2 renderer-smoke` passed in Debug
+(`build/renderer-loss-build-debug.log`), and
+`./build/windows/x64/debug/renderer-smoke.exe` passed
+(`build/renderer-loss-smoke-debug.log`). The two-mode integrated command
+`./scripts/test.ps1 -Mode all -Gui -InstalledIme` passed, exit **0**
+(`build/renderer-loss-integrated-all.log`): Debug **632 cases / 2,704,804
+assertions**, Release **632 cases / 2,704,663 assertions**, zero failed/skipped
+cases. Both passed the four actual Dawn loss rounds, native graphics/fonts/
+viewport, local/TCP GUI, services/Git/recovery/workspace, presentation/default
+visual/body/clipboard-failure workflows and real installed Chinese IME. All 12
+package helper checks and seven Skia provenance tests passed. The formatter gate
+covered **203 C++ / 15 JS**. One separate tooling read command failed to start
+PowerShell with a missing System.Xml.ReaderWriter assembly; the already-running
+acceptance process was confirmed live in the host context and completed without
+restart. That tool-launch error is not attributed to an Astra test or silently
+counted as acceptance. The earlier package predates this source increment; fresh
+packaging follows after remaining renderer concurrency checks. Physical driver resets,
+adapter removal and physical monitor DPI transitions are not inferred from
+this owned-device fault injection.
+
+### Final isolated clipboard recheck results (2026-10-11)
 
 After the user reported no visible UAC prompt and explicitly requested a rerun,
 the already-authorized dedicated binaries launched successfully with

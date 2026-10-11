@@ -12,6 +12,10 @@ class SkCanvas;
 
 namespace astra::ui {
 
+namespace detail {
+struct RendererAcceptance;
+}
+
 struct PixelSize {
     int width{};
     int height{};
@@ -65,6 +69,7 @@ class Renderer final {
     void clear_composition();
 
   private:
+    friend struct detail::RendererAcceptance;
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

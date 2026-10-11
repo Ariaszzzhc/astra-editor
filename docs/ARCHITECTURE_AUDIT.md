@@ -147,7 +147,7 @@ Windows behaviors, not unrestricted production or all-platform readiness.
 | Explicit requirement | Authoritative implementation/evidence | Current result |
 | --- | --- | --- |
 | C++, JS and xmake | `xmake.lua` selects C++23 and pinned QuickJS-NG; `script_tests.cpp` evaluates Unicode, overrides and actual service edits | Windows verified |
-| SDL3, Skia Graphite, Dawn | `renderer.cpp` creates the real native/Graphite/Dawn context; graphics/renderer/font tests and all native GUI targets | Windows verified on this GPU |
+| SDL3, Skia Graphite, Dawn | `renderer.cpp` creates the real native/Graphite/Dawn context; graphics/renderer/font tests, native GUI targets and four actual owned Dawn device-loss/callback/recovery/pixel rounds | Windows verified on this GPU; physical driver reset/adapter removal unverified |
 | Tree-sitter highlighting | `syntax.cpp`, grammar manifest; real grammar/syntax tests and GUI syntax-object/highlight workflows | Windows verified |
 | libuv asynchronous I/O | Transport/service/process adapters; real socket/worker tests prove input-loop progress, errors, cancellation and owned shutdown; final dedicated real delayed-clipboard fixture | Windows verified in both configurations |
 | Rope and persistent measured SumTrees | Core snapshot/differential tests check summaries, chunk bounds, UTF coordinate round trips; indexed presentation tests and measured history clone benchmark | Windows verified for stated invariants/costs |
@@ -193,14 +193,17 @@ find, workspace search, source control, diff, dirty-close and narrow resize.
 Native captures were inspected; this is concrete default-state acceptance,
 not a claim that visual quality can be inferred from test counts.
 Real installed Chinese IME document, editor/sidebar form and modal input passed
-both Windows modes at this checkpoint. Physical DPI transitions, real GPU device
-loss and other installed IMEs are outside that evidence. Clean-source Windows
+both Windows modes at this checkpoint. Owned native Dawn loss/callback/recovery
+now has two-mode acceptance. Physical DPI transitions, driver resets/adapter
+removal and other installed IMEs are outside that evidence. Clean-source Windows
 package `37bae5c` passed inventory, ZIP hash, fresh extraction, isolated service
 runtime and the extracted production GUI's JS edit/save/close workflow.
 Final-source delayed-provider rechecking passed both configurations after the
 authorized rerun, with new logs/owned processes and exit zero. Current runtime
 source and Release binary hashes match the recorded clean package; exact evidence
 is in `STATUS.md`. Earlier two-mode fixture evidence belongs to `83671c3`.
+The subsequent renderer acceptance increment changes runtime source; its fresh
+package is still due. The old artifact is not substituted for that new snapshot.
 No macOS/Linux build or runtime verification was performed in this environment;
 platform source/configuration is not all-platform acceptance.
 

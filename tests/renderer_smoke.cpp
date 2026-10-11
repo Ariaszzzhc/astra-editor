@@ -1,6 +1,7 @@
 #include "astra/ui/renderer.hpp"
 #include "support/window_frame.hpp"
 #include "../src/ui/window_frame_transaction.hpp"
+#include "../src/ui/renderer_acceptance.hpp"
 
 #include "include/codec/SkCodec.h"
 #include "include/core/SkCanvas.h"
@@ -10,6 +11,7 @@
 #include "include/core/SkPaint.h"
 
 #include <cstdint>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <random>
@@ -181,6 +183,46 @@ int main() {
             require(renderer.dpi_scale() > 0, "Window DPI scale is invalid");
             draw(renderer, screenshot);
             verify_png(screenshot, renderer.pixel_size());
+
+            const auto original_window = renderer.window();
+            const auto original_size = renderer.pixel_size();
+            for (unsigned round = 0; round < 4; ++round) {
+                // Odd rounds lose the real device while a recording is active.
+                if ((round % 2) != 0) {
+                    auto* canvas = renderer.begin_frame();
+                    require(canvas != nullptr, "Pre-loss active frame acquisition failed");
+                    canvas->clear(SK_ColorBLUE);
+                }
+                astra::ui::detail::RendererAcceptance::force_device_loss(renderer);
+                require(astra::ui::detail::RendererAcceptance::native_device_lost(renderer),
+                        "Dawn did not lose its actual owned device");
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+                while (!astra::ui::detail::RendererAcceptance::loss_callback_received(renderer)) {
+                    require(std::chrono::steady_clock::now() < deadline,
+                            "Actual Dawn loss callback did not arrive");
+                    renderer.poll_events([](const SDL_Event&) {
+                    });
+                    SDL_Delay(1);
+                }
+                if ((round % 2) != 0) {
+                    renderer.end_frame();
+                }
+                draw(renderer, screenshot);
+                verify_png(screenshot, original_size);
+                require(
+                    !astra::ui::detail::RendererAcceptance::native_device_lost(renderer) &&
+                        !astra::ui::detail::RendererAcceptance::loss_callback_received(renderer),
+                    "Frame recovery retained the lost native device or callback state");
+                require(renderer.window() == original_window &&
+                            renderer.pixel_size() == original_size &&
+                            SDL_TextInputActive(renderer.window()),
+                        "GPU loss changed window identity, size or text-input lifetime");
+#if defined(_WIN32)
+                astra::test::verify_window_frame(renderer.window(), dark);
+#endif
+            }
+            std::cout << "Actual owned Dawn device loss: callback, idle/active frame recovery, "
+                         "GPU pixels and native window/input preservation (four rounds): PASS\n";
 
             require(SDL_SetWindowSize(renderer.window(), 800, 600), "Native resize failed");
             require(SDL_SyncWindow(renderer.window()), "Native resize synchronization failed");
