@@ -12,6 +12,45 @@ namespace astra::ui {
 namespace {
 using Json = protocol::Json;
 
+struct FormExtents {
+    float title, header, field, field_step, toggle, toggle_step, message, action;
+};
+
+FormExtents extents(DialogMetrics metrics, float scale) {
+    metrics.validate();
+    const auto line = [scale](float value) {
+        return std::ceil(value * scale) / scale;
+    };
+    const auto title = line(std::max(20.0F, metrics.title));
+    const auto field = line(std::max(28.0F, metrics.input + 10));
+    const auto toggle = line(std::max(22.0F, metrics.row + 10));
+    return {title,
+            title + 8,
+            field,
+            field + 6,
+            toggle,
+            toggle + 4,
+            line(std::max(20.0F, metrics.detail + 5)),
+            line(std::max(26.0F, metrics.button + 14))};
+}
+
+Box pixel_box(Box box, Box owner) {
+    // Align inward to an arbitrary owner's grid. Subpixel-only space collapses
+    // rather than painting or accepting a pointer outside the owning region.
+    auto left = std::ceil(owner.x), right = std::floor(owner.right());
+    auto top = std::ceil(owner.y), bottom = std::floor(owner.bottom());
+    if (right < left)
+        left = right = owner.x;
+    if (bottom < top)
+        top = bottom = owner.y;
+    const auto x = std::clamp(std::round(box.x), left, right);
+    const auto y = std::clamp(std::round(box.y), top, bottom);
+    return {x,
+            y,
+            std::clamp(std::round(box.right()), x, right) - x,
+            std::clamp(std::round(box.bottom()), y, bottom) - y};
+}
+
 void text_valid(std::string_view text, std::size_t limit) {
     if (text.size() > limit || text.find_first_of("\r\n") != text.npos ||
         text.find('\0') != text.npos) {
@@ -253,8 +292,12 @@ bool InlineForm::set_values(const Json& params) {
     return true;
 }
 
-InlineFormLayout InlineFormLayout::measure(
-    Box editor, float scale, std::size_t fields, std::size_t toggles, std::size_t actions) {
+InlineFormLayout InlineFormLayout::measure(Box editor,
+                                           float scale,
+                                           std::size_t fields,
+                                           std::size_t toggles,
+                                           std::size_t actions,
+                                           DialogMetrics metrics) {
     if (!std::isfinite(scale) || scale <= 0 || fields < 1 || fields > 4 || toggles > 4 ||
         actions < 1 || actions > 4 || !std::isfinite(editor.x) || !std::isfinite(editor.y) ||
         !std::isfinite(editor.width) || !std::isfinite(editor.height) || editor.width < 0 ||
@@ -262,72 +305,96 @@ InlineFormLayout InlineFormLayout::measure(
         throw std::invalid_argument("Invalid inline form geometry");
     }
     InlineFormLayout result;
+    const auto geometry = extents(metrics, scale);
     const auto inset = std::min(8 * scale, std::min(editor.width, editor.height) / 8);
     const auto width = std::max(0.0F, std::min(490 * scale, editor.width - 2 * inset));
-    const auto requested = (62 + 34 * static_cast<float>(fields) + (toggles ? 26 : 0)) * scale;
+    const auto requested =
+        std::ceil((geometry.header + geometry.field_step * static_cast<float>(fields) +
+                   (toggles ? geometry.toggle_step : 0) +
+                   std::max(geometry.message + 4, geometry.action) + 8) *
+                  scale);
     const auto height = std::max(0.0F, std::min(requested, editor.height - 2 * inset));
-    result.panel = {editor.right() - inset - width, editor.y + inset, width, height};
-    const auto sx = width > 0 ? width / (490 * scale) : 0;
-    const auto sy = requested > 0 ? height / requested : 0;
+    result.panel =
+        pixel_box({editor.right() - inset - width, editor.y + inset, width, height}, editor);
+    const auto sx = result.panel.width / (490 * scale);
+    const auto sy = result.panel.height / requested;
     const auto box = [&](float x, float y, float w, float h) {
-        return Box{result.panel.x + x * scale * sx,
-                   result.panel.y + y * scale * sy,
-                   w * scale * sx,
-                   h * scale * sy};
+        return pixel_box(Box{result.panel.x + x * scale * sx,
+                             result.panel.y + y * scale * sy,
+                             w * scale * sx,
+                             h * scale * sy},
+                         result.panel);
     };
-    result.title = box(10, 5, 438, 20);
+    result.title = box(10, 5, 438, geometry.title);
     result.close = box(458, 2, 28, 24);
     for (std::size_t i = 0; i < fields; ++i)
-        result.fields.push_back(box(8, 28 + 34 * static_cast<float>(i), 474, 28));
-    const auto bottom = 28 + 34 * static_cast<float>(fields);
+        result.fields.push_back(box(
+            8, geometry.header + geometry.field_step * static_cast<float>(i), 474, geometry.field));
+    const auto bottom = geometry.header + geometry.field_step * static_cast<float>(fields);
     if (toggles)
         for (std::size_t i = 0; i < toggles; ++i)
-            result.toggles.push_back(box(8 + static_cast<float>(i) * 84, bottom, 78, 22));
-    const auto action_y = bottom + (toggles ? 26 : 0);
-    result.message = box(10, action_y + 4, 218, 20);
+            result.toggles.push_back(
+                box(8 + static_cast<float>(i) * 84, bottom, 78, geometry.toggle));
+    const auto action_y = bottom + (toggles ? geometry.toggle_step : 0);
+    result.message = box(10, action_y + 4, 218, geometry.message);
     const auto action_width = 246 / static_cast<float>(actions);
     for (std::size_t i = 0; i < actions; ++i)
-        result.actions.push_back(
-            box(236 + static_cast<float>(i) * action_width, action_y, action_width - 4, 26));
+        result.actions.push_back(box(236 + static_cast<float>(i) * action_width,
+                                     action_y,
+                                     action_width - 4,
+                                     geometry.action));
     return result;
 }
 
-InlineFormLayout InlineFormLayout::measure_sidebar(
-    Box available, float scale, std::size_t fields, std::size_t toggles, std::size_t actions) {
-    static_cast<void>(measure(available, scale, fields, toggles, actions));
+InlineFormLayout InlineFormLayout::measure_sidebar(Box available,
+                                                   float scale,
+                                                   std::size_t fields,
+                                                   std::size_t toggles,
+                                                   std::size_t actions,
+                                                   DialogMetrics metrics) {
+    static_cast<void>(measure(available, scale, fields, toggles, actions, metrics));
     InlineFormLayout result;
-    const auto requested = (90 + 34 * static_cast<float>(fields) + (toggles ? 26 : 0)) * scale;
+    const auto geometry = extents(metrics, scale);
+    const auto requested = std::ceil(
+        (geometry.header + geometry.field_step * static_cast<float>(fields) +
+         (toggles ? geometry.toggle_step : 0) + geometry.message + 6 + geometry.action + 10) *
+        scale);
     const auto height = std::min(requested, available.height);
-    result.panel = {available.x, available.y, available.width, height};
-    const auto sx = std::min(1.0F, available.width / (180 * scale));
-    const auto sy = requested > 0 ? height / requested : 0;
+    result.panel = pixel_box({available.x, available.y, available.width, height}, available);
+    const auto sx = std::min(1.0F, result.panel.width / (180 * scale));
+    const auto sy = result.panel.height / requested;
     const auto pad = 8 * scale * sx;
-    const auto width = std::max(0.0F, available.width - 2 * pad);
+    const auto width = std::max(0.0F, result.panel.width - 2 * pad);
     const auto box = [&](float x, float y, float w, float h) {
-        return Box{result.panel.x + x, result.panel.y + y * scale * sy, w, h * scale * sy};
+        return pixel_box(
+            Box{result.panel.x + x, result.panel.y + y * scale * sy, w, h * scale * sy},
+            result.panel);
     };
-    result.title = box(pad, 5, std::max(0.0F, width - 32 * scale * sx), 20);
+    result.title = box(pad, 5, std::max(0.0F, width - 32 * scale * sx), geometry.title);
     result.close =
-        box(std::max(0.0F, available.width - pad - 28 * scale * sx), 2, 28 * scale * sx, 24);
+        box(std::max(0.0F, result.panel.width - pad - 28 * scale * sx), 2, 28 * scale * sx, 24);
     for (std::size_t i = 0; i < fields; ++i)
-        result.fields.push_back(box(pad, 28 + 34 * static_cast<float>(i), width, 28));
-    auto bottom = 28 + 34 * static_cast<float>(fields);
+        result.fields.push_back(box(pad,
+                                    geometry.header + geometry.field_step * static_cast<float>(i),
+                                    width,
+                                    geometry.field));
+    auto bottom = geometry.header + geometry.field_step * static_cast<float>(fields);
     if (toggles) {
         const auto step = width / static_cast<float>(toggles);
         for (std::size_t i = 0; i < toggles; ++i)
             result.toggles.push_back(box(pad + static_cast<float>(i) * step,
                                          bottom,
                                          std::max(0.0F, step - 4 * scale * sx),
-                                         22));
-        bottom += 26;
+                                         geometry.toggle));
+        bottom += geometry.toggle_step;
     }
-    result.message = box(pad, bottom + 4, width, 20);
+    result.message = box(pad, bottom + 4, width, geometry.message);
     const auto step = width / static_cast<float>(actions);
     for (std::size_t i = 0; i < actions; ++i)
         result.actions.push_back(box(pad + static_cast<float>(i) * step,
-                                     bottom + 26,
+                                     bottom + geometry.message + 6,
                                      std::max(0.0F, step - 4 * scale * sx),
-                                     26));
+                                     geometry.action));
     return result;
 }
 } // namespace astra::ui

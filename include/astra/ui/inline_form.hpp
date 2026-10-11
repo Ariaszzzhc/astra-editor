@@ -108,9 +108,17 @@ class InlineForm final {
 struct InlineFormLayout {
     Box panel, title, close, message;
     std::vector<Box> fields, toggles, actions;
-    static InlineFormLayout
-    measure(Box editor, float scale, std::size_t fields, std::size_t toggles, std::size_t actions);
-    static InlineFormLayout measure_sidebar(
-        Box available, float scale, std::size_t fields, std::size_t toggles, std::size_t actions);
+    static InlineFormLayout measure(Box editor,
+                                    float scale,
+                                    std::size_t fields,
+                                    std::size_t toggles,
+                                    std::size_t actions,
+                                    DialogMetrics metrics = {20, 15, 18, 12, 14});
+    static InlineFormLayout measure_sidebar(Box available,
+                                            float scale,
+                                            std::size_t fields,
+                                            std::size_t toggles,
+                                            std::size_t actions,
+                                            DialogMetrics metrics = {20, 15, 18, 12, 14});
 };
 } // namespace astra::ui

@@ -20,6 +20,71 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### Native font-measured nonmodal forms (2026-10-11)
+
+Test-only regressions reproduced native and actual GUI clipping
+before the production changes: `viewport-layout-tests.exe --forms` exited 1
+with size 16 / DPI 0.75 / field height 21 / paragraph height 16; input padding
+requires another 7.5 physical pixels (`inline-font-repro-native-debug.log`).
+`gui-presentation-smoke.exe` exited 1 with the actual large-font Find field
+clipping its configured paragraph (`inline-font-repro-gui-debug.log`), preserving
+`build/graphics/gui-presentation-355086016108600`. The test-only Debug build
+passed after scoping a duplicated local test name; the initial MSVC duplicate
+declaration failure remains in `inline-font-repro-build-debug.log`, and the
+corrected build in `inline-font-repro-fixed-build-debug.log`.
+
+The current patch measures overlay and mounted form line extents with native
+configured font probes, reserves each control's padding and snaps bounded
+physical edges. Mounted forms start below the measured sidebar heading.
+Agent geometry now calls the same layout path as drawing and pointer handling.
+New checks cover large fonts, Unicode pixel admission, native caret/pointer
+geometry, warm probes, tiny owners, mounted fields and document preservation.
+
+Windows Debug evidence on this patch:
+
+- `./scripts/format.ps1 -Offline` passed for 193 C++ / 15 JS files
+  (`inline-font-format-debug.log`).
+- `./scripts/xmake.ps1 build -y -j 2 astra-tests viewport-layout-tests gui-smoke
+  gui-workspace-smoke gui-presentation-smoke astra` exited 0
+  (`inline-font-build-debug.log`).
+- `astra-tests.exe '--test-case=presentation *geometry*,presentation *forms*,presentation measured forms*'
+  `--no-version` passed nine cases / 72,063 assertions
+  (`inline-font-focused-debug.log`). The subsequent full `astra-tests.exe
+  --no-version` passed 625 cases / 2,698,647 assertions, no failed/skipped cases
+  (`inline-font-all-debug.log`).
+- `viewport-layout-tests.exe --forms` passed native Unicode pixel admission,
+  bounded caret/painting, independent pointer placement and warm probe reuse for
+  overlay/mounted forms, four fields/toggles/actions, UI sizes 9/13/16 and DPI
+  0.75/1/1.5/2 (`inline-font-native-debug.log`).
+- `gui-presentation-smoke.exe`, `gui-workspace-smoke.exe` and `gui-smoke.exe`
+  passed in one sequential invocation that exited 0 (`inline-font-gui-debug.log`,
+  `inline-font-workspace-debug.log`, `inline-font-editing-debug.log`). Actual
+  large-font overlay and mounted Unicode insertion follows an independent native
+  font oracle, preserves document revision/selections, and closes by measured
+  pointer bounds. Inspected actual GPU captures `gui-style-large-find.png` and
+  `gui-style-large-workspace-form.png` show the original Unicode in these fields.
+
+Release configuration and the same six-target build passed
+(`inline-font-config-release.log`, `inline-font-build-release.log`). Full
+`astra-tests.exe --no-version` passed 625 cases / 2,698,646 assertions with no
+failed/skipped cases (`inline-font-all-release.log`). Native `--forms` and
+`--dialogs` checks passed (`inline-font-native-release.log`,
+`inline-font-dialog-release.log`), including the shared line-probe refactor.
+Release `gui-presentation-smoke.exe`, `gui-workspace-smoke.exe` and
+`gui-smoke.exe` passed (`inline-font-gui-release.log`,
+`inline-font-workspace-release.log`, `inline-font-editing-release.log`). The
+complete sequential full-Debug-unit/configure/build/Release-test invocation
+exited 0. `./scripts/format.ps1 -Check -Offline` passed for 193 C++ / 15 JS files
+(`inline-font-format-check.log`) and `git diff --check` passed.
+Final format verification passed (`inline-font-final-format-check.log`). Restored
+Debug with `./scripts/xmake.ps1 f -m debug -y`, then
+`./scripts/xmake.ps1 build -y -j 2 astra` exited 0
+(`inline-font-restore-debug-config.log`, `inline-font-restore-debug-build.log`).
+
+This Windows font-layout increment is validated. Whole-product visual
+acceptance, actual installed-IME interaction and a new distribution remain
+within the requested revision and are not established by these checks.
+
 ### Native font-measured modal geometry (2026-10-11)
 
 All nine production modal layout call sites now share native `DialogMetrics`

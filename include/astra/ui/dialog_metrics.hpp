@@ -12,4 +12,5 @@ struct WorkbenchStyle;
                                                    const WorkbenchStyle&,
                                                    float dpi,
                                                    bool monospace_detail = false);
+[[nodiscard]] DialogMetrics measure_inline_metrics(TextLabels&, const WorkbenchStyle&, float dpi);
 } // namespace astra::ui

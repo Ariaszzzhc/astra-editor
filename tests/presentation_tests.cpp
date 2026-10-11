@@ -1136,6 +1136,51 @@ TEST_CASE("presentation sidebar forms reserve bounded controls without overlap a
             }
 }
 
+TEST_CASE("presentation measured forms admit native extents and reject invalid metrics") {
+    using namespace astra::ui;
+    const DialogMetrics metrics{35, 30, 44, 29, 32};
+    for (const auto scale : {0.75F, 1.0F, 1.25F, 1.5F, 2.0F}) {
+        const Box available{0.3F, 0.6F, 1000 * scale, 900 * scale};
+        for (const auto& layout :
+             {InlineFormLayout::measure(available, scale, 4, 4, 4, metrics),
+              InlineFormLayout::measure_sidebar(available, scale, 4, 4, 4, metrics)}) {
+            CHECK(layout.title.height >= metrics.title * scale);
+            for (const auto& field : layout.fields)
+                CHECK(field.height >= (metrics.input + 10) * scale);
+            for (const auto& toggle : layout.toggles)
+                CHECK(toggle.height >= (metrics.row + 10) * scale);
+            for (const auto& action : layout.actions)
+                CHECK(action.height >= (metrics.button + 14) * scale);
+        }
+        for (const auto size : {0.0F, 0.2F, 2.0F, 60.0F}) {
+            const Box tiny{0.3F, 0.6F, size, size};
+            for (const auto& layout :
+                 {InlineFormLayout::measure(tiny, scale, 4, 4, 4, metrics),
+                  InlineFormLayout::measure_sidebar(tiny, scale, 4, 4, 4, metrics)}) {
+                CHECK(layout.panel.x >= tiny.x);
+                CHECK(layout.panel.y >= tiny.y);
+                CHECK(layout.panel.right() <= tiny.right());
+                CHECK(layout.panel.bottom() <= tiny.bottom());
+                for (const auto& regions : {layout.fields, layout.toggles, layout.actions})
+                    for (const auto& box : regions) {
+                        CHECK(box.x >= layout.panel.x);
+                        CHECK(box.y >= layout.panel.y);
+                        CHECK(box.right() <= layout.panel.right());
+                        CHECK(box.bottom() <= layout.panel.bottom());
+                        CHECK(box.width >= 0);
+                        CHECK(box.height >= 0);
+                    }
+            }
+        }
+    }
+    auto invalid = metrics;
+    invalid.input = 0;
+    CHECK_THROWS_AS(InlineFormLayout::measure({0, 0, 1000, 900}, 1, 2, 3, 3, invalid),
+                    std::invalid_argument);
+    CHECK_THROWS_AS(InlineFormLayout::measure_sidebar({0, 0, 1000, 900}, 1, 2, 3, 3, invalid),
+                    std::invalid_argument);
+}
+
 TEST_CASE("presentation text panels index mixed line endings and preserve snapshots") {
     astra::ui::TextLineIndex lines;
     lines.reset("中\r\n🙂\re\xCC\x81\n");

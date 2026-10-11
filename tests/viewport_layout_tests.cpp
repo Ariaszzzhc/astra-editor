@@ -8,6 +8,7 @@
 #include <astra/ui/view_rows.hpp>
 #include <astra/ui/workbench_chrome.hpp>
 #include <astra/ui/dialog_metrics.hpp>
+#include <astra/ui/inline_form.hpp>
 #include "../src/ui/glyph_cache.hpp"
 
 #include "include/core/SkCanvas.h"
@@ -1708,9 +1709,94 @@ void dialog_typography(TextLayoutEngine& engine) {
                  "warm probes, bounded input caret and independent pointer oracle: PASS\n";
 }
 
+void inline_typography(TextLayoutEngine& engine) {
+    TextLabels labels(engine);
+    WorkbenchStyle theme;
+    theme.font_families = {"Segoe UI", "Microsoft YaHei UI", "Segoe UI Emoji"};
+    theme.monospace_families = {"Cascadia Code"};
+    for (const auto size : {9.0F, 13.0F, 16.0F}) {
+        theme.font_size = size;
+        for (const auto dpi : {0.75F, 1.0F, 1.5F, 2.0F}) {
+            const auto metrics = measure_inline_metrics(labels, theme, dpi);
+            const auto shaped = labels.statistics().shaped;
+            static_cast<void>(measure_inline_metrics(labels, theme, dpi));
+            require(labels.statistics().shaped == shaped, "Warm form probes shaped again");
+            const auto oracle =
+                engine.layout("Native 中🙂e\xCC\x81", theme.text(13, dpi, 0xFFFFFFFF, 1));
+            const Box available{8 * dpi, 32 * dpi, 1000 * dpi, 700 * dpi};
+            for (const auto& layout :
+                 {InlineFormLayout::measure(available, dpi, 4, 4, 4, metrics),
+                  InlineFormLayout::measure_sidebar(available, dpi, 4, 4, 4, metrics)}) {
+                const auto button = engine.layout("Action 中🙂", theme.text(11, dpi, 0xFFFFFFFF));
+                for (const auto& action : layout.actions)
+                    require(action.height >= button.height() + 14 * dpi,
+                            "Nonmodal action clips native label padding");
+                for (const auto& field : layout.fields) {
+                    require(field.height >= oracle.height() + 10 * dpi,
+                            "Nonmodal field clips native input: size=" + std::to_string(size) +
+                                " dpi=" + std::to_string(dpi) +
+                                " field=" + std::to_string(field.height) +
+                                " paragraph=" + std::to_string(oracle.height()));
+                    constexpr std::uint32_t untouched = 0xFF102030;
+                    const auto image = SkImageInfo::MakeN32Premul(
+                        static_cast<int>(field.right() + 2), static_cast<int>(field.bottom() + 2));
+                    auto surface = SkSurfaces::Raster(image);
+                    require(surface != nullptr, "Cannot create form input pixel surface");
+                    surface->getCanvas()->clear(untouched);
+                    TextField input(engine);
+                    TextFieldPaint paint;
+                    paint.bounds = field;
+                    paint.text_style = theme.text(13, dpi, 0xFFFFFFFF, 1);
+                    paint.hint_style = theme.text(11, dpi, 0xFF909090);
+                    paint.colors = {
+                        0xFF202020, 0xFF404040, 0xFF3399FF, 0xFFFF0000, 0xFF264F78, 0xFF37373D};
+                    paint.text = "Native 中🙂e\xCC\x81";
+                    paint.selection = {{0}, {0}};
+                    paint.focused = true;
+                    const auto caret = input.draw(surface->getCanvas(), labels, paint);
+                    require(caret && caret->y >= field.y && caret->bottom() <= field.bottom(),
+                            "Form input caret escaped its measured bounds");
+                    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(image.width()) *
+                                                      image.height());
+                    require(surface->readPixels(
+                                image, pixels.data(), image.width() * sizeof(std::uint32_t), 0, 0),
+                            "Cannot read native form input pixels");
+                    std::size_t glyphs{};
+                    for (int y = 0; y < image.height(); ++y)
+                        for (int x = 0; x < image.width(); ++x) {
+                            const auto pixel =
+                                pixels[static_cast<std::size_t>(y * image.width() + x)];
+                            if (!field.contains(x + 0.5F, y + 0.5F))
+                                require(pixel == untouched,
+                                        "Form input painting escaped its owner");
+                            else if (x > field.x + 8 * dpi && x < field.right() - 2 * dpi &&
+                                     y >= field.y + 5 * dpi && y < field.bottom() - 5 * dpi &&
+                                     pixel != paint.colors.background)
+                                ++glyphs;
+                        }
+                    require(glyphs > 8, "Native form input lost Unicode glyph pixels");
+                    const auto [x, y] = input.to_text(field,
+                                                      dpi,
+                                                      field.x + 6 * dpi + 40 * dpi,
+                                                      field.y + 5 * dpi + oracle.height() / 2);
+                    require(input.text().layout()->hit_test(x, y).byte_offset ==
+                                oracle.hit_test(40 * dpi, oracle.height() / 2).byte_offset,
+                            "Form pointer placement disagrees with native font oracle");
+                }
+            }
+        }
+    }
+    std::cout << "Native nonmodal typography: configured Unicode input admission for overlay "
+                 "and sidebar forms, native pixels, caret, pointer and warm probes: PASS\n";
+}
+
 int main(int argc, char* argv[]) {
     try {
         TextLayoutEngine engine;
+        if (argc == 2 && std::string_view(argv[1]) == "--forms") {
+            inline_typography(engine);
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--dialogs") {
             dialog_typography(engine);
             return 0;
@@ -1761,6 +1847,7 @@ int main(int argc, char* argv[]) {
         view_row_surfaces(engine);
         workbench_chrome(engine);
         dialog_typography(engine);
+        inline_typography(engine);
         std::shared_ptr<const TextLayout> retained;
         {
             TextLayoutEngine temporary;

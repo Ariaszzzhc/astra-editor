@@ -536,6 +536,14 @@ painting uses its measured row step. The same input box drives `TextField`
 pointer conversion and the returned SDL candidate area. Native and asynchronous
 JS read state expose the measured extents for automation.
 
+Overlay and mounted `InlineFormLayout` regions likewise use cached native line
+probes for their own title/input/toggle/message/action reference sizes. Fields
+reserve the same five-unit vertical padding as `TextField`; actions reserve
+their seven-unit label inset. Whole physical-pixel minimum extents admit the
+configured paragraph on roomy frames, while tiny owners clip ordered regions
+inward. Mounted panels start at the actual sidebar heading boundary. Agent
+form snapshots, paint and pointer handling invoke the same measured layout.
+
 Field IME preedit has its own exact `TextInputLayout` cache. Unchanged preedit
 reuses the native paragraph instead of reshaping every repaint. Cold preedit of
 at least 4096 bytes uses the same background queue; changed preedit cancels the

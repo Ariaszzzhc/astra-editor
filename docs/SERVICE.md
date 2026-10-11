@@ -969,6 +969,12 @@ toggles. All control ids are unique across the form. Fields have `id`, `value`,
 `placeholder`, `submit` and optional `shiftSubmit`; submit identities refer to
 actions. Toggles have `id`, `label`, boolean `value`, and optional `shortcut`
 (`Alt+` plus one uppercase ASCII letter). Actions have `id` and `label`.
+
+Native form controls reserve measured configured UI font extents plus their
+input/label padding. Overlay and mounted snapshots share painting and pointer
+geometry; mounted forms start below the measured sidebar heading. Font changes
+therefore update the controls without changing the form's values or document
+revision. Small frames clip controls within their owning region.
 Input text is bounded to 16 KiB per field; CR/LF, NUL and invalid UTF-8 are
 rejected before mutation. Inputs have independent bounded Unicode editing and
 undo history, shaped mouse selection, clipboard and IME candidate positioning.

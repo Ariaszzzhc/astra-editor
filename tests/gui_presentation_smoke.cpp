@@ -815,6 +815,84 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
                     "Styled input painting and native pointer geometry diverged");
         };
         check_styled_input("acceptance.style.large", 16, "gui-style-large");
+        {
+            const auto body_before_forms = window.view_state().document;
+            key(window, SDLK_F, SDL_KMOD_CTRL);
+            settle(window);
+            const auto large_find = window.view_state();
+            require(large_find.inline_form_layout.has_value(), "Large-font find form did not open");
+            astra::ui::TextLayoutEngine form_fonts;
+            astra::ui::TextLayoutOptions form_style;
+            form_style.font_size = 16;
+            form_style.dpi_scale = window.layout().scale;
+            form_style.line_height = 1;
+            form_style.direction = astra::ui::TextDirection::automatic;
+            form_style.font_families = large_find.style.at("workbench")
+                                           .at("uiFontFamilies")
+                                           .get<std::vector<std::string>>();
+            const auto form_paragraph = form_fonts.layout("Native 中🙂e\xCC\x81", form_style);
+            require(large_find.inline_form_layout->fields.front().height >=
+                        form_paragraph.height() + 10 * window.layout().scale,
+                    "Actual large-font find input clips its configured native paragraph");
+            const auto check_form_input = [&](astra::ui::Box field,
+                                              const char* value_id,
+                                              bool sidebar) {
+                click(window,
+                      field.x + 10 * window.layout().scale,
+                      field.y + 5 * window.layout().scale + form_paragraph.height() / 2);
+                key(window, SDLK_A, SDL_KMOD_CTRL);
+                const std::string typed = "0123456789中🙂e\xCC\x81";
+                SDL_Event text{};
+                text.type = SDL_EVENT_TEXT_INPUT;
+                text.text.windowID = SDL_GetWindowID(window.window());
+                text.text.text = typed.c_str();
+                require(SDL_PushEvent(&text), "Cannot queue configured form Unicode input");
+                settle(window);
+                const auto paragraph = form_fonts.layout(typed, form_style);
+                const auto local_x = 40 * window.layout().scale;
+                click(window,
+                      field.x + 6 * window.layout().scale + local_x,
+                      field.y + 5 * window.layout().scale + paragraph.height() / 2);
+                text.text.text = "界";
+                require(SDL_PushEvent(&text), "Cannot queue form pointer insertion");
+                settle(window);
+                const auto offset = paragraph.hit_test(local_x, paragraph.height() / 2).byte_offset;
+                const auto state = window.view_state();
+                const auto& form = sidebar ? state.sidebar_form : state.inline_form;
+                require(form.at("values").at(value_id) ==
+                            typed.substr(0, offset) + "界" + typed.substr(offset),
+                        "Configured form pointer and native font oracle disagree");
+                require(state.document.at("revision") == body_before_forms.at("revision") &&
+                            state.document.at("selections") == body_before_forms.at("selections"),
+                        "Form Unicode input changed the body revision or selections");
+            };
+            check_form_input(large_find.inline_form_layout->fields.front(), "query", false);
+            window.request_screenshot("build/graphics/gui-style-large-find.png");
+            settle(window);
+            key(window, SDLK_ESCAPE);
+            settle(window);
+            window.execute_ui_command("ui.workspaceReplace");
+            settle(window);
+            const auto mounted = window.view_state();
+            require(mounted.sidebar_form_layout.has_value(),
+                    "Large-font workspace form did not mount");
+            const auto& boxes = *mounted.sidebar_form_layout;
+            require(boxes.panel.y >= window.layout().sidebar_heading.bottom(),
+                    "Mounted form overlaps its measured sidebar heading");
+            for (const auto& field : boxes.fields)
+                require(field.height >= form_paragraph.height() + 10 * window.layout().scale,
+                        "Mounted workspace input clips its configured font");
+            check_form_input(boxes.fields.at(1), "replacement", true);
+            window.request_screenshot("build/graphics/gui-style-large-workspace-form.png");
+            settle(window);
+            click(window,
+                  boxes.close.x + boxes.close.width / 2,
+                  boxes.close.y + boxes.close.height / 2);
+            require(!window.view_state().sidebar_form_layout.has_value(),
+                    "Mounted form close did not use measured pointer bounds");
+            window.execute_ui_command("ui.explorer");
+            settle(window);
+        }
         const auto large_style = window.view_state().style;
         window.execute_ui_command("acceptance.style.invalid");
         settle(window);

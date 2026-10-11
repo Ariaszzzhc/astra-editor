@@ -784,7 +784,7 @@ struct EditorWindow::Impl {
     void draw_prompt(SkCanvas* canvas, float width, float height);
     void draw_inline_form(SkCanvas* canvas);
     void draw_form(SkCanvas* canvas, const InlineForm& form, const InlineFormLayout& boxes);
-    InlineFormLayout form_layout(const InlineForm& form) const;
+    InlineFormLayout form_layout(const InlineForm& form);
     void clear_form_cache(const InlineForm& form);
     bool inline_key(const SDL_KeyboardEvent& input, bool control, bool shift, bool alt);
     void focus_view(std::optional<std::string> id);
@@ -1656,16 +1656,18 @@ void EditorWindow::Impl::clear_form_cache(const InlineForm& form) {
     }
 }
 
-InlineFormLayout EditorWindow::Impl::form_layout(const InlineForm& form) const {
+InlineFormLayout EditorWindow::Impl::form_layout(const InlineForm& form) {
+    const auto metrics = measure_inline_metrics(labels, ui_style, scale);
     if (form.view().empty())
         return InlineFormLayout::measure(geometry.editor,
                                          scale,
                                          form.fields().size(),
                                          form.toggles().size(),
-                                         form.actions().size());
+                                         form.actions().size(),
+                                         metrics);
     if (form.view() != active_view || !show_sidebar || geometry.sidebar.width <= 0)
         return {};
-    const auto top = geometry.sidebar.y + 32 * scale;
+    const auto top = geometry.sidebar_heading.bottom();
     return InlineFormLayout::measure_sidebar({geometry.sidebar.x,
                                               top,
                                               geometry.sidebar.width,
@@ -1673,7 +1675,8 @@ InlineFormLayout EditorWindow::Impl::form_layout(const InlineForm& form) const {
                                              scale,
                                              form.fields().size(),
                                              form.toggles().size(),
-                                             form.actions().size());
+                                             form.actions().size(),
+                                             metrics);
 }
 
 std::future<Json> EditorWindow::Impl::begin_fence(std::string_view method, const Json& params) {
@@ -5218,11 +5221,7 @@ WorkbenchViewState EditorWindow::view_state() const {
         });
     if (const auto* editor_form = impl_->forms.mounted({})) {
         const auto& form = *editor_form;
-        result.inline_form_layout = InlineFormLayout::measure(impl_->geometry.editor,
-                                                              impl_->scale,
-                                                              form.fields().size(),
-                                                              form.toggles().size(),
-                                                              form.actions().size());
+        result.inline_form_layout = impl_->form_layout(form);
         result.inline_form = form.state();
         result.inline_form["busy"] = form.busy();
         result.inline_form["error"] = form.error();
