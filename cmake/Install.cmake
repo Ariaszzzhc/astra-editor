@@ -83,8 +83,8 @@ install(FILES "${CMAKE_BINARY_DIR}/build-provenance.json" DESTINATION provenance
 
 # One shared developer runtime, never one copy per test executable.
 add_custom_target(astra-runtime
-    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${PROJECT_SOURCE_DIR}/resources" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resources"
-    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${ASTRA_RUNTIME_DIRECTORY}/tools" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tools"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory_if_different "${PROJECT_SOURCE_DIR}/resources" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resources"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory_if_different "${ASTRA_RUNTIME_DIRECTORY}/tools" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tools"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:SDL3::SDL3>" ${ASTRA_GRAPHICS_RUNTIME_FILES} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     ${ASTRA_CRT_STAGE_COMMAND}
     COMMENT "Stage shared developer runtime")

@@ -1,25 +1,5 @@
 {
-  "xmake": {
-    "version": "3.1.1",
-    "windowsArchiveSha256": "33fdf2f34a0e45fa731c000d59590d27b13dec7011f69cbf575004ed9279b4a2"
-  },
-  "recipes": {
-    "revision": "e567b25f0575b952c47b2000e0dedbd6fa698b2c",
-    "archiveSha256": "a7b574f77d1737abd322947850f215e552c5f611bdaf3f9b430a7a97d587e6ad"
-  },
-  "libraries": {
-    "doctest": "2.5.3",
-    "nlohmann_json": "3.12.0",
-    "libuv": "1.52.1",
-    "quickjs-ng": "0.15.1",
-    "tree-sitter": "0.26.12",
-    "utf8proc": "2.12.0",
-    "libsdl3": "3.4.18",
-    "re2": "2025.11.05",
-    "abseil": "20260107.1",
-    "skia": "148",
-    "dawn": "20260911.162847"
-  },
+  "schema": 1,
   "patches": {
     "skia-glyph-cache": {
       "path": "dependencies/ports/skia/glyph-cache.patch",

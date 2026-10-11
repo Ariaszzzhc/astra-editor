@@ -23,3 +23,7 @@ and binary-cache identity. No custom graphics builder or CRT patch is required.
 
 Grammar sources and executable language/Git runtimes remain separately pinned;
 they are application build/runtime inputs, not a globally installed SDK.
+`grammars/manifest.json` owns grammar archive/input hashes; `runtime/manifest.json`
+and packaging tool manifests own executable runtime assets. `patches.json` records
+only necessary patch hashes. C++ versions come from the vcpkg baseline/manifest;
+there is no second library-version lock or graphics dependency registry.

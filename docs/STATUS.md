@@ -2,6 +2,46 @@
 
 Product contract: `EditorDoc.md`. Product name: Astra (confirmed by the user).
 
+## CMake migration: legacy pipeline removal (2026-10-12)
+
+Removed xmake.lua, xmake/ recipes and duplicate patch copies; the Windows/native
+xmake wrappers, graphics builders/patch applicator, duplicate language/clangd
+preparers, obsolete graphics-script tests, old formatter manifest and old
+core/graphics notice registries. Official vcpkg copyright collections replace
+those notice registries. dependencies/patches.json now contains only its schema
+and necessary patch digests; vcpkg owns C++ versions. Ignored caches, packages
+and historical evidence remain intact. Workspace exclusion/file-icon support
+for users' xmake projects remains a normal editing feature.
+
+Developer resources/tools now use CMake copy_directory_if_different, preserving
+unchanged files during incremental builds. Only retained CMake/CTest/preparation,
+format and installation/verification entry points remain.
+
+Windows acceptance after removal:
+
+- `./scripts/test.ps1 -Mode all`: both modes passed unit/integration/CLI/package
+  helper checks (4/4 CTest each), all 634 cases with no failures/skips. Debug
+  took 121.50 s, Release 55.28 s (`build/cmake-final-cleanup-tests.log`). The full
+  17-check Debug/Release GUI milestone already passed on this same production
+  implementation, as recorded in the preceding directory increment.
+- `./scripts/package-windows.ps1 -OutputDirectory build/packages/astra-final-precommit -Offline -NoArchive`:
+  the windows-package preset built the real Release /MD production graph with
+  BUILD_TESTING, GUI/environment tests and benchmarks all disabled. Installed
+  inventory passed for 6,339 files (`build/cmake-final-production-build.log`).
+  This precommit review installation truthfully records dirty source state.
+- `./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/astra-final-precommit -RunSmoke -RunGuiSmoke`:
+  isolated installed production GUI/JS/renderer/Unicode history/save/close,
+  server/process/Git/recovery and C++/TypeScript/Python diagnostics all passed
+  (`build/cmake-final-production-smoke.log`).
+- Retained PowerShell sources parsed; all four retained Python sources passed
+  AST parsing only. Active scripts/configuration have no references to removed
+  build entry points. Formatting and the owned diff whitespace gate passed.
+
+Legacy build removal and the production-only installation are Windows-validated.
+A clean committed-source ZIP and extracted relocation checks are the remaining
+delivery step. IME, isolated delayed clipboard, physical DPI and adapter removal
+remain outside this migration's executed acceptance. No non-Windows execution.
+
 ## CMake migration: directories and tests (2026-10-12)
 
 Application/helper entry points now live under apps/, shipped JavaScript under
