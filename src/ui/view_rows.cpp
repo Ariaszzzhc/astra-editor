@@ -70,10 +70,17 @@ std::size_t ViewRows::paint(SkCanvas* canvas,
         const auto projected = resolve_icon ? resolve_icon(row) : std::nullopt;
         const auto icon =
             projected ? projected->icon : view_icon(item.value("icon", std::string{}));
-        const auto icon_color = icon == Icon::folder   ? theme.colors.folder
-                                : icon == Icon::code   ? theme.colors.code_icon
-                                : icon == Icon::braces ? theme.colors.script_icon
-                                                       : theme.colors.muted;
+        const auto icon_tone = item.value("iconTone", std::string{});
+        const auto icon_color = icon_tone == "normal"    ? theme.colors.foreground
+                                : icon_tone == "muted"   ? theme.colors.muted
+                                : icon_tone == "accent"  ? theme.colors.accent
+                                : icon_tone == "added"   ? theme.colors.added
+                                : icon_tone == "changed" ? theme.colors.changed
+                                : icon_tone == "error"   ? theme.colors.error
+                                : icon == Icon::folder   ? theme.colors.folder
+                                : icon == Icon::code     ? theme.colors.code_icon
+                                : icon == Icon::braces   ? theme.colors.script_icon
+                                                         : theme.colors.muted;
         draw_icon(canvas,
                   icon,
                   x + 18 * scale,

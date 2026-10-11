@@ -415,9 +415,9 @@ rejects. The component clips captions/icons and restores canvas state on failure
 hidden sidebar captions are not prepared. Native-font pixel checks cover three
 font sizes and four DPI scales, including warm reuse and control separation.
 
-Activity-bar, breadcrumb/status painting and Outline content/provider/action
-ownership remain separate controller work. Native Windows title-bar theme
-integration and whole-product visual acceptance remain outstanding.
+Activity-bar and breadcrumb/status painting remain separate controller work.
+The native Windows frame follows the compiled JS theme as documented above;
+whole-product visual acceptance remains outstanding.
 
 `TabBar` owns the native tab band's preparation, painting, overflow position,
 active reveal and caption/close/navigation hit geometry. Its caller keeps the
@@ -591,8 +591,17 @@ Native-font pixel checks cover four DPI values; real SDL/GPU tests cover a
 602-row custom JS view and font updates. Agent sidebar `viewport.painted` reports
 the most recent completed frame, while `first`, `end` and `page` describe current
 geometry. `WorkbenchChrome` owns sidebar headings and their control geometry;
-Outline content and the remaining outer components retain separate controller
-paths. This evidence does not establish whole-product visual acceptance.
+Outline content uses the same row painter with a bounded `ViewPage` publication.
+Its immutable measured index permits leaf indentation without requiring off-page
+ancestors. The native page fences document, text revision, active-document
+activity, viewport and request generation; pending or retired rows cannot
+activate. The shipped JS provider independently queries the service's measured
+symbol range, projects labels/icons and supplies all pane messages and actions.
+No complete symbol list is copied into JS on scrolling. The native highlighter
+no longer fetches or projects Outline content. User providers can replace and
+restore this policy through Promise-based reads, refresh and publication.
+The remaining outer components retain separate controller paths. This evidence
+does not establish whole-product visual acceptance.
 
 Quick Open and user-provided asynchronous pickers share `PickerLayout`, native
 editable text geometry and the persistent `PickerIndex`. Painting and pointer

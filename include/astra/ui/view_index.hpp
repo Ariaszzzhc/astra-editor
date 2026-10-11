@@ -54,6 +54,9 @@ class ViewIndex final {
   public:
     explicit ViewIndex(std::shared_ptr<const ViewSource> source = {},
                        std::set<std::string> collapsed = {});
+    // A bounded viewport page has leaf rows whose indentation can start inside
+    // a hierarchy. It does not claim to contain their off-page ancestors.
+    [[nodiscard]] static ViewIndex page(const protocol::Json& rows);
     [[nodiscard]] bool filter_step(std::size_t budget = 128);
 
     [[nodiscard]] bool ready() const noexcept {

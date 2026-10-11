@@ -24,6 +24,7 @@
 #include "astra/ui/input_queue.hpp"
 #include "astra/ui/input_events.hpp"
 #include "astra/ui/form_registry.hpp"
+#include "astra/ui/view_page.hpp"
 #include "astra/io/file_store.hpp"
 
 #include "include/core/SkCanvas.h"
@@ -112,8 +113,7 @@ struct EditorWindow::Impl {
         std::string syntax_revision;
         std::string syntax_state{"pending"};
         DecorationIndexes decorations;
-        Json outline = Json::array();
-        std::size_t outline_scroll{}, outline_begin{}, outline_total{};
+        std::size_t outline_scroll{};
         bool needs_syntax{true};
         bool syntax_loading{};
         bool reveal_horizontal{};
@@ -261,6 +261,7 @@ struct EditorWindow::Impl {
     TextLabels labels{fonts};
     TabBar tab_bar{labels};
     ViewRows view_rows{labels};
+    ViewPage outline;
     WorkbenchChrome chrome{labels};
     std::size_t painted_view_rows{};
     float scale{1};
@@ -373,6 +374,7 @@ struct EditorWindow::Impl {
                                                 {"astra/language", "language.js"},
                                                 {"astra/recovery", "recovery.js"},
                                                 {"astra/lifecycle", "lifecycle.js"},
+                                                {"astra/outline", "outline.js"},
                                                 {"astra/commands", "commands.js"},
                                                 {"astra/workbench", "workbench.js"}}) {
             modules.emplace(
@@ -1235,23 +1237,16 @@ void EditorWindow::Impl::fetch_syntax() {
     }
     const auto id = active_id;
     const auto revision = document->view_revision;
-    const auto outline_begin = document->outline_scroll;
-    const auto outline_limit = static_cast<std::size_t>(std::ceil(geometry.outline_rows.height /
-                                                                  geometry.sidebar_row_height)) +
-                               1;
-    const auto include_outline = show_outline && geometry.outline_rows.height > 0;
     document->syntax_loading = true;
     enqueue({"document.syntax",
              {{"id", id},
               {"baseRevision", revision},
               {"begin", document->viewport.lines().summary().begin},
               {"end", document->viewport.lines().summary().end},
-              {"outlineBegin", outline_begin},
-              {"outlineLimit", outline_limit},
-              {"includeOutline", include_outline}},
+              {"includeOutline", false}},
              id,
              false,
-             [this, id, revision, outline_limit, include_outline](const Json& result) {
+             [this, id, revision](const Json& result) {
                  if (!documents.contains(id)) {
                      return;
                  }
@@ -1287,23 +1282,6 @@ void EditorWindow::Impl::fetch_syntax() {
                  document.syntax_revision = revision;
                  document.needs_syntax = false;
                  document.decorations.set_highlights(result.value("highlights", Json::array()));
-                 document.outline = result.value("outline", Json::array());
-                 const auto page = result.value("outlinePage", Json::object());
-                 document.outline_begin = page.value("offset", std::size_t{0});
-                 document.outline_total = page.value("total", document.outline.size());
-                 if (document.outline_scroll >= document.outline_total)
-                     document.outline_scroll = document.outline_total > outline_limit
-                                                   ? document.outline_total - outline_limit
-                                                   : 0;
-                 const auto current_limit =
-                     static_cast<std::size_t>(
-                         std::ceil(geometry.outline_rows.height / geometry.sidebar_row_height)) +
-                     1;
-                 const auto want_outline = show_outline && geometry.outline_rows.height > 0;
-                 document.needs_syntax =
-                     want_outline != include_outline ||
-                     (want_outline && (document.outline_scroll != document.outline_begin ||
-                                       current_limit > outline_limit));
                  document.viewport.invalidate_layouts();
              },
              {}});
@@ -1586,8 +1564,8 @@ bool EditorWindow::Impl::native_idle(bool waiting_inputs) const {
     }
     return requests.empty() && !active_request && operations.empty() && pending_edits.empty() &&
            pending_reads.empty() && closing_pending.empty() && form_events.empty() &&
-           !pending_document_activity && sidebar_views.quiescent() && inputs_idle &&
-           layout_jobs->idle() && !input_point && input_events.size() == 0 &&
+           !pending_document_activity && !outline.needs_request() && sidebar_views.quiescent() &&
+           inputs_idle && layout_jobs->idle() && !input_point && input_events.size() == 0 &&
            pending_styles.empty() && !document_composition.pending();
 }
 
@@ -2189,6 +2167,26 @@ Json EditorWindow::Impl::style_model() const {
 }
 
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
+    if (method.starts_with("_ui.outline.")) {
+        measure_layout();
+        if (method == "_ui.outline.read")
+            return outline.state();
+        if (method == "_ui.outline.refresh") {
+            outline.refresh();
+            return outline.state();
+        }
+        if (method == "_ui.outline.publish") {
+            const auto accepted = outline.publish(params);
+            if (accepted)
+                if (auto* document = current())
+                    document->outline_scroll = outline.offset();
+            return accepted;
+        }
+        if (method == "_ui.outline.activate")
+            return outline.activate(params.at("version").get<std::string>(),
+                                    params.at("row").get<std::string>());
+        throw protocol::RpcError(-32601, "Unknown Outline primitive");
+    }
     if (method == "_ui.icons.read") {
         return {{"theme", settings.at("fileIcons")}, {"generation", file_icons.generation()}};
     }
@@ -3797,18 +3795,15 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             break;
         }
         if (geometry.outline_rows.contains(mouse_x, mouse_y)) {
-            if (const auto* document = current();
-                document && document->syntax_revision == document->view_revision &&
-                document->outline_begin == document->outline_scroll) {
-                const auto index = static_cast<std::size_t>((mouse_y - geometry.outline_rows.y) /
-                                                            geometry.sidebar_row_height);
-                if (index < document->outline.size()) {
-                    const auto& symbol = document->outline[index];
-                    set_selections(Json::array({{{"anchor", symbol.at("selectionBegin")},
-                                                 {"head", symbol.at("selectionEnd")}}}),
-                                   document->syntax_revision);
-                }
-            }
+            const auto rows = ViewRowsLayout::measure(geometry.outline_rows,
+                                                      scale,
+                                                      geometry.sidebar_row_height,
+                                                      outline.rows().size(),
+                                                      0);
+            if (const auto index = rows.hit(mouse_x, mouse_y))
+                editor_policy("workbench.outline.activate",
+                              {{"version", outline.state().at("version")},
+                               {"row", outline.rows().at(*index).value->at("id")}});
             break;
         }
         if (geometry.sidebar_rows.contains(mouse_x, mouse_y)) {
@@ -3904,15 +3899,13 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                     static_cast<long long>(std::round(input.wheel.y * direction * 3));
                 const auto count = static_cast<std::size_t>(
                     std::ceil(geometry.outline_rows.height / geometry.sidebar_row_height));
-                const auto maximum =
-                    document->outline_total > count ? document->outline_total - count : 0;
+                const auto maximum = outline.total() > count ? outline.total() - count : 0;
                 const auto next = static_cast<std::size_t>(
                     std::clamp(static_cast<long long>(document->outline_scroll) - shift,
                                0LL,
                                static_cast<long long>(maximum)));
                 if (next != document->outline_scroll) {
                     document->outline_scroll = next;
-                    document->needs_syntax = true;
                 }
             }
         } else if (geometry.sidebar.contains(mouse_x, mouse_y)) {
@@ -4020,6 +4013,17 @@ void EditorWindow::Impl::measure_layout(bool prepare_tabs) {
     content_bottom = geometry.editor.bottom();
     tab_bar.measure(
         geometry.tabs, scale, tabs, tabs.position(active_id).value_or(0), ui_style, prepare_tabs);
+    const auto* document = current();
+    const auto visible = document && geometry.outline_rows.height > 0;
+    outline.sync({active_id,
+                  document ? document->metadata.at("revision").get<std::string>() : std::string{},
+                  std::to_string(document_activity),
+                  document ? document->outline_scroll : 0,
+                  visible ? static_cast<std::size_t>(std::ceil(geometry.outline_rows.height /
+                                                               geometry.sidebar_row_height)) +
+                                1
+                          : 0,
+                  visible});
 }
 
 void EditorWindow::Impl::draw_inline_form(SkCanvas* canvas) {
@@ -4942,51 +4946,14 @@ void EditorWindow::Impl::draw() {
               ui_style.colors.muted);
     }
 
-    if (geometry.outline_rows.height > 0 && geometry.sidebar.width > 0) {
-        if (const auto* document = current()) {
-            const auto ox = geometry.outline_rows.x + 16 * scale, oy = geometry.outline_rows.y;
-            canvas->save();
-            canvas->clipRect(SkRect::MakeXYWH(geometry.outline_rows.x,
-                                              oy,
-                                              geometry.outline_rows.width,
-                                              geometry.outline_rows.height));
-            if (document->syntax_revision != document->view_revision ||
-                document->syntax_state == "pending" ||
-                document->outline_begin != document->outline_scroll) {
-                label(canvas, "Parsing document...", ox, oy + 6 * scale, 12, ui_style.colors.muted);
-            } else if (document->outline.empty()) {
-                label(canvas,
-                      document->syntax_state == "unsupported" ? "No parser for this file type"
-                                                              : "No symbols",
-                      ox,
-                      oy + 6 * scale,
-                      12,
-                      ui_style.colors.muted);
-            } else
-                for (std::size_t i = 0; i < document->outline.size(); ++i) {
-                    const auto y = oy + static_cast<float>(i) * geometry.sidebar_row_height;
-                    if (y >= geometry.outline_rows.bottom()) {
-                        break;
-                    }
-                    const auto& symbol = document->outline[i];
-                    const auto depth = std::min(symbol.value("depth", 0U), 8U);
-                    const auto x = ox + static_cast<float>(depth) * 10 * scale;
-                    draw_icon(canvas,
-                              symbol.at("kind") == "function" ? Icon::function : Icon::symbol,
-                              x,
-                              y + 4 * scale,
-                              16 * scale,
-                              ui_style.colors.accent);
-                    label(canvas,
-                          symbol.at("name").get<std::string>(),
-                          x + 22 * scale,
-                          y + 4 * scale,
-                          13,
-                          ui_style.colors.foreground);
-                }
-            canvas->restore();
-        }
-    }
+    static_cast<void>(view_rows.paint(
+        canvas,
+        outline.rows(),
+        ViewRowsLayout::measure(
+            geometry.outline_rows, scale, geometry.sidebar_row_height, outline.rows().size(), 0),
+        ui_style,
+        {"", outline.message(), false, true, mouse_x, mouse_y},
+        {}));
     fill(geometry.status, ui_style.colors.status);
     rectangle(canvas, 0, geometry.status.y, width, scale, ui_style.colors.border);
     const auto status_y = geometry.status.y + 6 * scale;
@@ -5307,10 +5274,11 @@ WorkbenchViewState EditorWindow::view_state() const {
             {"layoutsPending", document->viewport.layouts_pending()},
             {"workerSubmitted", impl_->layout_jobs->statistics().submitted},
             {"workerJobs", impl_->layout_jobs->statistics().jobs}};
-        result.outline_first = document->outline_begin;
-        result.outline_total = document->outline_total;
-        result.visible_outline_rows = document->outline.size();
     }
+    result.outline = impl_->outline.state();
+    result.outline_first = impl_->outline.offset();
+    result.outline_total = impl_->outline.total();
+    result.visible_outline_rows = impl_->outline.rows().size();
     return result;
 }
 
@@ -5399,6 +5367,9 @@ bool EditorWindow::pump() {
             }
         }
         const auto form_deadline = Clock::now() + std::chrono::milliseconds(4);
+        impl_->measure_layout();
+        if (const auto viewport = impl_->outline.take_request())
+            impl_->workbench->emit("ui.outline.request", *viewport);
         if (impl_->pending_document_activity) {
             impl_->pending_document_activity = false;
             impl_->workbench->emit("ui.document.activated",

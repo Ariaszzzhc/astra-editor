@@ -20,6 +20,101 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### JS-owned Outline pages and actions (2026-10-11)
+
+The shipped `data/workbench/outline.js` now owns visible symbol queries,
+pending/unsupported/empty messages, depth/icon projection and symbol activation.
+The native highlighter requests `includeOutline:false`. Both clients use the
+shared service parser and measured symbol range; abandoning an Outline wait does
+not cancel that shared parse. User scripts can replace/restore the provider and
+activation handler, with Promise-based refresh/read/publication methods.
+
+Native `ViewPage` fences document, text revision, document activity, viewport and
+monotonic generation. Publications contain at most 256 leaf rows / 64 KiB,
+validate completely before mutation and are immutable within a generation.
+Pending, hidden, retired and duplicate publications cannot activate. A shrinking
+source can clamp its offset; the owner retains each document's scroll position.
+`ViewIndex::page` supplies an immutable measured page with off-page indentation,
+without pretending it contains parent groups. The shared `ViewRows` component
+paints/hits these rows and accepts JS `iconTone` theme roles. The old native
+Outline projection, messages, painting loop and direct selection policy were
+removed. Agent state includes the guarded page and bounded original descriptors.
+
+Windows evidence and retained failures:
+
+- Initial `./scripts/xmake.ps1 build -y -j 2 astra-tests gui-presentation-smoke astra`
+  failed with MSVC C4834/C2220 in exception tests that discarded `[[nodiscard]]`
+  results (`build/outline-policy-build-debug.log`). Explicit void casts retain
+  the exception assertions; no warning suppression was introduced.
+- Formatting and corrected targeted build passed
+  (`outline-policy-format-fixed-debug.log`, `outline-policy-build-fixed-debug.log`).
+  `./build/windows/x64/debug/astra-tests.exe
+  '--test-case=view page*,workbench JS Outline*' --no-version` passed four cases /
+  73,877 assertions (`outline-policy-focused-debug.log`), with 609 unrelated cases
+  filtered out. Native differential coverage uses 2,000 rounds / seed `0xA57A9A`,
+  retaining old snapshots and checking source order, stale generation rejection,
+  atomic malformed/capacity rejection, hidden activation and shrinking ranges.
+- `./build/windows/x64/debug/gui-presentation-smoke.exe` exited 0
+  (`outline-policy-gui-debug.log`). Actual SDL/GPU input requests a bounded page
+  of 81 symbols, independently scrolls to rank 60 and selects the original
+  `outline59` symbol. A user JS provider awaits asynchronously, publishes two
+  nested-indented Unicode descriptors, handles actual pointer activation without
+  altering document selections and restores the shipped provider. Existing
+  5,005-file, 640-tab and custom-view checks pass.
+  `build/graphics/gui-custom-outline.png` was inspected: original Unicode labels
+  and JS-selected added/changed icon colors appear in the Outline pane.
+- Subsequent final formatting/build passed
+  (`outline-policy-format-final-debug.log`, `outline-policy-build-final-debug.log`).
+  Final focused tests passed five cases / 73,896 assertions
+  (`outline-policy-focused-final-debug.log`). Added cases prove that superseded
+  shared-parser waits drain late replies without `operation.cancel`, and that
+  current failure/AbortError pages settle with scalar-safe bounded messages.
+- `./scripts/test.ps1 -Mode all -Gui` exited 0 with source/runtime resources
+  unchanged (`build/outline-policy-acceptance-all.log`). Debug passed 614 cases /
+  2,656,130 assertions; Release passed 614 cases / 2,655,923 assertions, with no
+  failed or skipped cases. Both modes passed the real GUI Outline provider,
+  activation and restoration checks, renderer, editing/services/recovery,
+  workspace-conflict and TCP GUI checks. Package helpers passed 12 checks and
+  shaping provenance passed seven tests.
+  That matrix preceded the retired-provider regression fix described below.
+- The first regression-test build failed with MSVC C2039 because the test read
+  an ID directly from `ViewRow` instead of its original descriptor
+  (`outline-retired-build-debug.log`). The corrected build passed
+  (`outline-retired-build-fixed-debug.log`). Running
+  `./build/windows/x64/debug/astra-tests.exe
+  '--test-case=workbench JS Outline retired*' --no-version` then reproduced a
+  global error after native publication rejection: one case / 15 assertions,
+  one failed assertion (`outline-retired-reproducer-debug.log`, executable exit 1).
+  The test deliberately delays the next viewport event after native refresh,
+  then verifies the new provider still publishes normally.
+- JS now reports a provider failure globally only if the native error-page
+  publication is accepted and the request remains current. Formatting and build
+  passed (`outline-retired-format-final-debug.log`,
+  `outline-retired-build-final-debug.log`); the focused command with
+  `--test-case=view page*,workbench JS Outline*` passed six cases / 73,911
+  assertions (`outline-retired-focused-final-debug.log`).
+- Fresh `./scripts/test.ps1 -Mode all -Gui` exited 0 on the fixed source and
+  unchanged runtime resources (`build/outline-retired-acceptance-all.log`). Debug
+  passed 615 cases / 2,656,056 assertions; Release passed 615 cases / 2,655,982
+  assertions, with no failed or skipped cases. Both modes passed actual Outline
+  pagination, pointer activation, custom asynchronous provider/handler and
+  restoration checks, plus the full renderer/text/viewport, editing,
+  clangd/Git, recovery, workspace-conflict and TCP GUI matrix. Package helpers
+  passed 12 checks; shaping provenance passed seven tests.
+- Restored the Debug development configuration and built `astra` successfully
+  (`outline-retired-restore-debug.log`, `outline-retired-restore-build-debug.log`).
+  `./scripts/format.ps1 -Check -Offline` passed all 188 C++ / 14 JavaScript files
+  (`outline-retired-format-check.log`); `git diff --check` passed. The final GPU
+  custom-Outline capture was inspected again after the complete matrix: Unicode,
+  off-page indentation, themed icons and the original selected symbol remain
+  visible (`build/graphics/gui-custom-outline.png`). No new distribution was made.
+
+Outline policy ownership is accepted for the recorded Windows checks. This does
+not establish whole-product visual acceptance. Activity-bar and breadcrumb/status
+components, complete font adaptation, whole-product visual acceptance, physical
+installed-IME acceptance and a new distribution remain part of the requested
+architecture/UI revision. The full revision remains in progress.
+
 ### JS theme on the native Windows frame (2026-10-11)
 
 Startup and accepted asynchronous style updates now apply the compiled JS

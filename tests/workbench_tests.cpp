@@ -4,6 +4,7 @@
 #include <astra/ui/form_registry.hpp>
 #include <astra/ui/view_store.hpp>
 #include <astra/ui/picker_index.hpp>
+#include <astra/ui/view_page.hpp>
 #include <astra/io/file_store.hpp>
 #include <doctest/doctest.h>
 
@@ -61,6 +62,7 @@ std::map<std::string, std::string> modules() {
                                             {"astra/language", "language.js"},
                                             {"astra/recovery", "recovery.js"},
                                             {"astra/lifecycle", "lifecycle.js"},
+                                            {"astra/outline", "outline.js"},
                                             {"astra/commands", "commands.js"},
                                             {"astra/workbench", "workbench.js"}}) {
         result[name] = astra::io::read_file(std::filesystem::path("data/workbench") / file).text;
@@ -5198,6 +5200,217 @@ TEST_CASE("workbench JS textobject API rejects invalid flags and retires unavail
         CHECK(updates.front().contains("status"));
         CHECK_FALSE(updates.front().contains("document"));
     }
+}
+
+TEST_CASE("workbench JS Outline reads bounded syntax pages and owns symbol activation") {
+    auto channel = std::make_shared<Channel>();
+    astra::ui::ViewPage page;
+    page.sync({"captured", "3", "2", 60, 2, true});
+    unsigned updates{};
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.outline.publish")
+                return ready(page.publish(params));
+            if (method == "_ui.outline.activate")
+                return ready(page.activate(params.at("version").get<std::string>(),
+                                           params.at("row").get<std::string>()));
+            if (method == "_ui.read")
+                return ready({{"activity", "2"},
+                              {"document",
+                               {{"id", "captured"},
+                                {"revision", "3"},
+                                {"selections", Json::array({{{"anchor", 0}, {"head", 0}}})}}}});
+            CHECK(method == "_ui.update");
+            ++updates;
+            CHECK(params.at("revealCaretFor") == "captured");
+            return ready(nullptr);
+        },
+        modules());
+    workbench.emit("ui.outline.request", *page.take_request());
+    for (int tick = 0; tick < 16; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    const auto requested = channel->requests.front().body.at("params");
+    CHECK(channel->requests.front().body.at("method") == "document.syntax");
+    CHECK(requested.at("baseRevision") == "3");
+    CHECK(requested.at("outlineBegin") == 60);
+    CHECK(requested.at("outlineLimit") == 2);
+    CHECK(requested.at("begin") == 0);
+    CHECK(requested.at("end") == 0);
+    channel->reply({{"id", "captured"},
+                    {"revision", "3"},
+                    {"state", "ready"},
+                    {"outlinePage", {{"offset", 60}, {"total", 81}}},
+                    {"outline",
+                     Json::array({{{"name", "函数中🙂"},
+                                   {"kind", "function"},
+                                   {"depth", 5},
+                                   {"selectionBegin", 72},
+                                   {"selectionEnd", 91}},
+                                  {{"name", "Nested"},
+                                   {"kind", "class"},
+                                   {"depth", 12},
+                                   {"selectionBegin", 100},
+                                   {"selectionEnd", 120}}})}});
+    for (int tick = 0; tick < 16; ++tick)
+        workbench.poll();
+    CHECK_FALSE(page.pending());
+    REQUIRE(page.rows().size() == 2);
+    CHECK(page.rows().at(0).depth == 5);
+    CHECK(page.rows().at(1).depth == 8);
+    CHECK(page.rows().at(0).value->at("icon") == "function");
+    CHECK(page.rows().at(0).value->at("iconTone") == "accent");
+    std::optional<astra::script::Runtime::Outcome> outcome;
+    workbench.execute("workbench.outline.activate",
+                      {{"version", page.state().at("version")}, {"row", "symbol-60"}},
+                      [&](const auto& result) {
+                          outcome = result;
+                      });
+    for (int tick = 0; tick < 16; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "document.setSelections");
+    CHECK(channel->requests.front().body.at("params").at("baseRevision") == "3");
+    CHECK(channel->requests.front().body.at("params").at("selections") ==
+          Json::array({{{"anchor", 72}, {"head", 91}}}));
+    channel->reply({{"id", "captured"}, {"revision", "3"}});
+    for (int tick = 0; tick < 16; ++tick)
+        workbench.poll();
+    REQUIRE(outcome);
+    CHECK_FALSE(outcome->error);
+    CHECK(updates == 1);
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench JS Outline supersession drains late service replies without publication") {
+    auto channel = std::make_shared<Channel>();
+    astra::ui::ViewPage page;
+    page.sync({"old", "1", "1", 0, 1, true});
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            REQUIRE(method == "_ui.outline.publish");
+            return ready(page.publish(params));
+        },
+        modules());
+    workbench.emit("ui.outline.request", *page.take_request());
+    for (int tick = 0; tick < 16; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    channel->reply({{"id", "old"},
+                    {"revision", "1"},
+                    {"state", "pending"},
+                    {"operationId", "shared-parse"},
+                    {"shared", true}});
+    for (int tick = 0; tick < 16; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "operation.get");
+    page.sync({"new", "2", "2", 0, 1, true});
+    workbench.emit("ui.outline.request", *page.take_request());
+    for (int tick = 0; tick < 16; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 2);
+    channel->reply({{"state", "completed"},
+                    {"result", {{"id", "old"}, {"revision", "1"}, {"state", "ready"}}}});
+    for (int tick = 0; tick < 16; ++tick)
+        workbench.poll();
+    CHECK(page.pending());
+    CHECK(page.state().at("id") == "new");
+    channel->reply({{"id", "new"}, {"revision", "2"}, {"state", "unsupported"}});
+    for (int tick = 0; tick < 16; ++tick)
+        workbench.poll();
+    CHECK_FALSE(page.pending());
+    CHECK(page.message() == "No parser for this file type");
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench JS Outline failures settle with bounded scalar-safe messages") {
+    for (const bool cancelled : {false, true}) {
+        auto channel = std::make_shared<Channel>();
+        astra::ui::ViewPage page;
+        page.sync({"1", "3", "1", 0, 2, true});
+        const auto source =
+            std::string("const outlineCancelled = ") + (cancelled ? "true;" : "false;") + R"js(
+                astra.ui.registerOutline({loading: 'Loading custom symbols'}, async () => {
+                    const error = new Error('🙂'.repeat(700) + '\n failure');
+                    if (outlineCancelled) error.name = 'AbortError';
+                    throw error;
+                });
+            )js";
+        astra::ui::Workbench workbench(
+            channel,
+            [&](std::string_view method, const Json& params) {
+                REQUIRE(method == "_ui.outline.publish");
+                return ready(page.publish(params));
+            },
+            modules(),
+            source);
+        workbench.emit("ui.outline.request", *page.take_request());
+        for (int tick = 0; tick < 20; ++tick)
+            workbench.poll();
+        CHECK_FALSE(page.pending());
+        CHECK(page.rows().size() == 0);
+        CHECK(page.message().size() == 512 * 4);
+        CHECK(workbench.take_errors().size() == (cancelled ? 0U : 1U));
+        CHECK(channel->requests.empty());
+        CHECK(workbench.idle());
+    }
+}
+
+TEST_CASE("workbench JS Outline retired failures stay quiet before the next viewport event") {
+    auto channel = std::make_shared<Channel>();
+    astra::ui::ViewPage page;
+    page.sync({"1", "3", "1", 0, 1, true});
+    unsigned rejected{};
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.outline.refresh") {
+                page.refresh();
+                return ready(page.state());
+            }
+            REQUIRE(method == "_ui.outline.publish");
+            const auto accepted = page.publish(params);
+            if (!accepted)
+                ++rejected;
+            return ready(accepted);
+        },
+        modules(),
+        R"js(
+            let firstOutlineRequest = true;
+            astra.ui.registerOutline({loading: 'Loading custom symbols'}, async () => {
+                if (firstOutlineRequest) {
+                    firstOutlineRequest = false;
+                    await astra.ui.outline.refresh();
+                    throw new Error('Retired provider failure');
+                }
+                return {
+                    offset: 0, total: 1, empty: 'No symbols',
+                    rows: [{id: 'current', label: 'Current symbol'}]
+                };
+            });
+        )js");
+    workbench.emit("ui.outline.request", *page.take_request());
+    for (int tick = 0; tick < 20; ++tick)
+        workbench.poll();
+    CHECK(rejected == 1);
+    CHECK(page.pending());
+    CHECK(page.needs_request());
+    CHECK(page.message().empty());
+    CHECK(workbench.take_errors().empty());
+    workbench.emit("ui.outline.request", *page.take_request());
+    for (int tick = 0; tick < 20; ++tick)
+        workbench.poll();
+    CHECK_FALSE(page.pending());
+    REQUIRE(page.rows().size() == 1);
+    CHECK(page.rows().at(0).value->at("id") == "current");
+    CHECK(workbench.take_errors().empty());
+    CHECK(channel->requests.empty());
+    CHECK(workbench.idle());
 }
 
 TEST_CASE("workbench JS textobject cancellation drains parsing without selecting") {

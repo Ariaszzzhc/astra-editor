@@ -666,8 +666,45 @@ exit. Native C++ owns retained progress/choice input and physical window lifetim
 and `includeOutline` (boolean, default true). Ready responses include
 `outlinePage: {offset, total, nextOffset}`; an offset beyond the end clips to the
 total, and `nextOffset` is null at the end. Omitting outline rows still returns
-their total. Native Outline requests its viewport range through the measured
-semantic index and rejects obsolete pages for pointer selection.
+their total. The shipped JS Outline provider requests its viewport range through
+the measured semantic index. Native highlight requests use `includeOutline:false`;
+highlight preparation and Outline policy are independent clients of shared parsing.
+
+`astra.ui.registerOutline(spec, provider, handlers = {})` installs local policy for
+the active document's Outline pane. `spec.loading` is its pending message.
+The provider receives `(viewport, {signal, timeoutMs})` and returns a value or
+Promise for `{offset, total, rows, empty?}`. `viewport` contains `id`, `revision`,
+`activity`, string `version`, `offset`, `limit` and `visible`. Rows cover exactly
+`min(limit, total - offset)` items; a request past a shrinking source may clamp
+back into that source. Pages contain at most 256 leaf rows / 64 KiB. Unlike whole
+hierarchical sidebar sources, their indentation can start inside an off-page
+parent. Group rows are rejected; depth remains 0..64. The native page retains
+immutable measured rows and does not materialize the provider's entire source.
+
+`handlers.activate(data, row, identity)` owns each click. A native read checks the
+published row and current document/revision/activity/viewport generation before
+dispatch. The default JS handler performs a fenced document read and a
+revision-guarded `document.setSelections`, then reveals only that document.
+Providers choose labels, icons, empty/unsupported/error messages and actions.
+Changing document, revision, visibility or viewport cancels the superseded JS
+wait and rejects its late publication. Shared parse operations keep running for
+other clients. A current provider failure publishes an empty terminal page with
+a bounded, scalar-safe message and reports the error; a current AbortError
+settles the page without reporting an unrelated failure.
+If native publication rejects a retired error page before JS receives its next
+viewport event, that provider error is also discarded.
+
+Registration performs no I/O and returns the previous frozen registration
+`{spec, provider, handlers}`, if present. To replace a provider at runtime, call
+`await astra.ui.outline.refresh()` after registration; the old publication keeps
+its original handler until invalidation. Re-register the returned triple and
+refresh to restore it. `await astra.ui.outline.read()` returns the guarded
+viewport plus `total`, `pending`, `empty` and the bounded published `rows`.
+Advanced `outline.publish(model, options)` accepts the four identity fields
+`version`, `id`, `revision`, `activity` plus the page fields above. Invalid pages
+reject atomically; obsolete or already-published generations return false.
+The registration wrapper supplies these identity fields automatically. All three
+Outline request methods return Promises; registration is synchronous local setup.
 
 `astra.ui.registerView(spec, provider, handlers = {})` registers a sidebar view.
 The activity bar uses a snapshot of the registered `id`, `title`, `icon`, `order` (0..31) and
@@ -684,7 +721,9 @@ The provider receives `(parameters, {signal})` and may return a value or Promise
 for `{rows, subtitle?, empty?, update?, complete?}`, or a row iterable directly.
 `rows` accepts arrays, synchronous iterables and asynchronous iterables. Each row
 has stable `id`, single-line `label`, optional
-`icon`, `badge`, `tone`, `depth`, `group`, `selected` and JSON `data`.
+`icon`, `iconTone`, `badge`, `tone`, `depth`, `group`, `selected` and JSON `data`.
+`iconTone` chooses `normal`, `muted`, `accent`, `added`, `changed` or `error`
+from the effective theme; an explicit native file-icon resolver retains precedence.
 Group descendants follow their parent in preorder; depth may increase only one
 level after a group. Depth is 0..64. Native group folding uses the measured index.
 `await astra.ui.views.read(id?)` returns the current `{id, title, outlineTitle,

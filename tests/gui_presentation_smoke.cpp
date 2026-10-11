@@ -309,6 +309,27 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
                     throw Error('Actual window frame capabilities were not reported to JS');
                 await astra.ui.update({status: 'Light frame settled'});
             });
+            let previousOutline;
+            astra.registerCommand('acceptance.outline.custom', async () => {
+                previousOutline = astra.ui.registerOutline({loading: 'Preparing custom symbols 中🙂'},
+                    async (viewport, options) => {
+                        await astra.sleep(8, options);
+                        return {offset: 0, total: 2, empty: 'Custom Outline empty', rows: [
+                            {id: 'custom-outline-first', label: 'Custom symbol 中🙂', depth: 6,
+                             icon: 'function', iconTone: 'added', data: {action: 'custom'}},
+                            {id: 'custom-outline-second', label: 'Another custom symbol', depth: 2,
+                             icon: 'symbol', iconTone: 'changed', data: {action: 'second'}}
+                        ]};
+                    }, {activate: async (data) => {
+                        await astra.ui.update({status: 'Custom Outline ' + data.action});
+                    }});
+                await astra.ui.outline.refresh();
+            });
+            astra.registerCommand('acceptance.outline.restore', async () => {
+                astra.ui.registerOutline(previousOutline.spec, previousOutline.provider,
+                    previousOutline.handlers);
+                await astra.ui.outline.refresh();
+            });
             astra.registerCommand('acceptance.style.race', async () => {
                 return await astra.ui.style.update({workbench: {uiFontSize: 16}});
             });
@@ -968,6 +989,28 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         require(metadata.at("selections").front().at("anchor") ==
                     astra::io::read_file(workspace / "one.cpp").text.find("outline59"),
                 "Scrolled Outline pointer selected a different symbol");
+        const auto original_selections = window.view_state().document.at("selections");
+        window.execute_ui_command("acceptance.outline.custom");
+        settle(window);
+        require(window.view_state().outline_total == 2 &&
+                    window.view_state().visible_outline_rows == 2 &&
+                    window.view_state().outline_first == 0 &&
+                    window.view_state().outline.at("rows")[0].at("depth") == 6,
+                "Custom asynchronous JS Outline did not replace the indexed page");
+        window.request_screenshot("build/graphics/gui-custom-outline.png");
+        settle(window);
+        click(window,
+              window.layout().outline_rows.x + 160 * original.layout.scale,
+              window.layout().outline_rows.y + 12 * original.layout.scale);
+        require(window.status_text() == "Custom Outline custom" &&
+                    window.view_state().document.at("selections") == original_selections,
+                "Custom Outline activation bypassed its JS handler or changed document selection");
+        window.execute_ui_command("acceptance.outline.restore");
+        settle(window);
+        require(window.view_state().outline_total == 81,
+                "Restoring the shipped JS Outline provider lost document symbols");
+        std::cout << "GUI JS Outline: bounded indexed pages, independent scroll, real symbol "
+                     "selection, async custom provider/actions and restoration: PASS\n";
         window.open_path("two_with_a_long_name.cpp");
         settle(window);
         const auto two = window.active_document_id();

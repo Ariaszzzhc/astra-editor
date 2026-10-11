@@ -4,6 +4,29 @@ export const ui = {
     read: (parameters = {}, options) => read(parameters, options),
     update: (model) => request('_ui.update', model),
     selectObject,
+    outline: {
+        read: (options) => request('_ui.outline.read', {}, options),
+        publish: (model, options) => request('_ui.outline.publish', model, options),
+        refresh: (options) => request('_ui.outline.refresh', {}, options)
+    },
+    registerOutline(spec, provider, handlers = {}) {
+        if (
+            typeof provider !== 'function' ||
+            !spec ||
+            typeof spec.loading !== 'string' ||
+            !handlers ||
+            typeof handlers !== 'object' ||
+            (handlers.activate !== undefined && typeof handlers.activate !== 'function')
+        )
+            throw new TypeError('Invalid Outline provider');
+        const previous = outlineProvider;
+        outlineProvider = Object.freeze({
+            spec: Object.freeze({ ...spec }),
+            provider,
+            handlers: Object.freeze({ ...handlers })
+        });
+        return previous;
+    },
     icons: fileIcons,
     style: {
         read: (options) => request('_ui.style.read', {}, options),
@@ -522,7 +545,7 @@ async function dynamicPick(spec, options = {}) {
 }
 // Race cancellation even for a user provider which ignores its signal. Observe
 // both outcomes; its late continuation cannot publish to a newer query/dialog.
-async function pickerWork(work, signal) {
+async function providerWork(work, signal) {
     let abort;
     const cancelledWork = new Promise((_, reject) => {
         abort = () => reject(cancelled('Picker query cancelled'));
@@ -547,7 +570,7 @@ astra.on('ui.picker.query', async ({ id, generation, query }) => {
         record.generation === generation &&
         !control.signal.aborted;
     try {
-        const output = await pickerWork(
+        const output = await providerWork(
             Promise.resolve().then(() => record.provider(query, { signal: control.signal })),
             control.signal
         );
@@ -587,6 +610,71 @@ astra.on('ui.picker.query', async ({ id, generation, query }) => {
         }
     }
 });
+let outlineProvider, outlineControl, publishedOutline;
+function outlineGuard(snapshot) {
+    return {
+        version: snapshot.version,
+        id: snapshot.id,
+        revision: snapshot.revision,
+        activity: snapshot.activity
+    };
+}
+astra.on('ui.outline.request', async (snapshot) => {
+    outlineControl?.abort();
+    const control = new AbortController();
+    outlineControl = control;
+    publishedOutline = undefined;
+    const registration = outlineProvider;
+    if (!snapshot.visible || !snapshot.id || !registration) return;
+    const current = () => outlineControl === control && !control.signal.aborted;
+    const options = { signal: control.signal, timeoutMs: 30000 };
+    try {
+        if (
+            !(await ui.outline.publish(
+                { ...outlineGuard(snapshot), pending: true, empty: registration.spec.loading },
+                options
+            )) ||
+            !current()
+        )
+            return;
+        const model = await providerWork(
+            Promise.resolve().then(() =>
+                registration.provider(Object.freeze({ ...snapshot }), options)
+            ),
+            control.signal
+        );
+        if (!current()) return;
+        if (await ui.outline.publish({ ...model, ...outlineGuard(snapshot) }, options))
+            publishedOutline = { version: snapshot.version, registration };
+    } catch (error) {
+        if (!current()) return;
+        let message = '',
+            count = 0;
+        for (const scalar of String(error?.message ?? error)) {
+            if (count++ === 512) break;
+            message += /[\r\n\0]/.test(scalar) ? ' ' : scalar;
+        }
+        const accepted = await ui.outline.publish(
+            { ...outlineGuard(snapshot), offset: 0, total: 0, rows: [], empty: message },
+            options
+        );
+        if (accepted && current() && error?.name !== 'AbortError') throw error;
+    }
+});
+ui.registerCommand(
+    { id: 'workbench.outline.activate', title: 'Activate Outline row', palette: false },
+    async ({ version, row }) => {
+        const publication = publishedOutline;
+        if (!publication || publication.version !== version) return null;
+        const selection = await request('_ui.outline.activate', { version, row });
+        if (!selection || publishedOutline !== publication) return null;
+        return await publication.registration.handlers.activate?.(
+            selection.row.data,
+            selection.row,
+            selection.request
+        );
+    }
+);
 async function activateView({ id, version, row }) {
     if (publishedViews.get(id) !== version) return;
     await providers.get(id)?.handlers.activate?.(row.data, row);

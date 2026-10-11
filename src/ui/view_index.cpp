@@ -24,8 +24,8 @@ ViewRow parse(const Json& value, std::size_t ordinal) {
     for (const auto& [key, unused] : value.items()) {
         static_cast<void>(unused);
         if (key != "id" && key != "label" && key != "description" && key != "badge" &&
-            key != "icon" && key != "iconPath" && key != "tone" && key != "depth" &&
-            key != "group" && key != "selected" && key != "data")
+            key != "icon" && key != "iconPath" && key != "iconTone" && key != "tone" &&
+            key != "depth" && key != "group" && key != "selected" && key != "data")
             throw protocol::RpcError(-32602, "Unknown view row field");
     }
     if (field(value, "id", 4096).empty() || field(value, "label", 4096).empty())
@@ -34,6 +34,11 @@ ViewRow parse(const Json& value, std::size_t ordinal) {
     static_cast<void>(field(value, "badge", 64));
     static_cast<void>(field(value, "iconPath", 4096));
     const auto icon = field(value, "icon", 32), tone = field(value, "tone", 32);
+    const auto icon_tone = field(value, "iconTone", 32);
+    if (!icon_tone.empty() && icon_tone != "normal" && icon_tone != "muted" &&
+        icon_tone != "accent" && icon_tone != "added" && icon_tone != "changed" &&
+        icon_tone != "error")
+        throw protocol::RpcError(-32602, "Unknown view icon tone");
     if (!icon.empty() && icon != "files" && icon != "search" && icon != "branch" &&
         icon != "folder" && icon != "document" && icon != "code" && icon != "braces" &&
         icon != "symbol" && icon != "function" && icon != "warning")
@@ -123,6 +128,30 @@ ViewIndex::ViewIndex(std::shared_ptr<const ViewSource> source, std::set<std::str
         const auto found = source_->positions.find(id);
         return found == source_->positions.end() || !source_->rows.at(found->second).group;
     });
+}
+
+ViewIndex ViewIndex::page(const Json& values) {
+    if (!values.is_array() || values.size() > ViewBuilder::max_page_rows)
+        throw protocol::RpcError(-32602, "View page exceeds 256 rows");
+    const auto bytes = values.dump().size();
+    if (bytes > ViewBuilder::max_page_bytes)
+        throw protocol::RpcError(-32004, "View page exceeds 64 KiB");
+    auto source = std::make_shared<ViewSource>();
+    std::vector<ViewRow> rows;
+    rows.reserve(values.size());
+    for (const auto& value : values) {
+        auto row = parse(value, rows.size());
+        if (row.group)
+            throw protocol::RpcError(-32602, "Viewport pages require leaf rows");
+        if (!source->positions.emplace(value.at("id").get<std::string>(), row.ordinal).second)
+            throw protocol::RpcError(-32602, "Duplicate view page row identity");
+        rows.push_back(std::move(row));
+    }
+    source->rows = ViewSnapshot(std::move(rows));
+    source->bytes = bytes;
+    ViewIndex prepared(std::move(source));
+    static_cast<void>(prepared.filter_step());
+    return prepared;
 }
 
 std::size_t ViewIndex::subtree_end(const ViewRow& row) const {

@@ -7,6 +7,7 @@ import { registerClipboard } from 'astra/clipboard';
 import { registerLanguage } from 'astra/language';
 import { registerRecovery } from 'astra/recovery';
 import { registerLifecycle } from 'astra/lifecycle';
+import { registerOutline } from 'astra/outline';
 export function initialize() {
     registerIcons();
     registerNativeCommands();
@@ -17,4 +18,5 @@ export function initialize() {
     registerLanguage();
     registerRecovery();
     registerLifecycle();
+    registerOutline();
 }
