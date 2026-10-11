@@ -2,6 +2,48 @@
 
 Product contract: `EditorDoc.md`. Product name: Astra (confirmed by the user).
 
+## CMake migration: final Windows delivery (2026-10-12)
+
+The authorized migration is complete on Windows: CMake/Ninja, pinned submodule
+vcpkg, official Dawn/Skia recipes with only required overlays, dynamic CRT,
+organized sources/tests, one Runtime installation authority and CPack packaging.
+xmake and duplicate build/preparation scripts are removed. The original behavior
+coverage and necessary Skia/QuickJS capabilities remain. Full Debug/Release and
+subsequent cleanup acceptance are detailed in the entries below.
+
+Clean production code commit: `73baee86ed0bf25111bf3fba51a0d3f2c311e869`.
+This final evidence entry is a later documentation-only change; the package's
+source provenance accurately identifies the clean code commit, not this entry.
+Earlier tested/pushed increments are `2dee8d0`, `0f7457c`, and `956b0f4`.
+
+Final artifact: `build/packages/astra-0.1.0-windows-x64-73baee8.zip`,
+148,515,132 bytes. SHA-256:
+`fb8a884edabf762d8958f912142e51582c1d52a15b5eae93a580d32ff7f7c34e`.
+The detached digest is alongside the ZIP. Installed inventory has 6,339 files;
+package-manifest.json records sourceDirty=false, Release/MD, the clean code
+commit and vcpkg `e456309491fd875487bf02b8a0dca76c1b1b00cc`.
+
+Passed commands and evidence:
+
+- `./scripts/package-windows.ps1 -OutputDirectory build/packages/astra-0.1.0-windows-x64-73baee8 -Offline`:
+  production-only Release build, fresh Runtime install, inventory verification
+  and CPack ZIP (`build/cmake-final-package.log`).
+- `./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/astra-0.1.0-windows-x64-73baee8 -RunSmoke -RunGuiSmoke`:
+  all installed production GUI/JS/renderer/Unicode history/save/close and isolated
+  server/process/Git/recovery/real language diagnostics passed
+  (`build/cmake-final-package-smoke.log`).
+- `Expand-Archive -LiteralPath build/packages/astra-0.1.0-windows-x64-73baee8.zip -DestinationPath build/package-roundtrip-73baee8`, then
+  `./scripts/verify-windows-package.ps1 -PackageDirectory build/package-roundtrip-73baee8/astra-0.1.0-windows-x64-73baee8 -RunSmoke -RunGuiSmoke`:
+  complete extracted inventory and all the same production GUI/service checks
+  passed with isolated profiles/workspaces and Windows-only PATH
+  (`build/cmake-final-package-roundtrip.log`). Global language tools and the
+  development runtime cache cannot satisfy these installed checks.
+
+Validation is Windows-only. Installed IME, elevated isolated delayed clipboard,
+physical monitor DPI and physical driver/adapter removal were not re-executed;
+their retained sources do not establish fresh environmental acceptance. Native
+Linux/macOS build, test, packaging and relocation remain unverified.
+
 ## CMake migration: legacy pipeline removal (2026-10-12)
 
 Removed xmake.lua, xmake/ recipes and duplicate patch copies; the Windows/native

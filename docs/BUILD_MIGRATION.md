@@ -5,6 +5,10 @@ organization, one install-based distribution pipeline, removal of xmake. Preserv
 all EditorDoc.md features and the QuickJS host async context and Skia shaping
 patches. Validation on this host is Windows only.
 
+All increments below are complete on Windows. Final clean-source ZIP and
+extracted production GUI/service acceptance are recorded in [STATUS.md](STATUS.md).
+Native Linux/macOS sources remain unverified.
+
 ## Increments
 
 1. Record the contract and introduce the pinned vcpkg tool source.
