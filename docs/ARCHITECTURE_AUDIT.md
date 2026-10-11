@@ -147,7 +147,7 @@ Windows behaviors, not unrestricted production or all-platform readiness.
 | Explicit requirement | Authoritative implementation/evidence | Current result |
 | --- | --- | --- |
 | C++, JS and xmake | `xmake.lua` selects C++23 and pinned QuickJS-NG; `script_tests.cpp` evaluates Unicode, overrides and actual service edits | Windows verified |
-| SDL3, Skia Graphite, Dawn | `renderer.cpp` creates the real native/Graphite/Dawn context; graphics/renderer/font tests, native GUI targets and four actual owned Dawn device-loss/callback/recovery/pixel rounds | Windows verified on this GPU; physical driver reset/adapter removal unverified |
+| SDL3, Skia Graphite, Dawn | `renderer.cpp` creates the real native/Graphite/Dawn context; graphics/renderer/font tests, four idle/active and eight concurrent actual owned Dawn losses; callback/recovery/readback and reproduced classification-race correction | Windows Debug/Release verified on this GPU; physical driver reset/adapter removal unverified |
 | Tree-sitter highlighting | `syntax.cpp`, grammar manifest; real grammar/syntax tests and GUI syntax-object/highlight workflows | Windows verified |
 | libuv asynchronous I/O | Transport/service/process adapters; real socket/worker tests prove input-loop progress, errors, cancellation and owned shutdown; final dedicated real delayed-clipboard fixture | Windows verified in both configurations |
 | Rope and persistent measured SumTrees | Core snapshot/differential tests check summaries, chunk bounds, UTF coordinate round trips; indexed presentation tests and measured history clone benchmark | Windows verified for stated invariants/costs |
@@ -205,7 +205,8 @@ is in `STATUS.md`. Earlier two-mode fixture evidence belongs to `83671c3`.
 The subsequent renderer acceptance increment changes runtime source; its fresh
 package is still due. The old artifact is not substituted for that new snapshot.
 No macOS/Linux build or runtime verification was performed in this environment;
-platform source/configuration is not all-platform acceptance.
+platform source/configuration is not all-platform acceptance. The user confirmed
+there is no macOS/Linux acceptance host; those requirements remain unverified.
 
 Collaboration/embedded Agent UI/terminal/run/debug remain excluded by the contract.
 The contract's Agent control of editor commands for testing remains in scope.

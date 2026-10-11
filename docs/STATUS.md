@@ -55,7 +55,64 @@ native-I/O finding; it does not establish whole-architecture completion.
   remains explicitly attributed to `83671c3` below.
   No macOS/Linux runtime verification is claimed.
 
-### Native Dawn device-loss recovery acceptance (2026-10-11)
+### Concurrent native loss classification correction (2026-10-11)
+
+Increment following `2e30758`: source review found a publication/read race not
+covered by same-thread loss injection. The spontaneous Dawn callback wrote its
+error message under a mutex, then published `lost` after unlocking. The owner
+checked `lost` before taking that mutex and could report the loss message as a
+fatal error while the callback raced that read.
+
+The new acceptance worker captures an owning native-device value on the owner
+thread before starting; it never accesses the renderer's mutable device slot.
+After a bounded two-millisecond start delay it invokes actual Dawn `ForceLoss`.
+The owner probes the production error-check path concurrently, then verifies
+callback delivery and native recovery/readback across eight rounds. It does not
+fabricate a lost flag or swallow a production error. The fixture retains any
+observed error and fails after the owned worker has finished.
+
+Before the fix, Release **failed** with `Concurrent loss was reported as a fatal
+renderer error: GPU device lost: Astra concurrent owned renderer acceptance loss`
+(`build/renderer-loss-concurrent-before-release.log`); the earlier four loss
+rounds still passed. This proves that the earlier full-suite green result did not
+cover this race. The callback now publishes the message and classification under
+the same mutex, and the owner rechecks classification inside the protected read.
+Unrelated errors on healthy devices remain errors.
+
+`./scripts/format.ps1 -Offline`,
+`./scripts/xmake.ps1 build -y -j2 renderer-smoke` and the fixed Release
+`renderer-smoke.exe` passed all original checks, four idle/active losses and eight
+concurrent losses (`build/renderer-loss-concurrent-fixed-format.log`,
+`build/renderer-loss-concurrent-fixed-build-release.log`,
+`build/renderer-loss-concurrent-fixed-release.log`). Final command
+`./scripts/test.ps1 -Mode all -Gui -InstalledIme` completed with exit **0**
+(`build/renderer-loss-concurrent-integrated-all.log`). Debug passed **632 cases /
+2,704,792 assertions**; Release passed **632 cases / 2,704,649 assertions**; both
+had zero failed/skipped cases. Both passed four idle/active losses, eight concurrent
+losses, native graphics/fonts/viewport, CLI, local/TCP GUI, services/Git/recovery/
+workspace, presentation/default visual/body/clipboard-failure and real installed
+Chinese IME. All 12 package helper checks and seven Skia provenance tests passed;
+the formatting gate passed **203 C++ / 15 JS**.
+
+The final-source dedicated clipboard Release fixture was rebuilt, launched with
+the previously authorized guarded `Start-Process -Verb RunAs` launcher as owned
+PID **32604**, and exited **0**. Its new
+`build/windows/x64/release/clipboard-isolated-23176109.log` reports PASS for real
+delayed-provider progress/Unicode/cancellation/timeout/shutdown and production
+GUI input/rendering/AbortSignal/save/bounded shutdown. The Debug fixture rebuilt
+successfully, but its first elevation attempt returned Windows cancellation
+before any process/log was created; the enclosing launcher exited **1**. This
+does not establish Debug final-source isolated acceptance or prove a human
+cancelled a visible prompt. The authorized Debug retry and fresh clean-source
+package remain pending. Earlier two-mode isolated acceptance remains attributed
+to its earlier snapshot. No physical driver-reset or other-platform validation
+is inferred.
+
+The user confirmed there is no macOS/Linux acceptance host. Those contract
+requirements remain unverified; this does not waive them or authorize
+non-Windows builds/emulation on this Windows-only host.
+
+### Owned native Dawn recovery results (2026-10-11)
 
 Increment following `1b3e356`: existing renderer recovery was not exercised by
 the original resize/minimize/restart fixture. The internal

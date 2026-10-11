@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <mutex>
@@ -41,6 +42,7 @@
 #include <span>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -288,8 +290,8 @@ struct Renderer::Impl {
                 {
                     const std::lock_guard lock(state->mutex);
                     state->error = "GPU device lost: " + message_text(message);
+                    state->lost.store(true);
                 }
-                state->lost.store(true);
             });
         descriptor.SetUncapturedErrorCallback(
             [](const wgpu::Device&, wgpu::ErrorType, wgpu::StringView message, DeviceState* state) {
@@ -327,7 +329,9 @@ struct Renderer::Impl {
             return;
         }
         const std::lock_guard lock(device_state->mutex);
-        if (!device_state->error.empty()) {
+        // A spontaneous callback can publish loss after the fast check but
+        // before this lock. Read its classification with the protected message.
+        if (!device_state->lost.load() && !device_state->error.empty()) {
             throw std::runtime_error(device_state->error);
         }
     }
@@ -718,6 +722,20 @@ void Renderer::clear_composition() {
 void detail::RendererAcceptance::force_device_loss(Renderer& renderer) {
     renderer.impl_->device.ForceLoss(wgpu::DeviceLostReason::Unknown,
                                      "Astra owned renderer acceptance loss");
+}
+
+std::future<void> detail::RendererAcceptance::force_device_loss_concurrently(Renderer& renderer) {
+    // Copy the native device on its owner before starting the worker. The worker
+    // never reads the renderer's mutable device slot or its window state.
+    return std::async(std::launch::async, [device = renderer.impl_->device] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        device.ForceLoss(wgpu::DeviceLostReason::Unknown,
+                         "Astra concurrent owned renderer acceptance loss");
+    });
+}
+
+void detail::RendererAcceptance::check_device_errors(const Renderer& renderer) {
+    renderer.impl_->check_errors();
 }
 
 bool detail::RendererAcceptance::native_device_lost(const Renderer& renderer) {

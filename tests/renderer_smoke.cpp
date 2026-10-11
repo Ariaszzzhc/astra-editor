@@ -16,6 +16,7 @@
 #include <iostream>
 #include <random>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -223,6 +224,43 @@ int main() {
             }
             std::cout << "Actual owned Dawn device loss: callback, idle/active frame recovery, "
                          "GPU pixels and native window/input preservation (four rounds): PASS\n";
+
+            std::string concurrent_failure;
+            for (unsigned round = 0; round < 8; ++round) {
+                auto loss =
+                    astra::ui::detail::RendererAcceptance::force_device_loss_concurrently(renderer);
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+                unsigned probes{};
+                while (loss.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+                    require(std::chrono::steady_clock::now() < deadline,
+                            "Concurrent owned Dawn loss did not finish");
+                    try {
+                        astra::ui::detail::RendererAcceptance::check_device_errors(renderer);
+                    } catch (const std::exception& error) {
+                        concurrent_failure = error.what();
+                    }
+                    if ((++probes % 128) == 0) {
+                        std::this_thread::yield();
+                    }
+                }
+                loss.get();
+                while (!astra::ui::detail::RendererAcceptance::loss_callback_received(renderer)) {
+                    require(std::chrono::steady_clock::now() < deadline,
+                            "Concurrent actual Dawn callback did not arrive");
+                    renderer.poll_events([](const SDL_Event&) {
+                    });
+                    SDL_Delay(1);
+                }
+                draw(renderer, screenshot);
+                verify_png(screenshot, original_size);
+            }
+            if (!concurrent_failure.empty()) {
+                throw std::runtime_error(
+                    "Concurrent loss was reported as a fatal renderer error: " +
+                    concurrent_failure);
+            }
+            std::cout << "Actual concurrent Dawn loss: asynchronous callback versus owner error "
+                         "checks, healthy recovery and GPU pixels (eight rounds): PASS\n";
 
             require(SDL_SetWindowSize(renderer.window(), 800, 600), "Native resize failed");
             require(SDL_SyncWindow(renderer.window()), "Native resize synchronization failed");
