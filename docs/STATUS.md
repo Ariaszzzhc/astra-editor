@@ -47,10 +47,47 @@ native-I/O finding; it does not establish whole-architecture completion.
   physical monitor DPI transitions and real GPU device-loss remain unverified.
 - Current clean-source Windows package `37bae5c` passed inventory/hash checks,
   fresh extraction, isolated service/runtime acceptance and the extracted real
-  GUI edit/save/close workflow. The dedicated delayed-provider fixture recheck
-  after the final UI increment requires successful Windows elevation; the older
-  two-mode evidence remains explicitly attributed to `83671c3` below.
+  GUI edit/save/close workflow. The final-source dedicated delayed-provider fixture
+  recheck now passed in both Windows configurations; new process/log identities
+  and source/binary comparisons are recorded below. The older two-mode evidence
+  remains explicitly attributed to `83671c3` below.
   No macOS/Linux runtime verification is claimed.
+
+### Final isolated clipboard recheck (2026-10-11)
+
+After the user reported no visible UAC prompt and explicitly requested a rerun,
+the already-authorized dedicated binaries launched successfully with
+`Start-Process -Verb RunAs -WindowStyle Hidden -PassThru`, repository working
+directory and `--log`. The guarded launcher uses terminating start errors,
+requires a newly written log, waits for the owned process and checks its actual
+exit code. Only the two fixture executables were elevated.
+
+- Release: requested at **19:53:12 Asia/Hong_Kong**, owned PID **46912**, exit **0**;
+  new `build/windows/x64/release/clipboard-isolated-19916906.log`.
+- Debug: requested at **19:53:34 Asia/Hong_Kong**, owned PID **14580**, exit **0**;
+  new `build/windows/x64/debug/clipboard-isolated-19939312.log`.
+- Both logs report **PASS** for the real delayed provider: owner-loop progress,
+  Unicode, cancellation, timeout and owner shutdown, plus production native
+  SDL/Skia Graphite/Dawn GUI input/rendering, AbortSignal, save and bounded exit.
+  Both owned fixture processes are terminal; their private station/desktop
+  cleanup completed. No interactive clipboard contents were replaced.
+- Compared **162 current repository runtime C++/header/JS files** against the
+  clean `37bae5c` package's recorded source hashes: **zero mismatches**. All
+  packaged Release executable/runtime input hashes also match the current
+  Release directory. Later commits change tests/documentation, not the tested
+  runtime implementation or recorded binary identity.
+
+This supersedes the final-source unrun/elevation-prerequisite entries below.
+Earlier Windows start errors said cancellation but did not prove the user
+manually cancelled a prompt; the user explicitly saw none. The reason those
+earlier prompts did not appear is not established by this successful rerun.
+UAC is needed only for this fixture's new named window station, which owns a
+separate clipboard. Normal Astra/application clipboard helpers run without
+elevation, as exercised by the ordinary GUI and extracted-package acceptance.
+The user has confirmed the computer is available for ongoing GUI acceptance and
+will indicate when they need it; stop desktop/input/clipboard testing then.
+Physical monitor DPI transitions, real GPU device-loss and non-Windows runtime
+acceptance remain outside the verified evidence.
 
 ### Clean Windows package acceptance (2026-10-11)
 

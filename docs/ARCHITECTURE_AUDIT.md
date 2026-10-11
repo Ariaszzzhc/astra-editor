@@ -149,11 +149,11 @@ Windows behaviors, not unrestricted production or all-platform readiness.
 | C++, JS and xmake | `xmake.lua` selects C++23 and pinned QuickJS-NG; `script_tests.cpp` evaluates Unicode, overrides and actual service edits | Windows verified |
 | SDL3, Skia Graphite, Dawn | `renderer.cpp` creates the real native/Graphite/Dawn context; graphics/renderer/font tests and all native GUI targets | Windows verified on this GPU |
 | Tree-sitter highlighting | `syntax.cpp`, grammar manifest; real grammar/syntax tests and GUI syntax-object/highlight workflows | Windows verified |
-| libuv asynchronous I/O | Transport/service/process adapters; real socket/worker tests prove input-loop progress, errors, cancellation and owned shutdown | Windows verified; dedicated final delayed-clipboard recheck unrun |
+| libuv asynchronous I/O | Transport/service/process adapters; real socket/worker tests prove input-loop progress, errors, cancellation and owned shutdown; final dedicated real delayed-clipboard fixture | Windows verified in both configurations |
 | Rope and persistent measured SumTrees | Core snapshot/differential tests check summaries, chunk bounds, UTF coordinate round trips; indexed presentation tests and measured history clone benchmark | Windows verified for stated invariants/costs |
 | Client/server, in-process and remote semantics | `tcp_tests.cpp` compares identical local/remote responses and notifications; actual GUI local and `--tcp` workflows | Loopback TCP verified; arbitrary remote-network environments unverified |
 | C++ core, JS high-level customization | Shipped `data/workbench/` workflows and user command/provider/keymap override tests; extracted production GUI accepts workspace-relative user JS | Windows verified; language percentages are not a gate |
-| Asynchronous public JS API | Promise/AbortSignal/deadline/late-reply tests, responsive native GUI workflows; public form/clipboard/update forwarding | Windows verified with documented delayed-provider limitation |
+| Asynchronous public JS API | Promise/AbortSignal/deadline/late-reply tests, responsive native GUI workflows; public form/clipboard/update forwarding; final two-mode delayed-provider cancellation/exit | Windows verified for stated bounds and behaviors |
 | Agent command control | GUI fixture `execute_ui_command` and native events use production JS/shared dispatcher; service RPC/CLI tests | Windows verified; no parallel fake document model |
 | VS Code flavored default UI | Nine shipped-default real states, inspected native screenshots, fonts/forms/pickers/modal/error and resize tests | Windows default-state acceptance; subjective further feedback remains possible |
 | Complete editing, multicursor | GUI Unicode/multicursor/undo/redo/save/reopen/dirty-close; atomic stale/overlap rejection and history tests | Windows verified for exercised behaviors |
@@ -167,7 +167,7 @@ Windows behaviors, not unrestricted production or all-platform readiness.
 | Request/response and notifications | Framing/RPC/TCP tests cover fragmentation, malformed/EOF/bounds and notification equality; reordered GUI notification tests | Windows verified |
 | File icons and themes out of box | Shipped descriptors/themes, icon identity/atomic-validation/bounds tests and inspected default captures | Windows verified |
 | Formatting, tests, coherent commits and push | Pinned formatter gate, full two-mode Windows log, Git commit history and upstream equality; `AGENTS.md` and repository skills exist | Current gates satisfied |
-| Deployable Windows artifact | Clean `37bae5c` ZIP inventory/hash, fresh extraction, minimal-PATH real Git/LSP/recovery, production GUI Unicode edit/save/close; formal GUI verifier adds undo/redo | Windows checks passed; dedicated delayed-provider final recheck remains |
+| Deployable Windows artifact | Clean `37bae5c` ZIP inventory/hash, fresh extraction, minimal-PATH real Git/LSP/recovery, production GUI Unicode edit/save/close; formal GUI verifier adds undo/redo; final fixture and runtime source/binary hash comparisons | Windows checks passed for recorded scope |
 | macOS/Linux, including named Linux distributions | Native source/package paths are retained; no builds/emulators/tests launched on this host | Not verified; this host is explicitly Windows-only |
 
 Collaboration, an embedded Agent product UI, terminal, run and debugger remain
@@ -197,8 +197,10 @@ both Windows modes at this checkpoint. Physical DPI transitions, real GPU device
 loss and other installed IMEs are outside that evidence. Clean-source Windows
 package `37bae5c` passed inventory, ZIP hash, fresh extraction, isolated service
 runtime and the extracted production GUI's JS edit/save/close workflow.
-Final-source delayed-provider rechecking still requires a successful elevated
-fixture start; earlier two-mode fixture evidence belongs to `83671c3`.
+Final-source delayed-provider rechecking passed both configurations after the
+authorized rerun, with new logs/owned processes and exit zero. Current runtime
+source and Release binary hashes match the recorded clean package; exact evidence
+is in `STATUS.md`. Earlier two-mode fixture evidence belongs to `83671c3`.
 No macOS/Linux build or runtime verification was performed in this environment;
 platform source/configuration is not all-platform acceptance.
 
