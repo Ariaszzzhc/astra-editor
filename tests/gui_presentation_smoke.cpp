@@ -781,8 +781,11 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
             require(SDL_GetWindowSizeInPixels(window.window(), &width, &height),
                     "Cannot read styled input window dimensions");
             const auto scale = window.layout().scale;
-            const auto box = astra::ui::PickerLayout::measure(
-                                 static_cast<float>(width), static_cast<float>(height), scale, 0)
+            const auto box = astra::ui::PickerLayout::measure(static_cast<float>(width),
+                                                              static_cast<float>(height),
+                                                              scale,
+                                                              0,
+                                                              window.view_state().dialog_metrics)
                                  .input;
             const auto x = 40 * scale;
             click(window, box.x + 6 * scale + x, box.y + 10 * scale);
@@ -1278,7 +1281,8 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
             astra::ui::PickerLayout::measure(static_cast<float>(picker_width),
                                              static_cast<float>(picker_height),
                                              window.layout().scale,
-                                             1);
+                                             1,
+                                             window.view_state().dialog_metrics);
         enqueue_mouse(window,
                       SDL_EVENT_MOUSE_BUTTON_DOWN,
                       pending_picker.rows.x + 30,
@@ -1352,7 +1356,8 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
             astra::ui::ConfirmationLayout::measure(static_cast<float>(review_width),
                                                    static_cast<float>(review_height),
                                                    window.layout().scale,
-                                                   40);
+                                                   40,
+                                                   window.view_state().dialog_metrics);
         click(window,
               review.cancel.x + review.cancel.width / 2,
               review.cancel.y + review.cancel.height / 2);
@@ -1366,7 +1371,9 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         settle(window);
         const auto picker = astra::ui::PickerLayout::measure(static_cast<float>(review_width),
                                                              static_cast<float>(review_height),
-                                                             window.layout().scale);
+                                                             window.layout().scale,
+                                                             12,
+                                                             window.view_state().dialog_metrics);
         require(picker.capacity > 0, "Picker has no visible rows");
         const auto first_item = 20 >= picker.capacity ? 20 - picker.capacity + 1 : 0;
         click(window,
@@ -1435,7 +1442,8 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         const auto input_box = astra::ui::PickerLayout::measure(static_cast<float>(input_width),
                                                                 static_cast<float>(input_height),
                                                                 window.layout().scale,
-                                                                0)
+                                                                0,
+                                                                window.view_state().dialog_metrics)
                                    .input;
         const auto local_x = 40 * window.layout().scale;
         enqueue_mouse(window,
@@ -1480,7 +1488,8 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         const auto long_box = astra::ui::PickerLayout::measure(static_cast<float>(input_width),
                                                                static_cast<float>(input_height),
                                                                window.layout().scale,
-                                                               0)
+                                                               0,
+                                                               window.view_state().dialog_metrics)
                                   .input;
         enqueue_mouse(window,
                       SDL_EVENT_MOUSE_BUTTON_DOWN,
@@ -1709,11 +1718,13 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         int text_width{}, text_height{};
         require(SDL_GetWindowSizeInPixels(window.window(), &text_width, &text_height),
                 "Cannot read text viewport");
-        const auto text_panel = astra::ui::TextPanelLayout::measure(static_cast<float>(text_width),
-                                                                    static_cast<float>(text_height),
-                                                                    window.layout().scale,
-                                                                    4,
-                                                                    3);
+        const auto text_panel =
+            astra::ui::TextPanelLayout::measure(static_cast<float>(text_width),
+                                                static_cast<float>(text_height),
+                                                window.layout().scale,
+                                                4,
+                                                3,
+                                                window.view_state().dialog_metrics);
         window.request_screenshot("build/graphics/gui-text-actions.png");
         settle(window);
         click(window,
@@ -1773,7 +1784,8 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         const auto choices = astra::ui::ChoiceLayout::measure(static_cast<float>(choice_width),
                                                               static_cast<float>(choice_height),
                                                               window.layout().scale,
-                                                              4);
+                                                              4,
+                                                              window.view_state().dialog_metrics);
         require(choices.buttons[1].y > choices.buttons[0].y,
                 "Narrow choice dialog did not use vertical buttons");
         window.request_screenshot("build/graphics/gui-choice-narrow.png");

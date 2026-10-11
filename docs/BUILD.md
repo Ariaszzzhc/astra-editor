@@ -127,7 +127,7 @@ For a focused check after configuring the desired mode:
 | `astra-platform-tests` | Real child processes, Git repositories and language-server transport |
 | `astra-recovery-tests`, `astra-watch-tests` | Durable checkpoints/crash recovery and real filesystem events |
 | `graphics-smoke`, `renderer-smoke`, `text-layout-tests` | GPU pixels, native window lifecycle and Unicode shaping/hit testing |
-| `viewport-layout-tests` | Native-font paragraph pixels/geometry against fresh shaping, every style option, LRU entry/byte admission, failures and retained layouts |
+| `viewport-layout-tests` | Native-font paragraph pixels/geometry against fresh shaping, every style option, LRU entry/byte admission, failures and retained layouts; `--dialogs` isolates font/DPI modal glyph, caret, pointer and clipping checks |
 | `gui-smoke` | SDL editing, multicursor undo, clipboard, syntax, save/close, viewport scroll/edit layout reuse and long-line paging; `--tcp` uses the remote channel |
 | `gui-services-smoke` | Actual clangd and Git through production GUI commands |
 | `gui-recovery-smoke` | Restore review, dirty preservation, durable exit and checkpoint-error handling |

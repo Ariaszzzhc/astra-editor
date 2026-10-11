@@ -20,6 +20,81 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+### Native font-measured modal geometry (2026-10-11)
+
+All nine production modal layout call sites now share native `DialogMetrics`
+derived from cached configured UI font line probes, including CJK/emoji fallback
+and the text panel's selected monospace family. Choice buttons, confirmation
+items/buttons, picker/input regions and text-panel action rows reserve measured
+line extents plus their control padding. Physical minimum heights round upward;
+small windows retain ordered, clipped regions. Confirmation drawing uses the
+same measured item step as layout. Native GUI acceptance reads the window's
+actual metrics rather than recreating geometry with default font assumptions.
+JS continues to own dialog contents, choices and asynchronous workflows.
+
+Windows work so far:
+
+- Formatting and initial Debug builds passed (`dialog-metrics-format-debug.log`,
+  `dialog-metrics-build-debug.log`, `dialog-metrics-test-format-debug.log`,
+  `dialog-metrics-test-build-debug.log`).
+- `astra-tests.exe '--test-case=presentation *layout*,presentation measured dialog*'
+  `--no-version` exited 0: four cases / 10,581 assertions, with 620 unrelated
+  cases filtered out (`dialog-metrics-focused-debug.log`). Includes measured
+  line extents, very small/narrow/scaled frames, ordered input/title regions,
+  button containment and invalid metric rejection.
+- New `viewport-layout-tests.exe --dialogs` initially exited 1 because its
+  visible-glyph predicate required fully white pixels at small antialiased
+  font sizes (`dialog-metrics-native-debug.log`). The predicate now counts
+  glyph pixels inside the text region excluding borders, cursor and background.
+  The next run exposed an input-height comparison failure
+  (`dialog-metrics-native-fixed-debug.log`); an expanded diagnostic reproduced
+  Segoe UI size 16 / DPI 0.75 with input height 24.499998 versus required 24.5
+  (`dialog-metrics-native-diagnostic-debug.log`). Minimum control dimensions now
+  round up to physical pixels. The new matrix additionally checks native input
+  caret bounds, original Unicode pixels, no painting outside the measured
+  control, an independent native paragraph pointer oracle and warm probe reuse.
+
+The source also snaps all modal region edges after an actual native pixel check
+detected painting at fractional clipping boundaries
+(`dialog-metrics-rounded-native-debug.log`). The final snapped Debug build passed
+(`dialog-metrics-snapped-build-debug.log`); the four focused cases / 10,581
+assertions and the actual native font/pixel/caret/pointer matrix passed
+(`dialog-metrics-snapped-focused-debug.log`, `dialog-metrics-snapped-native-debug.log`).
+The matrix covers Segoe UI and Cascadia Code at UI sizes 9/13/16, DPI
+0.75/1/1.5/2 and narrow/wide inputs. Async JS native-read state includes the same
+modal extents. `./scripts/test.ps1 -Mode all -Gui` exited 0 on this fixed
+source and unchanged resources (`dialog-metrics-acceptance-all.log`). Debug
+passed all 624 cases / 2,695,606 assertions; Release passed all 624 cases /
+2,695,465 assertions, with no failed/skipped cases. Both modes passed native
+GPU/window/text/viewport checks, including the new modal matrix, and all actual
+editing/services/recovery/workspace/presentation/body GUI targets plus the TCP
+editing variant. Packaging helpers passed 12 checks; shaping provenance passed
+seven tests. The
+entry point also runs the new modal font/pixel matrix as part of the native
+viewport suite. Final source formatting passed (`dialog-metrics-final-source-format-check.log`)
+and `git diff --check` passed before the matrix. This Windows increment is
+validated; the full revision is still in progress. Whole-product visual acceptance,
+installed IME interaction and a new distribution remain within the requested
+revision.
+Final `./scripts/format.ps1 -Check -Offline` passed for 193 C++ / 15 JS files
+(`dialog-metrics-final-format-check.log`), and `git diff --check` passed. Restored
+Debug with `./scripts/xmake.ps1 f -m debug -y`, then
+`./scripts/xmake.ps1 build -y -j 2 astra` passed
+(`dialog-metrics-final-debug-config.log`, `dialog-metrics-final-debug-build.log`).
+
+Review of the remaining input typography found that `InlineFormLayout` still
+allocates fixed 28-unit fields and scales them by available height, independently
+of configured native font extents. Mounted form placement also uses a fixed
+32-unit sidebar-heading offset instead of the measured heading boundary. The
+modal matrix does not establish font admission for those nonmodal search/forms.
+After this completed modal acceptance, add native and actual GUI coverage
+for configured large-font mounted/overlay fields, then correct their geometry.
+These forms remain part of the requested revision. A read-only Windows
+`GetKeyboardLayoutList` audit returned loaded English `0x04090409` and Chinese
+`0x08040804` layouts. This identifies an available language prerequisite for a
+later OS input test; it does not establish installed-IME composition/candidate
+interaction, which the SDL event-injection suites do not exercise.
+
 ### JS-owned welcome and notice surfaces (2026-10-11)
 
 `data/workbench/chrome.js` now supplies welcome title/detail, New/Open/Commands

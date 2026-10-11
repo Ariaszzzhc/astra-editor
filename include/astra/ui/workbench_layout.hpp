@@ -40,29 +40,44 @@ struct WorkbenchLayout {
                                    float ui_font_size = 13);
 };
 
+// Logical line extents measured with the configured native UI fonts. Defaults
+// preserve the baseline geometry for callers without a native font engine.
+struct DialogMetrics {
+    float title{24}, detail{18}, input{20}, row{18}, button{18};
+    void validate() const;
+};
+
 struct ConfirmationLayout {
     Box panel, title, detail, items, accept, cancel;
-    static ConfirmationLayout measure(float width, float height, float scale, std::size_t items);
+    float row_height{};
+    static ConfirmationLayout
+    measure(float width, float height, float scale, std::size_t items, DialogMetrics = {});
 };
 
 struct ChoiceLayout {
     Box panel, title, detail;
     std::vector<Box> buttons;
-    static ChoiceLayout measure(float width, float height, float scale, std::size_t choices);
+    static ChoiceLayout
+    measure(float width, float height, float scale, std::size_t choices, DialogMetrics = {});
 };
 
 struct PickerLayout {
     Box panel, title, input, rows;
     float row_height{};
     std::size_t capacity{};
-    static PickerLayout measure(float width, float height, float scale, std::size_t rows = 12);
+    static PickerLayout
+    measure(float width, float height, float scale, std::size_t rows = 12, DialogMetrics = {});
 };
 
 struct TextPanelLayout {
     Box panel, title, content;
     std::vector<Box> actions;
-    static TextPanelLayout
-    measure(float width, float height, float scale, std::size_t rows = 32, std::size_t actions = 0);
+    static TextPanelLayout measure(float width,
+                                   float height,
+                                   float scale,
+                                   std::size_t rows = 32,
+                                   std::size_t actions = 0,
+                                   DialogMetrics = {});
 };
 
 struct TabBox {

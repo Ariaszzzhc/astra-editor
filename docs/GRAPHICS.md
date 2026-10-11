@@ -526,6 +526,16 @@ to the control, including collapsed bounds. The returned physical-pixel IME area
 stays within the control; the window adapter converts it for SDL. Canvas state is
 restored by RAII when native preparation or drawing fails.
 
+Modal layout consumes shared `DialogMetrics` measured from configured native UI
+fonts, CJK/emoji fallback and the selected monospace detail family. Cached line
+probes provide title/detail/input/row/button logical extents. Minimum control
+heights round upward in physical pixels; every panel/title/input/content/button
+edge snaps to the same pixel grid before painting and hit testing. Small frames
+clip available regions while preserving their ordering. Confirmation item
+painting uses its measured row step. The same input box drives `TextField`
+pointer conversion and the returned SDL candidate area. Native and asynchronous
+JS read state expose the measured extents for automation.
+
 Field IME preedit has its own exact `TextInputLayout` cache. Unchanged preedit
 reuses the native paragraph instead of reshaping every repaint. Cold preedit of
 at least 4096 bytes uses the same background queue; changed preedit cancels the

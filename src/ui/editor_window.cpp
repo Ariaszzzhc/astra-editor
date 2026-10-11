@@ -16,6 +16,7 @@
 #include "astra/ui/tab_bar.hpp"
 #include "astra/ui/view_rows.hpp"
 #include "astra/ui/workbench_chrome.hpp"
+#include "astra/ui/dialog_metrics.hpp"
 #include "astra/ui/document_metadata.hpp"
 #include "astra/ui/picker_index.hpp"
 #include "astra/ui/decoration_indexes.hpp"
@@ -689,6 +690,11 @@ struct EditorWindow::Impl {
     std::string workspace_notice_sequence() const {
         const auto* notice = selected_notice();
         return std::to_string(notice && !notice->text.empty() ? notice->sequence : 0);
+    }
+
+    DialogMetrics dialog_metrics() {
+        return measure_dialog_metrics(
+            labels, ui_style, scale, dialog && dialog->spec.value("monospace", false));
     }
 
     void service_responses();
@@ -2045,7 +2051,8 @@ bool EditorWindow::Impl::point_dialog_input(float x, float y, bool extend) {
         scale,
         prompt == Prompt::policy_pick
             ? std::max(dialog->picker.size(), dialog->picker.dynamic() ? std::size_t{1} : 0)
-            : 0);
+            : 0,
+        dialog_metrics());
     if (!dragging_dialog_input && !layout.input.contains(x, y)) {
         return false;
     }
@@ -2544,6 +2551,14 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
                     {"tabs", tabs.ids()}};
         result["fileIcons"] = file_icons.state();
         result["windowFrame"] = window_frame_model();
+        if (dialog) {
+            const auto metrics = dialog_metrics();
+            result["dialogMetrics"] = {{"title", metrics.title},
+                                       {"detail", metrics.detail},
+                                       {"input", metrics.input},
+                                       {"row", metrics.row},
+                                       {"button", metrics.button}};
+        }
         if (params.contains("preferences")) {
             const auto& sections = params.at("preferences");
             if (!sections.is_array() || sections.size() > 16)
@@ -3725,7 +3740,8 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                                                          static_cast<float>(pixels.height),
                                                          scale,
                                                          dialog->detail->lines().size(),
-                                                         dialog->text_panel.actions().size());
+                                                         dialog->text_panel.actions().size(),
+                                                         dialog_metrics());
             for (std::size_t index = 0; index < layout.actions.size(); ++index)
                 if (layout.actions[index].contains(mouse_x, mouse_y)) {
                     finish_dialog(dialog->text_panel.actions()[index].id);
@@ -3739,7 +3755,8 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
                 width,
                 static_cast<float>(pixels.height),
                 scale,
-                std::max(dialog->picker.size(), dialog->picker.dynamic() ? std::size_t{1} : 0));
+                std::max(dialog->picker.size(), dialog->picker.dynamic() ? std::size_t{1} : 0),
+                dialog_metrics());
             if (layout.rows.contains(mouse_x, mouse_y) && layout.capacity &&
                 dialog->picker.size()) {
                 prompt_choice = std::min(prompt_choice, dialog->picker.size() - 1);
@@ -3755,8 +3772,11 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             break;
         }
         if (prompt == Prompt::policy_choice && dialog) {
-            const auto layout = ChoiceLayout::measure(
-                width, static_cast<float>(pixels.height), scale, dialog->spec.at("items").size());
+            const auto layout = ChoiceLayout::measure(width,
+                                                      static_cast<float>(pixels.height),
+                                                      scale,
+                                                      dialog->spec.at("items").size(),
+                                                      dialog_metrics());
             for (std::size_t i = 0; i < layout.buttons.size(); ++i)
                 if (layout.buttons[i].contains(mouse_x, mouse_y)) {
                     finish_dialog(i);
@@ -3765,8 +3785,11 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             break;
         }
         if (prompt == Prompt::policy_confirm || prompt == Prompt::policy_progress) {
-            const auto layout = ConfirmationLayout::measure(
-                width, static_cast<float>(pixels.height), scale, dialog ? dialog->items.size() : 0);
+            const auto layout = ConfirmationLayout::measure(width,
+                                                            static_cast<float>(pixels.height),
+                                                            scale,
+                                                            dialog ? dialog->items.size() : 0,
+                                                            dialog_metrics());
             if (prompt == Prompt::policy_confirm && layout.accept.contains(mouse_x, mouse_y))
                 finish_dialog(true);
             else if (layout.cancel.contains(mouse_x, mouse_y))
@@ -4403,7 +4426,8 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
     rectangle(canvas, 0, 0, width, height, SkColorSetA(ui_style.colors.background, 160));
     if (prompt == Prompt::policy_choice && dialog) {
         const auto& choices = dialog->spec.at("items");
-        const auto layout = ChoiceLayout::measure(width, height, scale, choices.size());
+        const auto layout =
+            ChoiceLayout::measure(width, height, scale, choices.size(), dialog_metrics());
         rectangle(canvas,
                   layout.panel.x,
                   layout.panel.y,
@@ -4470,7 +4494,8 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                                                      height,
                                                      scale,
                                                      dialog->detail->lines().size(),
-                                                     dialog->text_panel.actions().size());
+                                                     dialog->text_panel.actions().size(),
+                                                     dialog_metrics());
         rectangle(canvas,
                   layout.panel.x,
                   layout.panel.y,
@@ -4550,7 +4575,8 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         return;
     }
     if ((prompt == Prompt::policy_confirm || prompt == Prompt::policy_progress) && dialog) {
-        const auto layout = ConfirmationLayout::measure(width, height, scale, dialog->items.size());
+        const auto layout = ConfirmationLayout::measure(
+            width, height, scale, dialog->items.size(), dialog_metrics());
         const auto fill = [&](const Box& box, SkColor color) {
             rectangle(canvas, box.x, box.y, box.width, box.height, color);
         };
@@ -4595,7 +4621,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
         if (dialog->items.size() > 0) {
             prompt_choice = std::min(prompt_choice, dialog->items.size() - 1);
             const auto count =
-                static_cast<std::size_t>(std::ceil(layout.items.height / (28 * scale))) + 1;
+                static_cast<std::size_t>(std::ceil(layout.items.height / layout.row_height)) + 1;
             canvas->save();
             canvas->clipRect(SkRect::MakeXYWH(
                 layout.items.x, layout.items.y, layout.items.width, layout.items.height));
@@ -4603,8 +4629,8 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                 prompt_choice,
                 std::min(dialog->items.size(), prompt_choice + count),
                 [&](std::size_t row, const std::string& text) {
-                    const auto y =
-                        layout.items.y + static_cast<float>(row - prompt_choice) * 28 * scale;
+                    const auto y = layout.items.y +
+                                   static_cast<float>(row - prompt_choice) * layout.row_height;
                     elided_label(canvas,
                                  text,
                                  layout.items.x,
@@ -4644,7 +4670,8 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
             height,
             scale,
             picking ? std::max(dialog->picker.size(), dialog->picker.dynamic() ? std::size_t{1} : 0)
-                    : 0);
+                    : 0,
+            dialog_metrics());
         rectangle(canvas,
                   layout.panel.x,
                   layout.panel.y,
@@ -5157,6 +5184,13 @@ WorkbenchViewState EditorWindow::view_state() const {
         result.input_layout["pickerError"] = picker.error();
     }
     if (impl_->dialog) {
+        result.dialog_metrics = impl_->dialog_metrics();
+        const auto& metrics = result.dialog_metrics;
+        result.input_layout["dialogMetrics"] = {{"title", metrics.title},
+                                                {"detail", metrics.detail},
+                                                {"input", metrics.input},
+                                                {"row", metrics.row},
+                                                {"button", metrics.button}};
         if (impl_->dialog->input_layout) {
             result.input_layout["pending"] = impl_->dialog->input_layout->pending();
             result.input_layout["compositionPending"] =

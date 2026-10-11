@@ -5,7 +5,25 @@
 #include <stdexcept>
 
 namespace astra::ui {
-ChoiceLayout ChoiceLayout::measure(float width, float height, float scale, std::size_t choices) {
+namespace {
+void snap(Box& box) {
+    const auto right = std::round(box.right()), bottom = std::round(box.bottom());
+    box.x = std::round(box.x);
+    box.y = std::round(box.y);
+    box.width = std::max(0.0F, right - box.x);
+    box.height = std::max(0.0F, bottom - box.y);
+}
+} // namespace
+
+void DialogMetrics::validate() const {
+    for (const auto extent : {title, detail, input, row, button})
+        if (!std::isfinite(extent) || extent <= 0 || extent > 256)
+            throw std::invalid_argument("Invalid dialog font extents");
+}
+
+ChoiceLayout ChoiceLayout::measure(
+    float width, float height, float scale, std::size_t choices, DialogMetrics metrics) {
+    metrics.validate();
     if (!std::isfinite(width) || !std::isfinite(height) || !std::isfinite(scale) || width <= 0 ||
         height <= 0 || scale <= 0 || choices < 2 || choices > 4)
         throw std::invalid_argument("Invalid choice dialog dimensions");
@@ -14,7 +32,11 @@ ChoiceLayout ChoiceLayout::measure(float width, float height, float scale, std::
     const auto pw = std::min(560 * scale, width - 2 * margin);
     const bool vertical = pw < 420 * scale;
     const auto count = static_cast<float>(choices);
-    const auto desired = (vertical ? 136 + 42 * count : 178) * scale;
+    const auto desired_button = std::max(34.0F, metrics.button + 16);
+    const auto desired =
+        ((vertical ? 136 + 42 * count : 178) + std::max(0.0F, metrics.title - 24) +
+         3 * std::max(0.0F, metrics.detail - 18) + (desired_button - 34) * (vertical ? count : 1)) *
+        scale;
     const auto ph = std::min(desired, height - 2 * margin);
     const auto x = (width - pw) / 2,
                y = std::min(90 * scale, std::max(margin, height - ph - margin));
@@ -22,7 +44,7 @@ ChoiceLayout ChoiceLayout::measure(float width, float height, float scale, std::
     const auto pad = std::min(24 * scale, std::min(pw, ph) / 8);
     const auto gap = std::min(8 * scale, std::min(pw, ph) / (count * 4));
     const auto button_height = std::min(
-        34 * scale,
+        std::ceil(desired_button * scale),
         std::max(0.0F,
                  (ph - 2 * pad - (vertical ? gap * (count - 1) : 0)) / (vertical ? count : 1)));
     const auto area_height = vertical ? count * button_height + (count - 1) * gap : button_height;
@@ -35,81 +57,117 @@ ChoiceLayout ChoiceLayout::measure(float width, float height, float scale, std::
              button_width,
              button_height});
     const auto title_y = std::min(y + pad, button_y);
-    result.title = {
-        x + pad, title_y, pw - 2 * pad, std::min(24 * scale, std::max(0.0F, button_y - title_y))};
+    result.title = {x + pad,
+                    title_y,
+                    pw - 2 * pad,
+                    std::min(metrics.title * scale, std::max(0.0F, button_y - title_y))};
     const auto detail_y = std::min(result.title.bottom() + 12 * scale, button_y);
     result.detail = {x + pad, detail_y, pw - 2 * pad, std::max(0.0F, button_y - detail_y - gap)};
+    snap(result.panel);
+    snap(result.title);
+    snap(result.detail);
+    for (auto& button : result.buttons)
+        snap(button);
     return result;
 }
 
-ConfirmationLayout
-ConfirmationLayout::measure(float width, float height, float scale, std::size_t items) {
+ConfirmationLayout ConfirmationLayout::measure(
+    float width, float height, float scale, std::size_t items, DialogMetrics metrics) {
+    metrics.validate();
     if (!std::isfinite(width) || !std::isfinite(height) || !std::isfinite(scale) || width <= 0 ||
         height <= 0 || scale <= 0)
         throw std::invalid_argument("Invalid confirmation dimensions");
     ConfirmationLayout result;
+    result.row_height = std::ceil(std::max(28.0F, metrics.row + 8) * scale);
+    const auto button_height = std::ceil(std::max(34.0F, metrics.button + 16) * scale);
     const auto pw = std::max(0.0F, std::min(600 * scale, width - 24 * scale));
-    const auto desired =
-        175.0F +
-        (items ? 12.0F + 28.0F * static_cast<float>(std::min(items, std::size_t{9})) : 0.0F);
+    const auto desired = 175.0F + std::max(0.0F, metrics.title - 24) +
+                         3 * std::max(0.0F, metrics.detail - 18) + button_height / scale - 34 +
+                         (items ? 12.0F + result.row_height / scale *
+                                              static_cast<float>(std::min(items, std::size_t{9}))
+                                : 0.0F);
     const auto ph = std::max(0.0F, std::min(desired * scale, height - 24 * scale));
     const auto x = (width - pw) / 2,
                y = std::min(90 * scale, std::max(0.0F, height - ph - 12 * scale));
     result.panel = {x, y, pw, ph};
     const auto padding = std::min(24 * scale, pw / 6),
-               button_y = std::max(y, result.panel.bottom() - 54 * scale);
+               button_y = std::max(y, result.panel.bottom() - button_height - 20 * scale);
     const auto bw = std::max(0.0F, (pw - 3 * padding) / 2);
     result.accept = {
-        x + padding, button_y, bw, std::min(34 * scale, result.panel.bottom() - button_y)};
+        x + padding, button_y, bw, std::min(button_height, result.panel.bottom() - button_y)};
     result.cancel = {x + 2 * padding + bw, button_y, bw, result.accept.height};
     const auto title_y = std::min(y + 18 * scale, button_y);
     result.title = {x + padding,
                     title_y,
                     pw - 2 * padding,
-                    std::min(24 * scale, std::max(0.0F, button_y - title_y))};
-    const auto dy = std::min(y + 55 * scale, button_y);
+                    std::min(metrics.title * scale, std::max(0.0F, button_y - title_y))};
+    const auto dy = std::min(result.title.bottom() + 13 * scale, button_y);
     result.detail = {x + padding,
                      dy,
                      pw - 2 * padding,
-                     std::min(58 * scale, std::max(0.0F, button_y - dy - 8 * scale))};
+                     std::min((58 + 3 * std::max(0.0F, metrics.detail - 18)) * scale,
+                              std::max(0.0F, button_y - dy - 8 * scale))};
     const auto iy = std::min(result.detail.bottom() + 8 * scale, button_y);
     result.items = {x + padding,
                     iy,
                     pw - 2 * padding,
                     items ? std::max(0.0F, button_y - iy - 12 * scale) : 0.0F};
+    snap(result.panel);
+    snap(result.title);
+    snap(result.detail);
+    snap(result.items);
+    snap(result.accept);
+    snap(result.cancel);
     return result;
 }
 
-PickerLayout PickerLayout::measure(float width, float height, float scale, std::size_t rows) {
+PickerLayout PickerLayout::measure(
+    float width, float height, float scale, std::size_t rows, DialogMetrics metrics) {
+    metrics.validate();
     if (!std::isfinite(width) || !std::isfinite(height) || !std::isfinite(scale) || width <= 0 ||
         height <= 0 || scale <= 0)
         throw std::invalid_argument("Invalid picker dimensions");
     PickerLayout result;
+    const auto title_height = std::ceil(std::max(20.0F, metrics.row) * scale);
+    const auto input_height = std::ceil(std::max(30.0F, metrics.input + 10) * scale);
+    result.row_height = std::ceil(std::max(34.0F, metrics.row + 16) * scale);
+    const auto rows_top = 8 * scale + title_height + 2 * scale + input_height + 6 * scale;
     const auto margin = std::min(12 * scale, width / 4),
                pw = std::min(600 * scale, width - 2 * margin);
     const auto y = std::min(64 * scale, height / 6),
-               ph = std::min((74 + 34 * static_cast<float>(
-                                            std::clamp(rows, std::size_t{1}, std::size_t{12}))) *
-                                 scale,
+               ph = std::min(rows_top + 8 * scale +
+                                 result.row_height * static_cast<float>(std::clamp(
+                                                         rows, std::size_t{1}, std::size_t{12})),
                              std::max(0.0F, height - y - 12 * scale));
     const auto x = (width - pw) / 2, pad = std::min(12 * scale, pw / 6);
     result.panel = {x, y, pw, ph};
-    result.title = {x + pad, y + 8 * scale, pw - 2 * pad, std::min(20 * scale, ph)};
-    const auto iy = std::min(y + 30 * scale, result.panel.bottom());
+    result.title = {x + pad,
+                    y + std::min(8 * scale, ph),
+                    pw - 2 * pad,
+                    std::min(title_height, std::max(0.0F, ph - 8 * scale))};
+    const auto iy = std::min(result.title.bottom() + 2 * scale, result.panel.bottom());
     result.input = {x + pad,
                     iy,
                     pw - 2 * pad,
-                    std::min(30 * scale, std::max(0.0F, result.panel.bottom() - iy))};
-    const auto ry = std::min(y + 66 * scale, result.panel.bottom());
+                    std::min(input_height, std::max(0.0F, result.panel.bottom() - iy))};
+    const auto ry = std::min(y + rows_top, result.panel.bottom());
     result.rows = {
         x + pad, ry, pw - 2 * pad, std::max(0.0F, result.panel.bottom() - ry - 8 * scale)};
-    result.row_height = 34 * scale;
+    snap(result.panel);
+    snap(result.title);
+    snap(result.input);
+    snap(result.rows);
     result.capacity = static_cast<std::size_t>(std::floor(result.rows.height / result.row_height));
     return result;
 }
 
-TextPanelLayout TextPanelLayout::measure(
-    float width, float height, float scale, std::size_t rows, std::size_t actions) {
+TextPanelLayout TextPanelLayout::measure(float width,
+                                         float height,
+                                         float scale,
+                                         std::size_t rows,
+                                         std::size_t actions,
+                                         DialogMetrics metrics) {
+    metrics.validate();
     if (!std::isfinite(width) || !std::isfinite(height) || !std::isfinite(scale) || width <= 0 ||
         height <= 0 || scale <= 0 || actions > 8)
         throw std::invalid_argument("Invalid text panel dimensions");
@@ -121,18 +179,23 @@ TextPanelLayout TextPanelLayout::measure(
         std::size_t{1},
         std::min(actions, static_cast<std::size_t>(std::floor((pw - 2 * pad) / (120 * scale)))));
     const auto action_rows = actions ? (actions + columns - 1) / columns : 0;
-    const auto toolbar = static_cast<float>(action_rows) * 40 * scale;
+    const auto toolbar =
+        static_cast<float>(action_rows) * std::ceil(std::max(40.0F, metrics.button + 18) * scale);
     const auto y = std::min(64 * scale, height / 6),
                ph = std::min(std::min(620.0F,
-                                      56 + toolbar / scale +
-                                          20 * static_cast<float>(std::clamp(
-                                                   rows, std::size_t{4}, std::size_t{32}))) *
+                                      56 + std::max(0.0F, metrics.title - 24) + toolbar / scale +
+                                          std::max(20.0F, metrics.detail) *
+                                              static_cast<float>(std::clamp(
+                                                  rows, std::size_t{4}, std::size_t{32}))) *
                                  scale,
                              std::max(0.0F, height - y - 24 * scale));
     const auto x = (width - pw) / 2;
     result.panel = {x, y, pw, ph};
-    result.title = {x + pad, y + 10 * scale, pw - 2 * pad, std::min(24 * scale, ph)};
-    const auto cy = std::min(y + 44 * scale, result.panel.bottom());
+    result.title = {x + pad,
+                    y + std::min(10 * scale, ph),
+                    pw - 2 * pad,
+                    std::min(metrics.title * scale, std::max(0.0F, ph - 10 * scale))};
+    const auto cy = std::min(result.title.bottom() + 10 * scale, result.panel.bottom());
     const auto available = std::max(0.0F, result.panel.bottom() - cy - 12 * scale);
     const auto used_toolbar = std::min(toolbar, available);
     result.content = {x + pad, cy, pw - 2 * pad, available - used_toolbar};
@@ -146,6 +209,11 @@ TextPanelLayout TextPanelLayout::measure(
                  std::max(0.0F, step_x - 4 * scale),
                  std::max(0.0F, step_y - 4 * scale)});
     }
+    snap(result.panel);
+    snap(result.title);
+    snap(result.content);
+    for (auto& action : result.actions)
+        snap(action);
     return result;
 }
 

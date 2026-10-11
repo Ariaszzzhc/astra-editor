@@ -7,6 +7,7 @@
 #include <astra/ui/tab_bar.hpp>
 #include <astra/ui/view_rows.hpp>
 #include <astra/ui/workbench_chrome.hpp>
+#include <astra/ui/dialog_metrics.hpp>
 #include "../src/ui/glyph_cache.hpp"
 
 #include "include/core/SkCanvas.h"
@@ -1613,9 +1614,107 @@ void tab_bars(TextLayoutEngine& engine) {
            "invalidation, caption/close/overflow identity and canvas failure ownership: PASS\n";
 }
 
+void dialog_typography(TextLayoutEngine& engine) {
+    TextLabels labels(engine);
+    WorkbenchStyle theme;
+    theme.monospace_families = {"Cascadia Code"};
+    constexpr std::uint32_t untouched = 0xFF102030;
+    for (const auto& family : {"Segoe UI", "Cascadia Code"}) {
+        theme.font_families = {family};
+        for (const auto size : {9.0F, 13.0F, 16.0F}) {
+            theme.font_size = size;
+            for (const auto dpi : {0.75F, 1.0F, 1.5F, 2.0F}) {
+                const auto metrics = measure_dialog_metrics(labels, theme, dpi);
+                const auto shaped = labels.statistics().shaped;
+                static_cast<void>(measure_dialog_metrics(labels, theme, dpi));
+                require(labels.statistics().shaped == shaped,
+                        "Warm dialog line probes shaped again");
+                const auto style = theme.text(14, dpi, 0xFFFFFFFF, 1);
+                const std::string original = "Native 中🙂e\xCC\x81";
+                const auto oracle = engine.layout(original, style);
+                for (const auto width : {260.0F, 1000.0F}) {
+                    const auto layout =
+                        PickerLayout::measure(width * dpi, 700 * dpi, dpi, 12, metrics);
+                    require(
+                        layout.input.height >= oracle.height() + 10 * dpi,
+                        "Measured modal input clips its native paragraph: " + std::string(family) +
+                            " size=" + std::to_string(size) + " dpi=" + std::to_string(dpi) +
+                            " input=" + std::to_string(layout.input.height) +
+                            " paragraph=" + std::to_string(oracle.height()));
+                    const auto pixel_width = static_cast<int>(std::ceil(width * dpi));
+                    const auto pixel_height =
+                        static_cast<int>(std::ceil(layout.input.bottom() + 16 * dpi));
+                    const auto image = SkImageInfo::MakeN32Premul(pixel_width, pixel_height);
+                    auto surface = SkSurfaces::Raster(image);
+                    require(surface != nullptr, "Cannot create dialog typography surface");
+                    auto* canvas = surface->getCanvas();
+                    canvas->clear(untouched);
+                    TextField input(engine);
+                    TextFieldPaint paint;
+                    paint.bounds = layout.input;
+                    paint.text_style = style;
+                    paint.hint_style = theme.text(12, dpi, 0xFF909090);
+                    paint.colors = {
+                        0xFF202020, 0xFF404040, 0xFF3399FF, 0xFFFF0000, 0xFF264F78, 0xFF37373D};
+                    paint.text = original;
+                    paint.selection = {{0}, {0}};
+                    paint.focused = true;
+                    const auto caret = input.draw(canvas, labels, paint);
+                    require(caret && caret->y >= layout.input.y &&
+                                caret->bottom() <= layout.input.bottom(),
+                            "Modal caret escaped its measured input area");
+                    std::vector<std::uint32_t> painted(static_cast<std::size_t>(pixel_width) *
+                                                       pixel_height);
+                    require(surface->readPixels(
+                                image, painted.data(), pixel_width * sizeof(std::uint32_t), 0, 0),
+                            "Cannot read native modal glyph pixels");
+                    std::size_t glyph_pixels{};
+                    for (int py = 0; py < pixel_height; ++py)
+                        for (int px = 0; px < pixel_width; ++px) {
+                            const auto pixel =
+                                painted[static_cast<std::size_t>(py * pixel_width + px)];
+                            if (!layout.input.contains(px + 0.5F, py + 0.5F))
+                                require(pixel == untouched,
+                                        "Modal input pixels escaped their measured bounds");
+                            else if (px > layout.input.x + 8 * dpi &&
+                                     px < layout.input.right() - 2 * dpi &&
+                                     py >= layout.input.y + 5 * dpi &&
+                                     py < layout.input.bottom() - 5 * dpi &&
+                                     pixel != paint.colors.background)
+                                ++glyph_pixels;
+                        }
+                    require(glyph_pixels > 8,
+                            "Measured modal input lost its original native glyph pixels");
+                    const auto [x, y] =
+                        input.to_text(layout.input,
+                                      dpi,
+                                      layout.input.x + 6 * dpi + 40 * dpi,
+                                      layout.input.y + 5 * dpi + oracle.height() / 2);
+                    require(input.text().layout()->hit_test(x, y).byte_offset ==
+                                oracle.hit_test(40 * dpi, oracle.height() / 2).byte_offset,
+                            "Measured modal pointer disagrees with its native font oracle");
+                    const auto choices =
+                        ChoiceLayout::measure(width * dpi, 700 * dpi, dpi, 4, metrics);
+                    const auto button_text =
+                        engine.layout("Choose 中🙂", theme.text(13, dpi, 0xFFFFFFFF));
+                    for (const auto& button : choices.buttons)
+                        require(button.height >= button_text.height() + 16 * dpi,
+                                "Measured choice button clips configured native glyphs");
+                }
+            }
+        }
+    }
+    std::cout << "Native modal typography: configured font/fallback and DPI line extents, "
+                 "warm probes, bounded input caret and independent pointer oracle: PASS\n";
+}
+
 int main(int argc, char* argv[]) {
     try {
         TextLayoutEngine engine;
+        if (argc == 2 && std::string_view(argv[1]) == "--dialogs") {
+            dialog_typography(engine);
+            return 0;
+        }
         if (argc == 2 && std::string_view(argv[1]) == "--chrome") {
             workbench_chrome(engine);
             return 0;
@@ -1661,6 +1760,7 @@ int main(int argc, char* argv[]) {
         tab_bars(engine);
         view_row_surfaces(engine);
         workbench_chrome(engine);
+        dialog_typography(engine);
         std::shared_ptr<const TextLayout> retained;
         {
             TextLayoutEngine temporary;

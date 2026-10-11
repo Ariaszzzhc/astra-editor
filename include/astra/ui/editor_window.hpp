@@ -50,6 +50,7 @@ struct WorkbenchViewState {
     protocol::Json window_frame;
     protocol::Json outline;
     protocol::Json chrome;
+    DialogMetrics dialog_metrics;
 };
 
 // Main-thread editor front end. Every document change goes through EditorChannel.

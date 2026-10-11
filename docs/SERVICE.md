@@ -588,7 +588,13 @@ row ranges `{begin,end,tone}` bounded by the text's line count; tones are
 resolve colors; JS supplies domain classification. `monospace` selects code fonts.
 These are native retained modal
 components with Promise completion; input/focus/drawing stays in C++ and the
-following service workflow stays in JS. Abort dismisses the matching dialog and
+following service workflow stays in JS.
+`await astra.ui.read({immediate:true})` includes `dialogMetrics` while a modal is
+active: logical native-font extents `{title,detail,input,row,button}`. The window
+uses these same values for shared modal geometry, with physical pixel rounding
+and clipping. The native automation snapshot additionally exposes those extents
+in its input-layout state. This is presentation metadata, not a document edit.
+Abort dismisses the matching dialog and
 drains its native future. Dialogs default to five minutes, with a separate bounded
 client task deadline. UI automation distinguishes waiting for user input from
 unfinished background operations. Input is bounded to 16 KiB; confirmation

@@ -1559,6 +1559,60 @@ TEST_CASE("presentation modal layouts share bounded rows and pointer geometry") 
     CHECK(astra::ui::TextPanelLayout::measure(1440, 900, 1, 6).panel.height < 200);
 }
 
+TEST_CASE("presentation measured dialog typography keeps controls ordered and bounded") {
+    const astra::ui::DialogMetrics metrics{32, 26, 30, 28, 28};
+    for (const auto scale : {0.75F, 1.0F, 1.5F, 2.0F})
+        for (const auto width : {40.0F, 260.0F, 1000.0F})
+            for (const auto height : {40.0F, 180.0F, 800.0F}) {
+                const auto bounded = [&](const astra::ui::Box& panel, const astra::ui::Box& box) {
+                    CHECK(box.x >= panel.x);
+                    CHECK(box.y >= panel.y);
+                    CHECK(box.width >= 0);
+                    CHECK(box.height >= 0);
+                    CHECK(box.right() <= panel.right() + 0.01F);
+                    CHECK(box.bottom() <= panel.bottom() + 0.01F);
+                };
+                const auto picker = astra::ui::PickerLayout::measure(
+                    width * scale, height * scale, scale, 20, metrics);
+                bounded(picker.panel, picker.title);
+                bounded(picker.panel, picker.input);
+                bounded(picker.panel, picker.rows);
+                CHECK(picker.title.bottom() <= picker.input.y);
+                CHECK(picker.input.bottom() <= picker.rows.y);
+                CHECK(picker.capacity * picker.row_height <= picker.rows.height);
+                const auto choice = astra::ui::ChoiceLayout::measure(
+                    width * scale, height * scale, scale, 4, metrics);
+                bounded(choice.panel, choice.title);
+                bounded(choice.panel, choice.detail);
+                for (const auto& box : choice.buttons)
+                    bounded(choice.panel, box);
+                const auto confirmation = astra::ui::ConfirmationLayout::measure(
+                    width * scale, height * scale, scale, 9, metrics);
+                bounded(confirmation.panel, confirmation.title);
+                bounded(confirmation.panel, confirmation.detail);
+                bounded(confirmation.panel, confirmation.items);
+                bounded(confirmation.panel, confirmation.accept);
+                bounded(confirmation.panel, confirmation.cancel);
+                const auto text = astra::ui::TextPanelLayout::measure(
+                    width * scale, height * scale, scale, 12, 8, metrics);
+                bounded(text.panel, text.title);
+                bounded(text.panel, text.content);
+                for (const auto& box : text.actions)
+                    bounded(text.panel, box);
+                if (height == 800) {
+                    CHECK(picker.input.height >= (metrics.input + 10) * scale);
+                    CHECK(picker.row_height >= (metrics.row + 16) * scale);
+                    CHECK(confirmation.accept.height >= (metrics.button + 16) * scale);
+                }
+            }
+    for (const auto value : {-1.0F, 0.0F, 257.0F, std::numeric_limits<float>::quiet_NaN()}) {
+        auto invalid = metrics;
+        invalid.input = value;
+        CHECK_THROWS_AS((void)astra::ui::PickerLayout::measure(640, 480, 1, 1, invalid),
+                        std::invalid_argument);
+    }
+}
+
 TEST_CASE("presentation file tree random collapse matches a flat reference") {
     constexpr std::uint32_t seed = 0xA57A2026;
     INFO(seed);
