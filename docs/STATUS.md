@@ -22,6 +22,14 @@ older remaining-work lists without replacing their acceptance or failure evidenc
 
 Current remaining work (2026-10-11):
 
+[ARCHITECTURE_AUDIT.md](ARCHITECTURE_AUDIT.md) records the current source
+responsibility/index map and concrete open findings. At `c7d865c`, native
+clipboard reads still check only null despite SDL's documented empty-string
+failure return; owner-loop clipboard responsiveness against delayed providers
+is unproven; and public form/clipboard/update wrappers omit per-call request
+options. These require implementation and behavior verification, not a
+whole-architecture completion label.
+
 - Audit the final C++ service/native-mechanism versus JavaScript policy/API
   boundaries, asynchronous cancellation/error/lifecycle behavior, and measured
   persistent indexes against every `EditorDoc.md` requirement. Component test
