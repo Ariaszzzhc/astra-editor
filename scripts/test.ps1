@@ -1,6 +1,7 @@
 param(
     [ValidateSet('debug', 'release', 'all')][string]$Mode = 'all',
     [switch]$Gui,
+    [switch]$IsolatedClipboard,
     [switch]$InstalledIme,
     [switch]$Benchmarks
 )
@@ -11,6 +12,16 @@ if (-not $IsWindows -or [Runtime.InteropServices.RuntimeInformation]::OSArchitec
 }
 if ($InstalledIme -and -not $Gui) {
     throw 'Installed IME acceptance requires -Gui and an interactive Windows desktop.'
+}
+if ($IsolatedClipboard) {
+    if (-not $Gui) { throw 'Isolated clipboard acceptance requires -Gui.' }
+    $acceptanceIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    try {
+        $acceptancePrincipal = [Security.Principal.WindowsPrincipal]::new($acceptanceIdentity)
+        if (-not $acceptancePrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'Isolated clipboard acceptance requires an administrator token to create its own Windows station. Run the dedicated fixture elevated or this entry point from an elevated test session.'
+        }
+    } finally { $acceptanceIdentity.Dispose() }
 }
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $configurations = if ($Mode -eq 'all') { @('debug', 'release') } else { @($Mode) }
@@ -25,6 +36,7 @@ try {
         & "$PSScriptRoot/xmake.ps1" f -m $configuration -y
         $targets = @('astra-tests','astra-server')
         if ($Gui) { $targets += @('astra','graphics-smoke','renderer-smoke','text-layout-tests','viewport-layout-tests','gui-smoke','gui-services-smoke','gui-recovery-smoke','gui-workspace-smoke','gui-presentation-smoke','gui-body-smoke','gui-clipboard-smoke') }
+        if ($IsolatedClipboard) { $targets += 'gui-clipboard-async-smoke' }
         if ($InstalledIme) { $targets += 'gui-ime-smoke' }
         if ($Benchmarks -and $configuration -eq 'release') { $targets += @('astra-core-benchmark', 'astra-view-benchmark') }
         & "$PSScriptRoot/xmake.ps1" build -y @targets
@@ -36,6 +48,7 @@ try {
                 Invoke-AcceptanceBinary $directory $name
             }
             Invoke-AcceptanceBinary $directory 'gui-smoke' @('--tcp')
+            if ($IsolatedClipboard) { Invoke-AcceptanceBinary $directory 'gui-clipboard-async-smoke' }
             if ($InstalledIme) { Invoke-AcceptanceBinary $directory 'gui-ime-smoke' }
         }
         if ($Benchmarks -and $configuration -eq 'release') {

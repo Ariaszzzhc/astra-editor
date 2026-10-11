@@ -78,7 +78,7 @@ std::wstring quote(std::wstring_view argument) {
 
 int wmain(int count, wchar_t** arguments) {
     (void)_setmode(3, _O_BINARY);
-    if (count < 3) {
+    if (count < 4) {
         return fail(ERROR_INVALID_PARAMETER);
     }
     const auto control = reinterpret_cast<HANDLE>(_get_osfhandle(3));
@@ -94,7 +94,7 @@ int wmain(int count, wchar_t** arguments) {
     }
 
     std::wstring command;
-    for (int index = 2; index < count; ++index) {
+    for (int index = 3; index < count; ++index) {
         if (!command.empty()) {
             command.push_back(L' ');
         }
@@ -102,6 +102,7 @@ int wmain(int count, wchar_t** arguments) {
     }
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
+    startup.lpDesktop = arguments[2][0] ? arguments[2] : nullptr;
     startup.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
     startup.wShowWindow = SW_HIDE;
     startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);

@@ -8,7 +8,7 @@ $manifest = Assert-ReleaseInventory $package 'package-manifest.json'
 if ($manifest.schema -ne 1 -or $manifest.product -cne 'Astra' -or $manifest.platform -cne 'windows' -or $manifest.architecture -cne 'x64') {
     throw 'Unexpected package identity'
 }
-$required = @('astra.exe','astra-server.exe','astra-process-host.exe','SDL3.dll','dxcompiler.dll','dxil.dll','icudtl.dat',
+$required = @('astra.exe','astra-server.exe','astra-process-host.exe','astra-clipboard-host.exe','SDL3.dll','dxcompiler.dll','dxil.dll','icudtl.dat',
     'data/defaults.js','tools/clangd/bin/clangd.exe','tools/clangd/LICENSE.TXT','tools/node/node.exe','tools/node/LICENSE',
     'tools/node_modules/typescript/lib/typescript.js','tools/node_modules/typescript/LICENSE.txt',
     'tools/node_modules/typescript/ThirdPartyNoticeText.txt','tools/node_modules/typescript-language-server/lib/cli.mjs',
@@ -19,7 +19,7 @@ $required = @('astra.exe','astra-server.exe','astra-process-host.exe','SDL3.dll'
 foreach ($relative in $required) {
     if (-not (Test-Path -LiteralPath (Join-Path $package $relative) -PathType Leaf)) { throw "Required package file missing: $relative" }
 }
-foreach ($exe in @('astra.exe','astra-server.exe','astra-process-host.exe','tools/node/node.exe','tools/clangd/bin/clangd.exe','tools/git/cmd/git.exe')) {
+foreach ($exe in @('astra.exe','astra-server.exe','astra-process-host.exe','astra-clipboard-host.exe','tools/node/node.exe','tools/clangd/bin/clangd.exe','tools/git/cmd/git.exe')) {
     $bytes = [IO.File]::ReadAllBytes((Join-Path $package $exe))
     if ($bytes.Length -lt 64 -or $bytes[0] -ne 77 -or $bytes[1] -ne 90) { throw "Invalid PE file: $exe" }
     $offset = [BitConverter]::ToInt32($bytes, 60)

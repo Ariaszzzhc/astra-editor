@@ -626,6 +626,19 @@ options)` also forwards them. Cancellation before native dispatch prevents the
 operation; a timeout rejects the waiting caller and drains late replies. It does
 not roll back an operation already accepted by the native host.
 
+Native providers execute in `astra-clipboard-host`, never in the GUI's input or
+render loop. Each process is owned through the existing libuv/Windows Job adapter.
+The client permits at most eight outstanding process lifetimes, serializes
+unfinished operations, limits aggregate queued JSON frames to six times the
+8 MiB text budget plus framing overhead, and applies a ten-second native deadline
+including queue time. Cancel/timeout kills the unfinished helper; successful
+write ownership remains alive and pumps SDL events until superseded or shutdown.
+Native reads use the caller's bounded UTF-8 limit; GUI input fields use 16 KiB.
+The helper joins the GUI's Windows station/desktop explicitly and requires no
+administrator privilege in normal editor use. JS exit policy cancels unfinished
+clipboard work before its idle barrier. Clipboard ownership and cancellation are
+client-local primitives; document changes still use the common service dispatcher.
+
 `astra.ui.choose({title, detail, choices, defaultChoice, keys, id}, options)`
 awaits one of 2–4 choices, returning the original string/object or `null` on
 dismissal. Objects carry a `label`; optional keys are unique ASCII letters/digits

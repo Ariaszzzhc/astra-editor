@@ -53,6 +53,7 @@ std::string text(JSContext* context, JSValueConst value) {
 
 struct Runtime::Impl {
     AsyncRequest request;
+    AsyncCancel cancel_request;
     Limits limits;
     std::thread::id owner = std::this_thread::get_id();
     JSRuntime* runtime{};
@@ -611,10 +612,25 @@ struct Runtime::Impl {
             cancellations.push_back(
                 submit(incoming.owner, "operation.cancel", {{"id", incoming.operation}}));
         } else if (incoming.future) {
+            std::exception_ptr cancel_error;
+            const auto previous_owner = std::exchange(submitting_task, incoming.owner);
+            try {
+                if (cancel_request) {
+                    auto cleanup = cancel_request(incoming.method, incoming.params);
+                    if (!cleanup.valid())
+                        throw ScriptError("Host cancellation returned an invalid future");
+                    cancellations.push_back(std::move(cleanup));
+                }
+            } catch (...) {
+                cancel_error = std::current_exception();
+            }
+            submitting_task = previous_owner;
             // Drain an outstanding response. A late descriptor can reveal an
             // owned operation to cancel; shared service jobs keep running.
             abandoned.push_back({incoming.method, std::move(*incoming.future), incoming.owner});
             incoming.future.reset();
+            if (cancel_error)
+                std::rethrow_exception(cancel_error);
         }
     }
 
@@ -1087,6 +1103,13 @@ std::optional<Runtime::Outcome> Runtime::take_result(TaskId id) {
         impl_->tasks.erase(found);
     }
     return result;
+}
+
+void Runtime::set_request_cancel_handler(AsyncCancel cancel) {
+    impl_->require_owner();
+    if (!impl_->pending.empty() || !impl_->abandoned.empty() || !impl_->cancellations.empty())
+        throw ScriptError("Cannot replace cancellation handling with outstanding requests");
+    impl_->cancel_request = std::move(cancel);
 }
 
 void Runtime::cancel(TaskId id) {

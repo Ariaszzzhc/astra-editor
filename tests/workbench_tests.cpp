@@ -5103,6 +5103,10 @@ TEST_CASE("workbench public UI request deadlines discard late native results") {
         astra::ui::Workbench workbench(
             channel,
             [&](std::string_view method, const Json& params) {
+                if (method == "_ui.clipboard.cancel") {
+                    CHECK(params.at("id").is_string());
+                    return ready(nullptr);
+                }
                 CHECK(method == methods[index]);
                 if (method == "_ui.form.focus")
                     CHECK(params.at("selectAll") == false);

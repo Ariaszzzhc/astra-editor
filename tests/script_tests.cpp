@@ -261,6 +261,121 @@ TEST_CASE(
     CHECK(runtime.idle());
 }
 
+TEST_CASE("QuickJS host cancellation cleans up a dispatched request without JS continuation") {
+    for (const bool deadline : {false, true}) {
+        CAPTURE(deadline);
+        std::promise<Json> native;
+        std::vector<Json> cancelled;
+        Runtime::TaskId cleanup_owner{};
+        Runtime runtime(Runtime::AsyncRequest{[&](std::string_view method, const Json& params) {
+            CHECK(method == "native.read");
+            CHECK(params.at("id") == "owned-clipboard");
+            return native.get_future();
+        }});
+        runtime.set_request_cancel_handler([&](std::string_view method, const Json& params) {
+            cleanup_owner = runtime.request_owner();
+            cancelled.push_back({{"method", method}, {"params", params}});
+            native.set_exception(std::make_exception_ptr(
+                astra::protocol::RpcError(-32004, "Native request stopped")));
+            std::promise<Json> cleanup;
+            cleanup.set_value(nullptr);
+            return cleanup.get_future();
+        });
+        static_cast<void>(runtime.evaluate(R"js(
+            let drained = null, published = false;
+            astra.on('runtime.requestDrained', value => drained = value);
+        )js"));
+        const auto task = runtime.start_evaluation(deadline ? R"js(
+            (async () => {
+                try { await astra.request('native.read', {id:'owned-clipboard'}, {timeoutMs:20}); }
+                catch (error) { return error.name; }
+                published = true;
+            })()
+        )js"
+                                                            : R"js(
+            (async () => {
+                await astra.request('native.read', {id:'owned-clipboard'});
+                published = true;
+            })()
+        )js");
+        runtime.poll();
+        CHECK_THROWS_AS(runtime.set_request_cancel_handler({}), ScriptError);
+        if (deadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        else
+            runtime.cancel(task);
+        runtime.poll();
+        runtime.poll();
+        const auto result = runtime.take_result(task);
+        REQUIRE(result);
+        if (deadline) {
+            CHECK_FALSE(result->error);
+            CHECK(result->value == "TimeoutError");
+        } else {
+            REQUIRE(result->error);
+            CHECK(result->error->at("name") == "AbortError");
+        }
+        CHECK(cancelled == std::vector<Json>{{{"method", "native.read"},
+                                              {"params", {{"id", "owned-clipboard"}}}}});
+        CHECK(runtime.evaluate("published") == false);
+        CHECK(cleanup_owner == task);
+        CHECK(runtime.request_owner() == 0);
+        CHECK(runtime.evaluate("drained") ==
+              Json{{"method", "native.read"},
+                   {"cancelled", true},
+                   {"error", {{"code", -32004}, {"message", "Native request stopped"}}}});
+        CHECK(runtime.idle());
+    }
+}
+
+TEST_CASE("QuickJS host cleanup failure is observable while the native response still drains") {
+    std::promise<Json> native;
+    Runtime runtime(Runtime::AsyncRequest{[&](std::string_view, const Json&) {
+        return native.get_future();
+    }});
+    runtime.set_request_cancel_handler([](std::string_view, const Json&) {
+        std::promise<Json> cleanup;
+        cleanup.set_exception(
+            std::make_exception_ptr(std::runtime_error("Cleanup transport failed")));
+        return cleanup.get_future();
+    });
+    const auto task = runtime.start_evaluation("astra.request('native.read')");
+    runtime.poll();
+    runtime.cancel(task);
+    REQUIRE(runtime.take_result(task));
+    CHECK_THROWS_WITH_AS(runtime.poll(), "Cleanup transport failed", std::runtime_error);
+    CHECK_FALSE(runtime.idle());
+    native.set_value("late ignored value");
+    CHECK_NOTHROW(runtime.poll());
+    CHECK(runtime.idle());
+}
+
+TEST_CASE("QuickJS invalid host cleanup retains its outstanding native response") {
+    std::promise<Json> native;
+    Runtime runtime(Runtime::AsyncRequest{[&](std::string_view, const Json&) {
+        return native.get_future();
+    }});
+    runtime.set_request_cancel_handler([](std::string_view, const Json&) {
+        return std::future<Json>{};
+    });
+    const auto task = runtime.start_evaluation(R"js(
+        (async () => {
+            try { await astra.request('native.read', {}, {timeoutMs:20}); }
+            catch (error) { return error.message; }
+        })()
+    )js");
+    runtime.poll();
+    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+    runtime.poll();
+    const auto outcome = runtime.take_result(task);
+    REQUIRE(outcome);
+    CHECK(outcome->value == "Host cancellation returned an invalid future");
+    CHECK_FALSE(runtime.idle());
+    native.set_value("late ignored value");
+    runtime.poll();
+    CHECK(runtime.idle());
+}
+
 TEST_CASE("QuickJS shared promises resume each registered task independently of the resolver") {
     Runtime* owner{};
     std::vector<std::pair<std::string, Runtime::TaskId>> requests;

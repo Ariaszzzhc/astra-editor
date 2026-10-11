@@ -5,7 +5,8 @@ Contract: [EditorDoc.md](../EditorDoc.md). Base source review: `c7d865c`, Window
 whole-product completion claim. Runtime evidence and failed attempts belong in
 [STATUS.md](STATUS.md); source wiring alone does not prove runtime acceptance.
 Clipboard/request corrections below refer to the tested increment whose parent
-is `efa8a24`, with exact commands and limitations in `STATUS.md`.
+is `efa8a24`; process-isolated clipboard work has parent `e3b275d`, with exact
+commands and limitations in `STATUS.md`.
 
 ## Responsibility boundaries
 
@@ -26,6 +27,38 @@ policy ownership. Conversely, Unicode editing, native geometry, protocol
 validation and drawing do not need to move to JS merely to change line counts.
 
 ## Ordered persistent data
+
+### Neovim responsibility comparison
+
+Checked upstream documentation/source on 2026-10-11; these links track upstream
+`master`, not a pinned Astra dependency. Neovim's boundary is a useful comparison,
+but its language percentages are not an acceptance target for Astra.
+
+- The C implementation of
+  [buffer APIs](https://github.com/neovim/neovim/blob/master/src/nvim/api/buffer.c)
+  owns live buffer access, coordinate/range validation, modification and undo
+  integration. Lua invokes those mechanisms through `vim.api`; it does not
+  replace their state ownership.
+- [Lua's programming interface](https://github.com/neovim/neovim/blob/master/runtime/doc/lua.txt)
+  combines its standard library, editor functions/commands and the native API.
+  User configuration and plugins load as Lua modules, alongside retained
+  Vimscript facilities. High-level built-in code also lives in Lua: the
+  [LSP RPC implementation](https://github.com/neovim/neovim/blob/master/runtime/lua/vim/lsp/rpc.lua)
+  owns request identities/callbacks, protocol messages and response dispatch
+  over a transport abstraction.
+- `vim.uv` exposes libuv networking/filesystem/process mechanisms. Its callbacks
+  must schedule editor API calls when they are not fast-event-safe. This is an
+  execution-context boundary, not a rule that every Lua API returns a Promise.
+  Neovim exposes its API through Lua, Vimscript and
+  [remote RPC](https://github.com/neovim/neovim/blob/master/runtime/doc/api.txt).
+
+For Astra, product command composition, close/save/reload decisions, keymap and
+provider publication belong in shipped JS. Persistent documents/transactions,
+service ownership, Unicode/shaping, native handles and bounded asynchronous
+operations belong in C++. The user's asynchronous JS requirement additionally
+requires Promise dispatch with cancellation/deadlines and responsive native
+execution; copying Neovim's scripting syntax would not establish that behavior.
+The responsibility table above maps the actual Astra source owners.
 
 The following measured persistent structures are present in the production
 sources. Review must cover their use in seek/edit/publication paths, not just
@@ -57,13 +90,17 @@ specific invariants; they do not establish an O(log n) whole-editor update.
    and RAII cleanup. Empty paste is a no-op. The real owned-window contention
    fixture verifies JS rejection plus editor/sidebar/modal content preservation.
    See `STATUS.md` for exact snapshot evidence and retained fixture failures.
-2. **Promise return does not prove clipboard responsiveness.** Native clipboard
-   read/write still execute directly on the owner loop. The Windows reader now
-   uses checked Win32 acquisition; delayed rendering can still block that caller.
-   Other platforms retain SDL's main-thread-only getter, so moving the same SDL
-   call to an arbitrary worker is not an acceptable fix. Validate delayed/unresponsive
-   clipboard providers and provide bounded asynchronous native work, cancellation,
-   timeout and shutdown without blocking the editor input/render loop.
+2. **Promise return did not prove clipboard responsiveness.** The previous native
+   read/write executed on the GUI owner loop. The checked reader alone did not
+   prevent delayed-provider blocking. `clipboard_client.cpp` now serializes
+   bounded operations in owned `astra-clipboard-host` processes. SDL/native work
+   stays on each helper's main thread; the GUI polls ready replies and process
+   completion. Host cancellation works even after whole-task cancellation;
+   successful ownership remains alive until superseded/shutdown. The dedicated
+   real Windows delayed-provider fixture proves input/render progress, Unicode,
+   AbortSignal/deadlines, queued field input and bounded exit in both modes.
+   This specific finding is resolved by the evidence in `STATUS.md`; no other
+   platform runtime acceptance is inferred.
 3. **Original public request options were inconsistent.** `astra.request` supports signal
    and timeout options, but `ui.update`, the form wrappers and clipboard wrappers
    in `data/workbench/api.js` do not forward caller options. Add consistent
@@ -73,6 +110,13 @@ specific invariants; they do not establish an O(log n) whole-editor update.
    already-aborted and queued-aborted calls, per-call deadlines and discarded
    late native replies. This establishes runtime request behavior, not native
    clipboard latency or rollback after native acceptance.
+4. **Prepared history is not persistent.** `Document::clone()` uses the default
+   copy constructor. Its undo/redo deques therefore copy every `HistoryEntry`
+   and selection vector, even though the entries' Rope nodes share. This grows
+   preparation cost with retained history and leaves that ordered sequence outside
+   the measured persistent model. Replace history storage while preserving atomic
+   failure behavior, saved identities, trimming, branches and clone independence;
+   existing shallow Rope snapshots alone do not prove that correction.
 
 API contracts used in this review:
 [SDL_GetClipboardText](https://wiki.libsdl.org/SDL3/SDL_GetClipboardText) and

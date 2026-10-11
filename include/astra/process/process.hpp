@@ -19,6 +19,9 @@ struct ProcessOptions {
     // no shell is involved. Windows windows_verbatim_arguments is never enabled.
     std::vector<std::string> argv;
     std::string cwd;
+    // Optional UTF-8 window-station\\desktop for Windows GUI helpers.
+    // Empty retains the normal Windows inheritance rules; other platforms reject it.
+    std::string windows_desktop;
     // Complete KEY=value environment, or nullopt to inherit the parent environment.
     std::optional<std::vector<std::string>> env;
     std::size_t max_queued_stdin_bytes{8 * 1024 * 1024};

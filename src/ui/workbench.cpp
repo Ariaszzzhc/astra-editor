@@ -56,6 +56,14 @@ struct Workbench::Impl {
                 return future;
             }},
             budget);
+        runtime->set_request_cancel_handler([this](std::string_view method, const Json& params) {
+            if ((method == "_ui.clipboard.read" || method == "_ui.clipboard.write") &&
+                params.contains("id"))
+                return native("_ui.clipboard.cancel", {{"id", params.at("id")}});
+            std::promise<Json> completed;
+            completed.set_value(nullptr);
+            return completed.get_future();
+        });
         static_cast<void>(runtime->evaluate("astra.context='client';"));
         for (const auto& [name, source] : modules) {
             runtime->define_module(name, source);

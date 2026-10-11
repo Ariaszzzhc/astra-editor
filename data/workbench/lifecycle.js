@@ -9,6 +9,9 @@ async function closeWindow(control) {
     await ui.execute('workbench.cancelDocumentSearch');
     await ui.execute('workbench.cancelWorkspaceSearch', { shutdown: true });
     await ui.native('ui.cancel');
+    // A provider can be blocked in another process. Stop unfinished clipboard
+    // work before the idle barrier, while retaining successfully copied text.
+    await request('_ui.clipboard.cancelPending', {}, options);
     for (;;) {
         await ui.waitForIdle(options);
         const state = await ui.read({ immediate: true });

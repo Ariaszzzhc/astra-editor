@@ -396,6 +396,13 @@ struct Process::Impl {
             validate_string(argument);
         }
         validate_string(options.cwd);
+        validate_string(options.windows_desktop);
+        if (options.windows_desktop.size() > 4096)
+            throw std::invalid_argument("Windows desktop name exceeds its bound");
+#ifndef _WIN32
+        if (!options.windows_desktop.empty())
+            throw std::invalid_argument("Windows desktop is not supported on this platform");
+#endif
         if (options.env) {
             for (const auto& variable : *options.env) {
                 validate_string(variable);
@@ -1027,6 +1034,7 @@ struct Process::Impl {
 #ifdef _WIN32
             initialize_pipe(startup);
             job = std::make_unique<Job>();
+            options.argv.insert(options.argv.begin(), options.windows_desktop);
             options.argv.insert(options.argv.begin(), job->name());
             options.argv.insert(options.argv.begin(), host_path());
 #endif

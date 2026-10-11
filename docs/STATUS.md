@@ -26,15 +26,20 @@ Current remaining work (2026-10-11):
 responsibility/index map and findings. Windows clipboard contention now has
 explicit error handling and real failure-path evidence; all ten public
 form/clipboard/update wrappers forward caller cancellation/deadline options.
-Native clipboard work still executes on the owner loop: delayed-provider
-responsiveness, bounded cancellation and shutdown remain unresolved. The
-request runtime's Promise/deadline evidence does not close that native-I/O gap
-or establish whole-architecture completion.
+The process-isolated clipboard draft now has real delayed-provider and production
+GUI input/rendering/cancellation/shutdown acceptance in both Windows modes.
+Final regression/commit evidence is recorded below. This closes that specific
+native-I/O finding; it does not establish whole-architecture completion.
 
 - Audit the final C++ service/native-mechanism versus JavaScript policy/API
   boundaries, asynchronous cancellation/error/lifecycle behavior, and measured
   persistent indexes against every `EditorDoc.md` requirement. Component test
   results do not establish whole-architecture acceptance.
+- The source audit found that `Document::clone()` copies deque-based undo/redo
+  entries, including their selections. Rope nodes share persistently, but whole
+  history preparation still grows with retained history. Review and replace that
+  history representation with persistent measured storage, preserving transaction
+  failure atomicity, trimming, branching and prepared-clone independence.
 - Finish whole-workbench visual acceptance across editing, Explorer, search,
   Git, Outline, pickers, forms and modal/error states. Measured typography and
   individual component tests do not establish a cohesive final UI.
@@ -44,6 +49,112 @@ or establish whole-architecture completion.
 - Validate and package the final source snapshot on Windows, including clean
   extraction and isolated runtime acceptance. The earlier package is stale for
   this revision. No macOS/Linux runtime verification is claimed.
+
+### Asynchronous clipboard implementation and resumed checks (2026-10-11)
+
+The uncommitted draft moves native clipboard reads and writes to owned helper
+processes. The client serializes unfinished requests, bounds text/wire queues,
+retains successful clipboard ownership, and kills cancelled/timed-out readers.
+The helper's SDL main thread performs native clipboard work; libuv carries framed
+requests/replies. GUI fields retain target/selection/version fences while awaiting
+results. A host cancellation hook permits cleanup after the entire JS task is
+cancelled, without relying on a cancelled continuation. Exit policy cancels
+unfinished clipboard operations before waiting for the workbench idle barrier.
+The following acceptance supersedes the earlier draft-only evidence.
+
+Resume evidence (Windows Debug):
+
+- Earlier pre-pause draft builds failed under warnings-as-errors with C4458
+  (a field-edit local shadowed `Impl::options`) and C4702 in the pinned JSON
+  library's MessagePack template. Logs remain `async-clipboard-draft-build-debug.log`
+  and `async-clipboard-shadow-build-debug.log`. The local was renamed; the helper
+  uses the existing bounded JSON/Content-Length framing, accounting explicitly
+  for six-byte control escapes. Third-party source and warning gates were not
+  weakened. The corrected initial build passed (`async-clipboard-json-build-debug.log`).
+
+- `./scripts/format.ps1 -Offline` passed. The first resumed build failed with
+  C2065 (`DESKTOP_ALL_ACCESS` in the new fixture). The corrected access mask
+  built all six requested application/test targets successfully with
+  `./scripts/xmake.ps1 build -y -j2 gui-clipboard-async-smoke gui-clipboard-smoke gui-smoke gui-presentation-smoke astra astra-tests`.
+  Logs: `async-clipboard-resume-build-debug.log`,
+  `async-clipboard-desktop-build-debug.log`,
+  `async-clipboard-cancel-pending-build-debug.log`.
+- `astra-tests.exe --no-version '--test-case=QuickJS*,JavaScript*,workbench*,process*'`
+  passed **145 cases / 6,674 assertions** after the exit-policy change
+  (`async-clipboard-cancel-pending-tests-debug.log`). These include host cleanup
+  without a JS continuation, per-call deadlines, failed/invalid cleanup futures,
+  retained native response draining, and real Windows process lifetimes.
+- `gui-clipboard-smoke.exe`, `gui-smoke.exe`, and `gui-smoke.exe --tcp` passed
+  real clipboard failure preservation and complete local/TCP editing workflows
+  (`async-clipboard-regression-native-debug.log`,
+  `async-clipboard-gui-debug.log`, `async-clipboard-gui-tcp-debug.log`).
+- The delayed-provider fixture has **not passed**. Ordinary execution failed
+  creating an explicitly named window station (Win32 5); an unnamed station
+  with `CWF_CREATE_ONLY` failed because Windows' generated name already existed
+  (Win32 183). It refused to reuse that station or overwrite the interactive
+  clipboard. Logs: `async-clipboard-desktop-native-debug.log`,
+  `async-clipboard-unnamed-native-debug.log`. The user has authorized an elevated
+  run of this specific Debug/Release fixture to create its own isolated station.
+  That run, Release checks, final formatting, packaging and publication remain
+  pending at this entry. No delayed-provider responsiveness claim follows from
+  the passing contention or Promise tests.
+
+Subsequent Windows acceptance:
+
+- Administrator execution of the dedicated fixture is explicitly user-authorized.
+  It creates only its own station/desktop/clipboard and never changes the user's
+  interactive clipboard. The entry thread had existing windows/hooks, so its first
+  desktop switch failed (Win32 170, `clipboard-isolated-6201078.log`). A fresh owned
+  GUI thread attaches before creating any window; all SDL/Graphite/Dawn input,
+  rendering and teardown stay on that thread. The parent restores the process
+  station and closes owned handles only after the thread joins.
+- The first delay-loop assertion assumed 1ms sleep granularity and failed
+  (`clipboard-isolated-6341265.log`). The fixture now independently bounds every
+  owner-loop call at 250ms and requires multiple calls during a real 300ms provider
+  hold. Cancelling a requester closes its clipboard lease, so its pending render
+  message must finish without publishing into that vanished request; this fixture
+  correction followed `clipboard-isolated-6428078.log`.
+- Real delayed reads, Unicode, cancellation, native timeout, writer ownership,
+  actual GUI input/rendering, editor/sidebar FIFO paste-plus-typing, AbortSignal,
+  durable save and bounded exit passed Debug (`clipboard-isolated-6510156.log`).
+  Input/queue bounds, duplicate/malformed identities, NUL/oversize rejection,
+  queued cancellation and expiration before process launch were then added;
+  Debug passed again (`clipboard-isolated-6759718.log`). These unique fixture logs
+  are under `build/windows/x64/debug/`.
+- `./scripts/format.ps1 -Check -Offline` passed **201 C++ / 15 JS files**
+  (`async-clipboard-final-format-check.log`). All affected Debug executables plus
+  the actual application/server were rebuilt (`async-clipboard-bounds-build-debug.log`,
+  `async-clipboard-final-build-debug.log`). Full `astra-tests.exe --no-version`
+  passed **630 cases / 2,698,549 assertions**, none skipped
+  (`async-clipboard-full-tests-debug.log`). Debug CLI and 12 packaging-helper
+  checks passed (`async-clipboard-cli-debug.log`,
+  `async-clipboard-package-script-tests.log`).
+- Release configure and all seven requested application/test targets passed
+  (`async-clipboard-final-config-release.log`, `async-clipboard-final-build-release.log`).
+  Full Release `astra-tests.exe --no-version` passed **630 cases / 2,698,588 assertions**,
+  none skipped (`async-clipboard-full-tests-release.log`). Async polling changes
+  assertion counts without changing the cases.
+- The first Release isolated success case exhausted its one-second fixture
+  deadline while full-suite work ran concurrently; its requester exited before
+  the provider could publish (`clipboard-isolated-7045031.log`). Success/ownership
+  now use a separate five-second startup budget and the genuine native timeout
+  case still holds the provider until a two-second client deadline. Exact helper
+  startup cause was not established. The serialized corrected Release fixture
+  passed all routes, with measured provider entry at **108/92/92ms**
+  (`build/windows/x64/release/clipboard-isolated-7209562.log`,
+  `async-clipboard-startup-margin-build-release.log`). Per-poll latency and
+  cancellation/shutdown drain bounds are unchanged. The exact final fixture source
+  was rebuilt in Debug (`async-clipboard-startup-margin-build-debug.log`) and
+  passed again (`build/windows/x64/debug/clipboard-isolated-7475812.log`), with
+  measured provider entry at **105/93/94ms**. Final formatter and whitespace gates
+  passed (`async-clipboard-commit-format-check.log`, `git diff --check`).
+- Release CLI, clipboard-failure preservation, full local/TCP editing and native
+  presentation regressions all passed (`async-clipboard-cli-release.log`,
+  `async-clipboard-regression-native-release.log`, `async-clipboard-gui-release.log`,
+  `async-clipboard-gui-tcp-release.log`, `async-clipboard-presentation-release.log`).
+  Debug native presentation also passed (`async-clipboard-presentation-debug.log`).
+  Package assembly/verifiers now require the helper and its runtime, but a fresh
+  clean-source package and isolated extraction acceptance still remain due.
 
 ### Clipboard preservation and public options (2026-10-11)
 

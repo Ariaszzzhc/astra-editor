@@ -10,6 +10,18 @@ It does not change existing clipboard contents or formats. A lease deadline
 releases contention if acceptance stops pumping; acquisition/cleanup failures
 fail the fixture rather than skipping it.
 
+`gui-clipboard-async-smoke` creates its own real Windows station, desktop and
+clipboard. Explicit station names require an administrator token. Run this
+dedicated binary elevated from the repository root; `--log` writes a unique log
+beside its executable under `build/`. It never reuses an existing station or
+changes the interactive clipboard. It exercises an actual delayed
+`WM_RENDERFORMAT` provider, Unicode round trips, cancellation/deadlines, field
+input order, responsive production rendering/input, and bounded shutdown.
+`scripts/test.ps1 -Gui -IsolatedClipboard` includes it in an elevated acceptance
+session; ordinary `-Gui` runs do not establish delayed-provider acceptance.
+The entry point checks that prerequisite before starting any tests and never
+silently elevates the entire development workflow.
+
 Run all commands from this repository. This document gives reproduction
 instructions; actual passed and failed checks are recorded in [STATUS.md](STATUS.md).
 Do not run Linux/macOS builds or tests from this Windows environment.

@@ -35,7 +35,7 @@ try {
     Copy-ReleaseTree $runtime $staging
     Copy-ReleaseTree (Join-Path $repo 'data') (Join-Path $staging 'data')
     $inputs = [ordered]@{}
-    foreach ($file in @('astra.exe','astra-server.exe','astra-process-host.exe','SDL3.dll','icudtl.dat','dxcompiler.dll','dxil.dll')) {
+    foreach ($file in @('astra.exe','astra-server.exe','astra-process-host.exe','astra-clipboard-host.exe','SDL3.dll','icudtl.dat','dxcompiler.dll','dxil.dll')) {
         $source = Assert-ReleaseChild $build (Join-Path $build $file)
         $inputs[$file] = Get-ReleaseHash $source
         [IO.File]::Copy($source, (Join-Path $staging $file))

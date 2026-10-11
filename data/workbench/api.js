@@ -95,8 +95,8 @@ export const ui = {
         setValues: (parameters, options) => request('_ui.form.setValues', parameters, options)
     },
     clipboard: {
-        read: (options) => request('_ui.clipboard.read', {}, options),
-        write: (text, options) => request('_ui.clipboard.write', { text }, options)
+        read: (options) => clipboardRequest('read', {}, options),
+        write: (text, options) => clipboardRequest('write', { text }, options)
     },
     input: (spec, options) => dialog('input', spec, options),
     async confirm(spec, options) {
@@ -404,6 +404,12 @@ let actionId = 0;
 let readId = 0;
 let fenceId = 0;
 let styleId = 0;
+let clipboardId = 0;
+
+function clipboardRequest(kind, parameters, options) {
+    const id = `clipboard-${++clipboardId}`;
+    return request(`_ui.clipboard.${kind}`, { ...parameters, id }, options);
+}
 async function selectObject(kind, parameters = {}, options = {}) {
     if (
         !['function', 'class', 'comment', 'string', 'block', 'parameter', 'heading'].includes(kind)

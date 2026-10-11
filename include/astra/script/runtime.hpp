@@ -32,6 +32,7 @@ class Runtime {
     // Submit must return promptly. Futures are produced by the owner of the
     // transport, never by blocking std::async work owned by the runtime.
     using AsyncRequest = std::function<std::future<Json>(std::string_view, const Json&)>;
+    using AsyncCancel = std::function<std::future<Json>(std::string_view, const Json&)>;
     using TaskId = std::uint64_t;
 
     struct Outcome {
@@ -70,6 +71,10 @@ class Runtime {
     void poll();
     [[nodiscard]] std::optional<Outcome> take_result(TaskId task);
     void cancel(TaskId task);
+    // Host-owned request cancellation runs without executing a cancelled JS
+    // continuation. It must return promptly with a valid future, drained and checked.
+    // Install before submitting requests. The host retains transport ownership.
+    void set_request_cancel_handler(AsyncCancel cancel);
     // Stop accepting work and reject/cancel outstanding requests. Keep polling
     // until idle before closing the transport, so late operation IDs are cancelled.
     void shutdown();

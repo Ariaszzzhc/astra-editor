@@ -2,12 +2,18 @@
 -- do not inherit the callback environment.
 rule("astra.resources")
     on_load(function(target)
+        target:add("deps", "astra-clipboard-host", {inherit = false})
         if target:is_plat("windows") then target:add("deps", "astra-process-host", {inherit = false}) end
     end)
     after_build(function(target)
         local json = import("core.base.json")
         local destination = target:targetdir()
         os.mkdir(destination)
+        local clipboard = assert(target:dep("astra-clipboard-host"), "Resources require the clipboard helper")
+        assert(os.isfile(clipboard:targetfile()), "Build astra-clipboard-host before staging resources")
+        if path.absolute(path.directory(clipboard:targetfile())) ~= path.absolute(destination) then
+            os.cp(clipboard:targetfile(), destination)
+        end
         os.cp(path.join(os.projectdir(), "data"), destination)
         if target:is_plat("windows") then
             local pointerfile = path.join(os.projectdir(), ".tools/runtime/windows-x64.json")
@@ -49,6 +55,14 @@ rule("astra.resources")
         local json = import("core.base.json")
         local destination = path.join(target:installdir(), "bin")
         os.mkdir(destination)
+        local clipboard = assert(target:dep("astra-clipboard-host"), "Installed resources require the clipboard helper")
+        os.cp(clipboard:targetfile(), destination)
+        local sdl = clipboard:pkg("libsdl3") or clipboard:pkg("astra-sdl3")
+        local pattern = target:is_plat("windows") and "bin/SDL3.dll"
+            or (target:is_plat("macosx") and "lib/libSDL3*.dylib" or "lib/libSDL3.so*")
+        local libraries = os.files(path.join(assert(sdl:installdir()), pattern))
+        assert(#libraries > 0, "Clipboard helper requires the SDL shared runtime")
+        for _, file in ipairs(libraries) do os.cp(file, destination) end
         os.cp(path.join(os.projectdir(), "data"), destination)
         if target:is_plat("windows") then
             local pointerfile = path.join(os.projectdir(), ".tools/runtime/windows-x64.json")
@@ -85,5 +99,20 @@ rule("astra.resources")
                 os.cp(path.join(runtime, name), destination)
             end
         end
+    end)
+rule_end()
+
+rule("astra.clipboard-runtime")
+    on_load(function(target)
+        if target:is_plat("macosx") then target:add("rpathdirs", "@executable_path")
+        elseif target:is_plat("linux") then target:add("rpathdirs", "$ORIGIN") end
+    end)
+    after_build(function(target)
+        local sdl = target:pkg("libsdl3") or target:pkg("astra-sdl3")
+        local pattern = target:is_plat("windows") and "bin/SDL3.dll"
+            or (target:is_plat("macosx") and "lib/libSDL3*.dylib" or "lib/libSDL3.so*")
+        local libraries = os.files(path.join(assert(sdl:installdir()), pattern))
+        assert(#libraries > 0, "Clipboard helper requires the SDL shared runtime")
+        for _, file in ipairs(libraries) do os.cp(file, target:targetdir()) end
     end)
 rule_end()

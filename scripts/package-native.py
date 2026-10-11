@@ -52,7 +52,7 @@ def main():
         shutil.copytree(runtime, staging, symlinks=True)
         shutil.copytree(REPO / "data", staging / "data")
         inputs = {}
-        for executable in ("astra", "astra-server"):
+        for executable in ("astra", "astra-server", "astra-clipboard-host"):
             inputs[executable] = sha256(build / executable)
             shutil.copy2(build / executable, staging / executable)
             check_hash(build / executable, inputs[executable])
@@ -108,7 +108,7 @@ def main():
 
 
 def require_payload(directory, platform, architecture):
-    for name in ("astra", "astra-server", "tools/node/bin/node", "tools/node/LICENSE", "tools/clangd/bin/clangd",
+    for name in ("astra", "astra-server", "astra-clipboard-host", "tools/node/bin/node", "tools/node/LICENSE", "tools/clangd/bin/clangd",
                  "tools/clangd/LICENSE.TXT", "tools/git/bin/git", "data/defaults.js", "THIRD-PARTY.md",
                  "tools/node_modules/typescript/lib/tsserver.js", "tools/node_modules/typescript/LICENSE.txt",
                  "tools/node_modules/typescript/ThirdPartyNoticeText.txt", "tools/node_modules/typescript-language-server/lib/cli.mjs",
@@ -116,7 +116,7 @@ def require_payload(directory, platform, architecture):
                  "tools/node_modules/basedpyright/LICENSE.txt", "tools/node_modules/basedpyright/dist/typeshed-fallback/LICENSE"):
         if not (directory / name).is_file():
             raise RuntimeError(f"Missing package resource: {name}")
-    for name in ("astra", "astra-server", "tools/node/bin/node", "tools/clangd/bin/clangd", "tools/git/bin/git"):
+    for name in ("astra", "astra-server", "astra-clipboard-host", "tools/node/bin/node", "tools/clangd/bin/clangd", "tools/git/bin/git"):
         if not (directory / name).stat().st_mode & 0o111:
             raise RuntimeError(f"Native executable has no execute permission: {name}")
         native_binary(directory / name, platform, architecture)

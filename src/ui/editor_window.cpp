@@ -1,5 +1,5 @@
 #include "astra/ui/editor_window.hpp"
-#include "astra/ui/clipboard_text.hpp"
+#include "astra/ui/clipboard_client.hpp"
 #include "astra/ui/renderer.hpp"
 #include "astra/ui/text_layout.hpp"
 #include "astra/ui/document_viewport.hpp"
@@ -349,6 +349,20 @@ struct EditorWindow::Impl {
     };
 
     std::optional<InputContext> input_event_context;
+    std::unique_ptr<ClipboardClient> clipboard;
+
+    struct FieldClipboard {
+        enum class Kind { copy, cut, paste };
+        std::string id;
+        Kind kind;
+        InputContext target;
+        std::future<Json> result;
+        std::function<void()> changed;
+    };
+
+    std::optional<FieldClipboard> field_clipboard;
+    std::uint64_t clipboard_sequence{};
+    bool complete_field_clipboard();
     bool replaying_input{};
     std::optional<SDL_Keymod> replay_input_modifiers;
 
@@ -358,6 +372,15 @@ struct EditorWindow::Impl {
         if (!channel) {
             throw std::invalid_argument("EditorWindow requires a document channel");
         }
+        const auto* clipboard_base = SDL_GetBasePath();
+        if (!clipboard_base)
+            throw std::runtime_error(std::string("Locate clipboard helper: ") + SDL_GetError());
+#ifdef _WIN32
+        const auto helper = std::filesystem::path(clipboard_base) / "astra-clipboard-host.exe";
+#else
+        const auto helper = std::filesystem::path(clipboard_base) / "astra-clipboard-host";
+#endif
+        clipboard = std::make_unique<ClipboardClient>(ClipboardClient::Options{helper});
         if (options.resource_directory.empty()) {
             const auto* base = SDL_GetBasePath();
             if (!base) {
@@ -393,6 +416,11 @@ struct EditorWindow::Impl {
         workbench = std::make_unique<Workbench>(
             channel,
             [this](std::string_view method, const Json& params) {
+                if (method == "_ui.clipboard.read")
+                    return clipboard->read(params.at("id").get<std::string>());
+                if (method == "_ui.clipboard.write")
+                    return clipboard->write(params.at("id").get<std::string>(),
+                                            params.at("text").get<std::string>());
                 if (method == "_ui.dialog") {
                     return begin_dialog(params);
                 }
@@ -1600,7 +1628,8 @@ bool EditorWindow::Impl::native_idle(bool waiting_inputs) const {
            !pending_document_activity && !outline.needs_request() &&
            !chrome_state.needs_request() && sidebar_views.quiescent() && inputs_idle &&
            layout_jobs->idle() && !input_point && input_events.size() == 0 &&
-           pending_styles.empty() && !document_composition.pending();
+           pending_styles.empty() && !document_composition.pending() && !field_clipboard &&
+           clipboard->idle();
 }
 
 void EditorWindow::Impl::emit_form(std::string_view event,
@@ -1877,6 +1906,10 @@ void EditorWindow::Impl::sync_dialog_input() {
 }
 
 void EditorWindow::Impl::clear_input_events() {
+    if (field_clipboard) {
+        clipboard->cancel(field_clipboard->id);
+        field_clipboard.reset();
+    }
     input_point.reset();
     input_events.clear();
     input_event_context.reset();
@@ -2009,6 +2042,8 @@ void EditorWindow::Impl::drain_input_events() {
             if (input_event_context && *input_event_context != input_context()) {
                 throw std::runtime_error("Input target changed before queued input completed");
             }
+            if (field_clipboard && !complete_field_clipboard())
+                break;
             if (input_point && !complete_input_point()) {
                 break;
             }
@@ -2026,7 +2061,7 @@ void EditorWindow::Impl::drain_input_events() {
             replay_input_modifiers.reset();
             input_event_context = input_context();
         }
-        if (!input_point && input_events.size() == 0) {
+        if (!input_point && !field_clipboard && input_events.size() == 0) {
             input_event_context.reset();
         }
     } catch (const std::exception& failure) {
@@ -2386,17 +2421,12 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         }
         return nullptr;
     }
-    if (method == "_ui.clipboard.read") {
-        return read_clipboard_text(8 * 1024 * 1024);
+    if (method == "_ui.clipboard.cancel") {
+        clipboard->cancel(params.at("id").get<std::string>());
+        return nullptr;
     }
-    if (method == "_ui.clipboard.write") {
-        const auto text = params.at("text").get<std::string>();
-        if (text.size() > 8 * 1024 * 1024 || text.find('\0') != std::string::npos) {
-            throw std::runtime_error("Clipboard text exceeds its limit or contains NUL");
-        }
-        if (!SDL_SetClipboardText(text.c_str())) {
-            throw std::runtime_error(std::string("Clipboard write failed: ") + SDL_GetError());
-        }
+    if (method == "_ui.clipboard.cancelPending") {
+        clipboard->cancel_pending();
         return nullptr;
     }
     if (method == "_ui.form.open") {
@@ -3390,29 +3420,56 @@ bool EditorWindow::Impl::inline_key(const SDL_KeyboardEvent& input,
     });
 }
 
+bool EditorWindow::Impl::complete_field_clipboard() {
+    if (field_clipboard->result.wait_for(std::chrono::seconds::zero()) != std::future_status::ready)
+        return false;
+    auto pending = std::move(*field_clipboard);
+    field_clipboard.reset();
+    if (pending.target != input_context()) {
+        clipboard->cancel(pending.id);
+        throw std::runtime_error("Clipboard input target changed before completion");
+    }
+    const auto result = pending.result.get();
+    auto* form = pending.target.kind == InputContext::Kind::dialog ? dialog->input.get()
+                                                                   : forms.find(pending.target.id);
+    if (!form || !form->focus())
+        throw std::runtime_error("Clipboard input field is no longer available");
+    if (pending.kind == FieldClipboard::Kind::paste) {
+        const auto text = result.get<std::string>();
+        if (!text.empty()) {
+            editing::Options input_options;
+            input_options.text = text;
+            if (form->edit(editing::Command::insert_text, input_options))
+                pending.changed();
+        }
+    } else if (pending.kind == FieldClipboard::Kind::cut &&
+               form->edit(editing::Command::insert_text)) {
+        pending.changed();
+    }
+    return true;
+}
+
 bool EditorWindow::Impl::text_input_key(InlineForm& form,
                                         const SDL_KeyboardEvent& input,
                                         bool control,
                                         bool shift,
                                         const std::function<void()>& changed) {
     const auto& field = form.fields()[*form.focus()];
-    if (control && (input.key == SDLK_C || input.key == SDLK_X)) {
+    if (control && (input.key == SDLK_C || input.key == SDLK_X || input.key == SDLK_V)) {
+        if (clipboard_sequence == std::numeric_limits<std::uint64_t>::max())
+            throw std::runtime_error("Clipboard input sequence exhausted");
+        const auto id = "field-clipboard-" + std::to_string(++clipboard_sequence);
+        const auto kind = input.key == SDLK_V   ? FieldClipboard::Kind::paste
+                          : input.key == SDLK_X ? FieldClipboard::Kind::cut
+                                                : FieldClipboard::Kind::copy;
+        const auto target = input_context();
         const auto selection = field.text.selections().front();
         const auto text = field.text.text().slice(selection.begin().value, selection.end().value);
-        if (!SDL_SetClipboardText(text.c_str()))
-            throw std::runtime_error(SDL_GetError());
-        if (input.key == SDLK_X && form.edit(editing::Command::insert_text))
-            changed();
-        return true;
-    }
-    if (control && input.key == SDLK_V) {
-        const auto pasted = read_clipboard_text(InlineForm::max_input_bytes);
-        if (pasted.empty())
-            return true;
-        editing::Options input_options;
-        input_options.text = pasted;
-        if (form.edit(editing::Command::insert_text, input_options))
-            changed();
+        auto future = kind == FieldClipboard::Kind::paste
+                          ? clipboard->read(id, InlineForm::max_input_bytes)
+                          : clipboard->write(id, text);
+        field_clipboard.emplace(FieldClipboard{id, kind, target, std::move(future), changed});
+        input_event_context = target;
         return true;
     }
     if (control && (input.key == SDLK_Z || input.key == SDLK_Y)) {
@@ -3606,7 +3663,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
     const auto ratio_y =
         logical_height > 0 ? static_cast<float>(pixels.height) / static_cast<float>(logical_height)
                            : 1;
-    if (!replaying_input && (input_point || input_events.size() != 0) &&
+    if (!replaying_input && (input_point || field_clipboard || input_events.size() != 0) &&
         InputEvents::accepts(input.type)) {
         bool cancellation = input.type == SDL_EVENT_KEY_DOWN && input.key.key == SDLK_ESCAPE;
         if (input.type == SDL_EVENT_MOUSE_BUTTON_DOWN && input.button.button == SDL_BUTTON_LEFT &&
@@ -5142,6 +5199,7 @@ WorkbenchViewState EditorWindow::view_state() const {
                               {"reserved", retired.reserved},
                               {"bytes", retired.bytes}};
     result.input_layout = {{"pointerPending", impl_->input_point.has_value()},
+                           {"clipboardPending", impl_->field_clipboard.has_value()},
                            {"documentCompositionPending", impl_->document_composition.pending()},
                            {"documentCompositionDrawn", impl_->document_composition_drawn},
                            {"documentCompositionColor", impl_->document_composition_color},
@@ -5293,10 +5351,12 @@ bool EditorWindow::pump() {
             impl_->policy_inputs.clear();
             impl_->view_inputs.clear();
             impl_->layout_jobs->close();
+            impl_->clipboard->close();
         }
         impl_->workbench->poll();
+        impl_->clipboard->poll();
         if (impl_->workbench->idle() && impl_->sidebar_views.quiescent() &&
-            impl_->layout_jobs->idle()) {
+            impl_->layout_jobs->idle() && impl_->clipboard->drained()) {
             return false;
         }
         if (Clock::now() >= impl_->workbench_shutdown_deadline) {
@@ -5306,6 +5366,9 @@ bool EditorWindow::pump() {
         return true;
     }
     try {
+        impl_->clipboard->poll();
+        for (const auto& error : impl_->clipboard->take_errors())
+            impl_->error = error;
         impl_->renderer.poll_events([this](const SDL_Event& event) {
             try {
                 impl_->event(event);
