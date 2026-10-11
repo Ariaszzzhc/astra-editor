@@ -2,7 +2,7 @@ import { fileIcons } from 'astra/icons';
 const request = (method, params = {}, options) => astra.request(method, params, options);
 export const ui = {
     read: (parameters = {}, options) => read(parameters, options),
-    update: (model) => request('_ui.update', model),
+    update: (model, options) => request('_ui.update', model, options),
     selectObject,
     chrome: {
         read: (options) => request('_ui.chrome.read', {}, options),
@@ -85,17 +85,18 @@ export const ui = {
         }
     },
     forms: {
-        open: (spec) => request('_ui.form.open', spec),
-        read: (id) => request('_ui.form.read', { id }),
-        update: (parameters) => request('_ui.form.update', parameters),
-        close: (id) => request('_ui.form.close', { id }),
-        focus: (id, field, selectAll = true) => request('_ui.form.focus', { id, field, selectAll }),
-        blur: (id) => request('_ui.form.blur', { id }),
-        setValues: (parameters) => request('_ui.form.setValues', parameters)
+        open: (spec, options) => request('_ui.form.open', spec, options),
+        read: (id, options) => request('_ui.form.read', { id }, options),
+        update: (parameters, options) => request('_ui.form.update', parameters, options),
+        close: (id, options) => request('_ui.form.close', { id }, options),
+        focus: (id, field, selectAll = true, options) =>
+            request('_ui.form.focus', { id, field, selectAll }, options),
+        blur: (id, options) => request('_ui.form.blur', { id }, options),
+        setValues: (parameters, options) => request('_ui.form.setValues', parameters, options)
     },
     clipboard: {
-        read: () => request('_ui.clipboard.read'),
-        write: (text) => request('_ui.clipboard.write', { text })
+        read: (options) => request('_ui.clipboard.read', {}, options),
+        write: (text, options) => request('_ui.clipboard.write', { text }, options)
     },
     input: (spec, options) => dialog('input', spec, options),
     async confirm(spec, options) {

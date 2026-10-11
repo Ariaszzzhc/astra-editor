@@ -24,7 +24,7 @@ try {
     foreach ($configuration in $configurations) {
         & "$PSScriptRoot/xmake.ps1" f -m $configuration -y
         $targets = @('astra-tests','astra-server')
-        if ($Gui) { $targets += @('astra','graphics-smoke','renderer-smoke','text-layout-tests','viewport-layout-tests','gui-smoke','gui-services-smoke','gui-recovery-smoke','gui-workspace-smoke','gui-presentation-smoke','gui-body-smoke') }
+        if ($Gui) { $targets += @('astra','graphics-smoke','renderer-smoke','text-layout-tests','viewport-layout-tests','gui-smoke','gui-services-smoke','gui-recovery-smoke','gui-workspace-smoke','gui-presentation-smoke','gui-body-smoke','gui-clipboard-smoke') }
         if ($InstalledIme) { $targets += 'gui-ime-smoke' }
         if ($Benchmarks -and $configuration -eq 'release') { $targets += @('astra-core-benchmark', 'astra-view-benchmark') }
         & "$PSScriptRoot/xmake.ps1" build -y @targets
@@ -32,7 +32,7 @@ try {
         Invoke-AcceptanceBinary $directory 'astra-tests' @('--no-version','--duration=true')
         & "$repository/tests/cli_smoke.ps1" -Mode $configuration
         if ($Gui) {
-            foreach ($name in @('graphics-smoke','renderer-smoke','text-layout-tests','viewport-layout-tests','gui-smoke','gui-services-smoke','gui-recovery-smoke','gui-workspace-smoke','gui-presentation-smoke','gui-body-smoke')) {
+            foreach ($name in @('graphics-smoke','renderer-smoke','text-layout-tests','viewport-layout-tests','gui-smoke','gui-services-smoke','gui-recovery-smoke','gui-workspace-smoke','gui-presentation-smoke','gui-body-smoke','gui-clipboard-smoke')) {
                 Invoke-AcceptanceBinary $directory $name
             }
             Invoke-AcceptanceBinary $directory 'gui-smoke' @('--tcp')

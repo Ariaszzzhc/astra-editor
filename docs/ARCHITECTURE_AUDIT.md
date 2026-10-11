@@ -1,9 +1,11 @@
 # Product and architecture acceptance audit
 
-Contract: [EditorDoc.md](../EditorDoc.md). Source review: `c7d865c`, Windows,
+Contract: [EditorDoc.md](../EditorDoc.md). Base source review: `c7d865c`, Windows,
 2026-10-11. This is a requirement map and a record of open findings, not a
 whole-product completion claim. Runtime evidence and failed attempts belong in
 [STATUS.md](STATUS.md); source wiring alone does not prove runtime acceptance.
+Clipboard/request corrections below refer to the tested increment whose parent
+is `efa8a24`, with exact commands and limitations in `STATUS.md`.
 
 ## Responsibility boundaries
 
@@ -43,29 +45,42 @@ would not demonstrate the contract's indexed-data philosophy. Existing core,
 syntax, presentation, viewport and tab differential tests are evidence for their
 specific invariants; they do not establish an O(log n) whole-editor update.
 
-## Concrete open findings
+## Clipboard and request findings
 
-1. **Clipboard failures can be mistaken for empty text.** The
+1. **Original failure handling was insufficient.** At the reviewed checkpoint, the
    `_ui.clipboard.read` branch in `src/ui/editor_window.cpp` checks only a null
    `SDL_GetClipboardText()` result. SDL documents an empty string on failure and
    directs callers to `SDL_GetError()`. Implement explicit error handling and a
-   real failure-path test that preserves document content/selections.
+   real failure-path test that preserves document content/selections. The current
+   Windows revision uses the narrow `clipboard_text.cpp` adapter: explicit
+   open/read/lock/conversion/close checks, bounded strict UTF-16 to UTF-8 decoding,
+   and RAII cleanup. Empty paste is a no-op. The real owned-window contention
+   fixture verifies JS rejection plus editor/sidebar/modal content preservation.
+   See `STATUS.md` for exact snapshot evidence and retained fixture failures.
 2. **Promise return does not prove clipboard responsiveness.** Native clipboard
-   read/write currently execute directly on the owner loop. SDL requires its
-   clipboard text getter on the main thread, so moving the same call to an
-   arbitrary worker is not an acceptable fix. Validate delayed/unresponsive
+   read/write still execute directly on the owner loop. The Windows reader now
+   uses checked Win32 acquisition; delayed rendering can still block that caller.
+   Other platforms retain SDL's main-thread-only getter, so moving the same SDL
+   call to an arbitrary worker is not an acceptable fix. Validate delayed/unresponsive
    clipboard providers and provide bounded asynchronous native work, cancellation,
    timeout and shutdown without blocking the editor input/render loop.
-3. **Public request options are inconsistent.** `astra.request` supports signal
+3. **Original public request options were inconsistent.** `astra.request` supports signal
    and timeout options, but `ui.update`, the form wrappers and clipboard wrappers
    in `data/workbench/api.js` do not forward caller options. Add consistent
    forwarding and verify cancellation before publication/dispatch. Existing task
-   cancellation is useful but does not replace per-call public options.
+   cancellation is useful but does not replace per-call public options. The
+   wrappers now forward options. Behavior tests cover all ten methods with
+   already-aborted and queued-aborted calls, per-call deadlines and discarded
+   late native replies. This establishes runtime request behavior, not native
+   clipboard latency or rollback after native acceptance.
 
 API contracts used in this review:
 [SDL_GetClipboardText](https://wiki.libsdl.org/SDL3/SDL_GetClipboardText) and
 [Windows clipboard ownership/delayed rendering](https://learn.microsoft.com/en-us/windows/win32/dataxchg/clipboard-operations).
 These sources establish API behavior, not measured latency in Astra.
+The fixed [SDL 3.4.12 Windows backend](https://github.com/libsdl-org/SDL/blob/release-3.4.12/src/video/windows/SDL_windowsclipboard.c)
+also has open-failure paths returning empty text without setting an SDL error;
+checking `SDL_GetError()` alone cannot establish Windows contention detection.
 
 ## Product scope and remaining proof
 

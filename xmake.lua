@@ -297,6 +297,10 @@ target("astra-ui")
     add_deps("astra-renderer", "astra-workbench", "astra-io")
     add_packages("nlohmann_json", {public = true})
     add_files("src/ui/editor_window.cpp", "src/ui/icons.cpp", "src/ui/document_viewport.cpp")
+    add_files("src/ui/clipboard_text.cpp")
+    if is_plat("windows") then
+        add_syslinks("user32")
+    end
     add_files("src/ui/layout_jobs.cpp")
     add_files("src/ui/text_surface.cpp")
     add_files("src/ui/text_input_layout.cpp")
@@ -406,6 +410,17 @@ target("gui-presentation-smoke")
     set_exceptions("cxx")
 
 if is_plat("windows") then
+    target("gui-clipboard-smoke")
+        set_kind("binary")
+        set_rundir(os.projectdir())
+        set_default(false)
+        add_deps("astra-ui", "astra-service")
+        add_packages("skia-graphite", "libsdl3")
+        add_rules("astra.resources", "astra.graphics-runtime")
+        add_files("tests/gui_clipboard_smoke.cpp")
+        add_syslinks("user32")
+        set_exceptions("cxx")
+
     target("gui-ime-smoke")
         set_kind("binary")
         set_rundir(os.projectdir())

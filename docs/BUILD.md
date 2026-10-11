@@ -4,6 +4,11 @@ Use native Windows x64, PowerShell 7, Git, and a C++23-capable Visual Studio
 toolchain with the Windows SDK. The recorded checks use Visual Studio 2026.
 The GUI needs a functioning D3D12 GPU/driver and a desktop session; its smoke
 tests open native windows and use the real SDL3/Skia Graphite/Dawn renderer.
+`scripts/test.ps1 -Gui` also runs `gui-clipboard-smoke`: its owned hidden window
+briefly leases the real Windows clipboard to verify read-failure preservation.
+It does not change existing clipboard contents or formats. A lease deadline
+releases contention if acceptance stops pumping; acquisition/cleanup failures
+fail the fixture rather than skipping it.
 
 Run all commands from this repository. This document gives reproduction
 instructions; actual passed and failed checks are recorded in [STATUS.md](STATUS.md).

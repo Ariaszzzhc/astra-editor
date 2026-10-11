@@ -620,6 +620,11 @@ decorations only while that document's revision still matches. Git's JS workflow
 chooses clean matching documents before publishing working-tree gutter marks.
 The clipboard adapter reads/writes at most 8 MiB and rejects
 oversized/NUL text rather than silently truncating it.
+`astra.ui.clipboard.read(options)` and `write(text, options)` accept the same
+`{signal, timeoutMs}` request options as `astra.request`. `astra.ui.update(model,
+options)` also forwards them. Cancellation before native dispatch prevents the
+operation; a timeout rejects the waiting caller and drains late replies. It does
+not roll back an operation already accepted by the native host.
 
 `astra.ui.choose({title, detail, choices, defaultChoice, keys, id}, options)`
 awaits one of 2–4 choices, returning the original string/object or `null` on
@@ -948,7 +953,7 @@ astra.ui.registerView({ id: 'streamed-files', title: 'Files' }, (_, options) => 
 });
 ```
 
-`astra.ui.forms.open(spec)` returns a Promise for a retained nonmodal input form.
+`astra.ui.forms.open(spec, options)` returns a Promise for a retained nonmodal input form.
 The acknowledgement is `{id, version, values}`; it does not await dismissal or
 hold a modal input task. `read(id)` returns the current state or null,
 `close(id)` closes only that identity, and `update({id,version,message,busy,error})`
@@ -959,6 +964,12 @@ one in each registered sidebar view; replacing a form on the same mount
 emits a closed event for the old identity. Only one form owns keyboard/IME focus.
 Inactive sidebar forms retain their input and history. Existing modal inputs must be dismissed
 before opening a form.
+All seven form request methods accept final `{signal, timeoutMs}` options:
+`open(spec, options)`, `read(id, options)`, `update(parameters, options)`,
+`close(id, options)`, `focus(id, field, selectAll = true, options)`,
+`blur(id, options)` and `setValues(parameters, options)`. Cancellation prevents
+dispatch when observed before native acceptance; it does not undo accepted
+state changes. Expired callers cannot resume from a late native result.
 
 Specifications contain `id`, `title`, `fields`, `toggles`, `actions` and optional
 `focus` (a field id) and `view` (a registered sidebar identity). Omit `view` to
@@ -978,7 +989,8 @@ revision. Small frames clip controls within their owning region.
 Input text is bounded to 16 KiB per field; CR/LF, NUL and invalid UTF-8 are
 rejected before mutation. Inputs have independent bounded Unicode editing and
 undo history, shaped mouse selection, clipboard and IME candidate positioning.
-`await astra.ui.forms.focus(id, field, selectAll = true)` focuses a visible field,
+`await astra.ui.forms.focus(id, field, selectAll = true, options)` focuses a visible field
+by its string identity,
 returning its state or null for a closed identity. `blur(id)` releases focus
 without closing or discarding input. `setValues({id,version,values})` validates
 all supplied fields/toggles before publishing one new generation, returns the

@@ -5021,6 +5021,145 @@ TEST_CASE("workbench separates shipped style defaults from explicit client prefe
     CHECK(channel->requests.empty());
 }
 
+TEST_CASE("workbench public UI requests cancel before native mutation") {
+    auto channel = std::make_shared<Channel>();
+    unsigned dispatched{};
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view, const Json&) {
+            ++dispatched;
+            return ready(nullptr);
+        },
+        modules(),
+        R"js(
+        astra.registerCommand('acceptance.cancelUi', async ({preAborted}) => {
+            const calls = [
+                options => astra.ui.update({status: 'Must not publish'}, options),
+                options => astra.ui.forms.open({id: 'must-not-open'}, options),
+                options => astra.ui.forms.read('form', options),
+                options => astra.ui.forms.update({id: 'form', message: 'Must not publish'}, options),
+                options => astra.ui.forms.close('form', options),
+                options => astra.ui.forms.focus('form', 'text', false, options),
+                options => astra.ui.forms.blur('form', options),
+                options => astra.ui.forms.setValues({id: 'form', values: {text: 'Must not replace'}}, options),
+                options => astra.ui.clipboard.read(options),
+                options => astra.ui.clipboard.write('Must not replace', options)
+            ];
+            const outcomes = [];
+            for (const call of calls) {
+                const controller = new AbortController();
+                if (preAborted) {
+                    controller.abort();
+                }
+                const pending = call({signal: controller.signal});
+                if (!(pending instanceof Promise)) {
+                    throw Error('UI API must return Promise');
+                }
+                controller.abort();
+                try {
+                    await pending;
+                    outcomes.push('Unexpected success');
+                } catch (error) {
+                    outcomes.push(error.name);
+                }
+            }
+            return outcomes;
+        });
+        )js");
+    for (const bool pre_aborted : {false, true}) {
+        std::optional<astra::script::Runtime::Outcome> result;
+        workbench.execute(
+            "acceptance.cancelUi", {{"preAborted", pre_aborted}}, [&](const auto& value) {
+                result = value;
+            });
+        for (int tick = 0; tick < 32; ++tick)
+            workbench.poll();
+        REQUIRE(result);
+        REQUIRE_FALSE(result->error);
+        CHECK(result->value == std::vector<std::string>(10, "AbortError"));
+        CHECK(dispatched == 0);
+        CHECK(channel->requests.empty());
+        CHECK(workbench.take_errors().empty());
+        CHECK(workbench.idle());
+    }
+}
+
+TEST_CASE("workbench public UI request deadlines discard late native results") {
+    const std::vector<std::string> methods{"_ui.update",
+                                           "_ui.form.open",
+                                           "_ui.form.read",
+                                           "_ui.form.update",
+                                           "_ui.form.close",
+                                           "_ui.form.focus",
+                                           "_ui.form.blur",
+                                           "_ui.form.setValues",
+                                           "_ui.clipboard.read",
+                                           "_ui.clipboard.write"};
+    for (std::size_t index = 0; index < methods.size(); ++index) {
+        CAPTURE(methods[index]);
+        auto channel = std::make_shared<Channel>();
+        std::promise<Json> native;
+        unsigned dispatched{};
+        astra::ui::Workbench workbench(
+            channel,
+            [&](std::string_view method, const Json& params) {
+                CHECK(method == methods[index]);
+                if (method == "_ui.form.focus")
+                    CHECK(params.at("selectAll") == false);
+                if (method == "_ui.form.focus")
+                    CHECK(params.at("field") == "text");
+                ++dispatched;
+                return native.get_future();
+            },
+            modules(),
+            R"js(
+            astra.registerCommand('acceptance.deadlineUi', async ({index}) => {
+                const calls = [
+                    options => astra.ui.update({status:'Pending'}, options),
+                    options => astra.ui.forms.open({id:'form'}, options),
+                    options => astra.ui.forms.read('form', options),
+                    options => astra.ui.forms.update({id:'form'}, options),
+                    options => astra.ui.forms.close('form', options),
+                    options => astra.ui.forms.focus('form', 'text', false, options),
+                    options => astra.ui.forms.blur('form', options),
+                    options => astra.ui.forms.setValues({id:'form', values:{text:'Pending'}}, options),
+                    options => astra.ui.clipboard.read(options),
+                    options => astra.ui.clipboard.write('Pending', options)
+                ];
+                try {
+                    await calls[index]({timeoutMs: 30});
+                    await astra.ui.update({status:'Must not continue after timeout'});
+                    return 'Unexpected success';
+                } catch (error) {
+                    return error.name;
+                }
+            });
+            )js");
+        std::optional<astra::script::Runtime::Outcome> result;
+        workbench.execute("acceptance.deadlineUi", {{"index", index}}, [&](const auto& value) {
+            result = value;
+        });
+        workbench.poll();
+        REQUIRE(dispatched == 1);
+        REQUIRE_FALSE(result);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!result && std::chrono::steady_clock::now() < deadline) {
+            workbench.poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        REQUIRE(result);
+        CHECK_FALSE(result->error);
+        CHECK(result->value == "TimeoutError");
+        native.set_value("Late result must not resume the caller");
+        for (int tick = 0; tick < 8; ++tick)
+            workbench.poll();
+        CHECK(dispatched == 1);
+        CHECK(channel->requests.empty());
+        CHECK(workbench.take_errors().empty());
+        CHECK(workbench.idle());
+    }
+}
+
 TEST_CASE("workbench style APIs await native completion and return authoritative values") {
     auto channel = std::make_shared<Channel>();
     std::promise<Json> reading, updating;

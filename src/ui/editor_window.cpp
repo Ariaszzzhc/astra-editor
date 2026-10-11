@@ -1,4 +1,5 @@
 #include "astra/ui/editor_window.hpp"
+#include "astra/ui/clipboard_text.hpp"
 #include "astra/ui/renderer.hpp"
 #include "astra/ui/text_layout.hpp"
 #include "astra/ui/document_viewport.hpp"
@@ -84,12 +85,6 @@ std::string normalized_binding(std::string_view binding) {
            (binding.find("Shift+") != std::string_view::npos ? "Shift+" : "") +
            (binding.find("Alt+") != std::string_view::npos ? "Alt+" : "") + std::string(key);
 }
-
-struct SdlStringDeleter {
-    void operator()(char* value) const noexcept {
-        SDL_free(value);
-    }
-};
 
 } // namespace
 
@@ -2392,15 +2387,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         return nullptr;
     }
     if (method == "_ui.clipboard.read") {
-        const std::unique_ptr<char, SdlStringDeleter> text(SDL_GetClipboardText());
-        if (!text) {
-            throw std::runtime_error(std::string("Clipboard read failed: ") + SDL_GetError());
-        }
-        const std::string_view value(text.get());
-        if (value.size() > 8 * 1024 * 1024) {
-            throw std::runtime_error("Clipboard exceeds the 8 MiB scripted clipboard limit");
-        }
-        return value;
+        return read_clipboard_text(8 * 1024 * 1024);
     }
     if (method == "_ui.clipboard.write") {
         const auto text = params.at("text").get<std::string>();
@@ -3419,11 +3406,11 @@ bool EditorWindow::Impl::text_input_key(InlineForm& form,
         return true;
     }
     if (control && input.key == SDLK_V) {
-        const std::unique_ptr<char, SdlStringDeleter> pasted(SDL_GetClipboardText());
-        if (!pasted)
-            throw std::runtime_error(SDL_GetError());
+        const auto pasted = read_clipboard_text(InlineForm::max_input_bytes);
+        if (pasted.empty())
+            return true;
         editing::Options input_options;
-        input_options.text = pasted.get();
+        input_options.text = pasted;
         if (form.edit(editing::Command::insert_text, input_options))
             changed();
         return true;

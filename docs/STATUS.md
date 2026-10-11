@@ -22,13 +22,14 @@ older remaining-work lists without replacing their acceptance or failure evidenc
 
 Current remaining work (2026-10-11):
 
-[ARCHITECTURE_AUDIT.md](ARCHITECTURE_AUDIT.md) records the current source
-responsibility/index map and concrete open findings. At `c7d865c`, native
-clipboard reads still check only null despite SDL's documented empty-string
-failure return; owner-loop clipboard responsiveness against delayed providers
-is unproven; and public form/clipboard/update wrappers omit per-call request
-options. These require implementation and behavior verification, not a
-whole-architecture completion label.
+[ARCHITECTURE_AUDIT.md](ARCHITECTURE_AUDIT.md) records the source
+responsibility/index map and findings. Windows clipboard contention now has
+explicit error handling and real failure-path evidence; all ten public
+form/clipboard/update wrappers forward caller cancellation/deadline options.
+Native clipboard work still executes on the owner loop: delayed-provider
+responsiveness, bounded cancellation and shutdown remain unresolved. The
+request runtime's Promise/deadline evidence does not close that native-I/O gap
+or establish whole-architecture completion.
 
 - Audit the final C++ service/native-mechanism versus JavaScript policy/API
   boundaries, asynchronous cancellation/error/lifecycle behavior, and measured
@@ -43,6 +44,108 @@ whole-architecture completion label.
 - Validate and package the final source snapshot on Windows, including clean
   extraction and isolated runtime acceptance. The earlier package is stale for
   this revision. No macOS/Linux runtime verification is claimed.
+
+### Clipboard preservation and public options (2026-10-11)
+
+The current increment (parent `efa8a24`) fixes per-call options for `ui.update`,
+seven form methods and two clipboard methods. Tests load the real shipped JS
+modules and run the QuickJS runtime. Already-aborted and queued-aborted requests
+must reach no native dispatcher; each method also has a pending native future
+with a short per-call deadline. Timeout rejects the caller, drains its late
+reply, and prevents the downstream publication. These tests use an isolated
+native host and establish request semantics, not clipboard integration latency
+or rollback after native acceptance. Form focus takes a string field identity;
+its fourth argument follows `selectAll` and carries the request options.
+
+The Windows reader is a narrow checked Win32 adapter under
+`include/astra/ui/clipboard_text.hpp` and `src/ui/clipboard_text.cpp`. It acquires
+the real clipboard, bounds the Unicode scan to both its allocated storage and
+the requested text budget, strictly converts UTF-16 to UTF-8, and checks
+open/data/lock/conversion/unlock/close failures. Clipboard handles and memory
+are borrowed; RAII releases the leases without freeing OS-owned data. Other
+platforms retain the SDL main-thread getter with explicit empty/error handling;
+their behavior was not executed in this environment. Empty field paste is a
+no-op; failed acquisition occurs before selection/content/history changes.
+
+The new Windows `gui-clipboard-smoke` fixture holds the real clipboard on an
+owned thread and hidden window without changing existing contents, formats or
+owner. It verifies public JS rejection, editor/sidebar form value and version
+preservation, continued replacement of the original selection and undo to the
+original Unicode content. A selected modal field must return its exact original
+Unicode value after failed paste. Document text, revision and selections are
+unchanged through every route. Leases have a release deadline and report cleanup
+errors. The normal `scripts/test.ps1 -Gui` matrix now includes this fixture.
+
+Windows evidence:
+
+- `./scripts/format.ps1 -Offline` and
+  `./scripts/xmake.ps1 build -y -j 2 astra-tests gui-clipboard-smoke gui-smoke gui-presentation-smoke`
+  passed in Debug (`clipboard-options-build-debug.log`,
+  `clipboard-native-adapter-build-debug.log`). Later fixture corrections passed
+  `./scripts/xmake.ps1 build -y -j 2 astra-tests gui-clipboard-smoke`
+  (`clipboard-field-id-build-debug.log`).
+- `./build/windows/x64/debug/astra-tests.exe --no-version '--test-case=workbench*'`
+  passed **99 cases / 6,382 assertions** on the final source
+  (`clipboard-field-id-workbench-debug.log`).
+- `./build/windows/x64/debug/gui-clipboard-smoke.exe` passed real clipboard
+  contention, both form mounts and modal preservation
+  (`clipboard-field-id-debug.log`).
+- `gui-smoke.exe` and `gui-smoke.exe --tcp` passed normal production Unicode
+  clipboard/editing/history/save/reopen regressions in Debug
+  (`clipboard-regression-gui-debug.log`, `clipboard-regression-gui-tcp-debug.log`).
+- `gui-presentation-smoke.exe` passed Debug native workbench/input/clipboard,
+  indexed views, async picker/text/review cancellation and shutdown
+  (`clipboard-regression-presentation-debug.log`).
+- Release configure and the four affected targets built successfully
+  (`clipboard-options-config-release.log`, `clipboard-options-build-release.log`).
+  Final test-source formatting was then rebuilt with
+  `./scripts/xmake.ps1 build -y -j 2 astra-tests`
+  (`clipboard-final-source-build-release.log`); the final Release workbench run
+  passed **99 cases / 6,382 assertions**
+  (`clipboard-final-source-workbench-release.log`).
+- `./build/windows/x64/release/gui-clipboard-smoke.exe`, `gui-smoke.exe` and
+  `gui-smoke.exe --tcp` passed real failure preservation and normal editing
+  (`clipboard-final-source-native-release.log`, `clipboard-regression-gui-release.log`,
+  `clipboard-regression-gui-tcp-release.log`).
+- `gui-presentation-smoke.exe` also passed Release
+  (`clipboard-regression-presentation-release.log`). Rebuilt the final fixture
+  with checked hidden-window destruction and reran its real failure workflow:
+  `clipboard-cleanup-final-build-release.log` and
+  `clipboard-cleanup-final-native-release.log` passed. Rebuilt the actual
+  Release Astra executable (`clipboard-final-app-build-release.log`).
+- `./scripts/format.ps1 -Check -Offline` passed **197 C++ / 15 JS files**
+  (`clipboard-options-final-format-check.log`); `git diff --check` passed.
+
+Retained failures: the first fixture did not observe the required JS rejection
+(`clipboard-options-native-debug.log`). Reviewing the fixed SDL 3.4.12 Windows
+backend independently showed open-failure paths can return empty text without
+setting an SDL error, motivating explicit Windows acquisition. The initial
+lease used `OpenClipboard(NULL)` and did not establish separate-window contention;
+the next run also reported lease cleanup failure
+(`clipboard-native-adapter-debug.log`). The fixture now uses a concrete owned
+hidden HWND. The next run failed because the fixture passed a numeric field
+index to the JS focus API (`clipboard-owned-window-debug.log`); corrected to
+the actual string identity before the accepted run. Failed fixtures remain
+under `build/graphics/gui-clipboard-*`.
+
+The current Release editor-surface captures `build/graphics/gui-editor.png` and
+`gui-editor-tcp.png` were generated by the accepted regression runs; the local
+image was visually inspected. This checks one editor/Explorer/notice state, not
+the full product-state visual matrix or the native caption (surface captures
+omit window decorations).
+
+- Final Debug configuration, real Astra executable, tests and clipboard fixture
+  rebuilt successfully (`clipboard-final-config-debug.log`,
+  `clipboard-final-source-build-debug.log`). The final workbench run again
+  passed **99 cases / 6,382 assertions**
+  (`clipboard-final-source-workbench-debug.log`), and the final owned-window
+  clipboard failure/cleanup fixture passed
+  (`clipboard-cleanup-final-native-debug.log`).
+- Final `./scripts/format.ps1 -Check -Offline` passed **197 C++ / 15 JS files**
+  (`clipboard-final-acceptance-format-check.log`). `git diff --check` passed.
+
+This increment does not establish delayed-provider responsiveness or complete
+the full UI/architecture/package acceptance.
 
 ### Installed IME forms and modal acceptance (2026-10-11)
 
