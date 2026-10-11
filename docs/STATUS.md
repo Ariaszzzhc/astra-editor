@@ -20,6 +20,229 @@ API, cohesive UI, or indexed incremental presentation model. That revision is
 The entries below record tested increments. Newer entries at the top supersede
 older remaining-work lists without replacing their acceptance or failure evidence.
 
+Current remaining work (2026-10-11):
+
+- Audit the final C++ service/native-mechanism versus JavaScript policy/API
+  boundaries, asynchronous cancellation/error/lifecycle behavior, and measured
+  persistent indexes against every `EditorDoc.md` requirement. Component test
+  results do not establish whole-architecture acceptance.
+- Finish whole-workbench visual acceptance across editing, Explorer, search,
+  Git, Outline, pickers, forms and modal/error states. Measured typography and
+  individual component tests do not establish a cohesive final UI.
+- Extend real installed-IME acceptance to forms/modal fields; physical monitor
+  DPI transitions and real GPU device-loss behavior remain unverified.
+- Validate and package the final source snapshot on Windows, including clean
+  extraction and isolated runtime acceptance. The earlier package is stale for
+  this revision. No macOS/Linux runtime verification is claimed.
+
+### Actual installed Windows IME acceptance (2026-10-11)
+
+Document-input acceptance passed in Windows Debug and Release. This increment
+adds a Windows-only `gui-ime-smoke` that queries enabled
+installed TSF keyboard profiles, activates a profile only for the test process,
+directs OS input only at its owned SDL window and restores profile/focus on exit.
+It observes real SDL composition/commit events and the shared document; no SDL
+text packet is injected by this fixture. Form/modal input and other installed
+input-service profiles are not covered by this acceptance. Earlier draft failures
+below are retained; final-source results supersede them.
+
+`./scripts/format.ps1 -Offline` and `./scripts/xmake.ps1 build -y -j 2 gui-ime-smoke`
+passed (`installed-ime-format-debug.log`, `installed-ime-build-debug.log`).
+`gui-ime-smoke.exe --probe` exited 0 and found an enabled installed Chinese
+keyboard text service (`installed-ime-probe-debug.log`), a stronger prerequisite
+than a loaded language layout but still not composition/candidate acceptance.
+The first actual GUI run exited 1 before any test keystroke because Windows
+declined foreground activation (`installed-ime-gui-debug.log`); preserved fixture
+`build/graphics/gui-ime-356670724106000`. A revised focus path uses a verified
+owned caption point and restores the pointer, without changing foreground-lock
+settings. That run exited 1 before keyboard injection because the point was
+obscured (`installed-ime-focus-gui-debug.log`), preserving
+`build/graphics/gui-ime-356800561218300`. Temporary fixture-only caption stacking
+then obtained focus and delivered OS input, but the run exited 1 after 15 seconds
+without SDL preedit (`installed-ime-caption-gui-debug.log`), preserving
+`build/graphics/gui-ime-356894707566200`. All three draft builds passed; failure
+paths retain diagnostics rather than reporting installed-IME acceptance.
+
+The pinned SDL header and its
+[IME UI declaration documentation](https://wiki.libsdl.org/SDL3/SDL_HINT_IME_IMPLEMENTED_UI)
+require the application to declare handled composition UI before initialization.
+The current renderer draft adds `composition` before first video initialization,
+leaving candidate UI native. Its formatted Debug build passed
+(`installed-ime-composition-format-debug.log`, `installed-ime-composition-build-debug.log`),
+but actual acceptance still exited 1 with no preedit
+(`installed-ime-composition-gui-debug.log`), preserving
+`build/graphics/gui-ime-357025986270500`. This is a candidate correction, not
+proof that the missing declaration caused the observed timeout.
+
+Subsequent draft checks verify the activated TSF language/CLSID/profile identity
+and add read-only native-message and SDL-event observation. Identity, scan-code
+and message-observer Debug builds passed (`installed-ime-identity-build-debug.log`,
+`installed-ime-scancode-build-debug.log`, `installed-ime-message-build-debug.log`).
+Their actual runs all exited 1 without preedit; corresponding `*-gui-debug.log`
+files retain diagnostics and fixtures. The current fixture sends the complete
+`NI` syllable rather than assuming a particular IME must publish after its first
+letter. Its formatted build passed (`installed-ime-syllable-format-debug.log`,
+`installed-ime-syllable-build-debug.log`) and actual run exited 1
+(`installed-ime-syllable-gui-debug.log`), preserving
+`build/graphics/gui-ime-357439109052500`.
+
+The final diagnostic verifies native foreground/focus, SDL keyboard focus and
+active text input. Both OS scan-code keys reach the owned window as queued
+`VK_PROCESSKEY` (229), with zero queued IME composition messages, zero native
+composition bytes and no SDL preedit/commit. The selected enabled input service
+is CLSID `{E7EA138E-69F8-11D7-A6EA-00065B844310}`; no profile was installed or
+enabled by the test. These observations narrow the unresolved path beyond
+foreground activation and raw key delivery; they do not establish candidate
+presentation, preedit or commit acceptance. Draft renderer/test changes remain
+uncommitted. All recorded invocations are terminal; no acceptance job remains
+running for this entry.
+
+Further draft diagnostics on native Windows remain failures, not acceptance:
+
+- Narrowing each IMM context lease to the immediate read/change operation built
+  successfully but actual Astra input still timed out (`installed-ime-lease-build-debug.log`,
+  `installed-ime-lease-gui-debug.log`). No lease now spans input or message pumping.
+- A native EDIT child inside the SDL root reproduced the missing composition;
+  live TSF profile description identified **搜狗拼音输入法**
+  (`installed-ime-reference-build-debug.log`, `installed-ime-reference-gui-debug.log`).
+  This child shared SDL's parent/pump and was insufficient to isolate that layer.
+- Own-process security diagnostics found integrity RID 8192 (normal medium user),
+  no restricted token and Job UI restrictions 0 for the escalated actual runs
+  (`installed-ime-environment-probe-escalated.log`). The default sandbox probe
+  was low integrity 4096 (`installed-ime-environment-probe-default.log`); it was
+  not the context used for actual IME acceptance. Other Job policies were not audited.
+- Separating scan-code press/release with a 35 ms message-processing dwell built
+  but did not fix the child reference (`installed-ime-key-dwell-build-debug.log`,
+  `installed-ime-key-dwell-reference-debug.log`).
+- Replaced the child reference with a standalone Win32 root and EDIT control,
+  a regular `PeekMessageW`/`TranslateMessage`/`DispatchMessageW` loop and RAII-owned
+  native windows. This path creates no SDL window, Astra service or renderer.
+  First build failed on the SDK's ANSI `IDC_ARROW` macro passed to `LoadCursorW`
+  (`installed-ime-independent-build-debug.log`); the corrected formatted build
+  passed (`installed-ime-independent-fixed-build-debug.log`). The independent
+  `gui-ime-smoke.exe --reference` still exited 1 with two `VK_PROCESSKEY` messages,
+  zero native composition bytes and no text (`installed-ime-independent-reference-debug.log`),
+  preserving `build/graphics/gui-ime-358712408961300`.
+- Added a real OS Latin-input control and two seconds of bounded native message
+  processing after Chinese mode activation. The formatted Debug build passed
+  (`installed-ime-settle-build-debug.log`). Independent EDIT accepted real `A`
+  scan-code input; Chinese mode read back open=1/conversion=1/sentence=8, yet `NI`
+  still produced no composition (`installed-ime-settle-reference-debug.log`, exit 1),
+  preserving `build/graphics/gui-ime-358827972424600`. This establishes ordinary
+  OS text delivery to the control, not Chinese candidate/preedit acceptance.
+- Preserving the original conversion options when enabling native input built
+  successfully (`installed-ime-preserve-mode-build-debug.log`). The original
+  conversion was already 1, and the reference still timed out with unchanged
+  mode (`installed-ime-preserve-mode-reference-debug.log`), preserving
+  `build/graphics/gui-ime-358954342482100`; dropping other mode bits was not the
+  observed cause in this run.
+- Continuing the independent reference through a real Space key after the
+  preedit timeout **did commit Chinese text**. The ordinary Win32 loop
+  (`installed-ime-independent-commit-debug.log`) and an explicitly activated,
+  RAII-deactivated TSF thread with `ITfMessagePump` (`installed-ime-explicit-tsf-debug.log`)
+  both passed real Latin input and real Chinese candidate commit. Explicit TSF
+  reported a focused document. Both complete checks still exited 1 because their
+  required IMM composition observation remained absent; fixtures
+  `build/graphics/gui-ime-359087047325700` and
+  `build/graphics/gui-ime-359156137650400` are retained. The earlier timeout did
+  not establish that Chinese commit was broken: it had stopped before trying
+  commit. Adding TSF activation did not recover the missing observation.
+- Added a test-only `SetWindowSubclass` observer that forwards every message to
+  the original procedure, captures synchronous IME start/composition/end and
+  character delivery, and removes itself before owned window destruction.
+  The formatted Debug build passed (`installed-ime-native-trace-build-debug.log`).
+  Actual Astra input still had no preedit messages, but IMM reported one candidate
+  list / 218 bytes and Space committed text matching the actual shared document.
+  The test then failed because its new atomic-revision assertion incorrectly
+  read the protocol's decimal-string revision as a JSON number
+  (`installed-ime-native-trace-astra-debug.log`), preserving
+  `build/graphics/gui-ime-359360460646300`. This was a test-oracle error, not evidence
+  of a production revision failure; it was corrected to parse the string.
+- The corrected formatted Debug build passed
+  (`installed-ime-native-trace-fixed-build-debug.log`). Actual
+  `gui-ime-smoke.exe` passed candidate-list observation, exact shared-document
+  Chinese commit, revision +1, single-step undo/redo and file-content verification
+  after `ui.save` (`installed-ime-native-trace-fixed-astra-debug.log`). No SDL text
+  packet was injected. The owned fixture's actual GPU capture
+  `build/graphics/gui-installed-ime-committed.png` was inspected and shows **你**
+  before the seed text. Synchronous tracing recorded no start/composition/end
+  messages while typing, then one of each at commit, flags 2048 (`GCS_RESULTSTR`)
+  and two result bytes. The complete check still exited 1 because app preedit
+  observation/painting was absent, preserving
+  `build/graphics/gui-ime-359460321707000`. The evidence establishes real Chinese
+  commit/history/save for this input service, not full installed-IME UI acceptance,
+  candidate-window placement, form/modal composition or another IME profile.
+
+Native-route clarification and stronger evidence:
+
+- The selection-history/restoration draft built and verified original selection
+  undo/redo and restored conversion/open/profile identity; document text stayed
+  unchanged during input preparation (`installed-ime-selection-build-debug.log`,
+  `installed-ime-selection-astra-debug.log`). Visible windows in the test's own
+  process/thread identified `SoPY_Comp` near the caret and a separate status window.
+  This supersedes interpreting absent app preedit as an entirely failed IME path.
+- Bounded, RAII-owned GDI capture of only the test-owned composition window built
+  and ran (`installed-ime-popup-capture-build-debug.log`,
+  `installed-ime-popup-capture-astra-debug.log`). The actual caret was
+  (1904,768), size 2x37; the composition window was (1897,789)-(2546,945).
+  Inspected `build/graphics/gui-ime-360032737128500/native-ime-candidate.png`
+  shows **ni** and Chinese candidates, with **你** selected. The older full check
+  still exited 1 because it required an app preedit event even for this native
+  composition route. That requirement misclassified the observed native UI;
+  it is not evidence that the editor failed to present composition to the user.
+- The current acceptance retains app-preedit painting checks when offered, and
+  additionally requires a newly visible test-owned native composition popup near
+  the actual caret plus validated candidate metadata for native-only composition.
+  It waits with a deadline for popup presentation and saves a unique actual-window
+  PNG outside the cleaned workspace. No disabled/stub backend or synthetic text
+  was used to pass this route.
+- An added candidate-label equality assertion failed
+  (`installed-ime-final-gui-ime-smoke-debug.log`,
+  `installed-ime-candidate-order-astra-debug.log`): native candidate metadata
+  returned the display label `你 `, while Space correctly committed `你`.
+  Moving the read immediately before Space did not fix this mismatch. The current
+  independent oracle captures the exact native `GCS_RESULTSTR` before forwarding
+  the original window procedure and compares that UTF-8 result with SDL text and
+  the shared document, preserving the candidate metadata and actual UI checks.
+- That result-oracle Debug build passed (`installed-ime-result-oracle-build-debug.log`).
+  Real document-input acceptance and affected `gui-smoke`, `gui-workspace-smoke`
+  and `gui-presentation-smoke` all passed in a terminal, sequential invocation
+  (`installed-ime-result-gui-ime-smoke-debug.log` and corresponding `*-debug.log`).
+  Inspected actual native popup
+  `build/graphics/gui-ime-360770356170700-native-composition.png` shows the original
+  phonetic input and candidates. A final fixture addition drains events/errors
+  after profile restoration and verifies no residual commit/document change;
+  its final-source Debug recheck passed
+  (`installed-ime-accepted-final-source-debug.log`), including restored-profile
+  event draining and unchanged-document verification.
+- Final-source Release document-input acceptance passed
+  (`installed-ime-accepted-gui-ime-smoke-release.log`). Affected `gui-smoke`,
+  `gui-workspace-smoke` and `gui-presentation-smoke` also passed sequentially
+  (`installed-ime-accepted-*-release.log`). The native composition popup was
+  captured and visually checked. This establishes the actual installed Chinese
+  input service's document route, not whole-product IME or visual acceptance.
+- Final `./scripts/format.ps1 -Check -Offline` passed all 194 C++ and 15 JavaScript
+  files (`build/installed-ime-final-format-check.log`), and `git diff --check`
+  passed. Final-source builds and acceptance ran only on native Windows.
+- `scripts/test.ps1` now exposes `-Gui -InstalledIme`, builds the real fixture and
+  invokes it per requested Windows configuration. PowerShell syntax and rejecting
+  `-InstalledIme` without `-Gui` passed (`installed-ime-runner-guard.log`). An enabled
+  installed Chinese profile and an interactive desktop are explicit prerequisites,
+  not silently skipped capabilities; `--probe` remains a prerequisite check only.
+
+The successful route establishes native composition UI and the exact native
+result's passage through SDL into atomic shared document/history/save behavior.
+Absent app preedit alone was an incorrect failure criterion for this native-UI
+route. Process-local profile restoration
+now reads back and verifies the original identity on the successful cleanup path.
+No system profile was enabled/installed and no global input setting was changed.
+
+API boundaries were checked against Microsoft's
+[profile activation](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-activateprofile),
+[profile enumeration](https://learn.microsoft.com/en-us/windows/win32/api/msctf/nf-msctf-itfinputprocessorprofilemgr-enumprofiles)
+and [OS input](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)
+documentation. These references do not establish successful runtime behavior.
+
 ### Native font-measured nonmodal forms (2026-10-11)
 
 Test-only regressions reproduced native and actual GUI clipping

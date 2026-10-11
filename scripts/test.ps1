@@ -1,12 +1,16 @@
 param(
     [ValidateSet('debug', 'release', 'all')][string]$Mode = 'all',
     [switch]$Gui,
+    [switch]$InstalledIme,
     [switch]$Benchmarks
 )
 
 $ErrorActionPreference = 'Stop'
 if (-not $IsWindows -or [Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64') {
     throw 'This acceptance entry point is for native Windows x64.'
+}
+if ($InstalledIme -and -not $Gui) {
+    throw 'Installed IME acceptance requires -Gui and an interactive Windows desktop.'
 }
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $configurations = if ($Mode -eq 'all') { @('debug', 'release') } else { @($Mode) }
@@ -21,6 +25,7 @@ try {
         & "$PSScriptRoot/xmake.ps1" f -m $configuration -y
         $targets = @('astra-tests','astra-server')
         if ($Gui) { $targets += @('astra','graphics-smoke','renderer-smoke','text-layout-tests','viewport-layout-tests','gui-smoke','gui-services-smoke','gui-recovery-smoke','gui-workspace-smoke','gui-presentation-smoke','gui-body-smoke') }
+        if ($InstalledIme) { $targets += 'gui-ime-smoke' }
         if ($Benchmarks -and $configuration -eq 'release') { $targets += @('astra-core-benchmark', 'astra-view-benchmark') }
         & "$PSScriptRoot/xmake.ps1" build -y @targets
         $directory = Join-Path $repository ('build/windows/x64/' + $configuration)
@@ -31,6 +36,7 @@ try {
                 Invoke-AcceptanceBinary $directory $name
             }
             Invoke-AcceptanceBinary $directory 'gui-smoke' @('--tcp')
+            if ($InstalledIme) { Invoke-AcceptanceBinary $directory 'gui-ime-smoke' }
         }
         if ($Benchmarks -and $configuration -eq 'release') {
             Invoke-AcceptanceBinary $directory 'astra-core-benchmark'

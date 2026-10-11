@@ -405,6 +405,19 @@ target("gui-presentation-smoke")
     end
     set_exceptions("cxx")
 
+if is_plat("windows") then
+    target("gui-ime-smoke")
+        set_kind("binary")
+        set_rundir(os.projectdir())
+        set_default(false)
+        add_deps("astra-ui", "astra-service")
+        add_packages("skia-graphite", "libsdl3")
+        add_rules("astra.resources", "astra.graphics-runtime")
+        add_files("tests/gui_ime_smoke.cpp")
+        add_syslinks("imm32", "ole32", "oleaut32", "uuid", "comctl32", "user32", "gdi32")
+        set_exceptions("cxx")
+end
+
 target("gui-body-smoke")
     set_kind("binary")
     set_rundir(os.projectdir())

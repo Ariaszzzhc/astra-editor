@@ -85,6 +85,29 @@ rules stage `data/`, `tools/`, notices, `astra-process-host.exe`, SDL3, ICU data
 and DXC beside the appropriate executables. Building the GUI executable alone
 without these resources does not create a runnable distribution.
 
+Real installed-IME acceptance additionally requires an interactive Windows
+desktop and an already-enabled Chinese keyboard text service:
+
+```powershell
+./scripts/test.ps1 -Mode all -Gui -InstalledIme
+# Or build/run the document-input fixture independently:
+./scripts/xmake.ps1 build -y gui-ime-smoke
+./build/windows/x64/debug/gui-ime-smoke.exe --probe
+./build/windows/x64/debug/gui-ime-smoke.exe
+```
+
+`--probe` establishes only the enabled-profile prerequisite. The actual fixture
+activates that profile for its own process, sends real OS scan codes only to its
+owned foreground window, and restores the profile and conversion/open state.
+It rejects held modifiers/test keys. It verifies app preedit when offered, or
+an actual owned native composition popup near the caret for native-only IMEs,
+then verifies native candidate metadata and compares the exact native IME result
+string with the SDL commit and shared document. One transaction, selection-history
+undo/redo and durable save are checked. Native composition-window PNGs remain
+under `build/graphics/` after
+successful fixture cleanup. This target covers document input; form/modal IME
+workflows need their own acceptance. It never injects SDL text packets.
+
 Use `astra --server --workspace DIR --port 7777` or the headless `astra-server`
 for a loopback service, and `astra --connect 127.0.0.1:7777` for a GUI client.
 `--config` loads a workspace-relative user JS file after defaults.

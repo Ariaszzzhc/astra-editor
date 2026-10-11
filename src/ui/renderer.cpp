@@ -52,6 +52,12 @@ namespace {
 
 struct VideoLifetime {
     VideoLifetime() {
+        // Astra draws preedit itself; the installed IME keeps its native
+        // candidate UI. SDL needs this declaration before video initialization.
+        if (!SDL_WasInit(SDL_INIT_VIDEO) &&
+            !SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "composition")) {
+            sdl_failure("SDL application-owned IME composition declaration");
+        }
         if (!SDL_InitSubSystem(SDL_INIT_VIDEO)) {
             sdl_failure("SDL video initialization");
         }
