@@ -53,6 +53,7 @@ try {
         }
         if ($Benchmarks -and $configuration -eq 'release') {
             Invoke-AcceptanceBinary $directory 'astra-core-benchmark'
+            Invoke-AcceptanceBinary $directory 'astra-core-benchmark' @('--history')
             Invoke-AcceptanceBinary $directory 'astra-view-benchmark'
         }
     }

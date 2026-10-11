@@ -1,11 +1,12 @@
 #pragma once
 
 #include <astra/core/rope.hpp>
+#include <astra/core/sum_tree.hpp>
 
 #include <compare>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -90,7 +91,8 @@ class Document {
     Document& operator=(Document&&) noexcept = default;
 
     // Explicit transactional preparation for multi-document operations. Text
-    // nodes remain shared; selections and complete undo/redo state are isolated.
+    // and history nodes remain shared; current selections are copied. Mutating
+    // either clone never changes the other's state or retained history.
     [[nodiscard]] Document clone() const;
     // A new buffer identity/history over immutable snapshot text. Recovery callers
     // explicitly invalidate the saved state after restoring the external version.
@@ -129,7 +131,8 @@ class Document {
     [[nodiscard]] bool replace_selections(std::string_view text);
     [[nodiscard]] bool undo();
     [[nodiscard]] bool redo();
-    void set_history_limit(std::size_t limit) noexcept;
+    // Preparing a trim can allocate; failure preserves both histories and the limit.
+    void set_history_limit(std::size_t limit);
 
   private:
     Document(const Document&) = default;
@@ -145,10 +148,31 @@ class Document {
         State after;
     };
 
+    struct HistorySummary {
+        std::size_t entries{};
+
+        friend HistorySummary operator+(HistorySummary left, HistorySummary right) {
+            if (right.entries > std::numeric_limits<std::size_t>::max() - left.entries) {
+                throw std::length_error("Document history count overflow");
+            }
+            return {left.entries + right.entries};
+        }
+    };
+
+    struct MeasureHistory {
+        [[nodiscard]] HistorySummary operator()(const HistoryEntry&) const noexcept {
+            return {1};
+        }
+    };
+
+    using History = SumTree<HistoryEntry, HistorySummary, MeasureHistory>;
+
     [[nodiscard]] static std::vector<Selection>
     normalize_selections(const Rope& text, std::vector<Selection> selections);
     void require_revision_space() const;
-    void trim_history() noexcept;
+    [[nodiscard]] static History trimmed_history(const History& history, std::size_t limit);
+    // Entry is a one-leaf tree so undo/redo transfer the existing immutable leaf.
+    [[nodiscard]] History appended_history(const History& history, const History& entry) const;
 
     BufferId id_;
     Revision revision_{};
@@ -157,8 +181,8 @@ class Document {
     bool saved_identity_valid_{true};
     std::uint64_t next_identity_{1};
     std::size_t history_limit_;
-    std::deque<HistoryEntry> undo_;
-    std::deque<HistoryEntry> redo_;
+    History undo_;
+    History redo_;
 };
 
 } // namespace astra

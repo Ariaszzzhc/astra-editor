@@ -287,15 +287,16 @@ bool Document::apply(Transaction transaction) {
         throw std::overflow_error("document content identity exhausted");
     }
     next.identity = ContentId{next_identity_};
+    History next_undo;
     if (history_limit_ != 0) {
         // All potentially throwing allocations happen before any document mutation.
-        undo_.push_back(HistoryEntry{state_, next});
+        next_undo = appended_history(undo_, History::singleton(HistoryEntry{state_, next}));
     }
     state_ = std::move(next);
+    undo_ = std::move(next_undo);
+    redo_ = {};
     ++next_identity_;
     ++revision_.value;
-    redo_.clear();
-    trim_history();
     return true;
 }
 
@@ -321,12 +322,13 @@ bool Document::undo() {
         return false;
     }
     require_revision_space();
-    State previous = undo_.back().before;
-    redo_.push_back(undo_.back());
+    auto [next_undo, entry] = undo_.split(undo_.size() - 1);
+    State previous = entry.at(0).before;
+    auto next_redo = appended_history(redo_, entry);
     state_ = std::move(previous);
-    undo_.pop_back();
+    undo_ = std::move(next_undo);
+    redo_ = std::move(next_redo);
     ++revision_.value;
-    trim_history();
     return true;
 }
 
@@ -335,27 +337,40 @@ bool Document::redo() {
         return false;
     }
     require_revision_space();
-    State next = redo_.back().after;
-    undo_.push_back(redo_.back());
+    auto [next_redo, entry] = redo_.split(redo_.size() - 1);
+    State next = entry.at(0).after;
+    auto next_undo = appended_history(undo_, entry);
     state_ = std::move(next);
-    redo_.pop_back();
+    undo_ = std::move(next_undo);
+    redo_ = std::move(next_redo);
     ++revision_.value;
-    trim_history();
     return true;
 }
 
-void Document::trim_history() noexcept {
-    while (undo_.size() > history_limit_) {
-        undo_.pop_front();
+Document::History Document::trimmed_history(const History& history, std::size_t limit) {
+    if (limit == 0) {
+        return {};
     }
-    while (redo_.size() > history_limit_) {
-        redo_.pop_front();
+    if (history.summary().entries <= limit) {
+        return history;
     }
+    return history.split(history.size() - limit).second;
 }
 
-void Document::set_history_limit(std::size_t limit) noexcept {
+Document::History Document::appended_history(const History& history, const History& entry) const {
+    if (history_limit_ == 0) {
+        return {};
+    }
+    // Trim before addition, keeping at most limit entries without count overflow.
+    return trimmed_history(history, history_limit_ - 1).concat(entry);
+}
+
+void Document::set_history_limit(std::size_t limit) {
+    auto next_undo = trimmed_history(undo_, limit);
+    auto next_redo = trimmed_history(redo_, limit);
+    undo_ = std::move(next_undo);
+    redo_ = std::move(next_redo);
     history_limit_ = limit;
-    trim_history();
 }
 
 } // namespace astra

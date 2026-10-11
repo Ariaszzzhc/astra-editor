@@ -151,8 +151,16 @@ The test entry point builds the selected targets, runs the doctest suite and CLI
 smoke, and checks packaging helpers. `-Gui` additionally runs GPU readback,
 renderer/text-layout and all editor GUI smoke targets, including the TCP variant
 of `gui-smoke`. These are separate acceptance executables, not doctest cases.
-`-Benchmarks` runs the 1, 8 and 64 MiB core benchmark and the 1,000 / 10,000 /
-100,000-row view lifetime benchmark only in Release. The latter compares actual
+`astra-core-benchmark --history` separately measures cloning real documents with
+100 / 1,000 / 10,000 retained edits and 1 / 32 cursors. It checks independent
+undo/redo, saved state and trimming; clone latency excludes subsequent cleanup.
+Single-call measurements can reach this host's timer resolution. Build with
+`./scripts/xmake.ps1 build -y astra-core-benchmark`, then run
+`./scripts/xmake.ps1 run astra-core-benchmark --history` in the selected mode.
+
+`-Benchmarks` runs the 1, 8 and 64 MiB core benchmark, the history clone benchmark,
+and the 1,000 / 10,000 / 100,000-row view lifetime benchmark only in Release.
+The latter compares actual
 source destruction with owner-thread cancellation/publication handoff; it also
 checks complete retirement after shutdown. Its latency numbers do not measure
 GPU frames, service search completion, parsing or external snapshot holders.

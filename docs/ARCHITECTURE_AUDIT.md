@@ -67,6 +67,7 @@ the presence of a `SumTree` declaration.
 | Domain | Source | Costs that must remain explicit |
 | --- | --- | --- |
 | Rope | `include/astra/core/rope.hpp`, `sum_tree.hpp` | Bounded UTF-8 chunks; logarithmic structural paths do not make returned text copying free |
+| Undo/redo history | `include/astra/core/document.hpp`, `src/core/document.cpp` | Entry-count summaries, shared immutable leaves and roots; cloning copies current selections, and releasing unreferenced history still costs work |
 | Syntax semantic partitions and highlight runs | `src/language/syntax.cpp`, `include/astra/language/syntax.hpp` | Changed parse contexts, wide-parent traversal, error recovery and cache publication can still require linear work |
 | Explorer, provider views, pickers and tabs | `file_tree_index.hpp`, `view_index.hpp`, `picker_index.hpp`, `tab_index.hpp` under `include/astra/ui/` | Full enumeration/filtering, input validation and tab order relabelling are distinct from measured seeks |
 | Document rows, decorations, text panels and metadata extents | `viewport_index.hpp`, `range_index.hpp`, `text_line_index.hpp`, `document_metadata.hpp` under `include/astra/ui/` | Bounded page publication/comparison, list sorting and complete serialization are explicit work |
@@ -110,13 +111,17 @@ specific invariants; they do not establish an O(log n) whole-editor update.
    already-aborted and queued-aborted calls, per-call deadlines and discarded
    late native replies. This establishes runtime request behavior, not native
    clipboard latency or rollback after native acceptance.
-4. **Prepared history is not persistent.** `Document::clone()` uses the default
-   copy constructor. Its undo/redo deques therefore copy every `HistoryEntry`
-   and selection vector, even though the entries' Rope nodes share. This grows
-   preparation cost with retained history and leaves that ordered sequence outside
-   the measured persistent model. Replace history storage while preserving atomic
-   failure behavior, saved identities, trimming, branches and clone independence;
-   existing shallow Rope snapshots alone do not prove that correction.
+4. **Prepared history previously copied all entries.** The deque representation
+   copied every historical selection vector during `Document::clone()`, despite
+   sharing Rope nodes. Undo/redo now use persistent entry-count measured SumTrees;
+   cloning shares both roots and copies only current selections. Split/concat
+   transfer existing immutable leaves, and all new roots/states are prepared
+   before publication. Dynamic-limit differential tests retain and independently
+   replay clones; Unicode multicursor tests cover trimming, saved identities,
+   rejected late selections and branches. Exact Windows checks and the real
+   before/after history-clone benchmark are recorded in `STATUS.md`. Dropping
+   unreferenced nodes is still proportional to the released history; this is not
+   a claim that freeing arbitrary history or whole-editor updates are O(log n).
 
 API contracts used in this review:
 [SDL_GetClipboardText](https://wiki.libsdl.org/SDL3/SDL_GetClipboardText) and

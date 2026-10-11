@@ -84,10 +84,60 @@ void benchmark(std::size_t mib) {
               << percentile(differences, 95) << ',' << percentile(seeks, 95) << ',' << undo_us
               << ',' << original.text.tree_height() << '\n';
 }
+
+void benchmark_history(std::size_t entries, std::size_t cursors) {
+    astra::Document document({2}, std::string(cursors * 2, 'a'), entries);
+    std::vector<astra::Selection> selections;
+    for (std::size_t i = 0; i < cursors; ++i) {
+        const astra::ByteOffset offset{i * 2};
+        selections.push_back({offset, offset});
+    }
+    document.set_selections(selections);
+    for (std::size_t i = 0; i < entries; ++i) {
+        require(
+            document.apply({document.revision(), {{{1}, {2}, i % 2 == 0 ? "b" : "a"}}, selections}),
+            "Missing benchmark history entry");
+    }
+    document.mark_saved();
+    const auto saved = document.snapshot();
+    std::vector<double> clones;
+    clones.reserve(200);
+    for (std::size_t i = 0; i < 200; ++i) {
+        const auto start = Clock::now();
+        auto clone = document.clone();
+        clones.push_back(microseconds(start));
+        require(clone.revision() == saved.revision && clone.selections() == selections,
+                "Cloning changed current state");
+        require(clone.undo() && clone.redo() && !clone.dirty(),
+                "Cloned history lost the saved state");
+        clone.set_history_limit(0);
+        require(!clone.can_undo() && document.can_undo() && !document.dirty(),
+                "Trimming a clone changed the original history");
+    }
+    auto clone = document.clone();
+    for (std::size_t i = 0; i < entries; ++i) {
+        require(clone.undo(), "Cloning lost a retained undo entry");
+    }
+    require(!clone.undo() && document.revision() == saved.revision && document.can_undo(),
+            "Undo in a clone changed its source");
+    std::cout << entries << ',' << cursors << ',' << percentile(clones, 50) << ','
+              << percentile(clones, 95) << '\n';
+}
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--history") {
+            std::cout << "history_entries,cursors,clone_p50_us,clone_p95_us\n";
+            for (const auto cursors : {std::size_t{1}, std::size_t{32}}) {
+                for (const auto entries :
+                     {std::size_t{100}, std::size_t{1000}, std::size_t{10000}}) {
+                    benchmark_history(entries, cursors);
+                }
+            }
+            return 0;
+        }
+        require(argc == 1, "Expected no arguments or --history");
         std::cout << "MiB,load_ms,edit_p50_us,edit_p95_us,edit_p99_us,diff_p95_us,UTF16_seek_p95_"
                      "us,undo_mean_us,tree_height\n";
         for (const auto size : {std::size_t{1}, std::size_t{8}, std::size_t{64}}) {

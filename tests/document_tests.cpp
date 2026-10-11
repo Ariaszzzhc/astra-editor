@@ -535,11 +535,12 @@ TEST_CASE("randomized document edit history matches a flat reference") {
     constexpr std::uint64_t seed = 0x4153545241444f43ULL;
     INFO("seed = ", seed);
     std::mt19937_64 random(seed);
-    constexpr std::size_t history_limit = 24;
+    std::size_t history_limit = 24;
 
     struct ReferenceState {
         std::string text;
         std::vector<astra::Selection> selections;
+        std::uint64_t identity{};
     };
 
     struct ReferenceEntry {
@@ -552,10 +553,24 @@ TEST_CASE("randomized document edit history matches a flat reference") {
     std::deque<ReferenceEntry> redo;
     astra::Document document(astra::BufferId{1}, reference.text, history_limit);
     std::uint64_t revision = 0;
+    std::uint64_t next_identity = 1;
+    std::uint64_t saved_identity = 0;
     std::vector<std::pair<astra::DocumentSnapshot, std::string>> retained;
+
+    struct RetainedHistory {
+        astra::Document document;
+        ReferenceState state;
+        std::deque<ReferenceEntry> undo;
+        std::deque<ReferenceEntry> redo;
+        std::uint64_t revision;
+        std::uint64_t saved_identity;
+        std::size_t limit;
+    };
+
+    std::vector<RetainedHistory> histories;
     for (std::size_t iteration = 0; iteration < 1500; ++iteration) {
         INFO("iteration = ", iteration);
-        const auto action = random() % 5;
+        const auto action = random() % 8;
         if (action == 0) {
             CHECK(document.undo() == !undo.empty());
             if (!undo.empty()) {
@@ -572,6 +587,12 @@ TEST_CASE("randomized document edit history matches a flat reference") {
                 redo.pop_back();
                 ++revision;
             }
+        } else if (action == 2) {
+            history_limit = static_cast<std::size_t>(random() % 33);
+            document.set_history_limit(history_limit);
+        } else if (action == 3) {
+            saved_identity = reference.identity;
+            document.mark_saved();
         } else {
             auto begin = static_cast<std::size_t>(random() % (reference.text.size() + 1));
             auto end = static_cast<std::size_t>(random() % (reference.text.size() + 1));
@@ -589,6 +610,7 @@ TEST_CASE("randomized document edit history matches a flat reference") {
             const bool changed = before.text != reference.text;
             CHECK(document.replace_selections(replacement) == changed);
             if (changed) {
+                reference.identity = next_identity++;
                 undo.push_back({before, reference});
                 redo.clear();
                 ++revision;
@@ -605,11 +627,96 @@ TEST_CASE("randomized document edit history matches a flat reference") {
         CHECK(document.revision() == astra::Revision{revision});
         CHECK(document.can_undo() == !undo.empty());
         CHECK(document.can_redo() == !redo.empty());
+        CHECK(document.content_identity() == astra::ContentId{reference.identity});
+        CHECK(document.dirty() == (reference.identity != saved_identity));
         if (iteration % 75 == 0) {
             retained.emplace_back(document.snapshot(), reference.text);
+            histories.push_back(
+                {document.clone(), reference, undo, redo, revision, saved_identity, history_limit});
         }
     }
     for (const auto& [snapshot, text] : retained) {
         CHECK(snapshot.text.str() == text);
     }
+    const auto final_snapshot = document.snapshot();
+    for (auto& history : histories) {
+        const auto check = [&] {
+            CHECK(history.document.text().str() == history.state.text);
+            CHECK(history.document.selections() == history.state.selections);
+            CHECK(history.document.revision() == astra::Revision{history.revision});
+            CHECK(history.document.content_identity() == astra::ContentId{history.state.identity});
+            CHECK(history.document.dirty() == (history.state.identity != history.saved_identity));
+            CHECK(history.document.can_undo() == !history.undo.empty());
+            CHECK(history.document.can_redo() == !history.redo.empty());
+        };
+        check();
+        while (!history.undo.empty()) {
+            REQUIRE(history.document.undo());
+            history.state = history.undo.back().before;
+            history.redo.push_back(history.undo.back());
+            history.undo.pop_back();
+            while (history.redo.size() > history.limit) {
+                history.redo.pop_front();
+            }
+            ++history.revision;
+            check();
+        }
+        CHECK_FALSE(history.document.undo());
+        while (!history.redo.empty()) {
+            REQUIRE(history.document.redo());
+            history.state = history.redo.back().after;
+            history.undo.push_back(history.redo.back());
+            history.redo.pop_back();
+            while (history.undo.size() > history.limit) {
+                history.undo.pop_front();
+            }
+            ++history.revision;
+            check();
+        }
+        CHECK_FALSE(history.document.redo());
+    }
+    check_unchanged(document, final_snapshot);
+}
+
+TEST_CASE("retained multicursor histories survive independent trimming and branches") {
+    const std::string initial = "a\xf0\x9f\x98\x80 b\xe4\xb8\xad\r\n";
+    astra::Document original({1}, initial);
+    original.set_selections({selection(1, 5), selection(10, 7)});
+    const auto before = original.snapshot();
+    REQUIRE(original.replace_selections("e\xcc\x81"));
+    original.mark_saved();
+    const auto saved = original.snapshot();
+    REQUIRE(original.replace_selections("!"));
+    const auto after = original.snapshot();
+    REQUIRE(original.undo());
+    auto retained = original.clone();
+    auto branch = retained.clone();
+    original.set_history_limit(0);
+    CHECK_FALSE(original.can_undo());
+    CHECK_FALSE(original.can_redo());
+    REQUIRE(branch.replace_selections("?"));
+    CHECK_FALSE(branch.can_redo());
+    REQUIRE(branch.undo());
+    CHECK_FALSE(branch.dirty());
+    CHECK(branch.selections() == saved.selections);
+    auto invalid = transaction(retained, {edit(0, 1, "\xf0\x9f\x98\x80")});
+    invalid.selections_after = std::vector{selection(1, 1)};
+    CHECK_THROWS_AS((void)retained.apply(std::move(invalid)), std::invalid_argument);
+    REQUIRE(retained.redo());
+    CHECK(retained.text().str() == after.text.str());
+    CHECK(retained.selections() == after.selections);
+    REQUIRE(retained.undo());
+    CHECK_FALSE(retained.dirty());
+    REQUIRE(retained.undo());
+    CHECK(retained.text().str() == before.text.str());
+    CHECK(retained.selections() == before.selections);
+    CHECK_FALSE(retained.undo());
+    CHECK_FALSE(original.dirty());
+    CHECK(original.text().str() == saved.text.str());
+    branch.set_history_limit(1);
+    REQUIRE(branch.redo());
+    CHECK(branch.dirty());
+    REQUIRE(branch.undo());
+    CHECK_FALSE(branch.dirty());
+    CHECK_FALSE(branch.undo());
 }

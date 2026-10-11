@@ -35,11 +35,9 @@ native-I/O finding; it does not establish whole-architecture completion.
   boundaries, asynchronous cancellation/error/lifecycle behavior, and measured
   persistent indexes against every `EditorDoc.md` requirement. Component test
   results do not establish whole-architecture acceptance.
-- The source audit found that `Document::clone()` copies deque-based undo/redo
-  entries, including their selections. Rope nodes share persistently, but whole
-  history preparation still grows with retained history. Review and replace that
-  history representation with persistent measured storage, preserving transaction
-  failure atomicity, trimming, branching and prepared-clone independence.
+- Undo/redo now use persistent measured storage rather than copied deques. Final
+  Windows core/service/GUI regression evidence for this correction is recorded
+  below; this resolves history preparation, not the entire index audit.
 - Finish whole-workbench visual acceptance across editing, Explorer, search,
   Git, Outline, pickers, forms and modal/error states. Measured typography and
   individual component tests do not establish a cohesive final UI.
@@ -50,9 +48,83 @@ native-I/O finding; it does not establish whole-architecture completion.
   extraction and isolated runtime acceptance. The earlier package is stale for
   this revision. No macOS/Linux runtime verification is claimed.
 
+### Persistent document history (2026-10-11)
+
+The increment following `83671c3` replaces undo/redo deques with immutable
+entry-count measured SumTrees. Summary identity is zero entries; composition is
+checked count addition. `Document::clone()` shares history roots and Rope nodes,
+copying only current selections. Undo/redo split off and transfer existing leaves;
+append/trim prepare roots before publishing state. All throwing preparation
+precedes document mutation, including limit changes. `set_history_limit` can now
+throw on allocation failure rather than terminating through a `noexcept` trim.
+Move publication remains nonthrowing. Releasing unreferenced entries still costs
+work proportional to what is destroyed; this is not a constant-time cleanup claim.
+
+The deterministic flat history test (`0x4153545241444f43`) performs 1,500 operations
+with changing limits, save baselines, branches, undo/redo and 20 retained clones.
+Each clone is independently replayed against its retained flat histories. A new
+Unicode multicursor case checks emoji, combining text, CJK, reversed selections,
+CRLF, late invalid-selection rejection, independent pruning and saved identities.
+The real benchmark validates full cloned undo histories up to 10,000 entries.
+
+Release comparison on this host (200 clones per row, only clone construction is
+timed; following undo/redo/pruning and destruction are outside the measurement):
+
+| Entries | Cursors | Before clone P95 (microseconds) | Persistent clone P95 (microseconds) |
+| --- | --- | --- | --- |
+| 100 | 1 | 6.7 | 0.1 |
+| 1,000 | 1 | 97.0 | 0.1 |
+| 10,000 | 1 | 1,511.0 | 0.1 |
+| 100 | 32 | 8.0 | 0.1 |
+| 1,000 | 32 | 385.2 | 0.1 |
+| 10,000 | 32 | 5,275.2 | 0.1 |
+
+The new single-call measurements reach this host's approximately 0.1-microsecond
+clock resolution; zero P50 values mean below resolution, not zero-cost cloning.
+The source-level guarantee is root sharing with O(current cursors) selection
+copying, independent of retained history size. Logs are
+`build/history-clone-baseline-release.csv` and `build/history-clone-release.csv`.
+The baseline used the new benchmark with the unchanged deque implementation.
+
+Windows acceptance (same production sources in Debug and Release):
+
+- `./scripts/format.ps1 -Offline`, then `./scripts/format.ps1 -Check -Offline`:
+  201 C++ / 15 JS files pass (`build/history-format-check.log`).
+  `git diff --check` and PowerShell parser validation of `scripts/test.ps1` pass.
+- Configure each mode with `./scripts/xmake.ps1 f -m <mode> -y`; build
+  `astra-core-tests astra-core-benchmark astra-tests astra astra-server gui-smoke`
+  using `./scripts/xmake.ps1 build -y -j2 ...`. Release preparation used separate
+  core and integration invocations. Logs: `history-build-release.log`,
+  `history-integration-build-release.log`, `history-build-debug.log` under `build/`.
+- `build/windows/x64/<mode>/astra-core-tests.exe --no-version`: both modes pass
+  **49 cases / 198,091 assertions / no skipped cases**
+  (`history-core-tests-<mode>.log`).
+- `build/windows/x64/<mode>/astra-tests.exe --no-version`: Debug passes
+  **631 cases / 2,704,814 assertions**; Release passes
+  **631 cases / 2,704,706 assertions**; zero failures/skips in either mode.
+  Logs: `history-full-tests-<mode>.log`. Async polling changes assertion counts.
+  These include real LSP/workspace/document-search preparations and concurrent
+  save/selection/version rejection, not just direct core calls.
+- Both modes pass `gui-smoke.exe`, `gui-smoke.exe --tcp` and
+  `./tests/cli_smoke.ps1 -Mode <mode>` (`history-gui-<mode>.log`,
+  `history-gui-tcp-<mode>.log`, `history-cli-<mode>.log`). Actual SDL input reaches
+  JS policy and the shared dispatcher for Unicode/multicursor editing, undo/redo,
+  find/replace, workspace replacement, dirty close and save/reopen.
+- `build/windows/x64/release/astra-core-benchmark.exe --history` produces the
+  comparison above; the default benchmark validates 1,000 Unicode insertions,
+  retained snapshots, UTF-16 seeking and full undo on 1/8/64 MiB inputs.
+  Edit P95: **11.0 / 11.0 / 12.9 microseconds**; undo mean:
+  **0.8333 / 0.9067 / 1.1143 microseconds**
+  (`build/history-edit-benchmark-release.csv`). These are core timings, not
+  end-to-end input/GPU latency. `scripts/test.ps1 -Benchmarks` now includes
+  the history benchmark in its Release sequence.
+
+No failed build/test attempt occurred in this history increment. The remaining
+whole-product audit, default visual matrix and fresh package are still open.
+
 ### Asynchronous clipboard implementation and resumed checks (2026-10-11)
 
-The uncommitted draft moves native clipboard reads and writes to owned helper
+Committed increment `83671c3` moves native clipboard reads and writes to owned helper
 processes. The client serializes unfinished requests, bounds text/wire queues,
 retains successful clipboard ownership, and kills cancelled/timed-out readers.
 The helper's SDL main thread performs native clipboard work; libuv carries framed
