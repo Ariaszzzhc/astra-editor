@@ -14,7 +14,7 @@ else()
     execute_process(COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/prepare-grammars.py"
         ${grammar_offline} WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}" COMMAND_ERROR_IS_FATAL ANY)
 endif()
-file(READ "${PROJECT_SOURCE_DIR}/grammars/manifest.json" grammar_manifest)
+file(READ "${PROJECT_SOURCE_DIR}/dependencies/grammars/manifest.json" grammar_manifest)
 string(JSON package_count LENGTH "${grammar_manifest}" packages)
 math(EXPR package_last "${package_count} - 1")
 foreach(index RANGE ${package_last})

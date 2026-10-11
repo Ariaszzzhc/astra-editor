@@ -84,7 +84,7 @@ endif()
 
 
 add_executable(astra-server
-    src/main.cpp
+    apps/astra/main.cpp
 )
 target_link_libraries(astra-server PUBLIC astra-options astra-service astra-transport libuv::uv_a)
 
@@ -152,7 +152,7 @@ astra_library(astra-workbench
 target_link_libraries(astra-workbench PUBLIC astra-options astra-script astra-core astra-editing)
 
 add_executable(astra
-    src/main.cpp
+    apps/astra/main.cpp
 )
 target_link_libraries(astra PUBLIC astra-options astra-service astra-transport astra-ui libuv::uv_a Astra::Graphics SDL3::SDL3)
 target_compile_definitions(astra PRIVATE ASTRA_WITH_GUI)
@@ -164,7 +164,7 @@ target_link_libraries(astra-git PUBLIC astra-options astra-core astra-io astra-p
 
 if(WIN32)
 add_executable(astra-process-host
-    src/process/windows_host.cpp
+    apps/process/host.cpp
 )
 target_link_libraries(astra-process-host PUBLIC astra-options )
 endif()
@@ -175,7 +175,7 @@ astra_library(astra-clipboard
 target_link_libraries(astra-clipboard PUBLIC astra-options astra-process astra-protocol astra-core)
 
 add_executable(astra-clipboard-host
-    src/ui/clipboard_host.cpp
+    apps/clipboard/host.cpp
     src/ui/clipboard_text.cpp
 )
 target_link_libraries(astra-clipboard-host PUBLIC astra-options astra-protocol astra-core SDL3::SDL3 libuv::uv_a)
@@ -198,9 +198,9 @@ if(WIN32)
 endif()
 
 if(ASTRA_BUILD_BENCHMARKS)
-    add_executable(astra-core-benchmark tests/core_benchmark.cpp)
+    add_executable(astra-core-benchmark benchmarks/core.cpp)
     target_link_libraries(astra-core-benchmark PRIVATE astra-core astra-options)
-    add_executable(astra-view-benchmark tests/view_benchmark.cpp)
+    add_executable(astra-view-benchmark benchmarks/view.cpp)
     target_link_libraries(astra-view-benchmark PRIVATE astra-workbench astra-text-source astra-options)
 endif()
 

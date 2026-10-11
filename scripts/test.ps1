@@ -55,7 +55,6 @@ try {
             Invoke-AcceptanceBinary $directory 'astra-view-benchmark'
         }
     }
-    & "$repository/tests/package_scripts_tests.ps1"
 } finally {
     Pop-Location
 }

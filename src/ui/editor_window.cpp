@@ -392,7 +392,8 @@ struct EditorWindow::Impl {
         std::map<std::string, std::string> modules;
         modules.emplace(
             "astra/defaults",
-            io::read_file(options.resource_directory / "data" / "defaults.js", 1024 * 1024).text);
+            io::read_file(options.resource_directory / "resources" / "defaults.js", 1024 * 1024)
+                .text);
         for (const auto& [name, file] :
              std::map<std::string, std::string>{{"astra/ui", "api.js"},
                                                 {"astra/icons", "icons.js"},
@@ -410,7 +411,8 @@ struct EditorWindow::Impl {
                                                 {"astra/workbench", "workbench.js"}}) {
             modules.emplace(
                 name,
-                io::read_file(options.resource_directory / "data" / "workbench" / file, 1024 * 1024)
+                io::read_file(options.resource_directory / "resources" / "workbench" / file,
+                              1024 * 1024)
                     .text);
         }
         workbench = std::make_unique<Workbench>(

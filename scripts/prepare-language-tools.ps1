@@ -6,7 +6,7 @@ if (-not $IsWindows -or [Runtime.InteropServices.RuntimeInformation]::OSArchitec
     throw 'This script prepares the verified Windows x64 language tools only.'
 }
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$manifestPath = Join-Path $repository 'languages/manifest.json'
+$manifestPath = Join-Path $repository 'dependencies/runtime/manifest.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 $cache = Join-Path $repository '.tools/lsp'
 $downloads = Join-Path $cache 'downloads'

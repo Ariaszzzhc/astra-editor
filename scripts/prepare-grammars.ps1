@@ -4,7 +4,7 @@ param([switch]$Offline)
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $cache = Join-Path $repository '.tools/grammars'
-$manifest = Get-Content -LiteralPath (Join-Path $repository 'grammars/manifest.json') -Raw | ConvertFrom-Json
+$manifest = Get-Content -LiteralPath (Join-Path $repository 'dependencies/grammars/manifest.json') -Raw | ConvertFrom-Json
 New-Item -ItemType Directory -Force -Path $cache | Out-Null
 
 function Assert-Hash([string] $Path, [string] $Expected) {

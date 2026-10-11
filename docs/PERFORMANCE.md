@@ -1,9 +1,9 @@
 # Windows core measurements
 
 Measured on 2026-10-09 with the repository's MSVC x64 Release build, C++23 and
-`/MT`. Run `./scripts/xmake.ps1 build -y astra-core-benchmark`, then
-`./build/windows/x64/release/astra-core-benchmark.exe` to reproduce the workload.
-`scripts/test.ps1 -Mode release -Benchmarks` also includes it.
+`/MT` in the historical build. The current build uses `/MD`; run
+`./scripts/test.ps1 -Mode release -Benchmarks` to repeat the correctness-checked
+workload with the CMake toolchain. The recorded timings below predate migration.
 
 Each size contains repeated source lines with Chinese text, a supplementary
 emoji and a combining sequence. The fixed seed `0x4153545241504552` chooses

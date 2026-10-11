@@ -27,7 +27,7 @@ if ($cache -notmatch '(?m)^CMAKE_GENERATOR:INTERNAL=Ninja\r?$' -or
 if ($BuildDirectory -ne 'build/cmake/windows-package') {
     & "$PSScriptRoot/cmake.ps1" -S $repo -B $build "-DASTRA_OFFLINE=$offlineOption"
 }
-& "$PSScriptRoot/cmake.ps1" --build $build --target astra astra-server astra-process-host astra-clipboard-host --parallel 8
+& "$PSScriptRoot/cmake.ps1" --build $build --target astra-production --parallel 8
 $version = (Get-Content (Join-Path $build 'astra-version.txt') -Raw).Trim()
 $name = 'astra-' + $version + '-windows-x64'
 if (-not $OutputDirectory) { $OutputDirectory = 'build/packages/' + $name }

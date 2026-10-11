@@ -63,12 +63,12 @@ reported immediately. Process lifecycle tests separately require immediate remov
 of the child's working directory, with no retry allowance.
 
 Windows Debug and Release acceptance includes 17 process cases and 19 Git cases.
-Run the standalone target with the pinned wrapper:
+Run the integration executable with the pinned wrapper:
 
 ```powershell
-./scripts/xmake.ps1 f -m debug -y
-./scripts/xmake.ps1 build -y astra-platform-tests
-./scripts/xmake.ps1 run astra-platform-tests --no-version
+./scripts/cmake.ps1 --preset windows-debug
+./scripts/cmake.ps1 --build --preset windows-debug --target astra-integration-tests
+./scripts/cmake.ps1 -CTest --preset windows-debug -R '^integration$'
 ```
 
-Repeat with `-m release`. This environment does not validate Linux/macOS behavior.
+Repeat with `windows-release`. This environment does not validate Linux/macOS behavior.

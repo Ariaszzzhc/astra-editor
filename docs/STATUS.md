@@ -2,6 +2,56 @@
 
 Product contract: `EditorDoc.md`. Product name: Astra (confirmed by the user).
 
+## CMake migration: directories and tests (2026-10-12)
+
+Application/helper entry points now live under apps/, shipped JavaScript under
+resources/, pinned grammar/runtime inputs under dependencies/, and distribution
+inputs under packaging/. Unit, integration, GUI, environment, package and support
+tests have distinct directories; benchmarks are separate. See DIRECTORIES.md.
+The original 632 cases remain, plus the two scheduler regressions recorded below.
+One shared doctest main object serves the 279-case unit and 355-case integration
+executables. No test or benchmark is installed. astra-production and Runtime
+installation share one production-target list; dependency ABI records invalidate
+consumer compile commands even when restored archive timestamps are older.
+
+Windows acceptance:
+
+- `./scripts/test.ps1 -Mode all -Gui`: Debug and Release each passed all 17 CTest
+  checks, 634 behavior cases, zero failures/skips. Debug took 915.77 s; Release
+  248.59 s (`build/cmake-phase3-acceptance-final.log`). Native Debug text/viewport
+  layout passed in 60.35/362.86 s and GUI presentation in 173.47 s. The ordinary
+  GUI checks include real rendering, editing, local/TCP service parity, recovery,
+  workspace, presentation, clipboard failure preservation and visual/body paths.
+- The initial directory rewrite incorrectly changed synthetic src/main.cpp
+  fixture strings in four test sources. Four EditorConfig cases failed; stopped
+  the owned CTest tree before continuing. Restored the original virtual fixture
+  paths and reviewed each moved test diff. Production matching logic and original
+  assertions are unchanged (`build/cmake-phase3-acceptance.log`).
+- Configured both presets with `-DASTRA_BUILD_ENVIRONMENT_TESTS=ON` and built
+  gui-ime-smoke/gui-clipboard-async-smoke; compiled successfully in both modes.
+  These fixtures were not executed. Release additionally enabled
+  `-DASTRA_BUILD_BENCHMARKS=ON`; astra-core-benchmark, its `--history` workload and
+  astra-view-benchmark all passed correctness checks
+  (`build/cmake-phase3-optional-{debug,release}.log`, `build/cmake-phase3-benchmarks.log`).
+- `./scripts/package-windows.ps1 -BuildDirectory build/cmake/windows-release -OutputDirectory build/packages/astra-cmake-phase3 -Offline -NoArchive`:
+  6,340 installed files passed inventory checks (`build/cmake-phase3-package.log`).
+  This intermediate installation truthfully records its dirty source snapshot.
+- `./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/astra-cmake-phase3 -RunSmoke -RunGuiSmoke`:
+  installed production GUI/shipped JS/renderer, atomic Unicode edit/undo/redo,
+  durable save/guarded close and isolated server/process/Git/recovery plus all
+  three real language diagnostic checks passed
+  (`build/cmake-phase3-package-smoke.log`).
+- Formatting/check passed for 203 C++ and 15 JS files. PowerShell parsing and
+  Python source AST parsing passed; no native non-Windows script was executed.
+  The staged owned diff passed whitespace checks. In the preceding port commit,
+  three unchanged official Skia files retained upstream whitespace; comparison
+  verified their official contents and excluded only those files from that gate.
+
+Directory/test migration is Windows-validated. Final removal of obsolete build
+entry points and clean-source ZIP relocation acceptance are still in progress.
+Installed IME, isolated delayed clipboard, physical DPI and adapter removal have
+not been re-established. No Linux/macOS build/test/package command has run.
+
 ## CMake migration: official ports (2026-10-12)
 
 The new graph uses pinned CMake 4.4.3, Ninja 1.13.1 and official ports at vcpkg

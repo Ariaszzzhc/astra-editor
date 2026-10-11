@@ -26,7 +26,7 @@ migration acceptance. Linux/macOS source is present but unverified on this host.
 
 1. Create the SDL3 window and obtain its `HWND` with
    `SDL_GetWindowProperties` / `SDL_PROP_WINDOW_WIN32_HWND_POINTER`.
-2. Install Dawn's native proc table, create the native instance and D3D12 adapter,
+2. Use the official monolithic native WebGPU entry points, create the instance and D3D12 adapter,
    then create the device with error/device-lost callbacks. Request optional
    features only when that adapter exposes them.
 3. Create a WebGPU surface using `wgpu::SurfaceSourceWindowsHWND`. Query supported
@@ -74,16 +74,16 @@ current CMake commands and outcomes are recorded in STATUS.md.
   SkParagraph, SkShaper, and ICU-backed SkUnicode libraries built and installed.
 - `-Stage Build -Configuration Debug -Jobs 8`: all 1,622 build steps completed;
   the separate Debug install uses the same pinned revisions and MT policy.
-- `tests/graphics_smoke.cpp`, linked against only the installed include/library manifest, created
+- `tests/gui/graphics_smoke.cpp`, linked against only the installed include/library manifest, created
   a real D3D12 Dawn device and Graphite surface, drew green over red, read pixels
   back from the GPU, checked the expected RGBA values, and initialized SkUnicode
   ICU using the installed runtime data. Release and Debug: **PASS**.
-- `tests/renderer_smoke.cpp` used the production `astra::ui::Renderer` and SDL3
+- `tests/gui/renderer_smoke.cpp` used the production `astra::ui::Renderer` and SDL3
   3.4.12 to present native HWND surface frames, save and decode a real GPU PNG,
   verify exact green/red pixels and resized dimensions, minimize/restore, set the
   IME candidate area, destroy the window/device, and create a second renderer.
   Release and Debug: **PASS**. The PNG is `build/graphics/renderer-smoke.png`.
-- `tests/text_layout_tests.cpp` exercises real native fonts, empty lines, CJK,
+- `tests/gui/text_layout_tests.cpp` exercises real native fonts, empty lines, CJK,
   emoji/ZWJ/flags, combining marks, RTL and mixed-direction hit/caret roundtrips,
   selection boxes, proportional-font tab stops, DPI scaling, supported wrapping,
   malformed UTF-8 rejection, and randomized mixed Unicode/tab positions. It also
@@ -95,7 +95,7 @@ current CMake commands and outcomes are recorded in STATUS.md.
   combining marks, CJK and bidi text. UTF-16-to-UTF-8 conversion is tested with
   surrogate pairs. The pinned SkParagraph `updateForegroundPaint` only supports
   whole-paragraph updates and is deliberately not used for syntax ranges.
-- `tests/gui_smoke.cpp` is an independent real SDL/Graphite window plus
+- `tests/gui/gui_smoke.cpp` is an independent real SDL/Graphite window plus
   `ServiceHost`. Native SDL events exercise Unicode and IME preedit/commit,
   multicursor input and one-step undo/redo, system clipboard, document find and
   replacement, workspace replacement with explicit confirmation, syntax object
@@ -103,7 +103,7 @@ current CMake commands and outcomes are recorded in STATUS.md.
   line-page boundary. Debug: **PASS**. GPU screenshots are
   `gui-editor.png`, `gui-palette.png`, `gui-dirty-close.png`, and
   `gui-replace-confirm.png` under `build/graphics`.
-- `tests/gui_services_smoke.cpp` uses the actual fixed clangd binary and a fresh
+- `tests/gui/gui_services_smoke.cpp` uses the actual fixed clangd binary and a fresh
   Git repository under `build/graphics`. Debug: **PASS** for completion with
   atomic undo, hover, definition, references, rename preview/confirmation,
   formatting, diff/gutter, stage/unstage, commit, and guarded discard including
@@ -132,7 +132,7 @@ on failure it keeps the window open and offers Retry, Keep open, or an explicit
 Exit anyway confirmation. A canceled exit cannot be completed by a stale flush
 response. Background recovery errors remain visible in the editor.
 
-`tests/gui_recovery_smoke.cpp` is an independent Windows acceptance executable
+`tests/gui/gui_recovery_smoke.cpp` is an independent Windows acceptance executable
 using the real RecoveryStore, ServiceHost, native renderer and input path. It
 covers startup notification, explicit Unicode/selection recovery, unchanged disk
 before Save, dirty-state preservation, and durable exit. Its failure-path channel
@@ -151,7 +151,7 @@ PDB service was inaccessible in the restricted execution sandbox (C1902); the
 normal authorized Windows build outside that sandbox passed. No SDK files were
 modified. These results verify the native renderer, text layout, and editor
 command path on Windows. Final Debug/Release application checks are coordinated
-through the repository's xmake targets.
+through the repository's CMake targets and CTest GUI label.
 
 Acceptance still requires:
 
@@ -407,8 +407,9 @@ bounded native font/paragraph heaps or constant frame latency.
 - [Microsoft DXC v1.9.2609](https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.9.2609)
 - [xmake generic Skia package](https://raw.githubusercontent.com/xmake-io/xmake-repo/master/packages/s/skia/xmake.lua)
 
-The generic xmake Skia package does not currently expose this Graphite/Dawn build
-configuration. It is not interchangeable with the local graphics package.
+The historical xmake build used its local graphics package. Current builds select
+Graphite/Dawn through the pinned official vcpkg features and retain only the
+necessary glyph-cache overlay described at the start of this document.
 
 ## Workbench style ownership and live updates
 
@@ -450,7 +451,7 @@ The actual GPU capture `build/graphics/gui-quick-open.png` shows a fuzzy query
 selecting `generated/item4999.txt` in a 5,000-file fixture. This establishes the
 tested picker presentation, not whole-product visual acceptance.
 
-`data/defaults.js` supplies all workbench RGB roles and UI font families. The
+`resources/defaults.js` supplies all workbench RGB roles and UI font families. The
 client imports it into its actual QuickJS runtime before user policy, retains the
 bootstrap settings separately and merges service and client preferences over
 that base. No native alternate palette is shown before asynchronous service

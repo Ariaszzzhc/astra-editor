@@ -44,7 +44,7 @@ and Windows-only PATH. It checks version entry points, real TCP dispatch,
 durable Unicode save, bundled Git, real C++/TypeScript/Python diagnostics and
 recovery. A global language tool or the development cache cannot enter that PATH.
 
--RunGuiSmoke invokes tests/package_gui_smoke.ps1 against the installed production
+-RunGuiSmoke invokes tests/package/package_gui_smoke.ps1 against the installed production
 GUI. Shipped JS opens a file, performs Unicode editing and atomic undo/redo,
 saves and closes through the shared dispatcher/lifecycle. The independent fixture
 checks durable file bytes and exit status. It requires a native desktop/GPU and

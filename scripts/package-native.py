@@ -14,7 +14,7 @@ def require_payload(directory, platform, architecture):
     for name in ("astra", "astra-server", "astra-clipboard-host", "tools/node/bin/node",
                  "tools/clangd/bin/clangd", "tools/git/bin/git"):
         native_binary(directory / name, platform, architecture)
-    for name in ("data/defaults.js", "README.md", "THIRD-PARTY.md",
+    for name in ("resources/defaults.js", "README.md", "THIRD-PARTY.md",
                  "licenses/vcpkg/skia/copyright", "licenses/vcpkg/dawn/copyright",
                  "provenance/vcpkg-status.txt", "provenance/build-provenance.json"):
         if not (directory / name).is_file():
@@ -43,7 +43,7 @@ def main():
         raise RuntimeError("A configured native Release build is required")
     if not args.cmake.is_file():
         raise RuntimeError("Pass the configured CMake executable")
-    run(args.cmake, "--build", build, "--target", "astra", "astra-server", "astra-clipboard-host")
+    run(args.cmake, "--build", build, "--target", "astra-production")
     version = (build / "astra-version.txt").read_text().strip()
     name = f"astra-{version}-{platform}-{architecture}"
     output = child(REPO / "build", REPO / (args.output or Path("build/packages") / name))

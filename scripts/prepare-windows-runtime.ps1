@@ -6,13 +6,13 @@ if (-not $IsWindows -or [Runtime.InteropServices.RuntimeInformation]::OSArchitec
     throw 'Only native Windows x64 runtime preparation is supported by this script.'
 }
 $repo = $ReleaseRepository
-$languages = Get-Content (Join-Path $repo 'languages/manifest.json') -Raw | ConvertFrom-Json
-$windows = Get-Content (Join-Path $repo 'release/windows-tools.json') -Raw | ConvertFrom-Json
-$grammars = Get-Content (Join-Path $repo 'grammars/manifest.json') -Raw | ConvertFrom-Json
-$lockFiles = @('languages/manifest.json','release/windows-tools.json','grammars/manifest.json',
-    'dependencies.lock.json','release/THIRD-PARTY.md','scripts/prepare-windows-runtime.ps1',
+$languages = Get-Content (Join-Path $repo 'dependencies/runtime/manifest.json') -Raw | ConvertFrom-Json
+$windows = Get-Content (Join-Path $repo 'packaging/windows-tools.json') -Raw | ConvertFrom-Json
+$grammars = Get-Content (Join-Path $repo 'dependencies/grammars/manifest.json') -Raw | ConvertFrom-Json
+$lockFiles = @('dependencies/runtime/manifest.json','packaging/windows-tools.json','dependencies/grammars/manifest.json',
+    'dependencies/patches.json','packaging/THIRD-PARTY.md','scripts/prepare-windows-runtime.ps1',
     'scripts/release-common.ps1','vcpkg.json','vcpkg-configuration.json','.gitmodules','dependencies/tools.json')
-$dependencyLock = Get-Content (Join-Path $repo 'dependencies.lock.json') -Raw | ConvertFrom-Json
+$dependencyLock = Get-Content (Join-Path $repo 'dependencies/patches.json') -Raw | ConvertFrom-Json
 foreach ($entry in $dependencyLock.patches.psobject.Properties) {
     $patch = $entry.Value
     $patchPath = Assert-ReleaseChild $repo (Join-Path $repo $patch.path)
@@ -77,8 +77,8 @@ if (Test-Path -LiteralPath $destination) {
             [IO.File]::Copy((Join-Path $repo $file), $target)
             Assert-ReleaseHash $target $lockHashes[$file]
         }
-        [IO.File]::Copy((Join-Path $repo 'languages/manifest.json'), (Join-Path $tools 'language-manifest.json'))
-        [IO.File]::Copy((Join-Path $repo 'release/THIRD-PARTY.md'), (Join-Path $staging 'THIRD-PARTY.md'))
+        [IO.File]::Copy((Join-Path $repo 'dependencies/runtime/manifest.json'), (Join-Path $tools 'language-manifest.json'))
+        [IO.File]::Copy((Join-Path $repo 'packaging/THIRD-PARTY.md'), (Join-Path $staging 'THIRD-PARTY.md'))
         Write-ReleaseInventory $staging 'runtime-manifest.json' ([ordered]@{schema=1;platform='windows';architecture='x64';identity=$identity;locks=$lockHashes})
         [void](Assert-ReleaseInventory $staging 'runtime-manifest.json')
         Move-Item -LiteralPath $staging -Destination $destination

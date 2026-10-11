@@ -23,9 +23,9 @@ commands and limitations in `STATUS.md`.
 | Text, Unicode coordinates, selections, atomic edits/history | `include/astra/core/`, `src/core/`, `src/editing/` | Persistent snapshots, bounded chunks, grapheme movement, stale/overlap rejection and complete multicursor history |
 | Documents/workspace, parsing, I/O and external services | `src/service/`, `src/workspace/`, `src/language/`, `src/process/` | Service-owned state, asynchronous work, cancellation, failure preservation and shutdown |
 | User scripts and asynchronous requests | `src/script/runtime.cpp` | Deferred Promise dispatch, task identity across continuations, bounded queues, AbortSignal/timeouts, late-response draining and observable errors |
-| Product commands, labels, keymaps and default settings | `data/defaults.js`, `data/workbench/commands.js`, `workbench.js` | User overrides reach actual input/menus and the shared dispatcher |
-| Files, clipboard, search, Git, language, recovery and exit workflows | `data/workbench/files.js`, `clipboard.js`, `search.js`, `workspace-search.js`, `git.js`, `language.js`, `recovery.js`, `lifecycle.js` | JS owns workflow decisions; native/service adapters expose mechanisms |
-| Sidebar/Outline/chrome policy and file icon associations | `data/workbench/api.js`, `outline.js`, `chrome.js`, `icons.js` | JS providers publish bounded immutable generations; retired state cannot activate |
+| Product commands, labels, keymaps and default settings | `resources/defaults.js`, `resources/workbench/commands.js`, `workbench.js` | User overrides reach actual input/menus and the shared dispatcher |
+| Files, clipboard, search, Git, language, recovery and exit workflows | `resources/workbench/files.js`, `clipboard.js`, `search.js`, `workspace-search.js`, `git.js`, `language.js`, `recovery.js`, `lifecycle.js` | JS owns workflow decisions; native/service adapters expose mechanisms |
+| Sidebar/Outline/chrome policy and file icon associations | `resources/workbench/api.js`, `outline.js`, `chrome.js`, `icons.js` | JS providers publish bounded immutable generations; retired state cannot activate |
 | Window/input, shaping, retained layout and drawing | `src/ui/renderer.cpp`, `editor_window.cpp`, component files under `src/ui/` | SDL3 + Skia Graphite/Dawn, common paint/hit geometry, responsive input and exact Unicode/native glyph coordinates |
 | In-process and remote clients | `include/astra/ui/editor_channel.hpp`, `src/ui/workbench.cpp`, `src/service/service_host.cpp`, `src/transport/` | Common service requests/responses/notifications; local `_ui.*` primitives belong to the client window |
 
@@ -112,7 +112,7 @@ specific invariants; they do not establish an O(log n) whole-editor update.
    platform runtime acceptance is inferred.
 3. **Original public request options were inconsistent.** `astra.request` supports signal
    and timeout options, but `ui.update`, the form wrappers and clipboard wrappers
-   in `data/workbench/api.js` do not forward caller options. Add consistent
+   in `resources/workbench/api.js` do not forward caller options. Add consistent
    forwarding and verify cancellation before publication/dispatch. Existing task
    cancellation is useful but does not replace per-call public options. The
    wrappers now forward options. Behavior tests cover all ten methods with
@@ -153,13 +153,13 @@ Windows behaviors, not unrestricted production or all-platform readiness.
 
 | Explicit requirement | Authoritative implementation/evidence | Current result |
 | --- | --- | --- |
-| C++, JS and xmake | `xmake.lua` selects C++23 and pinned QuickJS-NG; `script_tests.cpp` evaluates Unicode, overrides and actual service edits | Windows verified |
+| C++ and JS policy | `CMakeLists.txt` selects C++23 and pinned QuickJS-NG through vcpkg; `tests/integration/script_tests.cpp` evaluates Unicode, overrides and actual service edits | Windows verified; build-system replacement authorized separately |
 | SDL3, Skia Graphite, Dawn | `renderer.cpp` creates the real native/Graphite/Dawn context; graphics/renderer/font tests, four idle/active and eight concurrent actual owned Dawn losses; callback/recovery/readback and reproduced classification-race correction | Windows Debug/Release verified on this GPU; physical driver reset/adapter removal unverified |
 | Tree-sitter highlighting | `syntax.cpp`, grammar manifest; real grammar/syntax tests and GUI syntax-object/highlight workflows | Windows verified |
 | libuv asynchronous I/O | Transport/service/process adapters; real socket/worker tests prove input-loop progress, errors, cancellation and owned shutdown; real dedicated delayed-clipboard fixture | Ordinary and isolated Windows Debug/Release verified |
 | Rope and persistent measured SumTrees | Core snapshot/differential tests check summaries, chunk bounds, UTF coordinate round trips; indexed presentation tests and measured history clone benchmark | Windows verified for stated invariants/costs |
 | Client/server, in-process and remote semantics | `tcp_tests.cpp` compares identical local/remote responses and notifications; actual GUI local and `--tcp` workflows | Loopback TCP verified; arbitrary remote-network environments unverified |
-| C++ core, JS high-level customization | Shipped `data/workbench/` workflows and user command/provider/keymap override tests; extracted production GUI accepts workspace-relative user JS | Windows verified; language percentages are not a gate |
+| C++ core, JS high-level customization | Shipped `resources/workbench/` workflows and user command/provider/keymap override tests; extracted production GUI accepts workspace-relative user JS | Windows verified; language percentages are not a gate |
 | Asynchronous public JS API | Promise/AbortSignal/deadline/late-reply tests, responsive native GUI workflows; public form/clipboard/update forwarding; final two-mode delayed-provider cancellation/exit | Windows verified for stated bounds and behaviors |
 | Agent command control | GUI fixture `execute_ui_command` and native events use production JS/shared dispatcher; service RPC/CLI tests | Windows verified; no parallel fake document model |
 | VS Code flavored default UI | Nine shipped-default real states, native screenshots, fonts/forms/pickers/modal/error and resize tests | Windows functional/layout acceptance passed; visual-quality review owned by user |
@@ -169,7 +169,7 @@ Windows behaviors, not unrestricted production or all-platform readiness.
 | Global search and replace | GUI workspace search/replacement, untitled/unsaved results, external conflict and guarded reload; application failure-path tests | Windows verified |
 | LSP and Outline | Real packaged clangd/TypeScript/Python diagnostics, GUI completion/hover/navigation/references/rename/formatting and indexed Outline | Windows verified with bundled defaults |
 | Git | Bundled real Git and GUI diff/stage/unstage/commit/guarded-discard; sanitized fixture environment | Windows verified |
-| VS Code keymap | `data/defaults.js` shipped bindings, actual GUI SDL key input and JS override tests | Windows verified |
+| VS Code keymap | `resources/defaults.js` shipped bindings, actual GUI SDL key input and JS override tests | Windows verified |
 | EditorConfig | Parser/glob/layer/unset/save-policy tests plus application integration | Windows verified |
 | Request/response and notifications | Framing/RPC/TCP tests cover fragmentation, malformed/EOF/bounds and notification equality; reordered GUI notification tests | Windows verified |
 | File icons and themes out of box | Shipped descriptors/themes, icon identity/atomic-validation/bounds tests and inspected default captures | Windows verified |

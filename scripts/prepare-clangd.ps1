@@ -4,7 +4,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$manifest = (Get-Content -LiteralPath (Join-Path $repository 'languages/manifest.json') -Raw | ConvertFrom-Json).clangd
+$manifest = (Get-Content -LiteralPath (Join-Path $repository 'dependencies/runtime/manifest.json') -Raw | ConvertFrom-Json).clangd
 $version = $manifest.version
 $sha256 = $manifest.sha256
 $url = $manifest.archive

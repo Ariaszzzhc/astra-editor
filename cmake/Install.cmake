@@ -40,16 +40,18 @@ if(MSVC)
     set(ASTRA_CRT_STAGE_COMMAND COMMAND "${CMAKE_COMMAND}" -E copy_if_different
         ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 endif()
-install(TARGETS astra astra-server astra-clipboard-host RUNTIME DESTINATION . COMPONENT Runtime)
+set(ASTRA_DISTRIBUTION_TARGETS astra astra-server astra-clipboard-host)
 if(WIN32)
-    install(TARGETS astra-process-host RUNTIME DESTINATION . COMPONENT Runtime)
+    list(APPEND ASTRA_DISTRIBUTION_TARGETS astra-process-host)
 endif()
+add_custom_target(astra-production DEPENDS ${ASTRA_DISTRIBUTION_TARGETS})
+install(TARGETS ${ASTRA_DISTRIBUTION_TARGETS} RUNTIME DESTINATION . COMPONENT Runtime)
 if(WIN32)
     install(FILES "$<TARGET_FILE:SDL3::SDL3>" ${ASTRA_GRAPHICS_RUNTIME_FILES} DESTINATION . COMPONENT Runtime)
 else()
     install(IMPORTED_RUNTIME_ARTIFACTS SDL3::SDL3 LIBRARY DESTINATION . COMPONENT Runtime)
 endif()
-install(DIRECTORY "${PROJECT_SOURCE_DIR}/data" DESTINATION . COMPONENT Runtime)
+install(DIRECTORY "${PROJECT_SOURCE_DIR}/resources" DESTINATION . COMPONENT Runtime)
 foreach(directory IN ITEMS tools licenses provenance)
     install(DIRECTORY "${ASTRA_RUNTIME_DIRECTORY}/${directory}" DESTINATION . COMPONENT Runtime)
 endforeach()
@@ -62,19 +64,26 @@ foreach(notice IN LISTS dependency_notices)
 endforeach()
 install(FILES "${VCPKG_INSTALLED_DIR}/vcpkg/status" DESTINATION provenance RENAME vcpkg-status.txt COMPONENT Runtime)
 if(WIN32)
-    install(FILES "${PROJECT_SOURCE_DIR}/release/README-WINDOWS.md" DESTINATION . RENAME README.md COMPONENT Runtime)
+    install(FILES "${PROJECT_SOURCE_DIR}/packaging/README-WINDOWS.md" DESTINATION . RENAME README.md COMPONENT Runtime)
 else()
-    install(FILES "${PROJECT_SOURCE_DIR}/release/README-NATIVE.md" DESTINATION . RENAME README.md COMPONENT Runtime)
+    install(FILES "${PROJECT_SOURCE_DIR}/packaging/README-NATIVE.md" DESTINATION . RENAME README.md COMPONENT Runtime)
 endif()
 file(WRITE "${CMAKE_BINARY_DIR}/astra-version.txt" "${PROJECT_VERSION}\n")
 file(SHA256 "${PROJECT_SOURCE_DIR}/dependencies/ports/skia/glyph-cache.patch" glyph_patch_hash)
+set(astra_crt native)
+if(MSVC)
+    set(astra_crt MD)
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(astra_crt MDd)
+    endif()
+endif()
 file(WRITE "${CMAKE_BINARY_DIR}/build-provenance.json"
-    "{\"generator\":\"${CMAKE_GENERATOR}\",\"configuration\":\"${CMAKE_BUILD_TYPE}\",\"triplet\":\"${VCPKG_TARGET_TRIPLET}\",\"crt\":\"${CMAKE_MSVC_RUNTIME_LIBRARY}\",\"skiaGlyphPatchSha256\":\"${glyph_patch_hash}\"}\n")
+    "{\"generator\":\"${CMAKE_GENERATOR}\",\"configuration\":\"${CMAKE_BUILD_TYPE}\",\"triplet\":\"${VCPKG_TARGET_TRIPLET}\",\"crt\":\"${astra_crt}\",\"vcpkgStateSha256\":\"${ASTRA_VCPKG_STATE_SHA256}\",\"skiaGlyphPatchSha256\":\"${glyph_patch_hash}\"}\n")
 install(FILES "${CMAKE_BINARY_DIR}/build-provenance.json" DESTINATION provenance COMPONENT Runtime)
 
 # One shared developer runtime, never one copy per test executable.
 add_custom_target(astra-runtime
-    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${PROJECT_SOURCE_DIR}/data" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/data"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${PROJECT_SOURCE_DIR}/resources" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/resources"
     COMMAND "${CMAKE_COMMAND}" -E copy_directory "${ASTRA_RUNTIME_DIRECTORY}/tools" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tools"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_FILE:SDL3::SDL3>" ${ASTRA_GRAPHICS_RUNTIME_FILES} "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
     ${ASTRA_CRT_STAGE_COMMAND}

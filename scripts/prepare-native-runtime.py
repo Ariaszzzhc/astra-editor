@@ -114,18 +114,18 @@ def main():
     if args.jobs < 1 or args.jobs > 128:
         raise RuntimeError("jobs must be between 1 and 128")
     key = "-".join(host)
-    manifest = read_json(REPO / "release/native-tools.json")
-    languages = read_json(REPO / "languages/manifest.json")
+    manifest = read_json(REPO / "packaging/native-tools.json")
+    languages = read_json(REPO / "dependencies/runtime/manifest.json")
     cmake, ninja = args.cmake, args.ninja
     if not cmake.is_file() or not ninja.is_file():
         raise RuntimeError("Use the configured CMake/Ninja toolchain")
     dependency_prefix = child(REPO / ".tools", args.dependency_prefix)
-    locks = ["release/native-tools.json", "languages/manifest.json", "grammars/manifest.json",
-             "dependencies.lock.json", "release/THIRD-PARTY.md", "vcpkg.json", "vcpkg-configuration.json",
+    locks = ["packaging/native-tools.json", "dependencies/runtime/manifest.json", "dependencies/grammars/manifest.json",
+             "dependencies/patches.json", "packaging/THIRD-PARTY.md", "vcpkg.json", "vcpkg-configuration.json",
              "dependencies/tools.json", ".gitmodules", "scripts/native_release.py", "scripts/prepare-native-runtime.py"]
     locks += [str(path.relative_to(REPO)).replace("\\", "/") for path in
               sorted((REPO / "dependencies/ports").rglob("*")) if path.is_file()]
-    for name, patch in read_json(REPO / "dependencies.lock.json").get("patches", {}).items():
+    for name, patch in read_json(REPO / "dependencies/patches.json").get("patches", {}).items():
         if sha256(child(REPO, REPO / patch["path"])) != patch["sha256"]:
             raise RuntimeError("Dependency patch hash mismatch: " + name)
     hashes = {name: sha256(REPO / name) for name in locks}
@@ -182,7 +182,7 @@ def main():
             build_git(manifest, build_root, staging, host, dependency_prefix, cmake, ninja, args.jobs, args.offline)
             native_binary(staging / "tools/git/bin/git", *host)
             run(staging / "tools/git/bin/git", "--version")
-            for grammar in read_json(REPO / "grammars/manifest.json")["packages"]:
+            for grammar in read_json(REPO / "dependencies/grammars/manifest.json")["packages"]:
                 target = staging / "licenses/grammars" / grammar["name"]
                 extract(archive(grammar, args.offline), target, grammar["directory"] + "/", ("LICENSE",))
                 check_hash(target / "LICENSE", grammar["files"]["LICENSE"])
@@ -191,8 +191,8 @@ def main():
                 target = staging / "provenance" / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(REPO / name, target)
-            shutil.copy2(REPO / "release/THIRD-PARTY.md", staging / "THIRD-PARTY.md")
-            shutil.copy2(REPO / "languages/manifest.json", staging / "tools/language-manifest.json")
+            shutil.copy2(REPO / "packaging/THIRD-PARTY.md", staging / "THIRD-PARTY.md")
+            shutil.copy2(REPO / "dependencies/runtime/manifest.json", staging / "tools/language-manifest.json")
             write_json(staging / "provenance/native-build.json", {"clangd": clangd_origin, "compiler": run("c++", "--version", capture=True), "host": key})
             inventory(staging, "runtime-manifest.json", {"schema": 1, "platform": host[0], "architecture": host[1], "identity": identity, "locks": hashes})
             verify(staging, "runtime-manifest.json")

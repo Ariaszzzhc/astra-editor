@@ -19,7 +19,7 @@ foreach ($entry in $runtimeManifest.files) {
 }
 $required = @('astra.exe','astra-server.exe','astra-process-host.exe','astra-clipboard-host.exe','SDL3.dll','dxcompiler.dll','dxil.dll',
     'msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll',
-    'data/defaults.js','tools/clangd/bin/clangd.exe','tools/clangd/LICENSE.TXT','tools/node/node.exe','tools/node/LICENSE',
+    'resources/defaults.js','tools/clangd/bin/clangd.exe','tools/clangd/LICENSE.TXT','tools/node/node.exe','tools/node/LICENSE',
     'tools/node_modules/typescript/lib/typescript.js','tools/node_modules/typescript/LICENSE.txt',
     'tools/node_modules/typescript/ThirdPartyNoticeText.txt','tools/node_modules/typescript-language-server/lib/cli.mjs',
     'tools/node_modules/typescript-language-server/LICENSE','tools/node_modules/basedpyright/dist/pyright-langserver.js',
@@ -47,7 +47,7 @@ foreach ($exe in @('astra.exe','astra-server.exe','astra-process-host.exe','astr
 }
 Write-Output "Windows package inventory: PASS ($($manifest.files.Count) files)"
 if ($RunGuiSmoke) {
-    & (Join-Path $ReleaseRepository 'tests/package_gui_smoke.ps1') -PackageDirectory $package
+    & (Join-Path $ReleaseRepository 'tests/package/package_gui_smoke.ps1') -PackageDirectory $package
 }
 if (-not $RunSmoke) { return }
 

@@ -107,7 +107,7 @@ $runtimeDirectory = Assert-ReleaseChild (Join-Path $repository '.tools/runtime')
 Assert-ReleaseHash (Join-Path $runtimeDirectory 'runtime-manifest.json') $pointer.manifestSha256
 [void](Assert-ReleaseInventory $runtimeDirectory 'runtime-manifest.json')
 $node = Join-Path $runtimeDirectory 'tools/node/node.exe'
-$expectedNode = (Get-Content (Join-Path $repository 'languages/manifest.json') -Raw | ConvertFrom-Json).node.version
+$expectedNode = (Get-Content (Join-Path $repository 'dependencies/runtime/manifest.json') -Raw | ConvertFrom-Json).node.version
 $actualNode = & $node --version
 if ($LASTEXITCODE -ne 0 -or $actualNode -cne ('v' + $expectedNode)) {
     throw 'Formatting requires the repository-pinned Node runtime'
@@ -115,7 +115,7 @@ if ($LASTEXITCODE -ne 0 -or $actualNode -cne ('v' + $expectedNode)) {
 
 $cpp = @()
 $javascript = @()
-foreach ($directory in @('include', 'src', 'tests', 'data')) {
+foreach ($directory in @('include', 'src', 'apps', 'tests', 'resources', 'benchmarks')) {
     foreach ($file in Get-ChildItem -LiteralPath (Join-Path $repository $directory) -Recurse -File) {
         if ($file.Extension -in @('.cpp', '.hpp', '.h', '.cc')) {
             $cpp += $file.FullName

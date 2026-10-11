@@ -24,6 +24,12 @@ if(WIN32)
     endforeach()
 endif()
 
+# Restored archives can preserve older header timestamps. Fingerprint the
+# installed ABI records so dependency changes also invalidate consumer commands.
+file(SHA256 "${VCPKG_INSTALLED_DIR}/vcpkg/status" ASTRA_VCPKG_STATE_SHA256)
+target_compile_definitions(astra-options INTERFACE
+    ASTRA_VCPKG_STATE_SHA256="${ASTRA_VCPKG_STATE_SHA256}")
+
 include(CheckCSourceCompiles)
 include(CheckCXXSourceCompiles)
 unset(ASTRA_HAS_SHAPING_CACHE CACHE)

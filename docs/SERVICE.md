@@ -8,8 +8,9 @@ Rope snapshots and completion on the owner loop.
 ## Startup
 
 ```powershell
-./scripts/xmake.ps1 build -y astra-server
-./scripts/xmake.ps1 run astra-server --workspace . --port 7777
+./scripts/cmake.ps1 --preset windows-debug
+./scripts/cmake.ps1 --build --preset windows-debug --target astra-server
+./build/cmake/windows-debug/bin/astra-server.exe --workspace . --port 7777
 ```
 
 The server prints its actual bound port as JSON and stops on Ctrl+C. It only binds
@@ -217,7 +218,7 @@ error includes `handlerCompleted` and `resyncRequired`: it is not a rollback.
 
 ## JavaScript customization
 
-The client loads the shipped `data/defaults.js` policy before its workbench and
+The client loads the shipped `resources/defaults.js` policy before its workbench and
 user script. Default settings are retained separately: effective startup settings
 merge shipped defaults, service preferences, then explicit client preferences.
 An explicit client value equal to the default still overrides a different service
@@ -385,7 +386,7 @@ durable checkpoint. Dirty documents and the final active document retain the
 existing sequential save/discard/cancel workflow. Cancellation cannot undo an
 already accepted clean close.
 
-`data/defaults.js` supplies complete settings and VS Code-style bindings.
+`resources/defaults.js` supplies complete settings and VS Code-style bindings.
 Explicit `--config <workspace-relative.js>` runs user configuration afterward:
 
 ```javascript
@@ -519,7 +520,7 @@ wait; unrelated documents and viewport queries remain eligible. Saving does not
 hold this input gate while asynchronous filesystem work owns its snapshot.
 Remaining non-edit native workflow bridges still await their respective migration.
 QuickJS-NG uses the fixed, hash-verified host-context extension described in
-`xmake/packages/astra-quickjs/README.md`. Continuations retain the task in which
+`dependencies/ports/astra-quickjs/README.md`. Continuations retain the task in which
 they were registered, even when another command resolves a shared Promise.
 Retired/cancelled task continuations cannot issue new host RPC mutations.
 `astra.ui.input({title, value, placeholder}, {signal, timeoutMs})`

@@ -10,7 +10,7 @@ and failure propagation through SkParagraph. `src/ui/glyph_cache.cpp` and
 `text_layout.cpp` require its RunCache and FontCollection interfaces. Real native
 text-layout tests compare cached shaping with uncached output, including bidi,
 context, invalidation and memory admission failures. Do not replace those tests
-with source-text assertions. Patch bytes are pinned in dependencies.lock.json;
+with source-text assertions. Patch bytes are pinned in dependencies/patches.json;
 vcpkg verifies the upstream archive and incorporates the port/patch into its ABI.
 
 Dawn uses its unmodified official port as an external dependency. CRT flags come

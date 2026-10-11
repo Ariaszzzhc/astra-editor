@@ -84,7 +84,7 @@ vcpkg still uses its own cache/download policy. First-time setup needs network.
 Behavior and CLI tests run by default. Native GUI tests require explicit -Gui,
 which checks GPU readback, text layout, actual editing, services, recovery,
 presentation, clipboard failure preservation and the TCP GUI variant. CTest
-labels distinguish behavior, integration, gui and environment acceptance.
+labels distinguish unit, integration, gui, environment and package acceptance.
 Benchmarks are separate executables and are never installed.
 
 Installed-IME acceptance additionally needs an enabled Chinese text service and

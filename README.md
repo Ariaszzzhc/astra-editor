@@ -6,15 +6,13 @@ Skia Graphite, Dawn, QuickJS-NG and libuv. It is developed against the contract 
 search and replacement, Tree-sitter syntax, language services, Git and recovery.
 The GUI, JavaScript commands and external automation share one document service.
 
-The workbench is being revised toward JS-owned product policy, asynchronous user
-APIs and shared native presentation components. Windows acceptance exercises
-Debug/Release, real GPU rendering, GUI editing/services/recovery/presentation and
-the TCP GUI variant; current results and remaining work are recorded in
-[STATUS.md](docs/STATUS.md). A previous Windows ZIP from source commit `afcfbac`
-passed inventory, archive round-trip and isolated runtime smoke checks. The
-current workbench revision still requires final visual and distribution acceptance.
-Linux/macOS source and native build scripts are present but have not been built
-or tested in this Windows environment.
+The workbench uses shipped JS policy, asynchronous user APIs and shared
+native presentation components. Windows acceptance covers Debug/Release,
+real GPU rendering, editing/services/recovery/presentation and the TCP GUI.
+Current build/package results and physical/environment limits are recorded in
+[STATUS.md](docs/STATUS.md). The directory map is in
+[DIRECTORIES.md](docs/DIRECTORIES.md). Linux/macOS sources are maintained but
+have not been built or tested in this Windows environment.
 
 ## Build on Windows
 
@@ -86,7 +84,7 @@ notifications, revision checks, asynchronous operations and the JavaScript API.
 
 ## User JavaScript
 
-Defaults are supplied by [data/defaults.js](data/defaults.js). Put overrides in a
+Defaults are supplied by [resources/defaults.js](resources/defaults.js). Put overrides in a
 workspace-relative file such as `astra.user.js` and load it explicitly:
 
 ```javascript
@@ -103,7 +101,7 @@ astra.bind("Ctrl+Alt+C", "custom.comment");
 Settings merge with defaults; bindings and commands override individually.
 EditorConfig supplies per-file indentation, encoding and line-ending policy.
 C/C++, JavaScript/TypeScript and Python use the prepared language tools; available
-actions depend on each server's capabilities. See [languages/README.md](languages/README.md).
+actions depend on each server's capabilities. See [language tools](dependencies/runtime/README.md).
 
 Read [AGENTS.md](AGENTS.md) before contributing. Live collaboration, embedded AI
 agents, an embedded terminal, and run/debug interfaces are outside this product's scope.

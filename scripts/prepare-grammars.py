@@ -9,7 +9,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--offline", action="store_true")
     options = parser.parse_args()
-    for grammar in read_json(REPO / "grammars/manifest.json")["packages"]:
+    for grammar in read_json(REPO / "dependencies/grammars/manifest.json")["packages"]:
         source = child(REPO, REPO / ".tools/grammars" / grammar["directory"])
         bundle = archive(grammar, options.offline, [REPO / ".tools/grammars" / (grammar["name"] + ".zip")])
         if not source.exists():
