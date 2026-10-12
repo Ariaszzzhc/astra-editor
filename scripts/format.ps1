@@ -115,7 +115,7 @@ if ($LASTEXITCODE -ne 0 -or $actualNode -cne ('v' + $expectedNode)) {
 
 $cpp = @()
 $javascript = @()
-foreach ($directory in @('include', 'src', 'apps', 'tests', 'resources', 'benchmarks')) {
+foreach ($directory in @('include', 'src', 'apps', 'tests', 'resources', 'benchmarks', 'scripts')) {
     foreach ($file in Get-ChildItem -LiteralPath (Join-Path $repository $directory) -Recurse -File) {
         if ($file.Extension -in @('.cpp', '.hpp', '.h', '.cc')) {
             $cpp += $file.FullName

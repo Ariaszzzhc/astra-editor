@@ -31,7 +31,7 @@ class ViewRows final {
 
     using ResolveIcon = std::function<std::optional<Decoration>(const ViewRow&)>;
 
-    explicit ViewRows(TextLabels& labels) : labels_(labels) {
+    explicit ViewRows(TextLabels& labels, IconRenderer& icons) : labels_(labels), icons_(icons) {
     }
 
     [[nodiscard]] std::size_t paint(SkCanvas*,
@@ -43,5 +43,6 @@ class ViewRows final {
 
   private:
     TextLabels& labels_;
+    IconRenderer& icons_;
 };
 } // namespace astra::ui

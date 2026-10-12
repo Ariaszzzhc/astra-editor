@@ -121,11 +121,16 @@ astra_library(astra-ui
     src/ui/dialog_metrics.cpp
     src/ui/input_events.cpp
 )
-target_link_libraries(astra-ui PUBLIC astra-options astra-renderer astra-workbench astra-io astra-clipboard nlohmann_json::nlohmann_json libuv::uv_a)
+target_link_libraries(astra-ui PUBLIC astra-options astra-renderer astra-workbench astra-io astra-clipboard nlohmann_json::nlohmann_json libuv::uv_a unofficial::skia::modules::svg)
 if(WIN32)
     target_link_libraries(astra-ui PUBLIC user32)
 endif()
 
+astra_library(astra-icon-assets
+    src/ui/icon_resources.cpp
+    "${ASTRA_ICON_OUTPUT}/icon_data.cpp"
+)
+target_link_libraries(astra-icon-assets PUBLIC astra-options)
 astra_library(astra-workbench
     src/ui/workbench_style.cpp
     src/ui/tab_index.cpp
@@ -149,7 +154,7 @@ astra_library(astra-workbench
     src/ui/view_retirement.cpp
     src/ui/viewport_index.cpp
 )
-target_link_libraries(astra-workbench PUBLIC astra-options astra-script astra-core astra-editing)
+target_link_libraries(astra-workbench PUBLIC astra-options astra-script astra-core astra-editing astra-icon-assets)
 
 add_executable(astra
     apps/astra/main.cpp

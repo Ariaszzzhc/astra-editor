@@ -37,6 +37,7 @@ endif()
 
 include(cmake/Dependencies.cmake)
 include(cmake/Grammars.cmake)
+include(cmake/Icons.cmake)
 include(cmake/Targets.cmake)
 include(cmake/Install.cmake)
 if(BUILD_TESTING OR ASTRA_BUILD_GUI_TESTS OR ASTRA_BUILD_ENVIRONMENT_TESTS)

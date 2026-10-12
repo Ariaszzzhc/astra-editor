@@ -30,7 +30,7 @@ class TabBar final {
         bool dirty{};
     };
 
-    explicit TabBar(TextLabels& labels) : labels_(labels) {
+    explicit TabBar(TextLabels& labels, IconRenderer& icons) : labels_(labels), icons_(icons) {
     }
 
     // Pointer dispatch uses prepare_text=false: no new caption measurement.
@@ -61,6 +61,7 @@ class TabBar final {
 
   private:
     TextLabels& labels_;
+    IconRenderer& icons_;
     Box bounds_;
     float scale_{1};
     TabStrip strip_;

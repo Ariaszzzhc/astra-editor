@@ -2,6 +2,42 @@
 
 Product contract: `EditorDoc.md`. Product name: Astra (confirmed by the user).
 
+## Mature icons: resources and UI rendering (2026-10-12)
+
+First increment replaces the 15 hand-drawn UI glyphs with upstream Codicons SVGs.
+Material Icon Theme 5.39.0 official published SVGs/associations are vendored for
+the next file-policy increment: 1,185 total assets, 1,944 basename rules, 1,381
+extensions and 4,634 folder names. Source archives, images, associations and
+original license notices are hash-pinned. Git attributes preserve their bytes.
+CMake verifies local assets and embeds normalized bytes under build/; it uses
+the existing vcpkg SVG target, without an additional port/overlay/graphics recipe.
+Each window owns immutable vector pictures; remaining SVGs prepare on a
+cancellable worker. Runtime installation includes resources, attribution,
+licenses and provenance through the existing CMake authority.
+
+Windows Debug acceptance for this increment:
+
+- `./scripts/import-icons.ps1 -Offline` reproduces the reviewed asset inventory
+  from freshly extracted verified archives (`build/icons-import.log`).
+- `./scripts/cmake.ps1 --preset windows-debug -DASTRA_OFFLINE=ON -DASTRA_BUILD_GUI_TESTS=ON`,
+  then `--build --preset windows-debug --target astra icon-rendering-tests viewport-layout-tests gui-presentation-smoke` passed
+  (`build/icons-configure-debug.log`, `build/icons-build-debug.log`). Initial
+  configuration attempts failed to locate the Python executable; fixed by
+  obtaining vcpkg's python3 tool and handling first-fetch progress output.
+- `./scripts/cmake.ps1 -CTest --preset windows-debug -R '^(icon-rendering|viewport-layout-tests|gui-presentation-smoke)$' --output-on-failure`:
+  3/3 passed, 695.94 seconds (`build/icons-ui-tests-debug.log`).
+- Final viewport-clipping rebuild and `./build/cmake/windows-debug/bin/icon-rendering-tests.exe`:
+  all 1,185 assets rendered at 16/20/24/32 pixel sizes, bounded viewport, canvas
+  state, UI tint, original language colors, warm cache and cancellation passed.
+  Vector cache uses 567,232 bytes (`build/icons-render-debug.log`).
+- `./.tools/vcpkg/downloads/tools/python3-3.14.7-windows/python.exe tests/package/icon_assets_tests.py`:
+  4 corruption/external-content failure-path checks passed
+  (`build/icons-integrity-tests.log`). Repository formatter and its Check gate passed.
+
+File-policy/default-theme replacement and final Release/package acceptance
+remain for the next increment. Pixel-size checks do not establish physical
+monitor DPI acceptance. No non-Windows execution.
+
 ## CMake migration: final Windows delivery (2026-10-12)
 
 The authorized migration is complete on Windows: CMake/Ninja, pinned submodule

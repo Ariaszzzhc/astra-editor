@@ -41,7 +41,8 @@ class WorkbenchChrome final {
         [[nodiscard]] std::optional<Item> hit(float x, float y) const;
     };
 
-    explicit WorkbenchChrome(TextLabels& labels) : labels_(labels) {
+    explicit WorkbenchChrome(TextLabels& labels, IconRenderer& icons)
+        : labels_(labels), icons_(icons) {
     }
 
     void paint_header(SkCanvas*, const WorkbenchLayout&, const WorkbenchStyle&, const Header&);
@@ -87,6 +88,7 @@ class WorkbenchChrome final {
 
   private:
     TextLabels& labels_;
+    IconRenderer& icons_;
     void caption(SkCanvas*, Box, std::string_view, const TextLayoutOptions&);
 };
 } // namespace astra::ui

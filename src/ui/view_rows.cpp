@@ -61,12 +61,12 @@ std::size_t ViewRows::paint(SkCanvas* canvas,
         if (model.focused && selected)
             fill(canvas, {box.x, box.y, 2 * scale, box.height}, theme.colors.accent);
         if (row.group)
-            draw_icon(canvas,
-                      source.collapsed(id) ? Icon::chevron_right : Icon::chevron_down,
-                      x,
-                      box.y + 4 * scale,
-                      16 * scale,
-                      theme.colors.muted);
+            icons_.draw(canvas,
+                        source.collapsed(id) ? Icon::chevron_right : Icon::chevron_down,
+                        x,
+                        box.y + 4 * scale,
+                        16 * scale,
+                        theme.colors.muted);
         const auto projected = resolve_icon ? resolve_icon(row) : std::nullopt;
         const auto icon =
             projected ? projected->icon : view_icon(item.value("icon", std::string{}));
@@ -81,12 +81,12 @@ std::size_t ViewRows::paint(SkCanvas* canvas,
                                 : icon == Icon::code     ? theme.colors.code_icon
                                 : icon == Icon::braces   ? theme.colors.script_icon
                                                          : theme.colors.muted;
-        draw_icon(canvas,
-                  icon,
-                  x + 18 * scale,
-                  box.y + 4 * scale,
-                  16 * scale,
-                  projected ? projected->color : icon_color);
+        icons_.draw(canvas,
+                    icon,
+                    x + 18 * scale,
+                    box.y + 4 * scale,
+                    16 * scale,
+                    projected ? projected->color : icon_color);
         const auto tone = item.value("tone", std::string{});
         const auto color = tone == "error"     ? theme.colors.error
                            : tone == "added"   ? theme.colors.added

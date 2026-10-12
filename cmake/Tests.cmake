@@ -1,6 +1,8 @@
 # Each behavior source belongs to exactly one executable.
 get_property(astra_existing_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 if(BUILD_TESTING)
+    add_test(NAME icon-assets COMMAND "${ASTRA_ICON_PYTHON}" "${PROJECT_SOURCE_DIR}/tests/package/icon_assets_tests.py")
+    set_tests_properties(icon-assets PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}" LABELS package TIMEOUT 60)
     add_library(astra-test-main OBJECT tests/support/test_main.cpp)
     target_link_libraries(astra-test-main PRIVATE doctest::doctest astra-options)
     add_executable(astra-unit-tests
@@ -63,6 +65,11 @@ if(BUILD_TESTING)
     endif()
 endif()
 if(ASTRA_BUILD_GUI_TESTS)
+add_executable(icon-rendering-tests tests/gui/icon_rendering_tests.cpp)
+target_link_libraries(icon-rendering-tests PRIVATE astra-ui astra-options)
+add_dependencies(icon-rendering-tests astra-runtime)
+add_test(NAME icon-rendering COMMAND icon-rendering-tests)
+set_tests_properties(icon-rendering PROPERTIES WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}" LABELS "gui" TIMEOUT 60)
 add_executable(graphics-smoke
     tests/gui/graphics_smoke.cpp
 )

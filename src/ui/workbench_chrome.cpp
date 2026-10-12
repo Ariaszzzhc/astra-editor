@@ -19,19 +19,20 @@ void fill(SkCanvas* canvas, Box box, std::uint32_t color) {
     canvas->drawRect(rect(box), paint);
 }
 
-void icon(SkCanvas* canvas, Icon value, Box box, float size, std::uint32_t color) {
+void icon(
+    IconRenderer& icons, SkCanvas* canvas, Icon value, Box box, float size, std::uint32_t color) {
     if (box.width <= 0 || box.height <= 0)
         return;
     const SkAutoCanvasRestore restore(canvas, true);
     canvas->clipRect(rect(box));
     if (canvas->getDeviceClipBounds().isEmpty())
         return;
-    draw_icon(canvas,
-              value,
-              box.x + (box.width - size) / 2,
-              box.y + (box.height - size) / 2,
-              size,
-              color);
+    icons.draw(canvas,
+               value,
+               box.x + (box.width - size) / 2,
+               box.y + (box.height - size) / 2,
+               size,
+               color);
 }
 
 std::string diagnostic_caption(std::string_view original) {
@@ -110,7 +111,8 @@ void WorkbenchChrome::paint_header(SkCanvas* canvas,
     paint.setColor(search.contains(model.pointer_x, model.pointer_y) ? theme.colors.accent
                                                                      : theme.colors.border);
     canvas->drawRoundRect(rect(search), 4 * scale, 4 * scale, paint);
-    icon(canvas,
+    icon(icons_,
+         canvas,
          model.command_icon,
          {search.x + 9 * scale, search.y, 15 * scale, search.height},
          15 * scale,
@@ -157,7 +159,8 @@ void WorkbenchChrome::paint_sidebar(SkCanvas* canvas,
     const auto hovered = refresh.contains(model.pointer_x, model.pointer_y);
     if (hovered)
         fill(canvas, refresh, theme.colors.hover);
-    icon(canvas,
+    icon(icons_,
+         canvas,
          model.busy && hovered ? Icon::close : Icon::refresh,
          refresh,
          16 * scale,
@@ -167,7 +170,8 @@ void WorkbenchChrome::paint_sidebar(SkCanvas* canvas,
          section,
          section.contains(model.pointer_x, model.pointer_y) ? theme.colors.hover
                                                             : theme.colors.sidebar);
-    icon(canvas,
+    icon(icons_,
+         canvas,
          model.expanded ? Icon::chevron_down : Icon::chevron_right,
          {section.x + 6 * scale, section.y, 16 * scale, section.height},
          16 * scale,
@@ -184,7 +188,8 @@ void WorkbenchChrome::paint_sidebar(SkCanvas* canvas,
          outline,
          outline.contains(model.pointer_x, model.pointer_y) ? theme.colors.hover
                                                             : theme.colors.sidebar);
-    icon(canvas,
+    icon(icons_,
+         canvas,
          model.outline_expanded ? Icon::chevron_down : Icon::chevron_right,
          {outline.x + 6 * scale, outline.y, 16 * scale, outline.height},
          16 * scale,
@@ -444,7 +449,7 @@ void WorkbenchChrome::paint_outer(SkCanvas* canvas,
         if (!glyph.empty()) {
             const auto icon_color = tone(value.value("iconTone", std::string{}), theme, color);
             const auto box = activity ? item.bounds : Box{text.x, text.y, 16 * scale, text.height};
-            icon(canvas, view_icon(glyph), box, (activity ? 24 : 16) * scale, icon_color);
+            icon(icons_, canvas, view_icon(glyph), box, (activity ? 24 : 16) * scale, icon_color);
             text.x += 22 * scale;
             text.width = std::max(0.0F, text.width - 22 * scale);
         }
@@ -462,7 +467,8 @@ void WorkbenchChrome::paint_outer(SkCanvas* canvas,
     }
     for (const auto& item : layout.items)
         if (item.bank == ChromeBank::breadcrumb && item.index + 1 < source.rows(item.bank).size())
-            icon(canvas,
+            icon(icons_,
+                 canvas,
                  Icon::chevron_right,
                  {item.bounds.right(), item.bounds.y, 12 * scale, item.bounds.height},
                  12 * scale,
@@ -476,7 +482,7 @@ void WorkbenchChrome::paint_outer(SkCanvas* canvas,
         if (previous) {
             canvas->rotate(180, box.x + box.width / 2, box.y + box.height / 2);
         }
-        icon(canvas, Icon::chevron_down, box, 16 * scale, theme.colors.muted);
+        icon(icons_, canvas, Icon::chevron_down, box, 16 * scale, theme.colors.muted);
     }
 }
 
@@ -532,7 +538,8 @@ void WorkbenchChrome::paint_body(SkCanvas* canvas,
         text.width = std::max(0.0F, text.width - 2 * inset);
         const auto glyph = value.value("icon", std::string{});
         if (!glyph.empty()) {
-            icon(canvas,
+            icon(icons_,
+                 canvas,
                  view_icon(glyph),
                  {text.x, text.y, 18 * scale, text.height},
                  18 * scale,

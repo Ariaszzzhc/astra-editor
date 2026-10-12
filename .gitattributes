@@ -7,3 +7,8 @@
 *.js text eol=lf
 *.md text eol=lf
 *.ps1 text eol=crlf
+# Vendored artwork/notices and their hashed metadata stay byte-for-byte upstream.
+resources/icons/** -text
+dependencies/icons/licenses/** -text whitespace=-trailing-space
+dependencies/icons/manifest.json text eol=lf
+scripts/import-icons.mjs text eol=lf

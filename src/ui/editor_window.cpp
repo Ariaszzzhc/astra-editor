@@ -261,11 +261,12 @@ struct EditorWindow::Impl {
     NoticeRecord replace_notice;
     std::uint64_t notice_sequence{};
     std::string workspace_branch{"Astra"};
+    IconRenderer icons_;
     TextLabels labels{fonts};
-    TabBar tab_bar{labels};
-    ViewRows view_rows{labels};
+    TabBar tab_bar{labels, icons_};
+    ViewRows view_rows{labels, icons_};
     ViewPage outline;
-    WorkbenchChrome chrome{labels};
+    WorkbenchChrome chrome{labels, icons_};
     ChromeState chrome_state;
     WorkbenchChrome::OuterLayout chrome_layout;
     std::size_t activity_first{};
@@ -4408,12 +4409,12 @@ void EditorWindow::Impl::draw_form(SkCanvas* canvas,
                   boxes.close.width,
                   boxes.close.height,
                   ui_style.colors.hover);
-    draw_icon(canvas,
-              Icon::close,
-              boxes.close.x + 6 * scale,
-              boxes.close.y + 5 * scale,
-              14 * scale,
-              ui_style.colors.muted);
+    icons_.draw(canvas,
+                Icon::close,
+                boxes.close.x + 6 * scale,
+                boxes.close.y + 5 * scale,
+                14 * scale,
+                ui_style.colors.muted);
     for (std::size_t i = 0; i < form.fields().size(); ++i) {
         const auto& field = form.fields()[i];
         const auto box = boxes.fields[i];
@@ -4824,12 +4825,12 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                     }
                     if (!item.icon_path.empty()) {
                         const auto icon = file_icons.lookup(item.icon_path, false);
-                        draw_icon(canvas,
-                                  icon.glyph,
-                                  layout.rows.x + 8 * scale,
-                                  y + 7 * scale,
-                                  16 * scale,
-                                  icon.color(ui_style.colors));
+                        icons_.draw(canvas,
+                                    icon.glyph,
+                                    layout.rows.x + 8 * scale,
+                                    y + 7 * scale,
+                                    16 * scale,
+                                    icon.color(ui_style.colors));
                     }
                     elided_label(canvas,
                                  item.label,
@@ -5360,6 +5361,7 @@ WorkbenchViewState EditorWindow::view_state() const {
 }
 
 bool EditorWindow::pump() {
+    impl_->icons_.poll();
     if (!impl_->running) {
         impl_->layout_jobs->poll();
         if (!impl_->stopping_workbench) {

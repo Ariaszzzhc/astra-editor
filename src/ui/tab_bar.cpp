@@ -93,12 +93,12 @@ void TabBar::paint(SkCanvas* canvas,
         fill(canvas,
              {tab.bounds.right() - scale_, tab.bounds.y, scale_, tab.bounds.height},
              theme.colors.border);
-        draw_icon(canvas,
-                  item.icon,
-                  tab.bounds.x + 12 * scale_,
-                  tab.bounds.y + 9 * scale_,
-                  16 * scale_,
-                  item.color);
+        icons_.draw(canvas,
+                    item.icon,
+                    tab.bounds.x + 12 * scale_,
+                    tab.bounds.y + 9 * scale_,
+                    16 * scale_,
+                    item.color);
         {
             const SkAutoCanvasRestore caption_restore(canvas, true);
             const auto caption_x = tab.bounds.x + 34 * scale_;
@@ -118,12 +118,12 @@ void TabBar::paint(SkCanvas* canvas,
             canvas->drawCircle(
                 tab.close.x + 13 * scale_, tab.close.y + 17 * scale_, 3 * scale_, dirty);
         } else {
-            draw_icon(canvas,
-                      Icon::close,
-                      tab.close.x + 6 * scale_,
-                      tab.close.y + 10 * scale_,
-                      14 * scale_,
-                      theme.colors.muted);
+            icons_.draw(canvas,
+                        Icon::close,
+                        tab.close.x + 6 * scale_,
+                        tab.close.y + 10 * scale_,
+                        14 * scale_,
+                        theme.colors.muted);
         }
     }
     if (strip_.previous.width > 0) {
@@ -133,14 +133,14 @@ void TabBar::paint(SkCanvas* canvas,
             const SkAutoCanvasRestore previous_restore(canvas, true);
             canvas->translate(strip_.previous.x + 18 * scale_, strip_.previous.y + 10 * scale_);
             canvas->scale(-1, 1);
-            draw_icon(canvas, Icon::chevron_right, 0, 0, 14 * scale_, theme.colors.muted);
+            icons_.draw(canvas, Icon::chevron_right, 0, 0, 14 * scale_, theme.colors.muted);
         }
-        draw_icon(canvas,
-                  Icon::chevron_right,
-                  strip_.next.x + 6 * scale_,
-                  strip_.next.y + 10 * scale_,
-                  14 * scale_,
-                  theme.colors.muted);
+        icons_.draw(canvas,
+                    Icon::chevron_right,
+                    strip_.next.x + 6 * scale_,
+                    strip_.next.y + 10 * scale_,
+                    14 * scale_,
+                    theme.colors.muted);
     }
 }
 

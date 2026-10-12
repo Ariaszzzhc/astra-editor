@@ -107,7 +107,8 @@ void view_row_surfaces(TextLayoutEngine& engine) {
     theme.colors.changed = 0xFFDBAA66;
     theme.colors.hover = 0xFF2A2D2E;
     TextLabels labels(engine);
-    ViewRows rows(labels);
+    IconRenderer icons;
+    ViewRows rows(labels, icons);
     for (const auto scale : {0.75F, 1.0F, 1.5F, 2.0F}) {
         const auto layout =
             ViewRowsLayout::measure({12 * scale, 20 * scale, 220 * scale, 156 * scale},
@@ -227,7 +228,8 @@ void workbench_chrome(TextLayoutEngine& engine) {
     theme.colors.accent = 0xFF348AFF;
     theme.colors.hover = 0xFF283040;
     TextLabels labels(engine);
-    WorkbenchChrome chrome(labels);
+    IconRenderer icons;
+    WorkbenchChrome chrome(labels, icons);
     const auto long_caption = "Unicode 中🙂e\xCC\x81 " + std::string(100, 'x');
     for (const auto size : {9.0F, 13.0F, 16.0F}) {
         theme.font_size = size;
@@ -1472,7 +1474,8 @@ void tab_bars(TextLayoutEngine& engine) {
     theme.colors.muted = 0xFF9AABBC;
     theme.colors.border = 0xFF41454C;
     TextLabels labels(engine);
-    TabBar bar(labels);
+    IconRenderer icons;
+    TabBar bar(labels, icons);
     TabIndex tabs;
     for (unsigned index = 0; index < 64; ++index) {
         tabs.append(std::to_string(index),
@@ -1563,7 +1566,7 @@ void tab_bars(TextLayoutEngine& engine) {
                     render(bar, tabs, active, recolored) != before,
                 "Palette change remeasured captions or retained obsolete foreground pixels");
         TextLabels fresh_labels(engine);
-        TabBar fresh(fresh_labels);
+        TabBar fresh(fresh_labels, icons);
         auto fresh_tabs = tabs;
         fresh.scroll(static_cast<int>(bar.geometry().first), fresh_tabs.size());
         prepare(fresh, fresh_tabs, bounds, dpi, active, recolored);

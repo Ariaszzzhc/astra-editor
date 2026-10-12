@@ -1,155 +1,132 @@
 #include <astra/ui/icons.hpp>
 
 #include "include/core/SkCanvas.h"
+#include "include/core/SkColorFilter.h"
 #include "include/core/SkPaint.h"
-#include "include/core/SkPathBuilder.h"
-#include <utility>
+#include "include/core/SkPicture.h"
+#include "include/core/SkPictureRecorder.h"
+#include "include/core/SkStream.h"
+#include "modules/svg/include/SkSVGDOM.h"
+#include <chrono>
+#include <cmath>
+#include <future>
+#include <stdexcept>
+#include <thread>
+#include <vector>
 
 namespace astra::ui {
-Icon view_icon(std::string_view name) {
-    const std::pair<std::string_view, Icon> icons[] = {{"files", Icon::files},
-                                                       {"search", Icon::search},
-                                                       {"branch", Icon::branch},
-                                                       {"braces", Icon::braces},
-                                                       {"symbol", Icon::symbol},
-                                                       {"folder", Icon::folder},
-                                                       {"code", Icon::code},
-                                                       {"function", Icon::function},
-                                                       {"warning", Icon::warning},
-                                                       {"settings", Icon::settings}};
-    for (const auto& [id, icon] : icons)
-        if (id == name)
-            return icon;
-    return Icon::document;
+namespace {
+constexpr std::size_t max_cache_bytes = 32 * 1024 * 1024;
+
+struct Pictures {
+    std::vector<sk_sp<SkPicture>> items;
+    std::size_t bytes{};
+};
+
+void record(Pictures& pictures, IconAsset asset) {
+    if (pictures.items.at(asset.value)) {
+        return;
+    }
+    const auto& resource = icon_resources()[asset.value];
+    SkMemoryStream stream(resource.svg.data(), resource.svg.size(), false);
+    const auto dom = SkSVGDOM::Builder().make(stream);
+    if (!dom) {
+        throw std::runtime_error("Parse icon SVG: " + std::string(resource.id));
+    }
+    SkPictureRecorder recorder;
+    dom->setContainerSize({24, 24});
+    dom->render(recorder.beginRecording(24, 24));
+    auto picture = recorder.finishRecordingAsPicture();
+    const auto bytes = picture->approximateBytesUsed();
+    if (bytes > max_cache_bytes - pictures.bytes) {
+        throw std::length_error("Icon pictures exceed the cache budget");
+    }
+    pictures.bytes += bytes;
+    pictures.items[asset.value] = std::move(picture);
+}
+} // namespace
+
+struct IconRenderer::Impl {
+    std::shared_ptr<const Pictures> pictures;
+    std::future<std::shared_ptr<const Pictures>> pending;
+    bool ready{};
+    std::jthread worker;
+
+    Impl() {
+        auto warm = std::make_shared<Pictures>();
+        warm->items.resize(icon_resources().size());
+        for (std::size_t i = 0; i <= static_cast<std::size_t>(Icon::warning); ++i) {
+            record(*warm, icon_asset(static_cast<Icon>(i)));
+        }
+        for (const auto name : {"material/file", "material/folder", "material/folder-open"}) {
+            record(*warm, *icon_asset(name));
+        }
+        pictures = warm;
+        std::promise<std::shared_ptr<const Pictures>> result;
+        pending = result.get_future();
+        worker = std::jthread([warm, result = std::move(result)](std::stop_token stop) mutable {
+            try {
+                auto prepared = std::make_shared<Pictures>(*warm);
+                for (std::size_t i = 0; i < prepared->items.size(); ++i) {
+                    if (stop.stop_requested()) {
+                        return;
+                    }
+                    record(*prepared, IconAsset{static_cast<std::uint16_t>(i)});
+                }
+                result.set_value(std::move(prepared));
+            } catch (...) {
+                result.set_exception(std::current_exception());
+            }
+        });
+    }
+};
+
+IconRenderer::IconRenderer() : impl_(std::make_unique<Impl>()) {
 }
 
-void draw_icon(SkCanvas* canvas, Icon icon, float x, float y, float size, std::uint32_t color) {
-    canvas->save();
+IconRenderer::~IconRenderer() = default;
+
+void IconRenderer::poll() {
+    if (impl_->pending.valid() &&
+        impl_->pending.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        impl_->pictures = impl_->pending.get();
+        impl_->ready = true;
+    }
+}
+
+bool IconRenderer::ready() const {
+    return impl_->ready;
+}
+
+std::size_t IconRenderer::bytes() const {
+    return impl_->pictures->bytes;
+}
+
+void IconRenderer::draw(
+    SkCanvas* canvas, Icon icon, float x, float y, float size, std::uint32_t color) const {
+    draw(canvas, icon_asset(icon), x, y, size, color);
+}
+
+void IconRenderer::draw(
+    SkCanvas* canvas, IconAsset asset, float x, float y, float size, std::uint32_t color) const {
+    if (!canvas || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(size) || size <= 0 ||
+        asset.value >= icon_resources().size()) {
+        throw std::invalid_argument("Icon drawing requires a valid canvas, asset and geometry");
+    }
+    const auto& pictures = *impl_->pictures;
+    if (!pictures.items[asset.value]) {
+        asset = *icon_asset("material/file");
+    }
+    const SkAutoCanvasRestore restore(canvas, true);
     canvas->translate(x, y);
     canvas->scale(size / 24, size / 24);
+    canvas->clipRect(SkRect::MakeWH(24, 24));
     SkPaint paint;
-    paint.setColor(color);
-    paint.setAntiAlias(true);
-    paint.setStyle(SkPaint::kStroke_Style);
-    paint.setStrokeWidth(1.5F);
-    paint.setStrokeCap(SkPaint::kRound_Cap);
-    paint.setStrokeJoin(SkPaint::kRound_Join);
-    const auto line = [&](float x1, float y1, float x2, float y2) {
-        canvas->drawLine(x1, y1, x2, y2, paint);
-    };
-    SkPathBuilder path;
-    switch (icon) {
-    case Icon::files:
-        path.moveTo(5, 16).lineTo(3, 16).lineTo(3, 3).lineTo(14, 3).lineTo(14, 5);
-        path.moveTo(7, 7).lineTo(17, 7).lineTo(21, 11).lineTo(21, 21).lineTo(7, 21).close();
-        path.moveTo(17, 7).lineTo(17, 11).lineTo(21, 11);
-        break;
-    case Icon::search:
-        canvas->drawCircle(10.5F, 10.5F, 6.5F, paint);
-        line(15.5F, 15.5F, 21, 21);
-        break;
-    case Icon::branch:
-        canvas->drawCircle(7, 5, 2, paint);
-        canvas->drawCircle(17, 6, 2, paint);
-        canvas->drawCircle(7, 20, 2, paint);
-        path.moveTo(7, 7).lineTo(7, 18);
-        path.moveTo(17, 8).lineTo(17, 10).quadTo(17, 14, 7, 14);
-        break;
-    case Icon::settings:
-        canvas->drawCircle(12, 12, 3.2F, paint);
-        path.moveTo(9, 3)
-            .lineTo(15, 3)
-            .lineTo(16, 6)
-            .lineTo(19, 7)
-            .lineTo(21, 10)
-            .lineTo(19, 12)
-            .lineTo(21, 15)
-            .lineTo(19, 18)
-            .lineTo(16, 18)
-            .lineTo(15, 21)
-            .lineTo(9, 21)
-            .lineTo(8, 18)
-            .lineTo(5, 17)
-            .lineTo(3, 14)
-            .lineTo(5, 12)
-            .lineTo(3, 9)
-            .lineTo(5, 6)
-            .lineTo(8, 6)
-            .close();
-        break;
-    case Icon::close:
-        line(6, 6, 18, 18);
-        line(18, 6, 6, 18);
-        break;
-    case Icon::chevron_right:
-        path.moveTo(9, 6).lineTo(15, 12).lineTo(9, 18);
-        break;
-    case Icon::chevron_down:
-        path.moveTo(6, 9).lineTo(12, 15).lineTo(18, 9);
-        break;
-    case Icon::folder:
-        path.moveTo(3, 7)
-            .lineTo(9, 7)
-            .lineTo(11, 9)
-            .lineTo(21, 9)
-            .lineTo(21, 20)
-            .lineTo(3, 20)
-            .close();
-        path.moveTo(3, 7).lineTo(3, 5).lineTo(10, 5).lineTo(12, 7).lineTo(20, 7).lineTo(20, 9);
-        break;
-    case Icon::document:
-        path.moveTo(6, 3).lineTo(15, 3).lineTo(20, 8).lineTo(20, 21).lineTo(6, 21).close();
-        path.moveTo(15, 3).lineTo(15, 8).lineTo(20, 8);
-        line(9, 12, 17, 12);
-        line(9, 16, 17, 16);
-        break;
-    case Icon::code:
-        path.moveTo(8, 7).lineTo(3, 12).lineTo(8, 17);
-        path.moveTo(16, 7).lineTo(21, 12).lineTo(16, 17);
-        line(14, 5, 10, 19);
-        break;
-    case Icon::braces:
-        path.moveTo(9, 3)
-            .lineTo(7, 3)
-            .quadTo(5, 3, 5, 6)
-            .lineTo(5, 9)
-            .quadTo(5, 12, 3, 12)
-            .quadTo(5, 12, 5, 15)
-            .lineTo(5, 18)
-            .quadTo(5, 21, 7, 21)
-            .lineTo(9, 21);
-        path.moveTo(15, 3)
-            .lineTo(17, 3)
-            .quadTo(19, 3, 19, 6)
-            .lineTo(19, 9)
-            .quadTo(19, 12, 21, 12)
-            .quadTo(19, 12, 19, 15)
-            .lineTo(19, 18)
-            .quadTo(19, 21, 17, 21)
-            .lineTo(15, 21);
-        break;
-    case Icon::symbol:
-        path.moveTo(12, 4).lineTo(20, 12).lineTo(12, 20).lineTo(4, 12).close();
-        break;
-    case Icon::function:
-        path.moveTo(16, 4).quadTo(10, 2, 10, 7).lineTo(10, 17).quadTo(10, 22, 5, 20);
-        line(6, 10, 16, 10);
-        break;
-    case Icon::refresh:
-        path.moveTo(19, 8)
-            .quadTo(17, 3, 11, 4)
-            .quadTo(4, 5, 4, 12)
-            .quadTo(4, 20, 12, 20)
-            .quadTo(18, 20, 20, 15);
-        path.moveTo(19, 3).lineTo(19, 8).lineTo(14, 8);
-        break;
-    case Icon::warning:
-        path.moveTo(12, 3).lineTo(22, 21).lineTo(2, 21).close();
-        line(12, 8, 12, 14);
-        line(12, 17, 12, 17.5F);
-        break;
+    if (icon_resources()[asset.value].monochrome) {
+        paint.setColorFilter(SkColorFilters::Blend(color, SkBlendMode::kSrcIn));
     }
-    canvas->drawPath(path.detach(), paint);
-    canvas->restore();
+    canvas->drawPicture(pictures.items[asset.value],
+                        nullptr,
+                        icon_resources()[asset.value].monochrome ? &paint : nullptr);
 }
 } // namespace astra::ui
