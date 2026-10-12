@@ -55,10 +55,35 @@ The first Debug unit
 check preceded the payload review; the full 287-case unit rerun above verifies
 that final change, and the later GUI service check consumed the final policy.
 `./scripts/format.ps1 -Check -Offline` passed (`build/lsp-ui-format-check.log`),
-and Git whitespace checking passed. A refreshed distribution follows the clean
-implementation commit;
-the previous icon package does not contain these new interactions. Validation
-is Windows only. Hover displays plain text, not rich Markdown.
+and Git whitespace checking passed. Implementation commit
+`a808337871e6fb923260a72197aaf3e4de2080c7` was pushed to `codex/astra-editor`.
+
+Clean distribution: `build/packages/astra-0.1.0-windows-x64-a808337.zip`,
+150,118,143 bytes, SHA-256
+`8d1b7692a2c06ecd325b993501e97832561fbe7e3a1528621471d60540fc22ac`.
+The detached digest is alongside it. The 7,530-file inventory records the code
+commit above, sourceDirty=false, Release/MD and pinned vcpkg
+`e456309491fd875487bf02b8a0dca76c1b1b00cc`; all 1,185 SVGs remain included.
+
+Passed delivery commands:
+
+- `./scripts/package-windows.ps1 -OutputDirectory build/packages/astra-0.1.0-windows-x64-a808337 -Offline`:
+  production configure/build, CMake Runtime installation, inventory and CPack
+  ZIP passed (`build/lsp-ui-package.log`). No tests/fixtures/benchmarks installed.
+- `./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/astra-0.1.0-windows-x64-a808337 -RunSmoke -RunGuiSmoke`:
+  installed production GUI/shipped JS/native renderer, Unicode edit/undo/redo/
+  save/guarded close, service/process/Git/recovery and bundled C++/TypeScript/
+  Python diagnostics passed (`build/lsp-ui-package-smoke.log`).
+- `Expand-Archive -LiteralPath build/packages/astra-0.1.0-windows-x64-a808337.zip -DestinationPath build/package-roundtrip-lsp-a808337`, then
+  `./scripts/verify-windows-package.ps1 -PackageDirectory build/package-roundtrip-lsp-a808337/astra-0.1.0-windows-x64-a808337 -RunSmoke -RunGuiSmoke`:
+  the same isolated production checks passed from the extracted ZIP
+  (`build/lsp-ui-package-roundtrip.log`).
+
+The previous icon package does not contain these interactions. Old packages and
+evidence were preserved. Validation is Windows only; physical DPI transitions,
+installed IME and real driver/adapter removal were not re-executed. Hover displays
+plain text, not rich Markdown. This later evidence update does not change the
+distributed implementation commit.
 
 ## Mature icons: final Windows delivery (2026-10-12)
 
