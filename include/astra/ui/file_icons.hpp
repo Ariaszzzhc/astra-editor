@@ -16,8 +16,11 @@ namespace astra::ui {
 struct FileIcon {
     Icon glyph{Icon::document};
     std::string tone{"muted"};
+    std::optional<IconAsset> asset, light_asset, open_asset, open_light_asset;
     [[nodiscard]] static FileIcon parse(const protocol::Json& value);
     [[nodiscard]] std::uint32_t color(const WorkbenchStyle::Colors& palette) const;
+    [[nodiscard]] IconAsset drawing_asset(const WorkbenchStyle::Colors& palette,
+                                          bool expanded = false) const;
 };
 
 // Bounded presentation cache. Association policy runs asynchronously in JS.

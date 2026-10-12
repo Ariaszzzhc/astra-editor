@@ -70,8 +70,22 @@ def prepare(root, output):
         source.append('{"' + item['id'] + '", R"ASTRA_SVG(' + embedded +
                       ')ASTRA_SVG", ' + str(item['monochrome']).lower() + '},')
         total += len(data)
+    source += ['};', 'constexpr IconModule modules[] = {']
+    rows = [[table, key, value] for table in ('filenames', 'extensions', 'directories')
+            for key, value in policy[table].items()]
+    chunks = [rows[offset:offset + 128] for offset in range(0, len(rows), 128)]
+    metadata = {key: policy[key] for key in ('assets', 'fallback', 'folder')}
+    metadata['chunks'] = [f'astra/icon-assets/{index}' for index in range(len(chunks))]
+    for name, values in [('astra/icon-assets', metadata),
+                         *[(f'astra/icon-assets/{index}', chunk) for index, chunk in enumerate(chunks)]]:
+        encoded = json.dumps(values, ensure_ascii=False, separators=(',', ':'))
+        javascript = 'export default JSON.parse(' + json.dumps(encoded, ensure_ascii=False) + ');'
+        if len(javascript.encode('utf-8')) > 65535 or ')ASTRA_JS"' in javascript:
+            raise ValueError('Icon module exceeds its bounded literal size')
+        source.append('{"' + name + '", R"ASTRA_JS(' + javascript + ')ASTRA_JS"},')
     source += ['};', '} // namespace',
                'std::span<const IconResource> icon_resources() { return resources; }',
+               'std::span<const IconModule> icon_modules() { return modules; }',
                '} // namespace astra::ui', '']
     output.mkdir(parents=True, exist_ok=True)
     destination = output / 'icon_data.cpp'

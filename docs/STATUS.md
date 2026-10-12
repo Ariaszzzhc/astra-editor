@@ -2,6 +2,49 @@
 
 Product contract: `EditorDoc.md`. Product name: Astra (confirmed by the user).
 
+## Mature icons: file policy and distribution (2026-10-12)
+
+The second increment enables the official Material default associations in
+Explorer, tabs and pickers. Codicons remain the monochrome UI/symbol set;
+Material colors remain upstream. Light-background and expanded-folder variants
+are selected by the native presentation adapter. Legacy glyph/tone startup
+configuration, atomic theme updates, bounded overrides, generation rejection
+and warm native presentation caching remain supported.
+
+The verified association catalog is embedded as 128-entry JS pages. Each page
+yields to the owner loop; no large catalog is copied into user preferences or
+RPC responses. Cold concurrent resolution and cancellation preserve the existing
+8ms QuickJS budget. Installed-package verification independently checks original
+asset, association and license hashes against icon provenance.
+
+Windows acceptance:
+
+- Affected native/JS file-icon checks: 8 cases, 30,312 assertions passed
+  (`build/icons-file-unit-debug.log`). Includes cold responsiveness, concurrent
+  loading, cancellation, immutable policy results, legacy startup configuration,
+  resource variants and rejection before cache mutation.
+- Package-helper checks: 15 passed (`build/icons-package-helper-tests.log`),
+  including altered SVG and license rejection independently of package inventory.
+- Initial native build failed on discarded nodiscard results; explicit validation
+  fixed it (`build/icons-file-build-debug-failed-nodiscard.log`). Two eager JS
+  catalog approaches exceeded the existing runtime budget; bounded page imports
+  fixed the failure (`build/icons-file-unit-debug-failed-budget.log`).
+- `./scripts/format.ps1 -Offline` and its Check gate passed. Fresh production
+  package acceptance is pending.
+- Initial full Debug run passed 18/19 checks; the new Material screenshot
+  assertion sent End after leaving Explorer and failed to find visible C++ rows.
+  The fixture now re-enters Explorer before scrolling. Original failure is
+  retained in `build/icons-final-tests.log`; `./scripts/cmake.ps1 --build --preset windows-debug --target gui-presentation-smoke`
+  and `./scripts/cmake.ps1 -CTest --preset windows-debug -R '^gui-presentation-smoke$' --output-on-failure`
+  passed, 1/1 in 249.25 seconds (`build/icons-repair-test-debug.log`). All 19
+  Debug checks have a passing result, including 282 unit and 355 integration
+  cases; unchanged passing checks were not needlessly repeated.
+- `./scripts/test.ps1 -Mode release -Gui`: 19/19 passed, 271.58 seconds,
+  including 282 unit and 355 integration cases
+  (`build/icons-final-tests-release.log`). Actual-window screenshot
+  `build/graphics/gui-material-icons.png` confirms default C++ assets in Explorer
+  and tabs, with Codicons in the activity bar. This is not physical DPI evidence.
+
 ## Mature icons: resources and UI rendering (2026-10-12)
 
 First increment replaces the 15 hand-drawn UI glyphs with upstream Codicons SVGs.

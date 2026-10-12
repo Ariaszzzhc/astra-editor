@@ -17,5 +17,11 @@ graphics are prepared at startup; remaining SVGs are parsed/recorded on a
 cancellable worker. Painting replays immutable pictures. Current-color UI
 graphics follow the theme; language graphics retain upstream colors.
 
+Association metadata is embedded as 128-entry module pages. JavaScript loads
+those asynchronously and yields between pages, retaining the existing 8 ms
+execution budget and cancellation behavior. UI configuration stores the
+selected base theme and at most 256 user overrides per table; the full shipped
+catalog is never passed through preference/RPC limits.
+
 Resources, licenses and provenance are installed through cmake/Install.cmake.
 See resources/icons/NOTICE.md for attribution and build-time adaptation details.

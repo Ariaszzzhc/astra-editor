@@ -38,7 +38,7 @@ try {
         $benchmarkOption = if ($Benchmarks) { 'ON' } else { 'OFF' }
         & "$PSScriptRoot/cmake.ps1" --preset "windows-$configuration" "-DASTRA_BUILD_GUI_TESTS=$guiOption" "-DASTRA_BUILD_ENVIRONMENT_TESTS=$environmentOption" "-DASTRA_BUILD_BENCHMARKS=$benchmarkOption"
         $targets = @('astra-tests','astra-server')
-        if ($Gui) { $targets += @('astra','graphics-smoke','renderer-smoke','text-layout-tests','viewport-layout-tests','gui-smoke','gui-services-smoke','gui-recovery-smoke','gui-workspace-smoke','gui-presentation-smoke','gui-visual-smoke','gui-body-smoke','gui-clipboard-smoke') }
+        if ($Gui) { $targets += @('astra','icon-rendering-tests','graphics-smoke','renderer-smoke','text-layout-tests','viewport-layout-tests','gui-smoke','gui-services-smoke','gui-recovery-smoke','gui-workspace-smoke','gui-presentation-smoke','gui-visual-smoke','gui-body-smoke','gui-clipboard-smoke') }
         if ($IsolatedClipboard) { $targets += 'gui-clipboard-async-smoke' }
         if ($InstalledIme) { $targets += 'gui-ime-smoke' }
         if ($Benchmarks -and $configuration -eq 'release') { $targets += @('astra-core-benchmark', 'astra-view-benchmark') }

@@ -27,7 +27,9 @@ $required = @('astra.exe','astra-server.exe','astra-process-host.exe','astra-cli
     'tools/git/cmd/git.exe','tools/git/LICENSE.txt','THIRD-PARTY.md','README.md',
     'licenses/vcpkg/sdl3/copyright','licenses/vcpkg/skia/copyright','licenses/vcpkg/dawn/copyright',
     'licenses/vcpkg/icu/copyright','licenses/vcpkg/directx-dxc/copyright',
-    'provenance/vcpkg-status.txt','provenance/build-provenance.json','provenance/source-files.json')
+    'provenance/vcpkg-status.txt','provenance/build-provenance.json','provenance/source-files.json',
+    'provenance/icons.json','resources/icons/associations.json','resources/icons/NOTICE.md',
+    'licenses/icons/codicons/LICENSE','licenses/icons/codicons/LICENSE-CODE','licenses/icons/material/LICENSE')
 if ($manifest.configuration -cne 'Release' -or $manifest.crt -cne 'MD') { throw 'Release /MD package required' }
 foreach ($entry in $manifest.files) {
     if ($entry.path -match '(?i)(^|/)(tests|fixtures|benchmarks)/|(?:smoke|fixture|benchmark|tests)\.exe$|(?:msvcp140d|vcruntime140d|ucrtbased)\.dll$') {
@@ -46,6 +48,8 @@ foreach ($exe in @('astra.exe','astra-server.exe','astra-process-host.exe','astr
     }
 }
 Write-Output "Windows package inventory: PASS ($($manifest.files.Count) files)"
+$iconCount = Assert-ReleaseIcons $package
+Write-Output "Installed icon resources/notices: PASS ($iconCount SVGs)"
 if ($RunGuiSmoke) {
     & (Join-Path $ReleaseRepository 'tests/package/package_gui_smoke.ps1') -PackageDirectory $package
 }

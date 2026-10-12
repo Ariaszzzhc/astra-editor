@@ -694,6 +694,9 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         Window window(host, std::move(options));
         settle(window);
         const auto original = window.view_state();
+        require(original.file_icons.at("assetsReady").get<bool>() &&
+                    original.file_icons.at("cacheBytes").get<std::size_t>() <= 32 * 1024 * 1024,
+                "Official icon pictures were not ready within their cache budget");
         require(original.visible_file_rows == files + 5, "Indexed file rows were lost");
         require(original.layout.outline_rows.height == 0,
                 "Outline should default to collapsed inside Explorer");
@@ -759,6 +762,23 @@ void move_to(EditorState& state, unsigned line, unsigned column) noexcept {
         key(window, SDLK_ESCAPE);
         window.execute_ui_command("acceptance.icons.restore");
         settle(window);
+        window.execute_ui_command("ui.explorer");
+        settle(window);
+        key(window, SDLK_END);
+        const auto material_icons = window.view_state();
+        bool found_material_cpp{};
+        for (const auto& item : material_icons.file_icons.at("visibleRows")) {
+            if (item.at("path") == "one.cpp" || item.at("path") == "two_with_a_long_name.cpp") {
+                require(item.at("asset") == "material/cpp",
+                        "Default Material C++ icon was not restored");
+                found_material_cpp = true;
+            }
+        }
+        require(found_material_cpp, "Material Explorer icon was not visible");
+        window.request_screenshot("build/graphics/gui-material-icons.png");
+        settle(window);
+        key(window, SDLK_HOME);
+        key(window, SDLK_ESCAPE);
         window.execute_ui_command("acceptance.captureBody");
         settle(window);
         const auto check_styled_input = [&](const char* command, float size, const char* capture) {

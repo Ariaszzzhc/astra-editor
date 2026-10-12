@@ -27,6 +27,7 @@ class ViewRows final {
     struct Decoration {
         Icon icon{Icon::document};
         std::uint32_t color{};
+        std::optional<IconAsset> asset;
     };
 
     using ResolveIcon = std::function<std::optional<Decoration>(const ViewRow&)>;

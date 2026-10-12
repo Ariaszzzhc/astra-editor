@@ -36,7 +36,12 @@ struct IconResource {
     bool monochrome{};
 };
 
+struct IconModule {
+    std::string_view id, source;
+};
+
 [[nodiscard]] std::span<const IconResource> icon_resources();
+[[nodiscard]] std::span<const IconModule> icon_modules();
 [[nodiscard]] std::optional<IconAsset> icon_asset(std::string_view id);
 [[nodiscard]] std::string_view icon_asset_name(IconAsset asset);
 [[nodiscard]] IconAsset icon_asset(Icon icon);

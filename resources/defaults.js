@@ -53,51 +53,10 @@ astra.configure({
         syntaxError: '#F44747'
     },
     fileIcons: {
-        fallback: { glyph: 'document', tone: 'muted' },
-        folder: { glyph: 'folder', tone: 'folder' },
-        directories: {
-            '.git': { glyph: 'branch', tone: 'added' },
-            '.github': { glyph: 'branch', tone: 'muted' }
-        },
-        filenames: {
-            'cmakelists.txt': { glyph: 'settings', tone: 'accent' },
-            '.editorconfig': { glyph: 'settings', tone: 'muted' },
-            '.gitignore': { glyph: 'branch', tone: 'added' },
-            'package.json': { glyph: 'braces', tone: 'added' },
-            'xmake.lua': { glyph: 'settings', tone: 'accent' }
-        },
-        extensions: {
-            '.c': { glyph: 'code', tone: 'codeIcon' },
-            '.cc': { glyph: 'code', tone: 'codeIcon' },
-            '.cpp': { glyph: 'code', tone: 'codeIcon' },
-            '.cxx': { glyph: 'code', tone: 'codeIcon' },
-            '.h': { glyph: 'code', tone: 'codeIcon' },
-            '.hh': { glyph: 'code', tone: 'codeIcon' },
-            '.hpp': { glyph: 'code', tone: 'codeIcon' },
-            '.hxx': { glyph: 'code', tone: 'codeIcon' },
-            '.js': { glyph: 'braces', tone: 'scriptIcon' },
-            '.jsx': { glyph: 'braces', tone: 'scriptIcon' },
-            '.mjs': { glyph: 'braces', tone: 'scriptIcon' },
-            '.cjs': { glyph: 'braces', tone: 'scriptIcon' },
-            '.ts': { glyph: 'braces', tone: 'codeIcon' },
-            '.tsx': { glyph: 'braces', tone: 'codeIcon' },
-            '.json': { glyph: 'braces', tone: 'scriptIcon' },
-            '.jsonc': { glyph: 'braces', tone: 'scriptIcon' },
-            '.py': { glyph: 'code', tone: 'scriptIcon' },
-            '.pyi': { glyph: 'code', tone: 'scriptIcon' },
-            '.lua': { glyph: 'code', tone: 'accent' },
-            '.rs': { glyph: 'code', tone: 'changed' },
-            '.go': { glyph: 'code', tone: 'codeIcon' },
-            '.wgsl': { glyph: 'code', tone: 'accent' },
-            '.md': { glyph: 'document', tone: 'codeIcon' },
-            '.markdown': { glyph: 'document', tone: 'codeIcon' },
-            '.yaml': { glyph: 'settings', tone: 'warning' },
-            '.yml': { glyph: 'settings', tone: 'warning' },
-            '.toml': { glyph: 'settings', tone: 'muted' },
-            '.ini': { glyph: 'settings', tone: 'muted' },
-            '.sh': { glyph: 'code', tone: 'added' },
-            '.ps1': { glyph: 'code', tone: 'accent' }
-        }
+        theme: 'material',
+        directories: {},
+        filenames: {},
+        extensions: {}
     },
     workbench: {
         sidebarWidth: 248,

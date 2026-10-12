@@ -1,6 +1,8 @@
 // File associations are client policy. Native code receives drawing descriptors
 // and never interprets extensions, filenames or directory names.
+import material from 'astra/icon-assets';
 const request = (method, params = {}, options) => astra.request(method, params, options);
+const assets = new Set(material.assets);
 const glyphs = new Set([
     'files',
     'search',
@@ -62,6 +64,21 @@ function capture(value, depth = 0) {
     return result;
 }
 function descriptor(value) {
+    if (object(value) && Object.hasOwn(value, 'asset')) {
+        const fields = ['asset', 'lightAsset', 'openAsset', 'openLightAsset', 'tone'];
+        if (
+            Object.keys(value).some((key) => !fields.includes(key)) ||
+            !assets.has(value.asset) ||
+            ['lightAsset', 'openAsset', 'openLightAsset'].some(
+                (key) => Object.hasOwn(value, key) && !assets.has(value[key])
+            ) ||
+            (Object.hasOwn(value, 'tone') &&
+                !(tones.has(value.tone) || /^#[0-9a-fA-F]{6}$/.test(value.tone)))
+        ) {
+            throw new TypeError('Invalid icon resource descriptor');
+        }
+        return Object.freeze({ ...value });
+    }
     if (
         !object(value) ||
         Object.keys(value).some((key) => key !== 'glyph' && key !== 'tone') ||
@@ -93,21 +110,55 @@ function table(value, extensions = false) {
     return result;
 }
 function compile(theme) {
-    const fields = ['fallback', 'folder', 'filenames', 'extensions', 'directories'];
+    const fields = ['theme', 'fallback', 'folder', 'filenames', 'extensions', 'directories'];
     if (
         !object(theme) ||
         Object.keys(theme).some((key) => !fields.includes(key)) ||
-        JSON.stringify(theme).length > 65536
+        JSON.stringify(theme).length > 65536 ||
+        (Object.hasOwn(theme, 'theme') && !['material', 'custom'].includes(theme.theme))
     ) {
         throw new TypeError('Invalid or oversized file icon theme');
     }
-    return {
-        fallback: descriptor(theme.fallback),
-        folder: descriptor(theme.folder),
-        filenames: table(theme.filenames),
-        extensions: table(theme.extensions, true),
-        directories: table(theme.directories)
+    const base = theme.theme === 'material' ? materialTables : undefined;
+    const association = (field, extensions = false) => {
+        const overrides = table(theme[field], extensions);
+        if (!base) return overrides;
+        if (!overrides.size) return base[field];
+        return new Map([...base[field], ...overrides]);
     };
+    return {
+        fallback: descriptor(
+            Object.hasOwn(theme, 'fallback') ? theme.fallback : base ? material.fallback : undefined
+        ),
+        folder: descriptor(
+            Object.hasOwn(theme, 'folder') ? theme.folder : base ? material.folder : undefined
+        ),
+        filenames: association('filenames'),
+        extensions: association('extensions', true),
+        directories: association('directories')
+    };
+}
+const materialTables = {
+    filenames: new Map(),
+    extensions: new Map(),
+    directories: new Map()
+};
+let materialChunk = 0;
+async function prepareMaterial(options) {
+    // Parse immutable embedded data one bounded page per owner-loop tick.
+    // Cancellation retains prepared data without poisoning other callers.
+    while (materialChunk < material.chunks.length) {
+        options?.signal?.throwIfAborted();
+        const position = materialChunk;
+        const rows = (await import(material.chunks[position])).default;
+        if (materialChunk === position) {
+            for (const [table, key, icon] of rows)
+                materialTables[table].set(key, Object.freeze(icon));
+            ++materialChunk;
+        }
+        await astra.sleep(0);
+    }
+    options?.signal?.throwIfAborted();
 }
 function captureItems(items, limit) {
     if (!Array.isArray(items) || items.length > limit) {
@@ -183,6 +234,7 @@ function classify(theme, item) {
 }
 async function snapshot(options) {
     const state = await request('_ui.icons.read', {}, options);
+    if (state.theme.theme === 'material') await prepareMaterial(options);
     if (!compiled || compiled.generation !== state.generation) {
         compiled = { generation: state.generation, theme: compile(state.theme) };
     }
@@ -190,6 +242,17 @@ async function snapshot(options) {
 }
 function merge(target, patch) {
     if (!object(patch)) return patch;
+    if (
+        object(target) &&
+        ((Object.hasOwn(patch, 'glyph') &&
+            !Object.hasOwn(patch, 'asset') &&
+            Object.hasOwn(target, 'asset')) ||
+            (Object.hasOwn(patch, 'asset') &&
+                !Object.hasOwn(patch, 'glyph') &&
+                Object.hasOwn(target, 'glyph')))
+    ) {
+        target = undefined;
+    }
     const result = Object.assign(Object.create(null), object(target) ? target : {});
     for (const [key, value] of Object.entries(patch)) {
         if (value === null) delete result[key];
@@ -204,7 +267,15 @@ async function change(value, options, replace) {
         throw new TypeError('File icon update exceeds its size bound');
     }
     const state = await request('_ui.icons.read', {}, options);
-    const theme = replace ? captured : merge(state.theme, captured);
+    const previous = { ...state.theme };
+    if (previous.theme === 'material') {
+        for (const field of ['fallback', 'folder']) {
+            if (Object.hasOwn(captured, field) && !Object.hasOwn(previous, field))
+                previous[field] = material[field];
+        }
+    }
+    const theme = replace ? captured : merge(previous, captured);
+    if (theme.theme === 'material') await prepareMaterial(options);
     compile(theme);
     options?.signal?.throwIfAborted();
     const result = await request(

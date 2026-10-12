@@ -94,7 +94,7 @@ void TabBar::paint(SkCanvas* canvas,
              {tab.bounds.right() - scale_, tab.bounds.y, scale_, tab.bounds.height},
              theme.colors.border);
         icons_.draw(canvas,
-                    item.icon,
+                    item.asset.value_or(icon_asset(item.icon)),
                     tab.bounds.x + 12 * scale_,
                     tab.bounds.y + 9 * scale_,
                     16 * scale_,

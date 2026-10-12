@@ -1,4 +1,5 @@
 #include <astra/ui/workbench.hpp>
+#include <astra/ui/icons.hpp>
 #include <astra/ui/input_queue.hpp>
 #include <astra/ui/inline_form.hpp>
 #include <astra/ui/form_registry.hpp>
@@ -51,6 +52,9 @@ class Channel final : public astra::ui::EditorChannel {
 
 std::map<std::string, std::string> modules() {
     std::map<std::string, std::string> result;
+    for (const auto& module : astra::ui::icon_modules()) {
+        result.emplace(module.id, module.source);
+    }
     result["astra/defaults"] = astra::io::read_file("resources/defaults.js").text;
     for (const auto& [name, file] :
          std::map<std::string, std::string>{{"astra/ui", "api.js"},
@@ -2704,11 +2708,16 @@ TEST_CASE("workbench file icons use JS associations and async theme updates") {
                     {extensions: {'.bad': {glyph: 'code', tone: 'missing'}}},
                     {filenames: {'../escape': {glyph: 'code', tone: 'muted'}}},
                     {extensions: {'.CPP': {glyph: 'code', tone: 'muted'}}},
-                    {folder: null},
+                    {theme: 'custom', folder: null},
                     {unexpected: true},
                     {fallback: undefined},
                     {fallback: new Date()},
                     {fallback: {tone: () => 'error'}},
+                    {extensions: {'.bad': {asset: 'material/not-installed'}}},
+                    {extensions: {'.bad': {asset: 'material/../python'}}},
+                    {extensions: {'.bad': {asset: 'material/python', lightAsset: 'missing'}}},
+                    {extensions: {'.bad': {asset: 'material/python', glyph: 'warning'}}},
+                    {theme: 'missing'},
                     JSON.parse('{"__proto__":{"polluted":true}}')
                 ]) {
                     let rejected = false;
@@ -2739,7 +2748,7 @@ TEST_CASE("workbench file icons use JS associations and async theme updates") {
                     ]);
                 } catch (_) { rejected = true; }
                 if (!rejected) throw new Error('Oversized UTF-8 path accepted');
-                return result.items.map(item => item.icon.glyph);
+                return result.items.map(item => item.icon.asset);
             });
             astra.registerCommand('test.icons.restore', async () => {
                 await astra.ui.icons.replace(savedIcons.theme);
@@ -2755,19 +2764,19 @@ TEST_CASE("workbench file icons use JS associations and async theme updates") {
         workbench.execute(command, Json::object(), [&](const auto& result) {
             outcome = result;
         });
-        for (int tick = 0; tick < 30 && !outcome; ++tick)
+        for (int tick = 0; tick < 300 && !outcome; ++tick)
             workbench.poll();
         REQUIRE(outcome);
         REQUIRE_FALSE(outcome->error);
         return outcome->value;
     };
     const auto initial = run("test.icons");
-    CHECK(initial.at("items")[0].at("icon") == Json{{"glyph", "code"}, {"tone", "codeIcon"}});
-    CHECK(initial.at("items")[1].at("icon").at("tone") == "added");
-    CHECK(initial.at("items")[2].at("icon").at("glyph") == "branch");
-    CHECK(initial.at("items")[3].at("icon").at("glyph") == "document");
-    CHECK(initial.at("items")[4].at("icon").at("tone") == "codeIcon");
-    CHECK(run("test.icons.long") == Json::array({"code", "code", "code"}));
+    CHECK(initial.at("items")[0].at("icon") == Json{{"asset", "material/cpp"}});
+    CHECK(initial.at("items")[1].at("icon").at("asset") == "material/nodejs");
+    CHECK(initial.at("items")[2].at("icon").at("asset") == "material/folder-git");
+    CHECK(initial.at("items")[3].at("icon").at("asset") == "material/file");
+    CHECK(initial.at("items")[4].at("icon").at("asset") == "material/typescript");
+    CHECK(run("test.icons.long") == Json::array({"material/cpp", "material/cpp", "material/cpp"}));
     const auto custom = run("test.icons.custom");
     CHECK(custom.at("generation") == "2");
     CHECK(custom.at("items")[0].at("icon").at("glyph") == "symbol");
@@ -2775,12 +2784,89 @@ TEST_CASE("workbench file icons use JS associations and async theme updates") {
     CHECK(run("test.icons.invalid") == true);
     CHECK(writes == 1);
     const auto deleted = run("test.icons.delete");
-    CHECK(deleted.at("items")[0].at("icon").at("glyph") == "document");
+    CHECK(deleted.at("items")[0].at("icon").at("asset") == "material/cpp");
     const auto restored = run("test.icons.restore");
-    CHECK(restored.at("items")[0].at("icon").at("glyph") == "braces");
-    CHECK(restored.at("items")[1].at("icon").at("glyph") == "code");
+    CHECK(restored.at("items")[0].at("icon").at("asset") == "material/typescript-def");
+    CHECK(restored.at("items")[1].at("icon").at("asset") == "material/cpp");
     CHECK(channel->requests.empty());
     CHECK(workbench.idle());
+}
+
+TEST_CASE("material cold loading yields and preserves legacy configuration") {
+    auto channel = std::make_shared<Channel>();
+    Json theme;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.icons.read") {
+                return ready({{"theme", theme}, {"generation", "1"}});
+            }
+            if (method == "_ui.icons.update") {
+                theme = params.at("theme");
+                return ready({{"theme", theme}, {"generation", "1"}});
+            }
+            return ready(nullptr);
+        },
+        modules(),
+        R"js(
+        astra.configure({fileIcons: {
+            fallback: {glyph:'document',tone:'accent'},
+            folder: {glyph:'folder',tone:'#123456'}
+        }});
+        astra.registerCommand('test.pulse', () => 'responsive');
+        astra.registerCommand('test.cold', async () => {
+            const control = new AbortController();
+            const cancelled = astra.ui.icons.resolve([{path:'cancel.py',directory:false}], {signal:control.signal})
+                .then(()=>'unexpected', error=>error.name);
+            const first = astra.ui.icons.resolve([{path:'main.cpp',directory:false}]);
+            const second = astra.ui.icons.resolve([{path:'main.py',directory:false}]);
+            await astra.sleep(0);
+            await astra.sleep(0);
+            control.abort();
+            const cpp = await first;
+            const python = await second;
+            const frozen = !Reflect.set(cpp.items[0].icon, 'asset', 'material/python');
+            const legacy = await astra.ui.icons.resolve([
+                {path:'unknown',directory:false},{path:'ordinary',directory:true}
+            ]);
+            await astra.ui.icons.update({folder:{asset:'material/folder-src',openAsset:'material/folder-src-open'}});
+            const resource = await astra.ui.icons.resolve([{path:'ordinary',directory:true}]);
+            await astra.ui.icons.update({folder:{glyph:'warning',tone:'warning'}});
+            const restored = await astra.ui.icons.resolve([{path:'ordinary',directory:true}]);
+            return {cancelled:await cancelled,cpp,python,frozen,legacy,resource,restored};
+        });
+    )js");
+    theme = workbench.default_settings().at("fileIcons");
+    theme.merge_patch(workbench.settings().at("fileIcons"));
+    std::optional<astra::script::Runtime::Outcome> cold, pulse;
+    workbench.execute("test.cold", Json::object(), [&](const auto& result) {
+        cold = result;
+    });
+    workbench.poll();
+    workbench.execute("test.pulse", Json::object(), [&](const auto& result) {
+        pulse = result;
+    });
+    for (int tick = 0; tick < 5 && !pulse; ++tick) {
+        workbench.poll();
+    }
+    REQUIRE(pulse);
+    REQUIRE_FALSE(pulse->error);
+    CHECK(pulse->value == "responsive");
+    CHECK_FALSE(cold);
+    for (int tick = 0; tick < 500 && !cold; ++tick) {
+        workbench.poll();
+    }
+    REQUIRE(cold);
+    REQUIRE_FALSE(cold->error);
+    CHECK(cold->value.at("cancelled") == "AbortError");
+    CHECK(cold->value.at("cpp").at("items")[0].at("icon").at("asset") == "material/cpp");
+    CHECK(cold->value.at("python").at("items")[0].at("icon").at("asset") == "material/python");
+    CHECK(cold->value.at("frozen") == true);
+    CHECK(cold->value.at("legacy").at("items")[0].at("icon").at("tone") == "accent");
+    CHECK(cold->value.at("legacy").at("items")[1].at("icon").at("tone") == "#123456");
+    CHECK(cold->value.at("resource").at("items")[0].at("icon").at("asset") ==
+          "material/folder-src");
+    CHECK(cold->value.at("restored").at("items")[0].at("icon").at("glyph") == "warning");
 }
 
 TEST_CASE("workbench file icons capture input and reject racing updates") {
@@ -2836,12 +2922,12 @@ TEST_CASE("workbench file icons capture input and reject racing updates") {
         workbench.poll();
         CHECK_FALSE(outcome);
         delayed.set_value({{"theme", theme}, {"generation", "1"}});
-        for (int tick = 0; tick < 20; ++tick)
+        for (int tick = 0; tick < 300 && !outcome; ++tick)
             workbench.poll();
         REQUIRE(outcome);
         REQUIRE_FALSE(outcome->error);
         CHECK(outcome->value.at("items")[0].at("path") == "captured.cpp");
-        CHECK(outcome->value.at("items")[0].at("icon").at("glyph") == "code");
+        CHECK(outcome->value.at("items")[0].at("icon").at("asset") == "material/cpp");
     }
     SUBCASE("concurrent theme publication rejects stale generation") {
         std::optional<astra::script::Runtime::Outcome> outcome;
@@ -2850,7 +2936,7 @@ TEST_CASE("workbench file icons capture input and reject racing updates") {
         });
         workbench.poll();
         delayed.set_value({{"theme", theme}, {"generation", "1"}});
-        for (int tick = 0; tick < 20; ++tick)
+        for (int tick = 0; tick < 300 && !outcome; ++tick)
             workbench.poll();
         REQUIRE(outcome);
         REQUIRE_FALSE(outcome->error);
@@ -2864,7 +2950,7 @@ TEST_CASE("workbench file icons capture input and reject racing updates") {
         });
         workbench.poll();
         delayed.set_value({{"theme", theme}, {"generation", "1"}});
-        for (int tick = 0; tick < 20; ++tick)
+        for (int tick = 0; tick < 300 && !outcome; ++tick)
             workbench.poll();
         REQUIRE(outcome);
         REQUIRE_FALSE(outcome->error);

@@ -21,6 +21,10 @@ Recovery writes to the user's local state directory by default. Use
 `--state-directory PATH` to choose a different location. Recovery offers saved
 sessions explicitly; restoring a buffer does not overwrite its file on disk.
 
+UI graphics use Codicons; file, language and folder graphics use Material Icon
+Theme. Their attribution is in `resources/icons/NOTICE.md`, original licenses in
+`licenses/icons`, and pinned sources and hashes in `provenance/icons.json`.
+
 See `THIRD-PARTY.md` for dependency notices and source references. The SHA-256
 inventory in `package-manifest.json` detects missing, modified or unexpected
 payload files. It is an integrity inventory, not a publisher signature.

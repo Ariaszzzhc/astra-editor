@@ -391,6 +391,9 @@ struct EditorWindow::Impl {
             options.resource_directory = std::filesystem::path(base);
         }
         std::map<std::string, std::string> modules;
+        for (const auto& module : icon_modules()) {
+            modules.emplace(module.id, module.source);
+        }
         modules.emplace(
             "astra/defaults",
             io::read_file(options.resource_directory / "resources" / "defaults.js", 1024 * 1024)
@@ -4826,7 +4829,7 @@ void EditorWindow::Impl::draw_prompt(SkCanvas* canvas, float width, float height
                     if (!item.icon_path.empty()) {
                         const auto icon = file_icons.lookup(item.icon_path, false);
                         icons_.draw(canvas,
-                                    icon.glyph,
+                                    icon.drawing_asset(ui_style.colors),
                                     layout.rows.x + 8 * scale,
                                     y + 7 * scale,
                                     16 * scale,
@@ -4897,12 +4900,17 @@ void EditorWindow::Impl::draw() {
              view.expanded,
              mouse_x,
              mouse_y},
-            [this](const ViewRow& row) -> std::optional<ViewRows::Decoration> {
+            [this, &view](const ViewRow& row) -> std::optional<ViewRows::Decoration> {
                 if (!row.value->contains("iconPath"))
                     return std::nullopt;
                 const auto icon = file_icons.lookup(
                     row.value->at("iconPath").get_ref<const std::string&>(), row.group);
-                return ViewRows::Decoration{icon.glyph, icon.color(ui_style.colors)};
+                const auto expanded =
+                    row.group &&
+                    !view.index.collapsed(row.value->at("id").get_ref<const std::string&>());
+                return ViewRows::Decoration{icon.glyph,
+                                            icon.color(ui_style.colors),
+                                            icon.drawing_asset(ui_style.colors, expanded)};
             });
         chrome.paint_sidebar(canvas,
                              geometry,
@@ -4920,8 +4928,10 @@ void EditorWindow::Impl::draw() {
         canvas, tabs, tabs.position(active_id).value_or(0), ui_style, [&](std::size_t index) {
             const auto& document = documents.at(tabs.id_at(index));
             const auto icon = file_icons.lookup(document.path, false);
-            return TabBar::Decoration{
-                icon.glyph, icon.color(ui_style.colors), document.metadata.value("dirty", false)};
+            return TabBar::Decoration{icon.glyph,
+                                      icon.color(ui_style.colors),
+                                      document.metadata.value("dirty", false),
+                                      icon.drawing_asset(ui_style.colors)};
         });
     if (auto* document = current()) {
         const auto& selections = document->metadata.at("selections");
@@ -5170,8 +5180,9 @@ std::string EditorWindow::active_document_id() const {
 
 bool EditorWindow::idle() const noexcept {
     const auto* document = impl_->current();
-    return !impl_->quit_requested && impl_->tabs.pending() == 0 && impl_->file_icons.idle() &&
-           impl_->pending_fences.empty() && impl_->native_idle(impl_->dialog.has_value()) &&
+    return !impl_->quit_requested && impl_->icons_.ready() && impl_->tabs.pending() == 0 &&
+           impl_->file_icons.idle() && impl_->pending_fences.empty() &&
+           impl_->native_idle(impl_->dialog.has_value()) &&
            (!impl_->dialog || !impl_->dialog->picker.dynamic() || impl_->dialog->picker.ready()) &&
            (impl_->workbench->idle() || (impl_->dialog && impl_->workbench->awaiting_input())) &&
            (!document || (!document->needs_lines && !document->loading && !document->needs_syntax &&
@@ -5205,6 +5216,8 @@ WorkbenchViewState EditorWindow::view_state() const {
     result.style = impl_->style_model();
     result.window_frame = impl_->window_frame_model();
     result.file_icons = impl_->file_icons.state();
+    result.file_icons["assetsReady"] = impl_->icons_.ready();
+    result.file_icons["cacheBytes"] = impl_->icons_.bytes();
     auto visible_icons = Json::array();
     const auto rows = impl_->view_rows_layout();
     sidebar.index.for_each_range(rows.first(), rows.end(), [&](std::size_t, const ViewRow& row) {
@@ -5213,7 +5226,14 @@ WorkbenchViewState EditorWindow::view_state() const {
         const auto path = row.value->at("iconPath").get<std::string>();
         if (const auto icon = impl_->file_icons.peek(path, row.group)) {
             visible_icons.push_back(
-                {{"path", path}, {"glyph", static_cast<int>(icon->glyph)}, {"tone", icon->tone}});
+                {{"path", path},
+                 {"glyph", static_cast<int>(icon->glyph)},
+                 {"tone", icon->tone},
+                 {"asset",
+                  std::string(icon_asset_name(icon->drawing_asset(
+                      impl_->ui_style.colors,
+                      row.group && !sidebar.index.collapsed(
+                                       row.value->at("id").get_ref<const std::string&>()))))}});
         }
     });
     result.file_icons["visibleRows"] = std::move(visible_icons);

@@ -22,6 +22,27 @@ function Assert-ReleaseChild([string]$Root, [string]$Path) {
 function Get-ReleaseHash([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
+function Assert-ReleaseIcons([string]$Directory) {
+    $catalog = Get-Content (Get-ArchiveTarget $Directory 'provenance/icons.json') -Raw | ConvertFrom-Json
+    if ($catalog.schema -ne 1 -or $catalog.assets.Count -lt 1 -or $catalog.assets.Count -gt 4096) {
+        throw 'Invalid installed icon provenance'
+    }
+    $ids = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($asset in $catalog.assets) {
+        if (-not $ids.Add($asset.id) -or -not $asset.path.StartsWith('resources/icons/', [StringComparison]::Ordinal)) {
+            throw 'Invalid installed icon identity'
+        }
+        Assert-ReleaseHash (Get-ArchiveTarget $Directory $asset.path) $asset.sha256
+    }
+    Assert-ReleaseHash (Get-ArchiveTarget $Directory $catalog.associations.path) $catalog.associations.sha256
+    foreach ($notice in $catalog.notices) {
+        $prefix = 'dependencies/icons/licenses/'
+        if (-not $notice.path.StartsWith($prefix, [StringComparison]::Ordinal)) { throw 'Invalid icon notice path' }
+        $path = 'licenses/icons/' + $notice.path.Substring($prefix.Length)
+        Assert-ReleaseHash (Get-ArchiveTarget $Directory $path) $notice.sha256
+    }
+    return $catalog.assets.Count
+}
 function Assert-ReleaseHash([string]$Path, [string]$Expected) {
     if ($Expected -notmatch '^[a-f0-9]{64}$' -or (Get-ReleaseHash $Path) -cne $Expected) {
         throw "SHA-256 mismatch: $Path"

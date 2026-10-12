@@ -291,11 +291,23 @@ await astra.ui.icons.replace(previous.theme);
 ```
 
 Reads/updates return `{theme, generation}`; resolution returns
-`{generation, items: [{path, directory, icon: {glyph, tone}}]}`. Themes require
-`fallback`, `folder`, `filenames`, `extensions` and `directories`. Filename and
+`{generation, items: [{path, directory, icon}]}`. An icon is either the compatible
+`{glyph, tone}` descriptor or `{asset, lightAsset?, openAsset?, openLightAsset?, tone?}`.
+Resource IDs refer to the shipped catalog (for example `material/python` or
+`codicons/search`); arbitrary paths and unknown IDs reject. Material graphics
+retain their original colors; monochrome UI graphics use the current tone.
+`theme: 'material'` selects the default shipped associations. Its configuration
+stores only user overrides; omitted `fallback`/`folder` use the base theme.
+`theme: 'custom'` (or no selector) uses only supplied associations and requires
+explicit `fallback` and `folder`. Both modes require `filenames`, `extensions`
+and `directories` tables. Filename and
 directory-name matches ignore case. Exact filename rules take precedence over
 the longest matching compound extension; directories use their own name table.
-Partial updates use JSON merge-patch semantics: `null` removes an association.
+Partial updates use JSON merge-patch semantics: `null` removes an override,
+restoring its base association in Material mode. Switching between `glyph`
+and `asset` descriptors replaces the previous representation; tone-only patches
+retain the existing descriptor. Expanded folders and light backgrounds choose
+their shipped variants without rerunning JavaScript associations.
 `replace` restores the complete captured theme, including removal of subsequently
 added rules. Concurrent stale updates reject with `-32001` before publication.
 Invalid candidates reject before changing the theme. Cancelling an outstanding

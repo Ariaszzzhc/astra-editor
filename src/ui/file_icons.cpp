@@ -24,6 +24,38 @@ std::string key(std::string_view path, bool directory) {
 } // namespace
 
 FileIcon FileIcon::parse(const protocol::Json& value) {
+    if (value.is_object() && value.contains("asset")) {
+        FileIcon result;
+        if (value.size() > 5) {
+            throw protocol::RpcError(-32602, "Invalid resource icon descriptor");
+        }
+        for (const auto& [key, item] : value.items()) {
+            if (!item.is_string()) {
+                throw protocol::RpcError(-32602, "Icon descriptor fields require strings");
+            }
+            if (key == "tone") {
+                result.tone = item.get<std::string>();
+                continue;
+            }
+            const auto id = icon_asset(item.get_ref<const std::string&>());
+            if (!id) {
+                throw protocol::RpcError(-32602, "Unknown icon resource");
+            }
+            if (key == "asset") {
+                result.asset = id;
+            } else if (key == "lightAsset") {
+                result.light_asset = id;
+            } else if (key == "openAsset") {
+                result.open_asset = id;
+            } else if (key == "openLightAsset") {
+                result.open_light_asset = id;
+            } else {
+                throw protocol::RpcError(-32602, "Invalid icon descriptor field");
+            }
+        }
+        static_cast<void>(result.color({}));
+        return result;
+    }
     if (!value.is_object() || value.size() != 2 || !value.contains("glyph") ||
         !value.contains("tone")) {
         throw protocol::RpcError(-32602, "Invalid file icon descriptor");
@@ -49,6 +81,25 @@ FileIcon FileIcon::parse(const protocol::Json& value) {
         }
     }
     throw protocol::RpcError(-32602, "Unknown file icon glyph");
+}
+
+IconAsset FileIcon::drawing_asset(const WorkbenchStyle::Colors& palette, bool expanded) const {
+    const auto background = palette.background;
+    const bool light = 299 * ((background >> 16) & 255) + 587 * ((background >> 8) & 255) +
+                           114 * (background & 255) >=
+                       128000;
+    if (expanded) {
+        if (light && open_light_asset) {
+            return *open_light_asset;
+        }
+        if (open_asset) {
+            return *open_asset;
+        }
+    }
+    if (light && light_asset) {
+        return *light_asset;
+    }
+    return asset ? *asset : icon_asset(glyph);
 }
 
 std::uint32_t FileIcon::color(const WorkbenchStyle::Colors& palette) const {

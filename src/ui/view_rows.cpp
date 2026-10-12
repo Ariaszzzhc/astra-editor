@@ -82,7 +82,7 @@ std::size_t ViewRows::paint(SkCanvas* canvas,
                                 : icon == Icon::braces   ? theme.colors.script_icon
                                                          : theme.colors.muted;
         icons_.draw(canvas,
-                    icon,
+                    projected && projected->asset ? *projected->asset : icon_asset(icon),
                     x + 18 * scale,
                     box.y + 4 * scale,
                     16 * scale,

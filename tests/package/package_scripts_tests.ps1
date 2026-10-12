@@ -14,6 +14,32 @@ function Expect-Rejected([scriptblock]$Action, [string]$Pattern) {
     throw "Expected rejection: $Pattern"
 }
 try {
+    $iconPayload = Join-Path $fixture 'icon-payload'
+    $iconFiles = @('resources/icons/material/python.svg','resources/icons/associations.json')
+    foreach ($relative in $iconFiles) {
+        $target = Get-ArchiveTarget $iconPayload $relative
+        [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
+        Copy-Item -LiteralPath (Join-Path $ReleaseRepository $relative) -Destination $target
+    }
+    $noticePath = 'licenses/icons/material/LICENSE'
+    $noticeTarget = Get-ArchiveTarget $iconPayload $noticePath
+    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($noticeTarget))
+    Copy-Item -LiteralPath (Join-Path $ReleaseRepository 'dependencies/icons/licenses/material/LICENSE') -Destination $noticeTarget
+    $iconReceipt = [ordered]@{
+        schema=1
+        assets=@([ordered]@{id='material/python';path=$iconFiles[0];sha256=(Get-ReleaseHash (Join-Path $iconPayload $iconFiles[0]))})
+        associations=[ordered]@{path=$iconFiles[1];sha256=(Get-ReleaseHash (Join-Path $iconPayload $iconFiles[1]))}
+        notices=@([ordered]@{path='dependencies/icons/licenses/material/LICENSE';sha256=(Get-ReleaseHash $noticeTarget)})
+    }
+    [void][IO.Directory]::CreateDirectory((Join-Path $iconPayload 'provenance'))
+    $iconReceipt | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $iconPayload 'provenance/icons.json') -Encoding utf8
+    if ((Assert-ReleaseIcons $iconPayload) -ne 1) { throw 'Installed icon receipt was not verified' }
+    $checks++
+    [IO.File]::AppendAllText((Join-Path $iconPayload $iconFiles[0]), 'changed')
+    Expect-Rejected { Assert-ReleaseIcons $iconPayload } 'SHA-256 mismatch'
+    Copy-Item -LiteralPath (Join-Path $ReleaseRepository $iconFiles[0]) -Destination (Join-Path $iconPayload $iconFiles[0]) -Force
+    [IO.File]::AppendAllText($noticeTarget, 'changed')
+    Expect-Rejected { Assert-ReleaseIcons $iconPayload } 'SHA-256 mismatch'
     $payload = Join-Path $fixture 'payload'
     [void][IO.Directory]::CreateDirectory($payload)
     [IO.File]::WriteAllText((Join-Path $payload 'unicode.txt'), '中文 😀')

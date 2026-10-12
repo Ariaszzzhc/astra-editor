@@ -14,6 +14,64 @@ Json resolved(const Json& batch, std::string glyph = "code", std::string tone = 
 }
 } // namespace
 
+TEST_CASE("resource icons preserve upstream variants and legacy descriptors") {
+    using namespace astra::ui;
+    const auto resource = FileIcon::parse({{"asset", "material/python"},
+                                           {"lightAsset", "codicons/warning"},
+                                           {"openAsset", "material/folder-open"},
+                                           {"openLightAsset", "codicons/search"}});
+    WorkbenchStyle::Colors dark;
+    dark.background = 0xff181818;
+    auto light = dark;
+    light.background = 0xfffafafa;
+    CHECK(icon_asset_name(resource.drawing_asset(dark)) == "material/python");
+    CHECK(icon_asset_name(resource.drawing_asset(light)) == "codicons/warning");
+    CHECK(icon_asset_name(resource.drawing_asset(dark, true)) == "material/folder-open");
+    CHECK(icon_asset_name(resource.drawing_asset(light, true)) == "codicons/search");
+    const auto legacy = FileIcon::parse({{"glyph", "warning"}, {"tone", "#123456"}});
+    CHECK(icon_asset_name(legacy.drawing_asset(light, true)) == "codicons/warning");
+    CHECK(legacy.color(light) == 0xff123456);
+    CHECK_THROWS_AS(static_cast<void>(FileIcon::parse({{"asset", "material/../python"}})),
+                    astra::protocol::RpcError);
+    CHECK_THROWS_AS(static_cast<void>(FileIcon::parse({{"asset", "material/not-installed"}})),
+                    astra::protocol::RpcError);
+    CHECK_THROWS_AS(
+        static_cast<void>(FileIcon::parse({{"asset", "material/python"}, {"glyph", "warning"}})),
+        astra::protocol::RpcError);
+    CHECK_THROWS_AS(static_cast<void>(FileIcon::parse({{"asset", 17}})), astra::protocol::RpcError);
+    CHECK_THROWS_AS(
+        static_cast<void>(FileIcon::parse({{"asset", "material/python"}, {"tone", "missing"}})),
+        astra::protocol::RpcError);
+    CHECK_THROWS_AS(static_cast<void>(
+                        FileIcon::parse({{"asset", "material/python"}, {"lightAsset", "unknown"}})),
+                    astra::protocol::RpcError);
+}
+
+TEST_CASE("resource icon batch rejection keeps all warm entries") {
+    astra::ui::FileIcons icons;
+    static_cast<void>(icons.lookup("a.py", false));
+    static_cast<void>(icons.lookup("b.py", false));
+    auto batch = *icons.begin();
+    auto result = batch;
+    for (auto& item : result.at("items")) {
+        item["icon"] = {{"asset", "material/python"}};
+    }
+    icons.finish(batch, &result);
+    icons.invalidate();
+    static_cast<void>(icons.lookup("a.py", false));
+    static_cast<void>(icons.lookup("b.py", false));
+    batch = *icons.begin();
+    result = batch;
+    result["items"][0]["icon"] = {{"asset", "material/cpp"}};
+    result["items"][1]["icon"] = {{"asset", "material/missing"}};
+    CHECK_THROWS_AS(icons.finish(batch, &result), astra::protocol::RpcError);
+    for (const auto name : {"a.py", "b.py"}) {
+        CHECK(astra::ui::icon_asset_name(icons.lookup(name, false).drawing_asset({})) ==
+              "material/python");
+    }
+    CHECK(icons.state().at("resolutions") == 2);
+}
+
 TEST_CASE("presentation file icons retain generations and warm descriptors") {
     astra::ui::FileIcons icons;
     CHECK(icons.lookup("source.cpp", false).glyph == astra::ui::Icon::document);

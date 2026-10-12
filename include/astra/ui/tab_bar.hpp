@@ -28,6 +28,7 @@ class TabBar final {
         Icon icon{Icon::document};
         std::uint32_t color{};
         bool dirty{};
+        std::optional<IconAsset> asset;
     };
 
     explicit TabBar(TextLabels& labels, IconRenderer& icons) : labels_(labels), icons_(icons) {

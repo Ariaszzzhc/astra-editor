@@ -18,6 +18,14 @@ $workspaceRoot = Join-Path $fixtureRoot 'workspace'
 $scriptText = @'
 if (astra.context === 'client') {
     astra.registerCommand('workbench.recoveryScan', async () => {
+        const resolved = await astra.ui.icons.resolve([
+            {path:'main.cpp',directory:false}, {path:'main.py',directory:false},
+            {path:'CMakeLists.txt',directory:false}, {path:'src',directory:true}
+        ]);
+        const expected = ['material/cpp','material/python','material/cmake','material/folder-src'];
+        if (resolved.items.some((item,index) => item.icon.asset !== expected[index])) {
+            throw new Error('Packaged Material icon associations mismatch');
+        }
         await astra.ui.execute('workbench.open', { path: 'source.txt' });
         await astra.ui.native('editor.insert_text', { text: 'Packaged 中🙂\n' });
         await astra.ui.native('editor.undo');
