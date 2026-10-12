@@ -1,4 +1,5 @@
 #include <astra/ui/editor_tooltip.hpp>
+#include <astra/ui/editor_link.hpp>
 #include <doctest/doctest.h>
 
 namespace {
@@ -8,6 +9,28 @@ Json target(std::string revision = "1", std::size_t offset = 7) {
     return {{"id", "document"}, {"baseRevision", revision}, {"byteOffset", offset}};
 }
 } // namespace
+
+TEST_CASE("editor definition link fences pointer revision and Ctrl release") {
+    astra::ui::EditorLink link;
+    link.sync(target());
+    const auto first = link.take_request()->at("version");
+    CHECK(link.publish({{"version", first}, {"available", true}, {"error", ""}}));
+    CHECK(link.available());
+    link.sync(target("2"));
+    CHECK_FALSE(link.available());
+    CHECK_FALSE(link.publish({{"version", first}, {"available", true}, {"error", ""}}));
+    const auto latest = link.take_request()->at("version");
+    CHECK(
+        link.publish({{"version", latest}, {"available", false}, {"error", "server unavailable"}}));
+    CHECK_FALSE(link.pending());
+    CHECK(link.state().at("error") == "server unavailable");
+    CHECK_THROWS(static_cast<void>(link.publish(
+        {{"version", latest}, {"available", true}, {"error", std::string(4097, 'a')}})));
+    CHECK_FALSE(link.available());
+    link.sync(nullptr);
+    CHECK_FALSE(link.publish({{"version", latest}, {"available", true}, {"error", ""}}));
+    CHECK_FALSE(link.pending());
+}
 
 TEST_CASE("editor tooltip coalesces pointer changes and fences stale publication") {
     astra::ui::EditorTooltip tooltip;

@@ -129,7 +129,8 @@ astra::ui::TextRect symbol_point(astra::ui::EditorWindow& window,
             0};
 }
 
-void pointer(astra::ui::EditorWindow& window, float x, float y, bool click = false) {
+void pointer(
+    astra::ui::EditorWindow& window, float x, float y, bool click = false, bool wait = true) {
     int width{}, height{}, pixels_width{}, pixels_height{};
     require(SDL_GetWindowSize(window.window(), &width, &height) &&
                 SDL_GetWindowSizeInPixels(window.window(), &pixels_width, &pixels_height),
@@ -155,7 +156,8 @@ void pointer(astra::ui::EditorWindow& window, float x, float y, bool click = fal
         event.button.down = false;
         require(SDL_PushEvent(&event), "Queue pointer release");
     }
-    settle(window);
+    if (wait)
+        settle(window);
 }
 
 void tooltip_wheel(astra::ui::EditorWindow& window, float x, float y) {
@@ -186,7 +188,9 @@ void await_diagnostics(astra::ui::EditorWindow& window, bool errors) {
     throw std::runtime_error("Automatic inline diagnostics did not reach the current revision");
 }
 
-void require_error_pixels(const fs::path& path, astra::ui::Box region) {
+void require_error_pixels(const fs::path& path,
+                          astra::ui::Box region,
+                          std::uint32_t color = 0xFFF48771) {
     auto data = SkData::MakeFromFileName(path.string().c_str());
     require(data != nullptr, "Diagnostic screenshot missing");
     auto codec = SkCodec::MakeFromData(std::move(data));
@@ -206,8 +210,9 @@ void require_error_pixels(const fs::path& path, astra::ui::Box region) {
              ++x) {
             const auto offset =
                 static_cast<std::size_t>(y) * info.minRowBytes() + static_cast<std::size_t>(x) * 4;
-            marked +=
-                pixels[offset] == 244 && pixels[offset + 1] == 135 && pixels[offset + 2] == 113;
+            marked += pixels[offset] == ((color >> 16) & 255) &&
+                      pixels[offset + 1] == ((color >> 8) & 255) &&
+                      pixels[offset + 2] == (color & 255);
         }
     }
     require(marked >= 3,
@@ -364,12 +369,37 @@ int main() {
         key(window, SDLK_A, SDL_KMOD_CTRL);
         text(window, valid);
         await_diagnostics(window, false);
+        // Observe every publication, including the frames before the background
+        // syntax query completes. Editing whitespace must not remove token colors.
+        caret(window, host, valid.size() - 1);
+        const auto initial_revision = window.view_state().document_viewport.at("viewRevision");
+        SDL_Event entered{};
+        entered.type = SDL_EVENT_TEXT_INPUT;
+        entered.text.windowID = SDL_GetWindowID(window.window());
+        entered.text.text = " ";
+        require(SDL_PushEvent(&entered), "Queue continuity input");
+        bool published{};
+        const auto continuity_deadline = Clock::now() + std::chrono::seconds(40);
+        do {
+            require(window.pump() && window.last_error().empty(), "Syntax continuity pump failed");
+            const auto state = window.view_state().document_viewport;
+            if (state.at("viewRevision") != initial_revision) {
+                published = true;
+                require(state.at("syntaxRevision") == state.at("viewRevision") &&
+                            state.at("highlightCount").get<std::size_t>() > 0,
+                        "New text was published without its carried syntax colors");
+            }
+            SDL_Delay(2);
+        } while ((!published || !window.idle()) && Clock::now() < continuity_deadline);
+        require(published && window.idle(), "Syntax continuity input did not complete");
+        key(window, SDLK_Z, SDL_KMOD_CTRL);
         caret(window, host, 0);
         const auto valid_point = symbol_point(window, valid_line, 1, valid_line.find("square") + 2);
         pointer(window, valid_point.x, valid_point.y);
         const auto mouse_hover = window.view_state().editor_tooltip;
         require(mouse_hover.at("text").get<std::string>().find("square") != std::string::npos,
-                "Mouse hover did not show real clangd symbol information");
+                "Mouse hover did not show real clangd symbol information: " + mouse_hover.dump() +
+                    " language=" + window.view_state().document.at("language").dump());
         require(document(host, id).at("selections").front().at("head") == 0,
                 "Nonmodal symbol hover moved the caret");
         const auto box = mouse_hover.at("bounds");
@@ -398,6 +428,43 @@ int main() {
         key(window, SDLK_ESCAPE);
         const auto previous_modifiers = SDL_GetModState();
         SDL_SetModState(SDL_KMOD_CTRL);
+        pointer(window, valid_point.x, valid_point.y, false, false);
+        bool animated{};
+        const auto link_deadline = Clock::now() + std::chrono::seconds(10);
+        do {
+            require(window.pump() && window.last_error().empty(), "Definition link pump failed");
+            const auto link = window.view_state().editor_link;
+            if (link.at("available").get<bool>() && link.at("progress").get<float>() < 1)
+                animated = true;
+            SDL_Delay(2);
+        } while (!window.idle() && Clock::now() < link_deadline);
+        const auto link = window.view_state().editor_link;
+        require(link.at("available").get<bool>() && animated && link.at("progress") == 1,
+                "Real definition did not animate its confirmed Ctrl-hover affordance");
+        require(link.at("target").at("endByteOffset").get<std::size_t>() -
+                        link.at("target").at("byteOffset").get<std::size_t>() ==
+                    6,
+                "Definition underline does not cover the complete symbol");
+        window.request_screenshot("build/graphics/gui-definition-link.png");
+        settle(window);
+        require_error_pixels("build/graphics/gui-definition-link.png",
+                             {valid_point.x - 25 * geometry.scale,
+                              geometry.editor.y + row_height,
+                              90 * geometry.scale,
+                              row_height},
+                             0xFF0078D4);
+        const auto link_tooltip = window.view_state().editor_tooltip.at("bounds");
+        pointer(
+            window, link_tooltip.at("x").get<float>() + 15, link_tooltip.at("y").get<float>() + 10);
+        require(!window.view_state().editor_link.at("available").get<bool>(),
+                "Tooltip content advertised a definition for the obscured document");
+        SDL_SetModState(previous_modifiers);
+        settle(window);
+        require(!window.view_state().editor_link.at("available").get<bool>(),
+                "Ctrl release retained a definition underline");
+        require(SDL_GetCursor() == SDL_GetDefaultCursor(), "Ctrl release retained the link cursor");
+        SDL_SetModState(SDL_KMOD_CTRL);
+        pointer(window, valid_point.x, valid_point.y);
         pointer(window, valid_point.x, valid_point.y, true);
         SDL_SetModState(previous_modifiers);
         require(document(host, id).at("selections").front().at("anchor") == 4,

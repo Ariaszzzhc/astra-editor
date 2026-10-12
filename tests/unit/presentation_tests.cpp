@@ -4,6 +4,7 @@
 #include <astra/ui/text_line_index.hpp>
 #include <astra/ui/text_panel.hpp>
 #include <astra/ui/decoration_indexes.hpp>
+#include <astra/core/utf8.hpp>
 #include <astra/ui/inline_form.hpp>
 #include <astra/ui/form_registry.hpp>
 #include <astra/ui/view_store.hpp>
@@ -1355,6 +1356,132 @@ TEST_CASE("presentation decoration adapters distinguish bytes lines and UTF16 co
     indexes.set_diagnostics(Json::array());
     CHECK(indexes.diagnostics.size() == 0);
     CHECK(retained.diagnostics.size() == 1);
+}
+
+TEST_CASE("presentation syntax colors follow Unicode edits and shifted viewport rows") {
+    using namespace astra::ui;
+    using Json = astra::protocol::Json;
+    const auto row = [](std::size_t number, std::size_t begin, std::string text) {
+        const auto end = begin + text.size();
+        return ViewportLine{number, begin, end, end + 1, true, std::move(text)};
+    };
+    const std::string old_text = "int 中 = 12;";
+    ViewportIndex before;
+    before.reset({row(0, 0, old_text), row(1, old_text.size() + 1, "return 中;")});
+    DecorationIndexes indexes;
+    indexes.set_highlights(Json::array(
+        {{{"begin", 0}, {"end", 3}, {"kind", "keyword"}},
+         {{"begin", 4}, {"end", 7}, {"kind", "variable"}},
+         {{"begin", 10}, {"end", 12}, {"kind", "number"}},
+         {{"begin", old_text.size() + 1}, {"end", old_text.size() + 7}, {"kind", "keyword"}}}));
+    const auto retained = indexes.highlights;
+    std::vector<ViewportLine> edited{
+        row(0, 0, "int 中🙂 = 12;"), row(1, 18, ""), row(2, 19, "return 中;")};
+    indexes.remap_highlights(before, edited);
+    CHECK(indexes.highlights.validate());
+    CHECK(indexes.highlights
+              .intersect(0,
+                         3,
+                         [](const auto&) {
+                         })
+              .matches == 1);
+    indexes.highlights.intersect(14, 16, [&](const auto& span) {
+        CHECK(span.begin == 14);
+        CHECK(span.end == 16);
+        CHECK(span.value == "number");
+    });
+    CHECK(indexes.highlights
+              .intersect(19,
+                         25,
+                         [](const auto&) {
+                         })
+              .matches == 1);
+    CHECK(retained
+              .intersect(10,
+                         12,
+                         [](const auto&) {
+                         })
+              .matches == 1);
+    before.reset(edited);
+    edited = {row(0, 0, "int 文🙂 = 12;"), row(1, 18, ""), row(2, 19, "return 中;")};
+    indexes.remap_highlights(before, edited);
+    indexes.highlights.intersect(0, 17, [&](const auto& span) {
+        CHECK(astra::utf8::is_boundary(edited[0].text, span.begin));
+        CHECK(astra::utf8::is_boundary(edited[0].text, span.end));
+    });
+    before.reset(edited);
+    edited = {row(0, 0, "x"), row(1, 2, "return 中;")};
+    indexes.remap_highlights(before, edited);
+    CHECK(indexes.highlights
+              .intersect(0,
+                         1,
+                         [](const auto&) {
+                         })
+              .matches == 0);
+    CHECK(indexes.highlights
+              .intersect(2,
+                         8,
+                         [](const auto&) {
+                         })
+              .matches == 1);
+}
+
+TEST_CASE("presentation syntax remapping preserves untouched ranges under random Unicode edits") {
+    using namespace astra::ui;
+    constexpr unsigned seed = 0x20261012;
+    std::mt19937 random(seed);
+    CAPTURE(seed);
+    const std::string source = "int 中 = 12; // é🙂";
+    const std::vector<RangeIndex<std::string, Utf8ByteUnit>::Entry> original{
+        {0, 3, "keyword"}, {4, 7, "variable"}, {10, 12, "number"}, {14, source.size(), "comment"}};
+    std::vector<std::size_t> boundaries{0};
+    for (std::size_t position = 0; position < source.size();) {
+        position += astra::utf8::decode(source, position).bytes;
+        boundaries.push_back(position);
+    }
+    for (unsigned iteration = 0; iteration < 500; ++iteration) {
+        CAPTURE(iteration);
+        auto first = static_cast<std::size_t>(random()) % boundaries.size();
+        auto last = static_cast<std::size_t>(random()) % boundaries.size();
+        if (first > last)
+            std::swap(first, last);
+        const auto begin = boundaries[first];
+        const auto end = boundaries[last];
+        const std::string replacement = iteration % 2 ? "🧪" : "Ωé";
+        auto edited = source;
+        edited.replace(begin, end - begin, replacement);
+        ViewportIndex before;
+        before.reset({{0, 0, source.size(), source.size() + 1, true, source}});
+        DecorationIndexes indexes;
+        indexes.highlights.reset(original);
+        const auto retained = indexes.highlights;
+        indexes.remap_highlights(before, {{0, 0, edited.size(), edited.size() + 1, true, edited}});
+        REQUIRE(indexes.highlights.validate());
+        indexes.highlights.intersect(0, edited.size(), [&](const auto& span) {
+            CHECK(span.end <= edited.size());
+            CHECK(astra::utf8::is_boundary(edited, span.begin));
+            CHECK(astra::utf8::is_boundary(edited, span.end));
+        });
+        for (const auto& old : original) {
+            if (old.begin < end && old.end > begin)
+                continue;
+            auto expected = old;
+            if (old.begin >= end) {
+                expected.begin = begin + replacement.size() + old.begin - end;
+                expected.end = begin + replacement.size() + old.end - end;
+            }
+            bool found{};
+            indexes.highlights.intersect(expected.begin, expected.end, [&](const auto& span) {
+                found = found || span == expected;
+            });
+            CHECK(found);
+        }
+        std::vector<RangeIndex<std::string, Utf8ByteUnit>::Entry> snapshot;
+        retained.intersect(0, source.size(), [&](const auto& span) {
+            snapshot.push_back(span);
+        });
+        CHECK(snapshot == original);
+    }
 }
 
 TEST_CASE("presentation confirmation layout shares bounded review and button regions") {

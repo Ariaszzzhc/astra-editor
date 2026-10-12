@@ -26,6 +26,7 @@ struct DocumentViewport::Impl {
     ViewportCacheStatistics stats;
     ViewportIndex lines;
     std::map<std::size_t, std::shared_ptr<const TextLayout>> current;
+    std::map<std::size_t, std::shared_ptr<const TextLayout>> presentation;
     Entries recent;
     std::multimap<std::size_t, Entries::iterator> lookup;
 
@@ -180,8 +181,13 @@ void DocumentViewport::publish(std::vector<ViewportLine> lines) {
     invalidate_layouts();
 }
 
-void DocumentViewport::invalidate_layouts() {
+void DocumentViewport::invalidate_layouts(bool retain_presentation) {
     impl_->cancel();
+    if (retain_presentation && !impl_->current.empty()) {
+        impl_->presentation = impl_->current;
+    } else if (!retain_presentation) {
+        impl_->presentation.clear();
+    }
     impl_->current.clear();
 }
 
@@ -207,6 +213,7 @@ const TextLayout& DocumentViewport::shape(std::size_t number, const TextLayoutOp
     auto paragraph = impl_->get(line->text, options, number);
     auto& current = impl_->current[number];
     current = std::move(paragraph);
+    impl_->presentation.erase(number);
     return *current;
 }
 
@@ -226,6 +233,7 @@ const TextLayout* DocumentViewport::prepare(std::size_t number, const TextLayout
             impl_->pending.erase(found);
         }
         impl_->current[number] = std::move(cached);
+        impl_->presentation.erase(number);
         return layout(number);
     }
     auto found = impl_->pending.find(number);
@@ -248,7 +256,10 @@ const TextLayout* DocumentViewport::prepare(std::size_t number, const TextLayout
         value.ticket = impl_->jobs->submit(
             line->text, value.options, impl_->seed(number), impl_->glyph_seed(number));
     }
-    return nullptr;
+    const auto previous = impl_->presentation.find(number);
+    return previous != impl_->presentation.end() && previous->second->text() == line->text
+               ? previous->second.get()
+               : nullptr;
 }
 
 bool DocumentViewport::pending(std::size_t number) const {
@@ -297,6 +308,7 @@ void DocumentViewport::poll_layouts() {
         }
         impl_->store(result->paragraph, value.options, number);
         impl_->current[number] = std::move(result->paragraph);
+        impl_->presentation.erase(number);
         it = impl_->pending.erase(it);
     }
 }

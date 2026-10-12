@@ -132,6 +132,7 @@ astra_library(astra-icon-assets
 )
 target_link_libraries(astra-icon-assets PUBLIC astra-options)
 astra_library(astra-workbench
+    src/ui/editor_link.cpp
     src/ui/editor_tooltip.cpp
     src/ui/workbench_style.cpp
     src/ui/tab_index.cpp

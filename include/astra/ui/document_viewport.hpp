@@ -38,7 +38,8 @@ class DocumentViewport final {
     DocumentViewport& operator=(const DocumentViewport&) = delete;
 
     void publish(std::vector<ViewportLine> lines);
-    void invalidate_layouts();
+    // Color refresh may keep exact-text paragraphs visible until replacement.
+    void invalidate_layouts(bool retain_presentation = false);
     [[nodiscard]] const ViewportIndex& lines() const noexcept;
     [[nodiscard]] const TextLayout* layout(std::size_t number) const;
     [[nodiscard]] const TextLayout& shape(std::size_t number, const TextLayoutOptions&);

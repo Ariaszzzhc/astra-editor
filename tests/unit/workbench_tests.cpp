@@ -8,6 +8,7 @@
 #include <astra/ui/view_page.hpp>
 #include <astra/ui/chrome_state.hpp>
 #include <astra/ui/editor_tooltip.hpp>
+#include <astra/ui/editor_link.hpp>
 #include <astra/io/file_store.hpp>
 #include <doctest/doctest.h>
 
@@ -4049,6 +4050,53 @@ TEST_CASE("workbench mouse hover cancels debounce and joins UTF16 diagnostics wi
     CHECK(tooltip.text().find("outside") == std::string::npos);
     CHECK(tooltip.text().find("```") == std::string::npos);
     CHECK_FALSE(tooltip.pending());
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench Ctrl hover confirms definitions and rejects cancelled or obsolete results") {
+    auto channel = std::make_shared<Channel>();
+    astra::ui::EditorLink link;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            REQUIRE(method == "_ui.editorLink.publish");
+            return ready(link.publish(params));
+        },
+        modules());
+    const Json target{{"id", "source"}, {"baseRevision", "7"}, {"byteOffset", 15}};
+    link.sync(target);
+    workbench.emit("ui.editor.link", *link.take_request());
+    for (int tick = 0; tick < 8; ++tick)
+        workbench.poll();
+    link.sync(nullptr);
+    workbench.emit("ui.editor.link", *link.take_request());
+    for (int tick = 0; tick < 12; ++tick)
+        workbench.poll();
+    CHECK(channel->requests.empty());
+    for (const bool obsolete : {false, true}) {
+        link.sync(target);
+        workbench.emit("ui.editor.link", *link.take_request());
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+        while (channel->requests.empty() && std::chrono::steady_clock::now() < deadline) {
+            workbench.poll();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        REQUIRE(channel->requests.size() == 1);
+        CHECK(channel->requests.front().body.at("params").at("method") == "definition");
+        CHECK(channel->requests.front().body.at("params").at("byteOffset") == 15);
+        channel->reply({{"revision", "7"},
+                        {"obsolete", obsolete},
+                        {"resolvedLocations", Json::array({{{"path", "main.cpp"}}})}});
+        for (int tick = 0; tick < 24; ++tick)
+            workbench.poll();
+        CHECK(link.available() == !obsolete);
+        CHECK_FALSE(link.pending());
+        link.sync(nullptr);
+        workbench.emit("ui.editor.link", *link.take_request());
+        for (int tick = 0; tick < 12; ++tick)
+            workbench.poll();
+    }
     CHECK(workbench.take_errors().empty());
     CHECK(workbench.idle());
 }

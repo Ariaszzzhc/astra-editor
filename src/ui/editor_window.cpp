@@ -1,5 +1,6 @@
 #include "astra/ui/editor_window.hpp"
 #include "astra/ui/editor_tooltip.hpp"
+#include "astra/ui/editor_link.hpp"
 #include "astra/ui/clipboard_client.hpp"
 #include "astra/ui/renderer.hpp"
 #include "astra/ui/text_layout.hpp"
@@ -36,6 +37,7 @@
 #include "include/core/SkPath.h"
 #include "include/core/SkPathBuilder.h"
 #include <nlohmann/json.hpp>
+#include <utf8proc.h>
 
 #include <algorithm>
 #include <array>
@@ -245,6 +247,12 @@ struct EditorWindow::Impl {
     Json editor_settings = Json::object();
     WorkbenchStyle ui_style;
     EditorTooltip editor_tooltip;
+    EditorLink editor_link;
+    Clock::time_point link_started{};
+    float link_progress{};
+    std::unique_ptr<SDL_Cursor, decltype(&SDL_DestroyCursor)> link_cursor{nullptr,
+                                                                          SDL_DestroyCursor};
+    bool link_cursor_active{};
     TextSurface tooltip_surface{fonts, layout_jobs};
     Box tooltip_box;
     std::size_t tooltip_first{};
@@ -783,6 +791,7 @@ struct EditorWindow::Impl {
     void fetch_diagnostics(const std::string& id);
     Json editor_hit(float x, float y) const;
     void sync_editor_tooltip();
+    void sync_editor_link();
     void dismiss_editor_tooltip();
     void draw_editor_tooltip(SkCanvas* canvas);
     void editor_command(std::string command,
@@ -1307,6 +1316,10 @@ void EditorWindow::Impl::fetch_lines_page(std::shared_ptr<ViewState> view,
                  static_cast<void>(number);
                  lines.push_back(std::move(line));
              }
+             if (document.syntax_revision == document.view_revision) {
+                 document.decorations.remap_highlights(document.viewport.lines(), lines);
+                 document.syntax_revision = view->revision;
+             }
              document.viewport.publish(std::move(lines));
              document.view_revision = view->revision;
              document.loading = false;
@@ -1374,7 +1387,7 @@ void EditorWindow::Impl::fetch_syntax() {
                  document.syntax_revision = revision;
                  document.needs_syntax = false;
                  document.decorations.set_highlights(result.value("highlights", Json::array()));
-                 document.viewport.invalidate_layouts();
+                 document.viewport.invalidate_layouts(true);
              },
              {}});
 }
@@ -2283,6 +2296,18 @@ Json EditorWindow::Impl::style_model() const {
 }
 
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
+    if (method == "_ui.editorLink.read") {
+        return editor_link.state();
+    }
+    if (method == "_ui.editorLink.publish") {
+        sync_editor_link();
+        const auto was_available = editor_link.available();
+        const auto accepted = editor_link.publish(params);
+        if (accepted && editor_link.available() && !was_available) {
+            link_started = Clock::now();
+        }
+        return accepted;
+    }
     if (method == "_ui.editorTooltip.read") {
         return editor_tooltip.state();
     }
@@ -3073,9 +3098,6 @@ const TextLayout* EditorWindow::Impl::prepare_line(Document& document, std::size
     if (const auto* shaped = document.viewport.layout(number)) {
         return shaped;
     }
-    if (document.viewport.pending(number)) {
-        return nullptr;
-    }
     const auto* line = document.viewport.lines().find(number);
     if (!line) {
         return nullptr;
@@ -3743,6 +3765,82 @@ void EditorWindow::Impl::dismiss_editor_tooltip() {
     tooltip_offset = 0;
 }
 
+void EditorWindow::Impl::sync_editor_link() {
+    Json target = nullptr;
+    const auto modifiers = SDL_GetModState();
+    if (hover_tracking && !dragging && !dragging_scroll &&
+        !tooltip_box.contains(mouse_x, mouse_y) && (modifiers & SDL_KMOD_CTRL) &&
+        !(modifiers & (SDL_KMOD_ALT | SDL_KMOD_SHIFT))) {
+        target = editor_hit(mouse_x, mouse_y);
+        if (!target.is_null()) {
+            const auto* line =
+                current()->viewport.lines().find(target.at("line").get<std::size_t>());
+            const auto offset = target.at("byteOffset").get<std::size_t>() - line->begin;
+            // Unicode letters, marks, numbers and connector punctuation form a
+            // candidate. The LSP confirms whether it actually has a definition.
+            const auto word = [&](std::size_t position) {
+                if (position >= line->text.size())
+                    return false;
+                const auto scalar = utf8::decode(line->text, position);
+                const auto category =
+                    utf8proc_category(static_cast<utf8proc_int32_t>(scalar.value));
+                return (category >= UTF8PROC_CATEGORY_LU && category <= UTF8PROC_CATEGORY_NO) ||
+                       category == UTF8PROC_CATEGORY_PC;
+            };
+            auto point = offset;
+            const auto* shaped = current()->viewport.layout(line->number);
+            if (!word(point) && point > 0 &&
+                mouse_x < left + gutter - current()->horizontal + shaped->caret(point).x) {
+                do {
+                    --point;
+                } while (!utf8::is_boundary(line->text, point));
+            }
+            auto begin = point;
+            auto end = point;
+            // Bound pointer work even for huge generated single-line files.
+            while (begin > 0 && point - begin < 4096) {
+                auto previous = begin - 1;
+                while (!utf8::is_boundary(line->text, previous))
+                    --previous;
+                if (!word(previous))
+                    break;
+                begin = previous;
+            }
+            while (word(end) && end - point < 4096) {
+                end += utf8::decode(line->text, end).bytes;
+            }
+            const bool found = word(point) && point - begin < 4096 && end - point < 4096;
+            if (found) {
+                target = {{"id", active_id},
+                          {"baseRevision", current()->view_revision},
+                          {"byteOffset", line->begin + begin},
+                          {"endByteOffset", line->begin + end},
+                          {"line", line->number}};
+            } else
+                target = nullptr;
+        }
+    }
+    editor_link.sync(std::move(target));
+    link_progress =
+        editor_link.available()
+            ? std::clamp(std::chrono::duration<float>(Clock::now() - link_started).count() / 0.12F,
+                         0.0F,
+                         1.0F)
+            : 0;
+    const auto active = editor_link.available();
+    if (active != link_cursor_active) {
+        if (active && !link_cursor) {
+            link_cursor.reset(SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_POINTER));
+            if (!link_cursor)
+                throw std::runtime_error(SDL_GetError());
+        }
+        if (!SDL_SetCursor(active ? link_cursor.get() : SDL_GetDefaultCursor())) {
+            throw std::runtime_error(SDL_GetError());
+        }
+        link_cursor_active = active;
+    }
+}
+
 void EditorWindow::Impl::sync_editor_tooltip() {
     const Box bridge{tooltip_box.x - 4 * scale,
                      tooltip_box.y - 4 * scale,
@@ -3897,7 +3995,9 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
     const bool tooltip_click =
         input.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
         tooltip_box.contains(input.button.x * ratio_x, input.button.y * ratio_y);
-    if (input.type == SDL_EVENT_KEY_DOWN || input.type == SDL_EVENT_TEXT_INPUT ||
+    const bool control_key = input.type == SDL_EVENT_KEY_DOWN &&
+                             (input.key.key == SDLK_LCTRL || input.key.key == SDLK_RCTRL);
+    if ((input.type == SDL_EVENT_KEY_DOWN && !control_key) || input.type == SDL_EVENT_TEXT_INPUT ||
         input.type == SDL_EVENT_WINDOW_FOCUS_LOST || input.type == SDL_EVENT_WINDOW_MOUSE_LEAVE ||
         input.type == SDL_EVENT_WINDOW_RESIZED ||
         input.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
@@ -5251,6 +5351,23 @@ void EditorWindow::Impl::draw() {
                 }
             }
             shaped->draw(canvas, text_x, y);
+            if (editor_link.available() && editor_link.target().at("line") == number &&
+                editor_link.target().at("baseRevision") == document->view_revision) {
+                const auto begin =
+                    editor_link.target().at("byteOffset").get<std::size_t>() - line.begin;
+                const auto end =
+                    editor_link.target().at("endByteOffset").get<std::size_t>() - line.begin;
+                const auto progress = 1 - std::pow(1 - link_progress, 3.0F);
+                for (const auto& box : shaped->selection_rects(begin, end)) {
+                    rectangle(
+                        canvas,
+                        text_x + box.x,
+                        y + box.y + box.height - 2 * scale,
+                        box.width * progress,
+                        1.5F * scale,
+                        SkColorSetA(ui_style.colors.accent, static_cast<U8CPU>(255 * progress)));
+                }
+            }
             int line_severity = 4;
             document->decorations.diagnostics.intersect(
                 number, number + 1, [&](const auto& diagnostic) {
@@ -5444,6 +5561,8 @@ bool EditorWindow::idle() const noexcept {
     const auto* document = impl_->current();
     return !impl_->quit_requested && impl_->icons_.ready() && impl_->tabs.pending() == 0 &&
            !impl_->editor_tooltip.pending() && !impl_->tooltip_surface.pending() &&
+           !impl_->editor_link.pending() &&
+           (!impl_->editor_link.available() || impl_->link_progress == 1) &&
            impl_->file_icons.idle() && impl_->pending_fences.empty() &&
            impl_->native_idle(impl_->dialog.has_value()) &&
            (!impl_->dialog || !impl_->dialog->picker.dynamic() || impl_->dialog->picker.ready()) &&
@@ -5476,6 +5595,8 @@ WorkbenchViewState EditorWindow::view_state() const {
                               impl_->tabs.ids(),
                               impl_->sidebar_views.at("explorer").index.size()};
     result.editor_tooltip = impl_->editor_tooltip.state();
+    result.editor_link = impl_->editor_link.state();
+    result.editor_link["progress"] = impl_->link_progress;
     result.editor_tooltip["bounds"] = {{"x", impl_->tooltip_box.x},
                                        {"y", impl_->tooltip_box.y},
                                        {"width", impl_->tooltip_box.width},
@@ -5617,6 +5738,9 @@ WorkbenchViewState EditorWindow::view_state() const {
         const auto cache = document->viewport.statistics();
         const auto& summary = document->viewport.lines().summary();
         result.document_viewport = {
+            {"viewRevision", document->view_revision},
+            {"syntaxRevision", document->syntax_revision},
+            {"highlightCount", document->decorations.highlights.size()},
             {"rows", summary.rows},
             {"bytes", summary.utf8_bytes},
             {"firstLine", summary.rows ? Json(summary.first_line) : Json(nullptr)},
@@ -5746,6 +5870,10 @@ bool EditorWindow::pump() {
         const auto form_deadline = Clock::now() + std::chrono::milliseconds(4);
         impl_->measure_layout();
         impl_->sync_editor_tooltip();
+        impl_->sync_editor_link();
+        if (const auto context = impl_->editor_link.take_request()) {
+            impl_->workbench->emit("ui.editor.link", *context);
+        }
         if (const auto context = impl_->editor_tooltip.take_request()) {
             impl_->workbench->emit("ui.editor.hover", *context);
         }

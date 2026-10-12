@@ -1,6 +1,40 @@
 import { ui, request } from 'astra/ui';
 let interactive;
 let hoverControl;
+let linkControl;
+async function editorLink({ version, target }) {
+    linkControl?.abort();
+    linkControl = undefined;
+    if (!target) return;
+    const control = new AbortController();
+    linkControl = control;
+    const options = { signal: control.signal, timeoutMs: 5000 };
+    let available = false;
+    let failure = '';
+    try {
+        await astra.sleep(80, options);
+        const result = await request(
+            'language.request',
+            {
+                id: target.id,
+                baseRevision: target.baseRevision,
+                method: 'definition',
+                byteOffset: target.byteOffset
+            },
+            options
+        );
+        available =
+            !result.obsolete &&
+            result.revision === target.baseRevision &&
+            (result.resolvedLocations || []).some((item) => Boolean(item.path));
+    } catch (error) {
+        if (error.name !== 'AbortError') failure = tooltipText(String(error.message).slice(0, 512));
+    } finally {
+        if (!control.signal.aborted)
+            await ui.editorLink.publish({ version, available, error: failure });
+        if (linkControl === control) linkControl = undefined;
+    }
+}
 async function languageResult(method, present, parameters = {}) {
     interactive?.abort();
     const controller = new AbortController();
@@ -170,6 +204,7 @@ async function navigate(item, options) {
         });
 }
 export function registerLanguage() {
+    astra.on('ui.editor.link', editorLink);
     astra.on('ui.editor.hover', editorHover);
     for (const [id, title, kind, inner] of [
         ['ui.selectFunction', 'Select enclosing function', 'function', false],

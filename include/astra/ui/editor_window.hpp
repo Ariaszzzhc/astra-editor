@@ -42,6 +42,7 @@ struct WorkbenchViewState {
     protocol::Json document_viewport;
     protocol::Json document;
     protocol::Json editor_tooltip;
+    protocol::Json editor_link;
     protocol::Json text_surface;
     protocol::Json input_layout;
     protocol::Json text_labels;

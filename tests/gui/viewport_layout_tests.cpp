@@ -1125,6 +1125,20 @@ void background_viewport(TextLayoutEngine& engine) {
     viewport.publish(rows({text}));
     viewport.invalidate_layouts();
     require(viewport.prepare(0, style) == retained.get(), "Long paragraph cache hit queued work");
+    viewport.invalidate_layouts(true);
+    auto recolored = style;
+    recolored.color_spans = {{0, 100, 0xFF0088EE}};
+    require(viewport.prepare(0, recolored) == retained.get() && viewport.layouts_pending(),
+            "Color refresh blanked an exact-text paragraph while its worker was pending");
+    await(*jobs, [&] {
+        viewport.poll_layouts();
+        return !viewport.layouts_pending();
+    });
+    require(viewport.layout(0) != retained.get(), "Color refresh never replaced its presentation");
+    require(pixels(*viewport.layout(0)) == pixels(engine.layout(text, recolored)),
+            "Color refresh did not publish authoritative colors");
+    viewport.publish(rows({text}));
+    require(viewport.prepare(0, style) == retained.get(), "Original color cache was lost");
     style.font_size += 2;
     require(!viewport.prepare(0, style), "New long paragraph style reused old geometry");
     viewport.publish(rows({"new snapshot"}));

@@ -249,6 +249,21 @@ rendered by this panel. `astra.ui.read` also exposes `editorTooltip` and
 `count`, `reason`, `error`). Native `WorkbenchViewState.editor_tooltip` adds
 painted bounds, scrolling and paragraph-job state for GUI acceptance.
 
+`astra.ui.editorLink.read(options)` returns `{version, target, available, pending,
+error}`. Native Ctrl-hover supplies a bounded Unicode symbol range and emits
+`ui.editor.link`. JS debounces and cancels real definition queries, then publishes
+`{version, available, error}` with `astra.ui.editorLink.publish(model, options)`.
+Publication is rejected after pointer, modifier, document or revision changes.
+Only a resolved workspace location enables the hand cursor and accent underline;
+the underline expands and fades in over 120 ms. Releasing Ctrl removes it.
+
+Visible syntax colors are provisionally remapped through viewport text changes
+at Unicode scalar boundaries while background parsing catches up. Unchanged rows
+retain their colors even when edits shift line numbers or byte offsets. Complete
+replacements discard old token colors; authoritative current-revision syntax
+replaces the provisional ranges. Color-only updates of long rows keep their
+exact-text paragraph visible until the replacement worker result arrives.
+
 The client loads the shipped `resources/defaults.js` policy before its workbench and
 user script. Default settings are retained separately: effective startup settings
 merge shipped defaults, service preferences, then explicit client preferences.

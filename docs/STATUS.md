@@ -2,6 +2,70 @@
 
 Product contract: `EditorDoc.md`. Product name: Astra (confirmed by the user).
 
+## Stable syntax and definition feedback (2026-10-12)
+
+Typing previously published a new viewport without syntax colors, then replaced
+the plain frame after asynchronous parsing. The viewport now carries provisional
+colors through bounded visible-row edits at UTF-8 scalar boundaries. Unchanged
+rows retain colors across byte/line shifts, replaced token ranges are discarded,
+and current-revision parser results remain authoritative. Color-only long-row
+updates retain the exact-text paragraph until the replacement worker completes.
+
+Ctrl-hover now debounces a real definition query, cancels superseded requests and
+fences publication by pointer/modifier/document/revision. A resolved workspace
+location enables the hand cursor and an accent underline that expands/fades in
+over 120 ms. Ctrl release and tooltip occlusion clear it. Symbol scanning is
+bounded and Unicode-aware; errors remain observable in `editorLink` state.
+Ctrl+click still uses the existing revision-fenced definition dispatcher.
+
+Windows Debug and Release affected acceptance:
+
+- `./scripts/cmake.ps1 --preset windows-debug -DASTRA_OFFLINE=ON -DASTRA_BUILD_GUI_TESTS=ON`
+  and the corresponding `windows-release` configure passed; logs:
+  `build/editor-feedback-{debug,release}-configure.log`.
+- `./scripts/cmake.ps1 --build --preset windows-debug --target astra-unit-tests gui-services-smoke viewport-layout-tests astra`
+  and Release (also `gui-smoke`) passed. Final popup-guard builds are recorded in
+  `build/editor-feedback-{debug,release}-build-popup.log`; unit-only randomized
+  test builds are `build/editor-feedback-{debug,release}-build-random.log`.
+- `./build/cmake/windows-debug/bin/astra-unit-tests.exe --no-version` and the
+  Release binary passed 291 cases / 2,648,657 assertions each. Final logs:
+  `build/editor-feedback-{debug,release}-unit-final-random.log`. New checks cover
+  Unicode range/line shifts, immutable old snapshots, stale link publication,
+  cancelled debounce and obsolete definitions. The 500-edit differential seed is
+  `0x20261012` (6,682 assertions, `build/editor-feedback-debug-random.log`).
+- Both `./build/cmake/windows-{debug,release}/bin/viewport-layout-tests.exe`
+  passed. Logs: `build/editor-feedback-{debug,release}-viewport.log`. The new
+  color-refresh case proves the old exact-text paragraph stays visible while a
+  worker is pending, then compares final native pixels with a fresh layout.
+  Existing coordinate/glyph/worker cancellation and failure checks also passed.
+- Both `./build/cmake/windows-{debug,release}/bin/gui-services-smoke.exe` passed
+  with real bundled clangd. The GUI observes each post-input viewport publication,
+  confirms carried colors before syntax catches up, checks intermediate underline
+  animation and final accent pixels, clears the affordance on Ctrl release and
+  tooltip entry, and verifies actual Ctrl+click/F12 navigation. The capture is
+  `build/graphics/gui-definition-link.png`; hover still preserves the caret.
+  Debug final log: `build/editor-feedback-debug-gui-final.log`. Release final
+  contextual log: `build/editor-feedback-release-gui-diagnostic.log`.
+- Both `./build/cmake/windows-{debug,release}/bin/gui-smoke.exe` passed: Unicode
+  input, multicursor, atomic undo/redo, clipboard, replacement, syntax objects,
+  dirty close and save/reopen. Logs: `build/editor-feedback-{debug,release}-editing.log`.
+- `./scripts/format.ps1 -Offline`, `./scripts/format.ps1 -Check -Offline`, and
+  `git diff --check` passed; format logs are `build/editor-feedback-format*.log`.
+
+Failures are retained honestly: the first full Debug unit run raised QuickJS
+`InternalError: interrupted` in the existing malformed-search-page test while
+Release compilation was active (`build/editor-feedback-debug-unit.log`). Its
+isolated rerun passed 1 case / 256 assertions and the complete reruns above passed.
+One later Release GUI run missed the existing symbol-hover assertion after
+edit/undo (`build/editor-feedback-release-gui-final.log`). Added failure-context
+capture; the diagnostic rerun and three consecutive complete GUI-service runs
+passed (`build/editor-feedback-release-gui-repeat-{1,2,3}.log`). The cause of that
+single miss was not established; those reruns do not prove a separate hover race
+has been fixed. No assertion was removed or deadline widened.
+
+Validation is native Windows only. This increment uses the affected checks above;
+the earlier complete 19-test milestone remains recorded below.
+
 ## Direct LSP editor interactions (2026-10-12)
 
 Implemented the reported missing mouse interactions through the existing service
