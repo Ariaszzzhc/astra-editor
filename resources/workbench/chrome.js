@@ -113,7 +113,25 @@ function present(context) {
         id: 'indent',
         label: `${document.insertSpaces ? 'Spaces' : 'Tab Size'}: ${document.tabSize}`
     });
-    if (document.languageActive) model.statusRight.push({ id: 'language', label: 'LSP' });
+    const language = document.language;
+    if (document.languageActive || language?.error) {
+        model.statusLeft.push({
+            ...command(
+                'diagnostics',
+                `${language?.errors || 0} errors · ${language?.warnings || 0} warnings`,
+                'ui.diagnostics',
+                'warning'
+            ),
+            tone: language?.errors ? 'error' : language?.warnings ? 'changed' : 'muted'
+        });
+        model.statusRight.push({
+            ...command(
+                'language',
+                language?.error ? 'LSP unavailable' : language?.pending ? 'LSP …' : 'LSP',
+                'ui.diagnostics'
+            )
+        });
+    }
     return model;
 }
 

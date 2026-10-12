@@ -10,6 +10,7 @@ if(BUILD_TESTING)
         tests/unit/text_source_tests.cpp
         tests/unit/tab_index_tests.cpp
         tests/unit/file_icons_tests.cpp
+        tests/unit/editor_tooltip_tests.cpp
         tests/unit/sum_tree_tests.cpp
         tests/unit/rope_tests.cpp
         tests/unit/document_tests.cpp

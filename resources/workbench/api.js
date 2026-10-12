@@ -65,6 +65,10 @@ export const ui = {
         return previous;
     },
     icons: fileIcons,
+    editorTooltip: {
+        read: (options) => request('_ui.editorTooltip.read', {}, options),
+        publish: (model, options) => request('_ui.editorTooltip.publish', model, options)
+    },
     style: {
         read: (options) => request('_ui.style.read', {}, options),
         update: (patch, options) => updateStyle(patch, options)

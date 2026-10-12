@@ -2,6 +2,64 @@
 
 Product contract: `EditorDoc.md`. Product name: Astra (confirmed by the user).
 
+## Direct LSP editor interactions (2026-10-12)
+
+Implemented the reported missing mouse interactions through the existing service
+and JS policy: delayed nonmodal hover combines symbol information with matching
+UTF-16 diagnostics; Ctrl+click invokes revision-fenced definition navigation;
+automatic diagnostics draw wave underlines and gutter markers, with clickable
+error/warning counts. Hover preserves the caret/focus, supports wrapped-text
+scrolling, and rejects stale pointer/document/revision publications. Text is
+bounded to 16 KiB, requests have cancellation/deadlines, and layout uses the
+existing background paragraph workers. Keyboard language actions remain.
+
+Focused Windows Debug evidence:
+
+- `./scripts/format.ps1 -Offline`: passed (`build/lsp-ui-format.log`).
+- `./scripts/cmake.ps1 --preset windows-debug -DASTRA_OFFLINE=ON -DASTRA_BUILD_GUI_TESTS=ON`:
+  passed (`build/lsp-ui-debug-configure.log`).
+- `./scripts/cmake.ps1 --build --preset windows-debug --target astra-unit-tests gui-services-smoke astra`:
+  passed after corrections (`build/lsp-ui-debug-build-unicode.log`). Initial
+  failures were C4834 (nodiscard inside CHECK_THROWS) and C7692 (mixed string/
+  JSON comparison); both were corrected. Original failure logs remain as
+  `build/lsp-ui-debug-build.log` and `build/lsp-ui-debug-build-retry.log`.
+- `./build/cmake/windows-debug/bin/astra-unit-tests.exe '--test-case=*tooltip*,*mouse hover*,*pointer definition*,*JS chrome projects*' --no-version`:
+  5 cases / 70 assertions passed (`build/lsp-ui-debug-unit-final.log`): bounded
+  Unicode/atomic publication, coalescing/stale rejection, debounce cancellation,
+  UTF-16 diagnostic inclusion/exclusion, captured definition offsets, stale
+  document/revision rejection, and status-bar count/action projection.
+- `./build/cmake/windows-debug/bin/gui-services-smoke.exe`: passed
+  (`build/lsp-ui-debug-gui-unicode.log`). Real bundled clangd supplied automatic
+  diagnostics, symbol hover and Ctrl+click/F12 navigation after emoji prefixes;
+  error-colored gutter/underline pixels were decoded from production PNGs.
+  Moving into hover, wrapped paragraph scrolling, caret/document scroll
+  preservation and Escape passed. The long-text case is a test user command
+  through the public tooltip API, not simulated language-server acceptance.
+  Existing completion/atomic undo, references, rename confirmation, formatting,
+  Git stage/unstage/commit and guarded discard also passed.
+  Captures are under `build/graphics`: `gui-diagnostics-inline.png`,
+  `gui-diagnostic-tooltip.png`, `gui-mouse-hover.png`, `gui-long-hover-scroll.png`.
+- Final payload review bounds content parts/text before Markdown cleanup.
+  `./scripts/cmake.ps1 --build --preset windows-debug --target astra-unit-tests`,
+  then `./build/cmake/windows-debug/bin/astra-unit-tests.exe --no-version`:
+  287 cases / 2,641,934 assertions passed (`build/lsp-ui-debug-unit-complete.log`).
+  Added large Unicode hover, unavailable language server and obsolete-result
+  completion cases. This rerun follows the earlier full-suite unit check;
+  subsequent GUI checks consume the final shipped JS policy.
+
+The milestone `./scripts/test.ps1 -Mode all -Gui` passed Debug 19/19
+(1,257.92 seconds) and Release 19/19 (277.89 seconds), recorded in
+`build/lsp-ui-windows-acceptance.log`. Release passed 287 unit and 355 integration
+cases; Debug passed the same final case counts with the explicit unit rerun.
+The first Debug unit
+check preceded the payload review; the full 287-case unit rerun above verifies
+that final change, and the later GUI service check consumed the final policy.
+`./scripts/format.ps1 -Check -Offline` passed (`build/lsp-ui-format-check.log`),
+and Git whitespace checking passed. A refreshed distribution follows the clean
+implementation commit;
+the previous icon package does not contain these new interactions. Validation
+is Windows only. Hover displays plain text, not rich Markdown.
+
 ## Mature icons: final Windows delivery (2026-10-12)
 
 The approved icon migration is complete: Codicons for UI/symbol graphics and

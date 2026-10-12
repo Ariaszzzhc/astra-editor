@@ -104,6 +104,14 @@ current CMake commands and outcomes are recorded in STATUS.md.
   `gui-editor.png`, `gui-palette.png`, `gui-dirty-close.png`, and
   `gui-replace-confirm.png` under `build/graphics`.
 - `tests/gui/gui_services_smoke.cpp` uses the actual fixed clangd binary and a fresh
+  Git repository for automatic diagnostic count refresh and error-colored
+  gutter/underline PNG pixels, mouse diagnostic/symbol hover after an emoji
+  prefix, hover focus preservation, entry into the popup, long wrapped-text
+  scrolling, Escape and Ctrl+click definition navigation through the production
+  dispatcher. Real clangd supplies diagnostic/symbol information; the long text
+  layout case uses an explicit test user command through the public tooltip API.
+  Captures include `gui-diagnostics-inline.png`, `gui-diagnostic-tooltip.png`,
+  `gui-mouse-hover.png` and `gui-long-hover-scroll.png`. It also uses a fresh
   Git repository under `build/graphics`. Debug: **PASS** for completion with
   atomic undo, hover, definition, references, rename preview/confirmation,
   formatting, diff/gutter, stage/unstage, commit, and guarded discard including

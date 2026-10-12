@@ -1,13 +1,17 @@
 #include <astra/ui/editor_window.hpp>
+#include <astra/ui/text_layout.hpp>
 #include <astra/service/service_host.hpp>
 #include <astra/io/file_store.hpp>
 #include <astra/process/process.hpp>
 #include <astra/git/repository.hpp>
 
 #include <SDL3/SDL.h>
+#include "include/codec/SkCodec.h"
+#include "include/core/SkData.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -107,6 +111,109 @@ void caret(astra::ui::EditorWindow& window,
     settle(window);
 }
 
+astra::ui::TextRect symbol_point(astra::ui::EditorWindow& window,
+                                 std::string line,
+                                 std::size_t number,
+                                 std::size_t byte) {
+    const auto geometry = window.layout();
+    astra::ui::TextLayoutOptions style;
+    style.dpi_scale = geometry.scale;
+    style.font_families = {"Cascadia Code", "Consolas", "monospace"};
+    astra::ui::TextLayoutEngine fonts;
+    const auto paragraph = fonts.layout(std::move(line), style);
+    const auto hit = paragraph.caret(byte);
+    const auto row_height = std::ceil(16 * geometry.scale * 1.4F + 3 * geometry.scale);
+    return {geometry.editor.x + 60 * geometry.scale + hit.x,
+            geometry.editor.y + static_cast<float>(number) * row_height + hit.height / 2,
+            0,
+            0};
+}
+
+void pointer(astra::ui::EditorWindow& window, float x, float y, bool click = false) {
+    int width{}, height{}, pixels_width{}, pixels_height{};
+    require(SDL_GetWindowSize(window.window(), &width, &height) &&
+                SDL_GetWindowSizeInPixels(window.window(), &pixels_width, &pixels_height),
+            "Pointer geometry");
+    const auto logical_x = x * static_cast<float>(width) / static_cast<float>(pixels_width);
+    const auto logical_y = y * static_cast<float>(height) / static_cast<float>(pixels_height);
+    SDL_Event event{};
+    event.type = click ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_MOTION;
+    if (click) {
+        event.button.windowID = SDL_GetWindowID(window.window());
+        event.button.button = SDL_BUTTON_LEFT;
+        event.button.down = true;
+        event.button.x = logical_x;
+        event.button.y = logical_y;
+    } else {
+        event.motion.windowID = SDL_GetWindowID(window.window());
+        event.motion.x = logical_x;
+        event.motion.y = logical_y;
+    }
+    require(SDL_PushEvent(&event), "Queue pointer event");
+    if (click) {
+        event.type = SDL_EVENT_MOUSE_BUTTON_UP;
+        event.button.down = false;
+        require(SDL_PushEvent(&event), "Queue pointer release");
+    }
+    settle(window);
+}
+
+void tooltip_wheel(astra::ui::EditorWindow& window, float x, float y) {
+    int width{}, height{}, pixels_width{}, pixels_height{};
+    require(SDL_GetWindowSize(window.window(), &width, &height) &&
+                SDL_GetWindowSizeInPixels(window.window(), &pixels_width, &pixels_height),
+            "Wheel geometry");
+    SDL_Event event{};
+    event.type = SDL_EVENT_MOUSE_WHEEL;
+    event.wheel.windowID = SDL_GetWindowID(window.window());
+    event.wheel.mouse_x = x * static_cast<float>(width) / static_cast<float>(pixels_width);
+    event.wheel.mouse_y = y * static_cast<float>(height) / static_cast<float>(pixels_height);
+    event.wheel.y = -2;
+    require(SDL_PushEvent(&event), "Queue tooltip wheel");
+    settle(window);
+}
+
+void await_diagnostics(astra::ui::EditorWindow& window, bool errors) {
+    const auto deadline = Clock::now() + std::chrono::seconds(15);
+    do {
+        settle(window);
+        const auto language = window.view_state().document.at("language");
+        if (language.value("available", false) && !language.value("pending", true) &&
+            (language.value("errors", 0U) > 0) == errors)
+            return;
+        SDL_Delay(20);
+    } while (Clock::now() < deadline);
+    throw std::runtime_error("Automatic inline diagnostics did not reach the current revision");
+}
+
+void require_error_pixels(const fs::path& path, astra::ui::Box region) {
+    auto data = SkData::MakeFromFileName(path.string().c_str());
+    require(data != nullptr, "Diagnostic screenshot missing");
+    auto codec = SkCodec::MakeFromData(std::move(data));
+    require(codec != nullptr, "Diagnostic PNG decoding failed");
+    const auto dimensions = codec->dimensions();
+    const auto info = SkImageInfo::Make(
+        dimensions.width(), dimensions.height(), kRGBA_8888_SkColorType, kPremul_SkAlphaType);
+    std::vector<std::uint8_t> pixels(info.computeMinByteSize());
+    require(codec->getPixels(info, pixels.data(), info.minRowBytes()) == SkCodec::kSuccess,
+            "Diagnostic PNG pixels unavailable");
+    std::size_t marked{};
+    for (int y = std::max(0, static_cast<int>(region.y));
+         y < std::min(dimensions.height(), static_cast<int>(region.bottom()));
+         ++y) {
+        for (int x = std::max(0, static_cast<int>(region.x));
+             x < std::min(dimensions.width(), static_cast<int>(region.right()));
+             ++x) {
+            const auto offset =
+                static_cast<std::size_t>(y) * info.minRowBytes() + static_cast<std::size_t>(x) * 4;
+            marked +=
+                pixels[offset] == 244 && pixels[offset + 1] == 135 && pixels[offset + 2] == 113;
+        }
+    }
+    require(marked >= 3,
+            "Diagnostic decoration has no error-colored pixels in its expected region");
+}
+
 void git_command(const fs::path& directory, std::vector<std::string> args) {
     astra::process::ProcessOptions options;
     options.cwd = path_text(directory);
@@ -157,8 +264,10 @@ int main() {
             fs::path("build/graphics") /
             ("gui-services-" + std::to_string(Clock::now().time_since_epoch().count())));
         fs::create_directories(workspace);
+        const std::string invalid_line = "    /*🙂*/ return squ;";
         const std::string original =
-            "int square(int value) { return value * value; }\nint main() {\n    return squ;\n}\n";
+            "int square(int value) { return value * value; }\nint main() {\n" + invalid_line +
+            "\n}\n";
         write(workspace / "main.cpp", original);
         write(workspace / ".clangd",
               "CompileFlags:\n  Add: [-std=c++23, -nostdinc, -nostdinc++]\n");
@@ -179,9 +288,43 @@ int main() {
         options.title = "Astra — real clangd and Git UI acceptance";
         options.workspace_name = "LANGUAGE + GIT";
         options.open_paths = {"main.cpp"};
+        options.user_script = R"js(
+            astra.registerCommand('ui.acceptanceLongHover', async () => {
+                const state = await astra.ui.editorTooltip.read();
+                await astra.ui.editorTooltip.publish({version: state.version, text: 'Unicode 🙂 documentation '.repeat(300)});
+            });
+        )js";
         astra::ui::EditorWindow window(host, std::move(options));
         settle(window);
         const auto id = window.active_document_id();
+        await_diagnostics(window, true);
+        window.request_screenshot("build/graphics/gui-diagnostics-inline.png");
+        settle(window);
+        const auto invalid_point =
+            symbol_point(window, invalid_line, 2, invalid_line.find("squ") + 1);
+        const auto geometry = window.layout();
+        const auto row_height = std::ceil(16 * geometry.scale * 1.4F + 3 * geometry.scale);
+        require_error_pixels("build/graphics/gui-diagnostics-inline.png",
+                             {geometry.editor.x + 7 * geometry.scale,
+                              geometry.editor.y + 2 * row_height,
+                              8 * geometry.scale,
+                              row_height});
+        require_error_pixels("build/graphics/gui-diagnostics-inline.png",
+                             {invalid_point.x - 12 * geometry.scale,
+                              geometry.editor.y + 2 * row_height + 16 * geometry.scale,
+                              45 * geometry.scale,
+                              10 * geometry.scale});
+        const auto before_hover = document(host, id).at("selections");
+        pointer(window, invalid_point.x, invalid_point.y);
+        require(window.view_state().editor_tooltip.at("text").get<std::string>().find("squ") !=
+                    std::string::npos,
+                "Mouse hover did not show the real unresolved-identifier diagnostic");
+        require(document(host, id).at("selections") == before_hover, "Hover moved the caret");
+        window.request_screenshot("build/graphics/gui-diagnostic-tooltip.png");
+        settle(window);
+        key(window, SDLK_ESCAPE);
+        require(window.view_state().editor_tooltip.at("text") == "",
+                "Escape did not dismiss hover");
         caret(window, host, original.find("squ;") + 3);
         key(window, SDLK_SPACE, SDL_KMOD_CTRL);
         text(window, "square");
@@ -215,10 +358,51 @@ int main() {
         key(window, SDLK_ESCAPE);
         std::cerr << "GUI services: real clangd completion passed\n";
 
+        const std::string valid_line = "int main(){/*🙂*/return square(2);}";
         const std::string valid =
-            "int square(int value){return value*value;}\nint main(){return square(2);}\n";
+            "int square(int value){return value*value;}\n" + valid_line + "\n";
         key(window, SDLK_A, SDL_KMOD_CTRL);
         text(window, valid);
+        await_diagnostics(window, false);
+        caret(window, host, 0);
+        const auto valid_point = symbol_point(window, valid_line, 1, valid_line.find("square") + 2);
+        pointer(window, valid_point.x, valid_point.y);
+        const auto mouse_hover = window.view_state().editor_tooltip;
+        require(mouse_hover.at("text").get<std::string>().find("square") != std::string::npos,
+                "Mouse hover did not show real clangd symbol information");
+        require(document(host, id).at("selections").front().at("head") == 0,
+                "Nonmodal symbol hover moved the caret");
+        const auto box = mouse_hover.at("bounds");
+        require(box.at("height").get<float>() > 0, "Hover was not painted");
+        pointer(window, box.at("x").get<float>() + 15, box.at("y").get<float>() + 10);
+        require(window.view_state().editor_tooltip.at("text") == mouse_hover.at("text"),
+                "Moving into the tooltip discarded its content");
+        window.request_screenshot("build/graphics/gui-mouse-hover.png");
+        settle(window);
+        window.execute_ui_command("ui.acceptanceLongHover");
+        settle(window);
+        const auto long_hover = window.view_state().editor_tooltip;
+        const auto long_box = long_hover.at("bounds");
+        const auto first_document_line = window.view_state().document_viewport.at("firstLine");
+        pointer(window, long_box.at("x").get<float>() + 15, long_box.at("y").get<float>() + 10);
+        tooltip_wheel(
+            window, long_box.at("x").get<float>() + 15, long_box.at("y").get<float>() + 10);
+        require(window.view_state().editor_tooltip.at("offset").get<float>() > 0,
+                "Long wrapped hover did not scroll within its paragraph");
+        require(window.view_state().editor_tooltip.at("text") == long_hover.at("text"),
+                "Tooltip scrolling discarded its contents");
+        require(window.view_state().document_viewport.at("firstLine") == first_document_line,
+                "Tooltip wheel scrolled the underlying document");
+        window.request_screenshot("build/graphics/gui-long-hover-scroll.png");
+        settle(window);
+        key(window, SDLK_ESCAPE);
+        const auto previous_modifiers = SDL_GetModState();
+        SDL_SetModState(SDL_KMOD_CTRL);
+        pointer(window, valid_point.x, valid_point.y, true);
+        SDL_SetModState(previous_modifiers);
+        require(document(host, id).at("selections").front().at("anchor") == 4,
+                "Ctrl+click did not navigate from the pointed symbol to its declaration");
+        require(document(host, id).at("text") == valid, "Ctrl+click edited the document");
         caret(window, host, valid.rfind("square") + 2);
         key(window, SDLK_F12);
         require(document(host, id).at("selections").front().at("anchor") == 4,
@@ -306,7 +490,8 @@ int main() {
         require(document(host, id).at("text") == formatted,
                 "Git discard left the open clean buffer stale");
         std::cout << "Real Windows GUI -> shared service -> clangd/Git: completion, navigation, "
-                     "hover, references, rename confirmation, formatting, diff, stage/unstage, "
+                     "mouse/keyboard hover, automatic diagnostic pixels, Ctrl+click, references, "
+                     "rename confirmation, formatting, diff, stage/unstage, "
                      "commit, guarded discard: PASS\n";
         return 0;
     } catch (const std::exception& error) {

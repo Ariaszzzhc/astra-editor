@@ -7,6 +7,7 @@
 #include <astra/ui/picker_index.hpp>
 #include <astra/ui/view_page.hpp>
 #include <astra/ui/chrome_state.hpp>
+#include <astra/ui/editor_tooltip.hpp>
 #include <astra/io/file_store.hpp>
 #include <doctest/doctest.h>
 
@@ -3980,6 +3981,176 @@ TEST_CASE("workbench Git commit skips input when no staged changes exist") {
     CHECK(workbench.idle());
 }
 
+TEST_CASE("workbench mouse hover cancels debounce and joins UTF16 diagnostics with real policy") {
+    auto channel = std::make_shared<Channel>();
+    astra::ui::EditorTooltip tooltip;
+    const Json document{{"id", "source"},
+                        {"revision", "7"},
+                        {"selections", Json::array({{{"anchor", 0}, {"head", 0}}})}};
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.read")
+                return ready({{"document", document}});
+            REQUIRE(method == "_ui.editorTooltip.publish");
+            return ready(tooltip.publish(params));
+        },
+        modules());
+    const Json target{{"id", "source"},
+                      {"baseRevision", "7"},
+                      {"byteOffset", 15},
+                      {"line", 1},
+                      {"utf16Column", 6}};
+    tooltip.sync(target);
+    workbench.emit("ui.editor.hover", *tooltip.take_request());
+    for (int tick = 0; tick < 8; ++tick)
+        workbench.poll();
+    tooltip.sync(nullptr);
+    workbench.emit("ui.editor.hover", *tooltip.take_request());
+    for (int tick = 0; tick < 12; ++tick)
+        workbench.poll();
+    CHECK(channel->requests.empty());
+    CHECK(workbench.idle());
+
+    tooltip.sync(target);
+    workbench.emit("ui.editor.hover", *tooltip.take_request());
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (channel->requests.empty() && std::chrono::steady_clock::now() < deadline) {
+        workbench.poll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("method") == "language.diagnostics");
+    channel->reply({{"available", true},
+                    {"revision", "7"},
+                    {"diagnostics",
+                     Json::array({{{"message", "Unicode 🙂 warning"},
+                                   {"range",
+                                    {{"start", {{"line", 1}, {"character", 6}}},
+                                     {"end", {{"line", 1}, {"character", 7}}}}}},
+                                  {{"message", "outside"},
+                                   {"range",
+                                    {{"start", {{"line", 1}, {"character", 0}}},
+                                     {"end", {{"line", 1}, {"character", 6}}}}}}})}});
+    for (int tick = 0; tick < 12; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("params").at("byteOffset") == 15);
+    CHECK(channel->requests.front().body.at("params").at("method") == "hover");
+    channel->reply({{"revision", "7"},
+                    {"result",
+                     {{"contents",
+                       {{"kind", "markdown"},
+                        {"value", "```cpp\nint square(int value)\n```\n**Description**"}}}}}});
+    for (int tick = 0; tick < 24; ++tick)
+        workbench.poll();
+    CHECK(tooltip.text().find("Unicode 🙂 warning") != std::string::npos);
+    CHECK(tooltip.text().find("int square") != std::string::npos);
+    CHECK(tooltip.text().find("outside") == std::string::npos);
+    CHECK(tooltip.text().find("```") == std::string::npos);
+    CHECK_FALSE(tooltip.pending());
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench pointer definition captures hit offset and rejects stale document") {
+    auto channel = std::make_shared<Channel>();
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json&) {
+            if (method == "_ui.read")
+                return ready({{"document",
+                               {{"id", "source"},
+                                {"revision", "7"},
+                                {"selections", Json::array({{{"anchor", 0}, {"head", 0}}})}}}});
+            return ready(nullptr);
+        },
+        modules());
+    for (const auto& target : {Json{{"id", "other"}, {"baseRevision", "7"}, {"byteOffset", 15}},
+                               Json{{"id", "source"}, {"baseRevision", "6"}, {"byteOffset", 15}}}) {
+        workbench.execute("ui.definition", target, {});
+        for (int tick = 0; tick < 12; ++tick)
+            workbench.poll();
+        CHECK(channel->requests.empty());
+    }
+    workbench.execute(
+        "ui.definition", {{"id", "source"}, {"baseRevision", "7"}, {"byteOffset", 15}}, {});
+    for (int tick = 0; tick < 12; ++tick)
+        workbench.poll();
+    REQUIRE(channel->requests.size() == 1);
+    CHECK(channel->requests.front().body.at("params").at("byteOffset") == 15);
+    channel->reply({{"revision", "7"}, {"resolvedLocations", Json::array()}});
+    for (int tick = 0; tick < 12; ++tick)
+        workbench.poll();
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
+
+TEST_CASE("workbench hover bounds Unicode and settles unavailable or obsolete results") {
+    Json diagnostics{{"available", true}, {"revision", "7"}, {"diagnostics", Json::array()}};
+    Json hover{{"revision", "7"}, {"result", nullptr}};
+    std::string expected;
+    SUBCASE("large Unicode Markdown remains a bounded valid publication") {
+        std::string text = "```cpp\nint square();\n```\n";
+        for (unsigned i = 0; i < 10000; ++i)
+            text += "🙂中";
+        hover["result"] = {{"contents", Json::array({{{"value", text}}, {{"value", text}}})}};
+        expected = "int square";
+    }
+    SUBCASE("unavailable language server reports its failure without a hover request") {
+        diagnostics["available"] = false;
+        diagnostics["reason"] = "Language server is unavailable";
+        diagnostics["error"] = "process exited";
+        expected = "process exited";
+    }
+    SUBCASE("obsolete hover completes the pending publication without text") {
+        hover["obsolete"] = true;
+    }
+    auto channel = std::make_shared<Channel>();
+    astra::ui::EditorTooltip tooltip;
+    astra::ui::Workbench workbench(
+        channel,
+        [&](std::string_view method, const Json& params) {
+            if (method == "_ui.read")
+                return ready({{"document", {{"id", "source"}, {"revision", "7"}}}});
+            REQUIRE(method == "_ui.editorTooltip.publish");
+            return ready(tooltip.publish(params));
+        },
+        modules());
+    tooltip.sync({{"id", "source"},
+                  {"baseRevision", "7"},
+                  {"byteOffset", 0},
+                  {"line", 0},
+                  {"utf16Column", 0}});
+    workbench.emit("ui.editor.hover", *tooltip.take_request());
+    bool hover_requested = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    do {
+        workbench.poll();
+        if (!channel->requests.empty()) {
+            const auto method = channel->requests.front().body.at("method");
+            if (method == "language.diagnostics")
+                channel->reply(diagnostics);
+            else {
+                REQUIRE(method == "language.request");
+                hover_requested = true;
+                channel->reply(hover);
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    } while ((!workbench.idle() || tooltip.pending()) &&
+             std::chrono::steady_clock::now() < deadline);
+    CHECK_FALSE(tooltip.pending());
+    CHECK(tooltip.text().size() <= 16384);
+    if (expected.empty())
+        CHECK(tooltip.text().empty());
+    else
+        CHECK(tooltip.text().find(expected) != std::string::npos);
+    CHECK(hover_requested == diagnostics.at("available").get<bool>());
+    CHECK(workbench.take_errors().empty());
+    CHECK(workbench.idle());
+}
+
 TEST_CASE("workbench rename awaits name and plan review before applying captured edits") {
     auto channel = std::make_shared<Channel>();
     std::promise<Json> name, approval;
@@ -5678,6 +5849,7 @@ TEST_CASE("workbench JS chrome projects coordinates paths and dispatches registe
            {"tabSize", 4},
            {"insertSpaces", true},
            {"languageActive", true},
+           {"language", {{"errors", 3}, {"warnings", 2}, {"pending", false}}},
            {"caret", {{"line", 2}, {"utf16Column", 4}, {"visualColumn", 7}}}}}});
     unsigned activated{};
     astra::ui::Workbench workbench(
@@ -5711,6 +5883,9 @@ TEST_CASE("workbench JS chrome projects coordinates paths and dispatches registe
     CHECK(state.model().at("breadcrumb")[1].at("label") == "中🙂");
     CHECK(state.model().at("statusRight")[0].at("label") == "Ln 3, Col 8");
     CHECK(state.model().at("statusRight")[2].at("label") == "Spaces: 4");
+    CHECK(state.model().at("statusLeft").back().at("label") == "3 errors · 2 warnings");
+    CHECK(state.model().at("statusLeft").back().at("tone") == "error");
+    CHECK(state.model().at("statusLeft").back().at("data").at("name") == "ui.diagnostics");
     workbench.execute(
         "workbench.chrome.activate",
         {{"version", state.state().at("version")}, {"bank", "command"}, {"row", "commands"}},

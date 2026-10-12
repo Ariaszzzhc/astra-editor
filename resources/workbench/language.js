@@ -1,6 +1,7 @@
 import { ui, request } from 'astra/ui';
 let interactive;
-async function languageResult(method, present) {
+let hoverControl;
+async function languageResult(method, present, parameters = {}) {
     interactive?.abort();
     const controller = new AbortController();
     interactive = controller;
@@ -8,8 +9,13 @@ async function languageResult(method, present) {
     try {
         const { document } = await ui.read();
         if (!document) return;
+        if (
+            (parameters.id !== undefined && parameters.id !== document.id) ||
+            (parameters.baseRevision !== undefined && parameters.baseRevision !== document.revision)
+        )
+            return;
         await ui.update({ languageActive: { id: document.id, active: true } });
-        const offset = document.selections[0].head;
+        const offset = parameters.byteOffset ?? document.selections[0].head;
         const result = await request(
             'language.request',
             { id: document.id, baseRevision: document.revision, method, byteOffset: offset },
@@ -29,6 +35,102 @@ async function languageResult(method, present) {
         if (error.name !== 'AbortError') throw error;
     } finally {
         if (interactive === controller) interactive = undefined;
+    }
+}
+function tooltipText(value) {
+    let text = String(value).slice(0, 16384);
+    if (/[\ud800-\udbff]$/.test(text)) text = text.slice(0, -1);
+    while (astra.utf8ByteLength(text) > 16384) {
+        text = text.slice(0, Math.floor(text.length * 0.75));
+        if (/[\ud800-\udbff]$/.test(text)) text = text.slice(0, -1);
+    }
+    return text.replaceAll('\0', '');
+}
+function hoverText(contents) {
+    let text = '';
+    const parts = Array.isArray(contents)
+        ? contents.slice(0, 128)
+        : contents == null
+          ? []
+          : [contents];
+    for (const part of parts) {
+        const value = typeof part === 'string' ? part : part.value || '';
+        if (text) text += '\n';
+        text += value.slice(0, 16384 - text.length);
+        if (text.length >= 16384) break;
+    }
+    return tooltipText(text)
+        .replace(/^```[^\n]*\n?/gm, '')
+        .replace(/^#{1,6} /gm, '')
+        .replace(/\*\*([^*\n]+)\*\*/g, '$1');
+}
+async function editorHover({ version, target }) {
+    hoverControl?.abort();
+    hoverControl = undefined;
+    if (!target) return;
+    const control = new AbortController();
+    hoverControl = control;
+    const options = { signal: control.signal, timeoutMs: 5000 };
+    let settled = false;
+    try {
+        await astra.sleep(350, options);
+        const { document } = await ui.read({ immediate: true }, options);
+        if (document?.id !== target.id || document.revision !== target.baseRevision) return;
+        const diagnostics = await request('language.diagnostics', { id: target.id }, options);
+        const messages = [];
+        if (diagnostics.revision === target.baseRevision) {
+            let position = 0;
+            for (const item of diagnostics.diagnostics) {
+                const start = item.range.start,
+                    end = item.range.end;
+                const after =
+                    target.line > start.line ||
+                    (target.line === start.line && target.utf16Column >= start.character);
+                const before =
+                    target.line < end.line ||
+                    (target.line === end.line && target.utf16Column < end.character);
+                const empty =
+                    start.line === end.line &&
+                    start.character === end.character &&
+                    target.line === start.line &&
+                    target.utf16Column === start.character;
+                if (after && (before || empty)) messages.push(tooltipText(item.message));
+                if (messages.length === 8) break;
+                if (++position % 128 === 0) await astra.sleep(0, options);
+            }
+        }
+        if (diagnostics.available) {
+            const result = await request(
+                'language.request',
+                {
+                    id: target.id,
+                    baseRevision: target.baseRevision,
+                    method: 'hover',
+                    byteOffset: target.byteOffset
+                },
+                options
+            );
+            if (result.obsolete || result.revision !== target.baseRevision) return;
+            const text = hoverText(result.result?.contents);
+            if (text) messages.push(text);
+        } else if (diagnostics.error) messages.push(diagnostics.reason + ': ' + diagnostics.error);
+        await ui.editorTooltip.publish(
+            { version, text: tooltipText(messages.join('\n\n')) },
+            options
+        );
+        settled = true;
+    } catch (error) {
+        if (error.name !== 'AbortError') {
+            await ui.editorTooltip.publish({
+                version,
+                text: tooltipText(`Language information unavailable: ${error.message}`)
+            });
+            settled = true;
+        }
+    } finally {
+        if (!settled && !control.signal.aborted)
+            await ui.editorTooltip.publish({ version, text: '' });
+        if (hoverControl === control) hoverControl = undefined;
     }
 }
 async function navigate(item, options) {
@@ -68,6 +170,7 @@ async function navigate(item, options) {
         });
 }
 export function registerLanguage() {
+    astra.on('ui.editor.hover', editorHover);
     for (const [id, title, kind, inner] of [
         ['ui.selectFunction', 'Select enclosing function', 'function', false],
         ['ui.selectClass', 'Select enclosing class', 'class', false],
@@ -154,28 +257,32 @@ export function registerLanguage() {
         ['definition', 'F12', 'Go to definition'],
         ['references', 'Shift+F12', 'Find all references']
     ]) {
-        ui.registerCommand({ id: `ui.${method}`, title, shortcut }, () =>
-            languageResult(method, async (result, _, __, options) => {
-                const locations = result.resolvedLocations || [];
-                if (!locations.length) {
-                    await ui.update({ status: 'No locations found' });
-                    return;
-                }
-                const choice =
-                    locations.length === 1
-                        ? { item: locations[0] }
-                        : await ui.pick(
-                              {
-                                  title: 'LANGUAGE LOCATIONS — ENTER TO OPEN',
-                                  items: locations.map((item) => ({
-                                      label: `${item.path || item.uri}:${(item.line || 0) + 1}`,
-                                      item
-                                  }))
-                              },
-                              options
-                          );
-                if (choice) await navigate(choice.item, options);
-            })
+        ui.registerCommand({ id: `ui.${method}`, title, shortcut }, (parameters) =>
+            languageResult(
+                method,
+                async (result, _, __, options) => {
+                    const locations = result.resolvedLocations || [];
+                    if (!locations.length) {
+                        await ui.update({ status: 'No locations found' });
+                        return;
+                    }
+                    const choice =
+                        locations.length === 1
+                            ? { item: locations[0] }
+                            : await ui.pick(
+                                  {
+                                      title: 'LANGUAGE LOCATIONS — ENTER TO OPEN',
+                                      items: locations.map((item) => ({
+                                          label: `${item.path || item.uri}:${(item.line || 0) + 1}`,
+                                          item
+                                      }))
+                                  },
+                                  options
+                              );
+                    if (choice) await navigate(choice.item, options);
+                },
+                parameters
+            )
         );
     }
     ui.registerCommand(
@@ -183,6 +290,7 @@ export function registerLanguage() {
         async () => {
             const { document } = await ui.read();
             if (!document) return;
+            await ui.update({ languageActive: { id: document.id, active: true } });
             const result = await request('language.diagnostics', { id: document.id });
             if (result.revision !== document.revision) {
                 await ui.update({ status: 'Diagnostics changed; request them again' });

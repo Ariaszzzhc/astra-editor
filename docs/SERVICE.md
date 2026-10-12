@@ -218,6 +218,37 @@ error includes `handlerCompleted` and `resyncRequired`: it is not a rollback.
 
 ## JavaScript customization
 
+The default language policy supports mouse hover and Ctrl+left-click definition
+navigation in the document viewport. Hover waits 350 ms at a stable shaped-text
+hit, combines matching UTF-16 diagnostic messages with LSP hover text, and shows
+a nonmodal plain-text panel. The panel wraps and scrolls, retains its target when
+the pointer enters it, and never moves the caret. Escape, typing, scrolling the
+document, focus loss, resizing, and document/revision changes invalidate it.
+Ctrl+click passes the captured document ID, revision and UTF-8 byte offset to
+`ui.definition`; it uses the same dispatcher and navigation guards as F12.
+Ctrl+K, Ctrl+Shift+M, F12 and Shift+F12 remain available.
+
+Opening a supported file starts automatic diagnostic polling. Current-revision
+diagnostics draw wave underlines (including zero-width ranges) and error/warning
+gutter markers. The status bar exposes counts and opens `ui.diagnostics` on
+activation. Counts and decorations clear on edits until current results arrive.
+Language failures remain observable in document language state and the UI.
+
+`astra.on('ui.editor.hover', handler)` receives `{version, target}`. `target` is
+null on dismissal, otherwise `{id, baseRevision, byteOffset, line, utf16Column,
+anchor: {x, y, width, height}}`, with native pixel geometry. The owner-thread
+publication fence increments its decimal-string version when this target changes.
+`astra.ui.editorTooltip.read(options)` returns `{version, target, text, pending}`;
+`publish({version, text}, options)` accepts at most 16 KiB of valid UTF-8 without
+NUL and returns false for stale/dismissed targets. The default JS handler cancels
+superseded work, sets 5-second request deadlines and caps matching diagnostics at
+eight messages. Hover parsing reads at most 128 content parts and bounds text
+before Markdown cleanup. LSP Markdown is reduced to plain text; rich Markdown is not
+rendered by this panel. `astra.ui.read` also exposes `editorTooltip` and
+`document.language` (`available`, `pending`, `errors`, `warnings`, and optional
+`count`, `reason`, `error`). Native `WorkbenchViewState.editor_tooltip` adds
+painted bounds, scrolling and paragraph-job state for GUI acceptance.
+
 The client loads the shipped `resources/defaults.js` policy before its workbench and
 user script. Default settings are retained separately: effective startup settings
 merge shipped defaults, service preferences, then explicit client preferences.

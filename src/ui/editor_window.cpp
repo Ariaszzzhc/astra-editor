@@ -1,4 +1,5 @@
 #include "astra/ui/editor_window.hpp"
+#include "astra/ui/editor_tooltip.hpp"
 #include "astra/ui/clipboard_client.hpp"
 #include "astra/ui/renderer.hpp"
 #include "astra/ui/text_layout.hpp"
@@ -33,6 +34,7 @@
 #include "include/core/SkColor.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkPath.h"
+#include "include/core/SkPathBuilder.h"
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -117,6 +119,7 @@ struct EditorWindow::Impl {
         bool language_active{};
         Clock::time_point diagnostics_after{};
         std::uint64_t diagnostics_generation{};
+        Json language = {{"available", false}, {"pending", true}, {"errors", 0}, {"warnings", 0}};
     };
 
     struct PendingEdit {
@@ -241,6 +244,12 @@ struct EditorWindow::Impl {
     Json settings = Json::object();
     Json editor_settings = Json::object();
     WorkbenchStyle ui_style;
+    EditorTooltip editor_tooltip;
+    TextSurface tooltip_surface{fonts, layout_jobs};
+    Box tooltip_box;
+    std::size_t tooltip_first{};
+    float tooltip_offset{};
+    bool hover_tracking{};
     FileIcons file_icons;
     bool file_icons_override{};
     ViewStore sidebar_views;
@@ -603,6 +612,13 @@ struct EditorWindow::Impl {
             document.needs_syntax = true;
             document.decorations.diagnostics.clear();
         }
+        if (document.metadata.empty() || document.metadata.at("revision") != revision) {
+            document.language["pending"] = true;
+            document.language["errors"] = 0;
+            document.language["warnings"] = 0;
+            document.language["count"] = 0;
+            document.diagnostics_after = {};
+        }
         document.metadata = metadata;
         tabs.rename(id, document.path.empty() ? "Untitled" : basename(document.path));
         if (metadata.value("dirty", false)) {
@@ -765,6 +781,10 @@ struct EditorWindow::Impl {
         SkCanvas*, const InlineForm::Field&, Box, bool, bool, TextField&, std::string_view, float);
     const TextLayout* prepare_line(Document&, std::size_t);
     void fetch_diagnostics(const std::string& id);
+    Json editor_hit(float x, float y) const;
+    void sync_editor_tooltip();
+    void dismiss_editor_tooltip();
+    void draw_editor_tooltip(SkCanvas* canvas);
     void editor_command(std::string command,
                         Json extra = Json::object(),
                         std::shared_ptr<PendingEdit> edit = {});
@@ -989,6 +1009,11 @@ void EditorWindow::Impl::service_responses() {
                     auto& document = documents.at(completed.request.document);
                     document.diagnostics_loading = false;
                     document.language_active = false;
+                    document.language = {{"available", false},
+                                         {"pending", false},
+                                         {"errors", 0},
+                                         {"warnings", 0},
+                                         {"error", error}};
                 }
                 if (completed.request.method == "document.lines" &&
                     documents.contains(completed.request.document)) {
@@ -1543,6 +1568,18 @@ void EditorWindow::Impl::fetch_diagnostics(const std::string& id) {
                  if (result.at("revision") == document.metadata.at("revision")) {
                      document.decorations.set_diagnostics(
                          result.value("diagnostics", Json::array()));
+                     std::size_t errors{}, warnings{};
+                     for (const auto& diagnostic : result.at("diagnostics")) {
+                         errors += diagnostic.value("severity", 1) == 1;
+                         warnings += diagnostic.value("severity", 1) == 2;
+                     }
+                     document.language = {{"available", result.value("available", false)},
+                                          {"pending", result.value("pending", false)},
+                                          {"errors", errors},
+                                          {"warnings", warnings},
+                                          {"count", result.at("diagnostics").size()},
+                                          {"reason", result.value("reason", std::string{})},
+                                          {"error", result.value("error", std::string{})}};
                  }
              },
              {}});
@@ -2246,6 +2283,19 @@ Json EditorWindow::Impl::style_model() const {
 }
 
 Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& params) {
+    if (method == "_ui.editorTooltip.read") {
+        return editor_tooltip.state();
+    }
+    if (method == "_ui.editorTooltip.publish") {
+        sync_editor_tooltip();
+        const auto accepted = editor_tooltip.publish(params);
+        if (accepted) {
+            tooltip_surface.reset(editor_tooltip.text());
+            tooltip_first = 0;
+            tooltip_offset = 0;
+        }
+        return accepted;
+    }
     if (method.starts_with("_ui.chrome.")) {
         measure_layout();
         if (method == "_ui.chrome.read")
@@ -2577,6 +2627,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
                     {"outlineVisible", show_outline},
                     {"tabs", tabs.ids()}};
         result["fileIcons"] = file_icons.state();
+        result["editorTooltip"] = editor_tooltip.state();
         result["windowFrame"] = window_frame_model();
         if (dialog) {
             const auto metrics = dialog_metrics();
@@ -2631,6 +2682,7 @@ Json EditorWindow::Impl::native_ui_request(std::string_view method, const Json& 
         if (const auto* document = found == documents.end() ? nullptr : &found->second) {
             result["document"] = document->metadata;
             result["document"]["path"] = document->path;
+            result["document"]["language"] = document->language;
             result["viewport"] = {{"firstLine", document->first_line},
                                   {"pageLines",
                                    static_cast<std::size_t>(std::max(
@@ -3645,6 +3697,151 @@ void EditorWindow::Impl::point(float x, float y, bool extend, bool add) {
     set_selections(std::move(selections), document->view_revision);
 }
 
+Json EditorWindow::Impl::editor_hit(float x, float y) const {
+    const auto* document = current();
+    if (!document || prompt != Prompt::none || forms.focused() || focused_view ||
+        x < left + gutter || x >= right - 12 * scale || y < content_top || y >= content_bottom ||
+        document->view_revision !=
+            document->metadata.at("revision").get_ref<const std::string&>()) {
+        return nullptr;
+    }
+    const auto number =
+        document->first_line + static_cast<std::size_t>((y - content_top) / row_height);
+    const auto* line = document->viewport.lines().find(number);
+    const auto* shaped = document->viewport.layout(number);
+    if (!line || !shaped) {
+        return nullptr;
+    }
+    const auto text_x = left + gutter - document->horizontal;
+    const auto text_y =
+        content_top + static_cast<float>(number - document->first_line) * row_height;
+    if (x - text_x < 0 || x - text_x > shaped->width() + 6 * scale) {
+        return nullptr;
+    }
+    const auto hit = shaped->hit_test(x - text_x, y - text_y);
+    const auto offset = std::min(hit.byte_offset, line->text.size());
+    const auto caret = shaped->caret(offset);
+    const auto utf16 = utf8::utf16_length(std::string_view(line->text).substr(0, offset));
+    return {{"id", active_id},
+            {"baseRevision", document->view_revision},
+            {"byteOffset", line->begin + offset},
+            {"line", number},
+            {"utf16Column", utf16},
+            {"anchor",
+             {{"x", text_x + caret.x},
+              {"y", text_y + caret.y},
+              {"width", 6 * scale},
+              {"height", row_height}}}};
+}
+
+void EditorWindow::Impl::dismiss_editor_tooltip() {
+    hover_tracking = false;
+    editor_tooltip.sync(nullptr);
+    tooltip_surface.reset("");
+    tooltip_box = {};
+    tooltip_first = 0;
+    tooltip_offset = 0;
+}
+
+void EditorWindow::Impl::sync_editor_tooltip() {
+    const Box bridge{tooltip_box.x - 4 * scale,
+                     tooltip_box.y - 4 * scale,
+                     tooltip_box.width + 8 * scale,
+                     tooltip_box.height + 8 * scale};
+    if (hover_tracking && !editor_tooltip.text().empty() && bridge.contains(mouse_x, mouse_y)) {
+        const auto* document = current();
+        if (document && editor_tooltip.target().at("id") == active_id &&
+            editor_tooltip.target().at("baseRevision") == document->metadata.at("revision") &&
+            prompt == Prompt::none && !forms.focused() && !focused_view) {
+            return;
+        }
+    }
+    auto target = hover_tracking && !dragging && !dragging_scroll ? editor_hit(mouse_x, mouse_y)
+                                                                  : Json(nullptr);
+    if (target != editor_tooltip.target()) {
+        editor_tooltip.sync(std::move(target));
+        tooltip_surface.reset("");
+        tooltip_box = {};
+        tooltip_first = 0;
+        tooltip_offset = 0;
+    }
+}
+
+void EditorWindow::Impl::draw_editor_tooltip(SkCanvas* canvas) {
+    if (editor_tooltip.text().empty() || editor_tooltip.target().is_null()) {
+        tooltip_box = {};
+        return;
+    }
+    const auto width = std::min(600 * scale, right - left - 16 * scale);
+    const auto maximum_height = std::min(320 * scale, content_bottom - content_top - 16 * scale);
+    if (width < 40 * scale || maximum_height < 40 * scale) {
+        tooltip_box = {};
+        return;
+    }
+    const auto& anchor = editor_tooltip.target().at("anchor");
+    tooltip_first = std::min(tooltip_first, tooltip_surface.lines().size() - 1);
+    auto style =
+        ui_style.text(13, scale, ui_style.colors.foreground, 1.4F, false, width - 20 * scale);
+    for (unsigned step = 0; step < 12; ++step) {
+        tooltip_surface.show(tooltip_first ? tooltip_first - 1 : 0,
+                             std::min(tooltip_surface.lines().size(), tooltip_first + 12));
+        const auto* paragraph = tooltip_surface.prepare(tooltip_first, style);
+        if (!paragraph) {
+            return;
+        }
+        if (tooltip_offset >= paragraph->height() &&
+            tooltip_first + 1 < tooltip_surface.lines().size()) {
+            tooltip_offset -= paragraph->height();
+            ++tooltip_first;
+        } else if (tooltip_offset < 0 && tooltip_first > 0) {
+            const auto* previous = tooltip_surface.prepare(tooltip_first - 1, style);
+            if (!previous) {
+                return;
+            }
+            tooltip_offset += previous->height();
+            --tooltip_first;
+        } else {
+            tooltip_offset =
+                std::clamp(tooltip_offset, 0.0F, std::max(0.0F, paragraph->height() - 1));
+            break;
+        }
+    }
+    const auto end = std::min(tooltip_surface.lines().size(), tooltip_first + 12);
+    std::vector<const TextLayout*> paragraphs;
+    float height = 16 * scale - tooltip_offset;
+    for (auto row = tooltip_first; row < end; ++row) {
+        const auto* paragraph = tooltip_surface.prepare(row, style);
+        if (!paragraph) {
+            return;
+        }
+        paragraphs.push_back(paragraph);
+        height += paragraph->height();
+        if (height >= maximum_height) {
+            break;
+        }
+    }
+    height = std::min(height, maximum_height);
+    const auto x =
+        std::clamp(anchor.at("x").get<float>(), left + 8 * scale, right - width - 8 * scale);
+    auto y = anchor.at("y").get<float>() + anchor.at("height").get<float>() + 4 * scale;
+    if (y + height > content_bottom) {
+        y = std::max(content_top, anchor.at("y").get<float>() - height - 4 * scale);
+    }
+    tooltip_box = {x, y, width, height};
+    rectangle(canvas, x, y, width, height, ui_style.colors.border);
+    rectangle(
+        canvas, x + scale, y + scale, width - 2 * scale, height - 2 * scale, ui_style.colors.panel);
+    canvas->save();
+    canvas->clipRect(
+        SkRect::MakeXYWH(x + 10 * scale, y + 8 * scale, width - 20 * scale, height - 16 * scale));
+    auto text_y = y + 8 * scale - tooltip_offset;
+    for (const auto* paragraph : paragraphs) {
+        paragraph->draw(canvas, x + 10 * scale, text_y);
+        text_y += paragraph->height();
+    }
+    canvas->restore();
+}
+
 void EditorWindow::Impl::scroll_to(float y) {
     auto* document = current();
     if (!document) {
@@ -3697,6 +3894,21 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         return;
     }
     measure_layout();
+    const bool tooltip_click =
+        input.type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
+        tooltip_box.contains(input.button.x * ratio_x, input.button.y * ratio_y);
+    if (input.type == SDL_EVENT_KEY_DOWN || input.type == SDL_EVENT_TEXT_INPUT ||
+        input.type == SDL_EVENT_WINDOW_FOCUS_LOST || input.type == SDL_EVENT_WINDOW_MOUSE_LEAVE ||
+        input.type == SDL_EVENT_WINDOW_RESIZED ||
+        input.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
+        (input.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !tooltip_click)) {
+        const bool dismiss_only = input.type == SDL_EVENT_KEY_DOWN &&
+                                  input.key.key == SDLK_ESCAPE && !editor_tooltip.text().empty();
+        dismiss_editor_tooltip();
+        if (dismiss_only) {
+            return;
+        }
+    }
     switch (input.type) {
     case SDL_EVENT_QUIT:
     case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
@@ -3748,6 +3960,7 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
     case SDL_EVENT_MOUSE_MOTION:
         mouse_x = input.motion.x * ratio_x;
         mouse_y = input.motion.y * ratio_y;
+        hover_tracking = (input.motion.state & SDL_BUTTON_LMASK) == 0;
         // SDL's motion state is authoritative. Hover updates still apply, but
         // an outstanding down/up interaction must not turn native hover into a drag.
         if ((input.motion.state & SDL_BUTTON_LMASK) == 0) {
@@ -3784,6 +3997,9 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         break;
     case SDL_EVENT_MOUSE_BUTTON_DOWN: {
         if (input.button.button != SDL_BUTTON_LEFT) {
+            break;
+        }
+        if (tooltip_click) {
             break;
         }
         consumed_modal_text = false;
@@ -4012,6 +4228,15 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
             scroll_to(mouse_y);
             break;
         }
+        if ((modifiers & SDL_KMOD_CTRL) && !(modifiers & (SDL_KMOD_ALT | SDL_KMOD_SHIFT))) {
+            if (auto target = editor_hit(mouse_x, mouse_y); !target.is_null()) {
+                target.erase("anchor");
+                target.erase("line");
+                target.erase("utf16Column");
+                editor_policy("ui.definition", std::move(target));
+                break;
+            }
+        }
         point(mouse_x, mouse_y, (modifiers & SDL_KMOD_SHIFT) != 0, (modifiers & SDL_KMOD_ALT) != 0);
         if (mouse_x >= left && mouse_x <= right && mouse_y >= content_top &&
             mouse_y <= content_bottom) {
@@ -4037,6 +4262,12 @@ void EditorWindow::Impl::event(const SDL_Event& input) {
         mouse_x = input.wheel.mouse_x * ratio_x;
         mouse_y = input.wheel.mouse_y * ratio_y;
         const auto direction = input.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.0F : 1.0F;
+        if (tooltip_box.contains(mouse_x, mouse_y)) {
+            tooltip_offset +=
+                std::clamp(-input.wheel.y * direction * 40 * scale, -100 * scale, 100 * scale);
+            break;
+        }
+        dismiss_editor_tooltip();
         if (prompt != Prompt::none) {
             if (prompt == Prompt::policy_text && dialog && (modifiers & SDL_KMOD_SHIFT) != 0) {
                 dialog->horizontal =
@@ -4255,6 +4486,7 @@ void EditorWindow::Impl::sync_chrome() {
             {"tabSize", tab_size},
             {"insertSpaces", spaces},
             {"languageActive", document->language_active},
+            {"language", document->language},
             {"caret", std::move(caret)}};
     }
     chrome_state.sync(std::move(context));
@@ -5019,8 +5251,10 @@ void EditorWindow::Impl::draw() {
                 }
             }
             shaped->draw(canvas, text_x, y);
+            int line_severity = 4;
             document->decorations.diagnostics.intersect(
                 number, number + 1, [&](const auto& diagnostic) {
+                    line_severity = std::min(line_severity, diagnostic.value.severity);
                     const auto begin =
                         number == diagnostic.begin
                             ? shaped->byte_offset_from_utf16(diagnostic.value.start_utf16)
@@ -5031,13 +5265,32 @@ void EditorWindow::Impl::draw() {
                             : line.text.size();
                     const auto color = diagnostic.value.severity == 1 ? ui_style.colors.error
                                                                       : ui_style.colors.warning;
-                    for (const auto& box : shaped->selection_rects(begin, end)) {
-                        rectangle(canvas,
-                                  text_x + box.x,
-                                  y + box.y + box.height - 2 * scale,
-                                  std::max(scale, box.width),
-                                  scale,
-                                  color);
+                    auto boxes = shaped->selection_rects(begin, end);
+                    if (begin == end) {
+                        const auto caret = shaped->caret(begin);
+                        boxes.push_back({caret.x, caret.y, 6 * scale, caret.height});
+                    }
+                    SkPaint paint;
+                    paint.setAntiAlias(true);
+                    paint.setColor(color);
+                    paint.setStyle(SkPaint::kStroke_Style);
+                    paint.setStrokeWidth(1.5F * scale);
+                    for (const auto& box : boxes) {
+                        const auto start = std::max(left + gutter, text_x + box.x);
+                        const auto stop = std::min(right - 12 * scale, text_x + box.x + box.width);
+                        if (start >= stop) {
+                            continue;
+                        }
+                        const auto baseline = y + box.y + box.height - 2 * scale;
+                        SkPathBuilder wave;
+                        wave.moveTo(start, baseline);
+                        bool down = true;
+                        for (auto x = start + 2 * scale; x < stop; x += 2 * scale) {
+                            wave.lineTo(x, baseline + (down ? -2 : 0) * scale);
+                            down = !down;
+                        }
+                        wave.lineTo(stop, baseline);
+                        canvas->drawPath(wave.detach(), paint);
                     }
                 });
             for (std::size_t index = 0; index < selections.size(); ++index) {
@@ -5119,6 +5372,13 @@ void EditorWindow::Impl::draw() {
                       ui_style.colors.muted);
             }
             canvas->restore();
+            if (line_severity <= 2) {
+                SkPaint marker;
+                marker.setAntiAlias(true);
+                marker.setColor(line_severity == 1 ? ui_style.colors.error
+                                                   : ui_style.colors.warning);
+                canvas->drawCircle(left + 11 * scale, y + row_height / 2, 3 * scale, marker);
+            }
         });
         canvas->restore();
         const auto lines = document->metadata.at("lineCount").get<std::size_t>();
@@ -5144,6 +5404,8 @@ void EditorWindow::Impl::draw() {
     chrome.paint_body(
         canvas, geometry, ui_style, chrome_state, chrome_layout, mouse_x, mouse_y, error);
     draw_inline_form(canvas);
+    sync_editor_tooltip();
+    draw_editor_tooltip(canvas);
     draw_prompt(canvas, width, height);
     if (screenshot) {
         renderer.capture_png(*screenshot);
@@ -5181,6 +5443,7 @@ std::string EditorWindow::active_document_id() const {
 bool EditorWindow::idle() const noexcept {
     const auto* document = impl_->current();
     return !impl_->quit_requested && impl_->icons_.ready() && impl_->tabs.pending() == 0 &&
+           !impl_->editor_tooltip.pending() && !impl_->tooltip_surface.pending() &&
            impl_->file_icons.idle() && impl_->pending_fences.empty() &&
            impl_->native_idle(impl_->dialog.has_value()) &&
            (!impl_->dialog || !impl_->dialog->picker.dynamic() || impl_->dialog->picker.ready()) &&
@@ -5212,6 +5475,14 @@ WorkbenchViewState EditorWindow::view_state() const {
                               impl_->tab_bar.geometry(),
                               impl_->tabs.ids(),
                               impl_->sidebar_views.at("explorer").index.size()};
+    result.editor_tooltip = impl_->editor_tooltip.state();
+    result.editor_tooltip["bounds"] = {{"x", impl_->tooltip_box.x},
+                                       {"y", impl_->tooltip_box.y},
+                                       {"width", impl_->tooltip_box.width},
+                                       {"height", impl_->tooltip_box.height}};
+    result.editor_tooltip["first"] = impl_->tooltip_first;
+    result.editor_tooltip["offset"] = impl_->tooltip_offset;
+    result.editor_tooltip["layoutsPending"] = impl_->tooltip_surface.pending();
     const auto& sidebar = impl_->sidebar_views.at(impl_->active_view);
     result.style = impl_->style_model();
     result.window_frame = impl_->window_frame_model();
@@ -5342,6 +5613,7 @@ WorkbenchViewState EditorWindow::view_state() const {
     }
     if (const auto* document = impl_->current()) {
         result.document = document->metadata;
+        result.document["language"] = document->language;
         const auto cache = document->viewport.statistics();
         const auto& summary = document->viewport.lines().summary();
         result.document_viewport = {
@@ -5440,6 +5712,7 @@ bool EditorWindow::pump() {
         });
         impl_->layout_jobs->poll();
         impl_->document_composition.poll();
+        impl_->tooltip_surface.poll();
         for (auto& [id, document] : impl_->documents) {
             static_cast<void>(id);
             document.viewport.poll_layouts();
@@ -5472,6 +5745,10 @@ bool EditorWindow::pump() {
         }
         const auto form_deadline = Clock::now() + std::chrono::milliseconds(4);
         impl_->measure_layout();
+        impl_->sync_editor_tooltip();
+        if (const auto context = impl_->editor_tooltip.take_request()) {
+            impl_->workbench->emit("ui.editor.hover", *context);
+        }
         if (const auto context = impl_->chrome_state.take_request())
             impl_->workbench->emit("ui.chrome.request", *context);
         if (const auto viewport = impl_->outline.take_request())
