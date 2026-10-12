@@ -2,6 +2,50 @@
 
 Product contract: `EditorDoc.md`. Product name: Astra (confirmed by the user).
 
+## Mature icons: final Windows delivery (2026-10-12)
+
+The approved icon migration is complete: Codicons for UI/symbol graphics and
+Material Icon Theme 5.39.0 for default file/language/folder graphics. The 1,185
+original SVGs, notices and association catalog have pinned provenance; rendering
+uses the existing Skia SVG target and immutable vector pictures. Legacy glyph/tone
+customization, JavaScript-owned associations, bounded asynchronous loading and
+existing editing/service behavior remain. No new dependency port or overlay.
+
+Tested and pushed implementation increments: `839005c` (resources/UI) and
+`d918ce7d321a542e36c2b8bcbc693b8733bf3a9d` (file policy/distribution).
+Debug has passing results for all 19 checks after the focused fixture repair;
+the complete Release run passed 19/19. Both configurations passed 282 unit and
+355 integration cases. Commands, the initial failure and repair evidence are
+recorded below. Formatter Check and Git whitespace checks passed.
+
+Clean production artifact: `build/packages/astra-0.1.0-windows-x64-d918ce7.zip`,
+150,114,771 bytes. SHA-256:
+`deaecb0b6e089d5eef6d125660932bf1d3ed0e50c7491a1fc6c7437e4d6eb8f8`.
+Detached digest is alongside the ZIP. Its 7,530-file inventory records
+sourceDirty=false, the clean `d918ce7` code commit, Release/MD and pinned vcpkg
+`e456309491fd875487bf02b8a0dca76c1b1b00cc`. This final entry is a later
+documentation-only commit; it does not change the distributed implementation.
+
+Passed production commands:
+
+- `./scripts/package-windows.ps1 -OutputDirectory build/packages/astra-0.1.0-windows-x64-d918ce7 -Offline`:
+  production-only configure/build, fresh CMake Runtime install, original icon
+  resource/license hashes, full inventory and CPack ZIP
+  (`build/icons-final-package.log`). No tests/fixtures/benchmarks are installed.
+- `./scripts/verify-windows-package.ps1 -PackageDirectory build/packages/astra-0.1.0-windows-x64-d918ce7 -RunSmoke -RunGuiSmoke`:
+  shipped JS resolves C++, Python, CMake and src-folder assets; production GUI,
+  Unicode transaction/undo/redo/save/close, service/process/Git/recovery and real
+  bundled C++/TypeScript/Python diagnostics passed in isolated profiles with a
+  Windows-only PATH (`build/icons-final-package-smoke.log`).
+- `Expand-Archive -LiteralPath build/packages/astra-0.1.0-windows-x64-d918ce7.zip -DestinationPath build/package-roundtrip-icons-d918ce7`, then
+  `./scripts/verify-windows-package.ps1 -PackageDirectory build/package-roundtrip-icons-d918ce7/astra-0.1.0-windows-x64-d918ce7 -RunSmoke -RunGuiSmoke`:
+  all the same inventory, asset/license and production checks passed from the
+  extracted ZIP (`build/icons-final-package-roundtrip.log`).
+
+Windows-only validation. Physical monitor DPI, installed IME and actual driver/
+adapter removal were not re-executed; pixel-size rendering and screenshots do
+not establish that environmental evidence. No non-Windows execution.
+
 ## Mature icons: file policy and distribution (2026-10-12)
 
 The second increment enables the official Material default associations in
@@ -30,7 +74,7 @@ Windows acceptance:
   catalog approaches exceeded the existing runtime budget; bounded page imports
   fixed the failure (`build/icons-file-unit-debug-failed-budget.log`).
 - `./scripts/format.ps1 -Offline` and its Check gate passed. Fresh production
-  package acceptance is pending.
+  package acceptance is recorded in the final delivery entry above.
 - Initial full Debug run passed 18/19 checks; the new Material screenshot
   assertion sent End after leaving Explorer and failed to find visible C++ rows.
   The fixture now re-enters Explorer before scrolling. Original failure is
