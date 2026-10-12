@@ -66,6 +66,32 @@ has been fixed. No assertion was removed or deadline widened.
 Validation is native Windows only. This increment uses the affected checks above;
 the earlier complete 19-test milestone remains recorded below.
 
+Delivery source: `633f89482c96967a4e959ca6d6ae9b72f0cf2465`, pushed to
+`codex/astra-editor`. `./scripts/package-windows.ps1 -OutputDirectory
+build/packages/astra-0.1.0-windows-x64-633f894 -Offline` passed
+(`build/editor-feedback-package.log`). The 7,530-file inventory records
+sourceDirty=false, Release/MD, the pinned vcpkg revision below and all 1,185 SVGs.
+ZIP: `build/packages/astra-0.1.0-windows-x64-633f894.zip`, 150,130,886 bytes;
+SHA-256 `ce0527ab9ce9cf28a9bba439abacf8dc31816096cc1c4bd3f60660ed43e8ac16`.
+
+`./scripts/verify-windows-package.ps1 -PackageDirectory
+build/packages/astra-0.1.0-windows-x64-633f894 -RunSmoke -RunGuiSmoke` passed all
+installed production GUI, shipped JS, Unicode edit/undo/redo/save/guarded close,
+service/process/Git/recovery and bundled C++/TypeScript/Python diagnostics checks
+(`build/editor-feedback-package-smoke.log`). The first outer command returned 1
+because it checked `$LASTEXITCODE` for a PowerShell script; no verification check
+failed. The script uses terminating errors and validates owned process exit codes.
+
+`Expand-Archive -LiteralPath build/packages/astra-0.1.0-windows-x64-633f894.zip
+-DestinationPath build/package-roundtrip-feedback-633f894`, followed by the same
+verification command against
+`build/package-roundtrip-feedback-633f894/astra-0.1.0-windows-x64-633f894`, passed
+with strict PowerShell success/error handling and exit 0
+(`build/editor-feedback-package-roundtrip.log`). Owned GUI fixtures were retained.
+The installed package was launched visibly with `build/lsp-preview-633f894/main.cpp`
+and an isolated state directory; the preview contains a real definition target
+and an intentional diagnostic. Old packages/evidence were preserved.
+
 ## Direct LSP editor interactions (2026-10-12)
 
 Implemented the reported missing mouse interactions through the existing service
